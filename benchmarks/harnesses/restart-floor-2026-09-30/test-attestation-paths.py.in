@@ -1,0 +1,33 @@
+"""Only argparse/path preflight and mocks; no product or model process."""
+import os,runpy,sys,tempfile
+from pathlib import Path
+from unittest.mock import patch
+sys.dont_write_bytecode=True
+root=Path(__file__).resolve().parent
+guard=runpy.run_path(str(root/'run-guarded.py.in'));g=guard['main'].__globals__
+with tempfile.TemporaryDirectory() as directory:
+ parent=Path(directory);home=parent/'home';seed=parent/'seed';output=parent/'output'
+ for target in [home,seed,output]:target.mkdir()
+ excluded=0
+ for mode,roots in [('setup',[home]),('trials',[seed,output])]:
+  for target in roots:
+   alias=parent/(target.name+'-alias');alias.symlink_to(target,target_is_directory=True)
+   for attestation in [target/'build.json',target/'index/project/build.json',alias/'index/build.json']:
+    attestation.parent.mkdir(parents=True,exist_ok=True);attestation.write_text('{}')
+    stages=['bootstrap','seed'] if mode=='setup' else [None]
+    for stage in stages:
+     record=parent/'record.json';args=['guard','--attestation',str(attestation),'--model-manifest',str(parent/'models.json'),'--record',str(record),'--documents','1','--index','memory',mode]
+     args+=['--home',str(home),'--arm','fake','--stage',stage] if mode=='setup' else ['--seed',str(seed),'--output',str(output),'--fixture-manifest',str(parent/'fixture.json'),'--arm','fake']
+     with patch.dict(os.environ,{},clear=True),patch.dict(g,{'MODEL':{'load':lambda p:(_ for _ in ()).throw(RuntimeError('model boundary'))}}),patch.object(sys,'argv',args):
+      try:guard['main']()
+      except AssertionError as error:assert 'build attestation must be outside measured home/seed/output' in str(error)
+      else:raise AssertionError('contaminating attestation passed')
+     assert not record.exists();excluded+=1
+ # An external attestation passes the new guard and reaches the next preflight.
+ external=parent/'build.json';external.write_text('{}')
+ args=['guard','--attestation',str(external),'--model-manifest',str(parent/'models.json'),'--record',str(parent/'record.json'),'--documents','1','--index','memory','setup','--home',str(home),'--arm','fake','--stage','bootstrap']
+ with patch.dict(os.environ,{},clear=True),patch.dict(g,{'MODEL':{'load':lambda p:(_ for _ in ()).throw(RuntimeError('model boundary'))}}),patch.object(sys,'argv',args):
+  try:guard['main']()
+  except RuntimeError as error:assert str(error)=='model boundary'
+  else:raise AssertionError('external attestation did not reach next preflight')
+print(f'PASS: {excluded} direct/index/symlink attestation exclusions and external positive before model/write/launch')

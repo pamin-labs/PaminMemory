@@ -1,0 +1,23 @@
+"""Measured-index symlinks rejected; tiny fake fixture only."""
+import subprocess,sys,tempfile
+from pathlib import Path
+sys.dont_write_bytecode=True
+root=Path(__file__).resolve().parent;repo=root.parents[2];source=root/'run-guarded.py.in';text=source.read_text();before='--before' in sys.argv
+if before:text=subprocess.check_output(['git','show','741423999d7acdeeefd48afb54d991b27342cc86:'+str(source.relative_to(repo))],cwd=repo,text=True)
+g={'__file__':str(source),'__name__':'fixture'};exec(compile(text,str(source),'exec'),g)
+for kind in ['postgres','duplicate','cycle','file','index-root']:
+ with tempfile.TemporaryDirectory() as directory:
+  p=Path(directory);seed=p/'seed';models=p/'models';models.mkdir();(seed/'postgres/data').mkdir(parents=True);(seed/'postgres/data/fake').write_bytes(b'fake db');(seed/'index').mkdir();(seed/'models').symlink_to(models,target_is_directory=True)
+  if kind=='index-root':(seed/'index').rmdir();(seed/'index').symlink_to('postgres',target_is_directory=True)
+  else:
+   (seed/'index/sub').mkdir();(seed/'index/data').write_bytes(b'fake index')
+   target={'postgres':'../postgres','duplicate':'sub','cycle':'.','file':'data'}[kind];(seed/'index/link').symlink_to(target)
+  if before:g['fixture_snapshot'](seed,models)
+  else:
+   try:g['fixture_snapshot'](seed,models)
+   except AssertionError as error:assert 'measured index tree symlinks forbidden' in str(error)
+   else:raise AssertionError('measured index symlink accepted')
+with tempfile.TemporaryDirectory() as directory:
+ p=Path(directory);seed=p/'seed';models=p/'models';models.mkdir();(seed/'postgres/data').mkdir(parents=True);(seed/'index').mkdir();(seed/'index/data').write_bytes(b'index');(seed/'models').symlink_to(models,target_is_directory=True);(seed/'alias').symlink_to('postgres',target_is_directory=True)
+ fixture=g['fixture_snapshot'](seed,models);g['verify_fixture'](seed,fixture)
+print('BEFORE: five measured-index links accepted including recursive and postgres targets' if before else 'PASS: five measured-index links rejected; models/nonindex symlink positive')

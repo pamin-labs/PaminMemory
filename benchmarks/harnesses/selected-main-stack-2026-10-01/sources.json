@@ -1,0 +1,158 @@
+{
+  "revisions": {
+    "main": "315c10242ddf7a1cec3bccbf550a942320e09557",
+    "stack": "d0b6a14a4f317fea3c1e117f627289aad1b1c964"
+  },
+  "fixture": {
+    "memories.json": {
+      "count": 230,
+      "sha256": "67473f12f4f504e9e0ec4f605218cbc9d5fbd01265deadfbc2b7f4982808fd70"
+    },
+    "queries.json": {
+      "count": 157,
+      "sha256": "0662914901425b03c2f95667f68eede6caad1392ba367a2c8d5856efa1ed4faf"
+    }
+  },
+  "helper_sha256": "1473c07b397282d3a5bc833b2e8d3a94e824703a4219012251d2cd80af027b50",
+  "probe_sha256": "7a16f16acd939b68a65d8ae4c9a8fcff53e44d76508d4812ef0b8438b5299d2f",
+  "toolchain": "1.98.1",
+  "postgres_version": "17.6.0",
+  "ort_version": "1.28.0",
+  "zvec_vendor_revision": "1ab7975dfc2d2160054bafff614831b7099cd930",
+  "assets": [
+    {
+      "root": "native",
+      "relative": "libzvec_c_api.so",
+      "sha256": "58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a",
+      "bytes": 38067280
+    },
+    {
+      "root": "ort",
+      "relative": "libonnxruntime.so.1.28.0",
+      "sha256": "1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab",
+      "bytes": 24268848
+    },
+    {
+      "root": "models",
+      "relative": "models--gpahal--bge-m3-onnx-int8/refs/main",
+      "sha256": "70244ac5b9e0c1d94db43f1edd456f57a0982acdccc2a716e7b5c2663d5c4114",
+      "bytes": 40
+    },
+    {
+      "root": "models",
+      "relative": "models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/config.json",
+      "sha256": "68bf436cb7a210655f599b3944065f12a81317291b32e78bd4338b5745cda63a",
+      "bytes": 679
+    },
+    {
+      "root": "models",
+      "relative": "models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/model_quantized.onnx",
+      "sha256": "16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb",
+      "bytes": 569958496
+    },
+    {
+      "root": "models",
+      "relative": "models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/special_tokens_map.json",
+      "sha256": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+      "bytes": 964
+    },
+    {
+      "root": "models",
+      "relative": "models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer.json",
+      "sha256": "249df0778f236f6ece390de0de746838ef25b9d6954b68c2ee71249e0a9d8fd4",
+      "bytes": 17082799
+    },
+    {
+      "root": "models",
+      "relative": "models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer_config.json",
+      "sha256": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
+      "bytes": 1203
+    },
+    {
+      "root": "models",
+      "relative": "models--onnx-community--bge-reranker-v2-m3-ONNX/refs/main",
+      "sha256": "c7a57e61b67082e404334efffe3a340e32e9018a72b58e5a2572b3a2e1fef364",
+      "bytes": 40
+    },
+    {
+      "root": "models",
+      "relative": "models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/config.json",
+      "sha256": "122e922dcfed6503c8721e6fe1daf090340c3d95ca7f3aa3a72730b321a51cfd",
+      "bytes": 848
+    },
+    {
+      "root": "models",
+      "relative": "models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/special_tokens_map.json",
+      "sha256": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+      "bytes": 964
+    },
+    {
+      "root": "models",
+      "relative": "models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer.json",
+      "sha256": "8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3",
+      "bytes": 17082900
+    },
+    {
+      "root": "models",
+      "relative": "models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer_config.json",
+      "sha256": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
+      "bytes": 1203
+    },
+    {
+      "root": "models",
+      "relative": "prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx",
+      "sha256": "51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4",
+      "bytes": 592479
+    },
+    {
+      "root": "models",
+      "relative": "prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx.data",
+      "sha256": "2600d5896ddedb06f0d1627179ea1c39da1ef075e170598cd467016dc06e8c0b",
+      "bytes": 872738832
+    },
+    {
+      "root": "models",
+      "relative": "prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx",
+      "sha256": "24cc5ad23811a65c6a4648d8be0b79a7ad67a180e2db234b08c899c882ac5164",
+      "bytes": 347238
+    },
+    {
+      "root": "models",
+      "relative": "prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx",
+      "sha256": "7231486a34a1d71b151f9f0f8a224f1d7d454dfaad450117b5cc179a2d350bb8",
+      "bytes": 484362
+    },
+    {
+      "root": "models",
+      "relative": "prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx.data",
+      "sha256": "06b529ab95974bcf4b21c0ac9e649816534c2e2ebb44990cb15462872754199c",
+      "bytes": 874217472
+    }
+  ],
+  "roles": {
+    "embedding": {
+      "relative": "prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx",
+      "nodes": 1023
+    },
+    "reranker": {
+      "relative": "prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx",
+      "nodes": 295
+    }
+  },
+  "historical_binary_sha256": {
+    "main": "e59c39df486e1db7536a0bb5364d03acbe8b789c544a6d7da1d11d7fae188f0e",
+    "stack": "8da6eac4e2014b74fc4a05a09938f2bf55f40986f0f9fc4dfa629a2d083abb04"
+  },
+  "scope": "Fresh fixture generation; historical binary/DB/index byte identities are provenance only, not a new-run promise.",
+  "trees": {
+    "main": "21f1dfe989a629f1aa68fea275b9fc1f25d04ad1",
+    "stack": "81fe21f0e2c314081b03f1e520e805d3132d15af"
+  },
+  "stack_source_subset": {
+    "archive": "stack-source.tar.gz",
+    "archive_sha256": "2083bad5377d6a845146e73530ada9e4747da4ec5dbbf8f0adde14bbf13c9196",
+    "manifest": "stack-source-manifest.json",
+    "manifest_sha256": "165c95ebfe2284ed7099b9c9f759ad58b4287af7f283988081c30b7244206687",
+    "scope": "Byte-exact selected-target compilation inputs only, not an exported or certified full historical Git tree."
+  }
+}

@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Fake artifact/loader guards only. No Cargo, native loading, models or database."""
+import hashlib,json,os,runpy,subprocess,sys,tempfile
+from pathlib import Path
+if sys.flags.optimize:raise SystemExit('Negative guard checks require assertions; remove -O/PYTHONOPTIMIZE')
+sys.dont_write_bytecode=True
+root=Path(__file__).parent
+build=runpy.run_path(str(root/'build-guarded.py.in'));native=build['NATIVE']
+def refuse(operation):
+    try:operation()
+    except AssertionError:return
+    raise AssertionError('negative case passed')
+with tempfile.TemporaryDirectory() as directory:
+    parent=Path(directory);target=parent/'target';target.mkdir(mode=0o700);checkout=parent/'checkout';checkout.mkdir()
+    names=sorted(build['PRODUCTS'])+['scratch-restart-floor','third-party','proc-macro','build-script-build']
+    artifacts=[{'reason':'compiler-artifact','target':{'name':name.replace('-','_'),'src_path':str(checkout/build['TARGET'])},'manifest_path':str(checkout/'Cargo.toml'),'fresh':False,'filenames':[str(target/(name+'.rlib'))], 'executable':str(target/'helper') if name=='scratch-restart-floor' else None} for name in names]
+    records=artifacts+[{'reason':'build-finished','success':True}]
+    selected,_=build['fresh_artifacts'](records,checkout,target);assert len(selected)==8
+    for index in range(len(artifacts)):
+        artifacts[index]['fresh']=True;refuse(lambda:build['fresh_artifacts'](records,checkout,target));artifacts[index]['fresh']=False
+    artifacts[-1]['filenames']=[str(parent/'shared-cache.rlib')];refuse(lambda:build['fresh_artifacts'](records,checkout,target))
+    conversion_products={'pamin-core','pamin-index'}
+    conversion=[dict(row,target=dict(row['target'])) for row in artifacts[:2]]
+    for row,name in zip(conversion,sorted(conversion_products)):row['target']['name']=name.replace('-','_')
+    conversion.append({'reason':'compiler-artifact','target':{'name':'scratch_disk_schema','src_path':str(checkout/build['CONVERSION_TARGET'])},'manifest_path':str(checkout/'Cargo.toml'),'fresh':False,'filenames':[str(target/'disk-schema')],'executable':str(target/'disk-schema')})
+    conversion_records=conversion+[{'reason':'build-finished','success':True}]
+    def conversion_check():return build['fresh_artifacts'](conversion_records,checkout,target,conversion_products,'scratch_disk_schema',build['CONVERSION_TARGET'])
+    _,executable=conversion_check();assert executable==target/'disk-schema'
+    conversion[-1]['target']['src_path']=str(checkout/'unreviewed.rs');refuse(conversion_check)
+    conversion[-1]['target']['src_path']=str(checkout/build['CONVERSION_TARGET'])
+    conversion[-1]['fresh']=True;refuse(conversion_check);conversion[-1]['fresh']=False
+    libs=parent/'libs';libs.mkdir();library=libs/'libfake.so.1';library.write_bytes(b'original')
+    alias=libs/'libfake.so';alias.symlink_to(library.name);absent=parent/'absent'
+    expected=native['snapshot']([str(libs)],[str(libs),str(absent)])
+    env=native['environment']({'LD_LIBRARY_PATH':'uncontrolled','LD_PRELOAD':'attack','LD_AUDIT':'attack','LD_DEBUG':'all','GLIBC_TUNABLES':'attack','PATH':'keep'},expected)
+    assert env=={'PATH':'keep','LD_LIBRARY_PATH':str(libs)}
+    library.write_bytes(b'changed');refuse(lambda:native['verify'](expected));library.write_bytes(b'original')
+    alias.unlink();alias.symlink_to('missing.so');
+    try:native['verify'](expected)
+    except FileNotFoundError:pass
+    else:raise AssertionError('broken link accepted')
+    alias.unlink();alias.symlink_to(library.name)
+    unexpected=libs/'shadow.so';unexpected.write_bytes(b'extra');refuse(lambda:native['verify'](expected));unexpected.unlink()
+    absent.mkdir();refuse(lambda:native['verify'](expected));absent.rmdir()
+    outside=parent/'external.so';outside.write_bytes(b'outside');alias.unlink();alias.symlink_to(outside);refuse(lambda:native['snapshot']([str(libs)],[str(libs)]))
+with tempfile.TemporaryDirectory() as directory:
+    parent=Path(directory).resolve();checkout=parent/'ancestor'/'checkout';checkout.mkdir(parents=True)
+    home=parent/'cargo-home';home.mkdir()
+    expected=build['cargo_config_snapshot']([checkout],home)
+    for ancestor in [checkout,*checkout.parents]:
+        # Only mutate this disposable hierarchy; remaining real ancestors are
+        # still included by the production discovery and absence assertion.
+        if not ancestor.is_relative_to(parent):continue
+        config_dir=ancestor/'.cargo';config_dir.mkdir(exist_ok=True)
+        for name in ['config','config.toml']:
+            config=config_dir/name;config.write_text('[env]\nZVEC_AUTO_BUILD={value="1",force=true}\n')
+            refuse(lambda:build['cargo_config_snapshot']([checkout],home))
+            refuse(lambda:build['verify_cargo_configs'](expected,[checkout],home));config.unlink()
+    for name in ['config','config.toml']:
+        config=home/name;config.write_text('[build]\nrustc-wrapper="uncontrolled"\n')
+        refuse(lambda:build['cargo_config_snapshot']([checkout],home));config.unlink()
+        config.symlink_to('missing');refuse(lambda:build['cargo_config_snapshot']([checkout],home));config.unlink()
+    build['verify_cargo_configs'](expected,[checkout],home)
+# Synthetic Git object responses exercise the conversion source allowlist and
+# HEAD-blob comparison without invoking Git/Cargo or any external runtime.
+with tempfile.TemporaryDirectory() as directory:
+    checkout=Path(directory);scratch=build['CONVERSION_TARGET'];path=checkout/scratch;path.parent.mkdir(parents=True)
+    template=root/'disk_schema_guarded.rs.in';path.write_bytes(template.read_bytes());sha=build['digest'](template)
+    allowed={scratch:sha};plan={'harness':str(template),'harness_sha256':sha,'arms':{'candidate':{'allowed_untracked':allowed}}}
+    assert build['validate_harness'](plan,scratch,True)==template
+    plan['harness_sha256']='wrong';refuse(lambda:build['validate_harness'](plan,scratch,True));plan['harness_sha256']=sha
+    plan['arms']['candidate']['allowed_untracked']={'unreviewed.rs':sha};refuse(lambda:build['validate_harness'](plan,scratch,True));plan['arms']['candidate']['allowed_untracked']=allowed
+    tracked={'Cargo.toml':b'fake manifest','Cargo.lock':b'fake lock'}
+    for name,data in tracked.items():(checkout/name).write_bytes(data)
+    def fake_git(checkout,*args):
+        if args[0]=='rev-parse':return b'fake-commit\n'
+        if args[0] in {'status','diff','for-each-ref'}:return b''
+        if args[0]=='ls-tree':return b''.join(('100644 blob '+name+'\t'+name+'\0').encode() for name in tracked)
+        if args[0]=='ls-files':return (scratch+'\0').encode()
+        raise AssertionError(args)
+    class FakeSubprocess:
+        @staticmethod
+        def check_output(*args,**kwargs):
+            assert kwargs['env']['GIT_NO_REPLACE_OBJECTS']=='1'
+            return b''.join(name.encode()+b' blob '+str(len(data)).encode()+b'\n'+data+b'\n' for name,data in tracked.items())
+    globals_=build['inputs'].__globals__;old_git=globals_['git'];old_subprocess=globals_['subprocess'];old_objects=globals_['OBJECTS']
+    try:
+        globals_['git']=fake_git;globals_['subprocess']=FakeSubprocess
+        globals_['OBJECTS']=dict(old_objects,snapshot=lambda *args:{name:('100644',name,data) for name,data in tracked.items()})
+        result=build['inputs'](checkout,'fake-commit',allowed,scratch);assert result[scratch]['sha256']==sha
+        path.write_bytes(b'changed source');refuse(lambda:build['inputs'](checkout,'fake-commit',allowed,scratch));path.write_bytes(template.read_bytes())
+        (checkout/'Cargo.toml').write_bytes(b'dirty HEAD source');refuse(lambda:build['inputs'](checkout,'fake-commit',allowed,scratch))
+    finally:globals_['git']=old_git;globals_['subprocess']=old_subprocess;globals_['OBJECTS']=old_objects
+conversion_runner=runpy.run_path(str(root/'run-conversion-guarded.py.in'))
+with tempfile.TemporaryDirectory() as directory:
+    binary=Path(directory)/'disk-schema';binary.write_bytes(b'fake executable, never launched')
+    source=build['CONVERSION_TARGET'];sha=build['digest'](root/'disk_schema_guarded.rs.in')
+    inputs={source:{'sha256':sha}}
+    arm={'scratch_source':source,'scratch_sha256':sha,'inputs_before':inputs,'inputs_after':dict(inputs),'binary':str(binary),'binary_sha256':build['digest'](binary),'binary_bytes':binary.stat().st_size}
+    attestation={'build_kind':'disk-schema-conversion','scratch_target':source,'harness_sha256':sha,'arms':{'candidate':arm}}
+    assert conversion_runner['verified_binary'](attestation)==binary
+    arm['scratch_sha256']='unreviewed';refuse(lambda:conversion_runner['verified_binary'](attestation));arm['scratch_sha256']=sha
+    arm['inputs_after']={};refuse(lambda:conversion_runner['verified_binary'](attestation));arm['inputs_after']=dict(inputs)
+    binary.write_bytes(b'changed executable');refuse(lambda:conversion_runner['verified_binary'](attestation))
+for key in ['ZVEC_LIB_DIR','ZVEC_AUTO_BUILD','ORT_LIB_LOCATION','RUSTC','CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS']:
+    refuse(lambda:build['reject_overrides']({key:'uncontrolled'}))
+for name in sorted(build['CC_INPUTS']):
+    for key in [name,name+'_x86_64-unknown-linux-gnu',name+'_x86_64_unknown_linux_gnu','HOST_'+name,'TARGET_'+name]:
+        refuse(lambda:build['reject_overrides']({key:'uncontrolled'}))
+for key in ['CC_KNOWN_WRAPPER_CUSTOM','CC_SHELL_ESCAPED_FLAGS','CC_FORCE_DISABLE','CRATE_CC_NO_DEFAULTS','RING_PREGENERATE_ASM','PERL_EXECUTABLE','VCPKG_ROOT','RUSTONIG_SYSTEM_LIBONIG','RUSTONIG_DYNAMIC_LIBONIG','RUSTONIG_STATIC_LIBONIG','OPENSSL_DIR','OPENSSL_NO_VENDOR','OPENSSL_STATIC','X86_64_UNKNOWN_LINUX_GNU_OPENSSL_LIB_DIR','PKG_CONFIG_PATH','PKG_CONFIG_PATH_x86_64_unknown_linux_gnu','HOST_PKG_CONFIG_PATH']:
+    refuse(lambda:build['reject_overrides']({key:'uncontrolled'}))
+build['reject_overrides']({'PATH':'unchanged','HOME':'unchanged','TERM':'dumb'})
+print('passed Cargo config absence, conversion template/source/executable binding, every dependency/product/helper fresh check, private target containment, loader file/link/inventory/absence mutations, loader scrub, native/compiler overrides; no build or native execution')
+
+# Real replacement objects in a disposable Git repository: no root refs mutate.
+retrospective=runpy.run_path(str(root.parents[1]/'results/index/restart-floor-disk-2026-09-30/rebuild/verify.py'))
+with tempfile.TemporaryDirectory() as directory:
+    checkout=Path(directory)
+    env=dict(os.environ,GIT_CONFIG_NOSYSTEM='1',GIT_CONFIG_GLOBAL=os.devnull)
+    env.pop('GIT_NO_REPLACE_OBJECTS',None);env.pop('GIT_REPLACE_REF_BASE',None)
+    def local_git(*args):
+        return subprocess.check_output(['git',*args],cwd=checkout,env=env,stderr=subprocess.PIPE)
+    local_git('init','-q');local_git('config','user.name','Guard Fixture');local_git('config','user.email','fixture@example.invalid')
+    for name,data in {'Cargo.toml':b'original manifest','Cargo.lock':b'original lock'}.items():(checkout/name).write_bytes(data)
+    local_git('add','.');local_git('commit','-qm','original');original=local_git('rev-parse','HEAD').decode().strip()
+    original_blob=local_git('rev-parse',original+':Cargo.toml').decode().strip()
+    (checkout/'Cargo.toml').write_bytes(b'replacement manifest');local_git('add','.');local_git('commit','-qm','replacement')
+    replacement=local_git('rev-parse','HEAD').decode().strip();replacement_blob=local_git('rev-parse',replacement+':Cargo.toml').decode().strip()
+    local_git('checkout','--detach','-q',original)
+    good=build['inputs'](checkout,original,{})
+    assert good['Cargo.toml']['sha256']==hashlib.sha256(b'original manifest').hexdigest()
+    assert retrospective['source_inputs'](checkout,original)['Cargo.toml']['sha256']==good['Cargo.toml']['sha256']
+    def replacement_refused(operation):
+        try:operation()
+        except AssertionError as error:
+            assert 'Git replacement refs refused before source attestation' in str(error)
+            return
+        raise AssertionError('replacement source attestation accepted')
+    # Prove the review's attack rather than inventing a replacement-shaped ref.
+    local_git('replace',original,replacement)
+    assert local_git('rev-parse','HEAD').decode().strip()==original
+    assert local_git('show',original+':Cargo.toml')==b'replacement manifest'
+    assert build['git'](checkout,'show',original+':Cargo.toml')==b'original manifest'
+    replacement_refused(lambda:build['inputs'](checkout,original,{}))
+    replacement_refused(lambda:retrospective['source_inputs'](checkout,original))
+    local_git('replace','-d',original)
+    local_git('replace',original_blob,replacement_blob)
+    assert local_git('cat-file','blob',original_blob)==b'replacement manifest'
+    assert build['git'](checkout,'cat-file','blob',original_blob)==b'original manifest'
+    replacement_refused(lambda:build['inputs'](checkout,original,{}))
+    replacement_refused(lambda:retrospective['source_inputs'](checkout,original))
+    local_git('replace','-d',original_blob)
+    assert build['inputs'](checkout,original,{})==good
+    # An inherited zero flag must never enable replacements for guarded reads.
+    old=os.environ.get('GIT_NO_REPLACE_OBJECTS')
+    try:
+        os.environ['GIT_NO_REPLACE_OBJECTS']='0'
+        assert build['git_environment']()['GIT_NO_REPLACE_OBJECTS']=='1'
+    finally:
+        if old is None:os.environ.pop('GIT_NO_REPLACE_OBJECTS',None)
+        else:os.environ['GIT_NO_REPLACE_OBJECTS']=old
+print('passed real commit/blob replacement attacks, original-object reads and before-attestation ref rejection in both guards; disposable Git only, no build/native execution')

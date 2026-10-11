@@ -1,0 +1,679 @@
+diff --git a/crates/pamin-engine/src/engine.rs b/crates/pamin-engine/src/engine.rs
+index 20c0fc0..8f9791e 100644
+--- a/crates/pamin-engine/src/engine.rs
++++ b/crates/pamin-engine/src/engine.rs
+@@ -1841,21 +1841,27 @@ impl Engine {
+-        let neighbors = match graph::expand_reading(
+-            &mut *connection,
+-            self.project,
+-            &seeds,
+-            &expansion,
+-            keep,
+-        )
+-        .await?
+-        .strongest(keep, worth)
+-        {
+-            Some(neighbors) => neighbors,
+-            None => {
+-                tracing::debug!(
+-                    seeds = seeds.len(),
+-                    "an edge the bounded walk left unread could have ranked; walking again in full"
+-                );
+-                graph::strongest(
+-                    graph::expand(&mut *connection, self.project, &seeds, &expansion).await?,
+-                    keep,
+-                    worth,
+-                )
++        let neighbors = if USE_SCORED_GRAPH_RECALL {
++            scored_graph_recall(
++                &mut *connection,
++                self.project,
++                &seeds,
++                options.depths.graph,
++                keep,
++                worth,
++            )
++            .await?
++        } else {
++            match graph::expand_reading(&mut *connection, self.project, &seeds, &expansion, keep)
++                .await?
++                .strongest(keep, worth)
++            {
++                Some(neighbors) => neighbors,
++                None => {
++                    tracing::debug!(
++                        seeds = seeds.len(),
++                        "an edge the bounded walk left unread could have ranked; walking again in full"
++                    );
++                    graph::strongest(
++                        graph::expand(&mut *connection, self.project, &seeds, &expansion).await?,
++                        keep,
++                        worth,
++                    )
++                }
+@@ -2255,0 +2262,155 @@ fn best_first(lists: &[ChannelResults]) -> Vec<TopicId> {
++// The measurement generator flips this in untracked source copies. This
++// prototype adds no environment-controlled mode to product builds.
++const USE_SCORED_GRAPH_RECALL: bool = false;
++
++/// Experimental score-aware recall. Only the strongest explored arrival for
++/// each topic is returned. A frontier cap still makes this approximate; the
++/// bound on discarded work is reported rather than claimed to be settled.
++async fn scored_graph_recall(
++    connection: &mut PgConnection,
++    project: ProjectId,
++    seeds: &[TopicId],
++    depth: u8,
++    keep: usize,
++    worth: impl Fn(f32, u8, TopicId) -> f32,
++) -> Result<Vec<Neighbor>> {
++    if keep == 0 || seeds.is_empty() {
++        return Ok(Vec::new());
++    }
++    let depth = depth.min(graph::MAX_DEPTH);
++    let mut reached = std::collections::HashMap::new();
++    let mut frontier: Vec<_> = seeds
++        .iter()
++        .map(|seed| graph::RecallPosition {
++            topic: *seed,
++            origin: *seed,
++            via: *seed,
++        })
++        .collect();
++    for hop in 1..=depth {
++        let mut walk = graph::recall_hop(connection, project, &frontier, hop, Some(keep)).await?;
++        let floor = {
++            let mut preview = reached.clone();
++            retain_graph_arrivals(&mut preview, &walk.arrivals, &worth);
++            graph_floor(&preview, keep, &worth)
++        };
++        // The final edge supplies confidence, not a path product. Even an
++        // unread weak edge can lead to a certain edge at the next hop.
++        let cuts_settled = recall_cuts_settled(&walk.unread, hop, depth, floor, &worth);
++        if !cuts_settled {
++            drop(walk);
++            walk = graph::recall_hop(connection, project, &frontier, hop, None).await?;
++        }
++        retain_graph_arrivals(&mut reached, &walk.arrivals, &worth);
++        if hop == depth {
++            break;
++        }
++        let floor = graph_floor(&reached, keep, &worth);
++        frontier = recall_frontier(&walk.arrivals, hop + 1, floor, &worth);
++        // Retaining via in the key preserves the different backtracking
++        // exclusions of two routes to the same (topic, origin).
++        const MAX_RECALL_FRONTIER: usize = 2_000;
++        if frontier.len() > MAX_RECALL_FRONTIER {
++            let discarded_bound = worth(1.0, hop + 1, frontier[MAX_RECALL_FRONTIER].origin);
++            tracing::debug!(
++                hop,
++                discarded = frontier.len() - MAX_RECALL_FRONTIER,
++                discarded_bound,
++                "scored graph recall capped unresolved frontier work"
++            );
++            frontier.truncate(MAX_RECALL_FRONTIER);
++        }
++        if frontier.is_empty() {
++            break;
++        }
++    }
++    Ok(graph::strongest(
++        reached.into_values().collect(),
++        keep,
++        worth,
++    ))
++}
++
++fn recall_cuts_settled(
++    unread: &[graph::Unread],
++    hop: u8,
++    depth: u8,
++    floor: Option<f32>,
++    worth: impl Fn(f32, u8, TopicId) -> f32,
++) -> bool {
++    unread.iter().all(|cut| {
++        cut.origins.iter().all(|origin| {
++            let bound = worth(cut.confidence, hop, *origin).max(if hop < depth {
++                worth(1.0, hop + 1, *origin)
++            } else {
++                0.0
++            });
++            floor.is_some_and(|floor| floor > bound)
++        })
++    })
++}
++
++fn retain_graph_arrivals(
++    reached: &mut std::collections::HashMap<TopicId, Neighbor>,
++    arrivals: &[Neighbor],
++    worth: impl Fn(f32, u8, TopicId) -> f32,
++) {
++    for arrival in arrivals {
++        reached
++            .entry(arrival.topic)
++            .and_modify(|held| {
++                let order = worth(arrival.confidence, arrival.hops, arrival.origin)
++                    .total_cmp(&worth(held.confidence, held.hops, held.origin))
++                    .then_with(|| held.hops.cmp(&arrival.hops))
++                    .then_with(|| held.origin.0.cmp(&arrival.origin.0))
++                    .then_with(|| held.via.0.cmp(&arrival.via.0))
++                    .then_with(|| held.kind.cmp(&arrival.kind))
++                    .then_with(|| held.outbound.cmp(&arrival.outbound));
++                if order.is_gt() {
++                    *held = arrival.clone();
++                }
++            })
++            .or_insert_with(|| arrival.clone());
++    }
++}
++
++fn graph_floor(
++    reached: &std::collections::HashMap<TopicId, Neighbor>,
++    keep: usize,
++    worth: impl Fn(f32, u8, TopicId) -> f32,
++) -> Option<f32> {
++    let ranked = graph::strongest(reached.values().cloned().collect(), keep, &worth);
++    ranked
++        .get(keep.checked_sub(1)?)
++        .map(|last| worth(last.confidence, last.hops, last.origin))
++}
++
++fn recall_frontier(
++    arrivals: &[Neighbor],
++    next_hop: u8,
++    floor: Option<f32>,
++    worth: impl Fn(f32, u8, TopicId) -> f32,
++) -> Vec<graph::RecallPosition> {
++    let mut once = std::collections::HashSet::new();
++    let mut frontier: Vec<_> = arrivals
++        .iter()
++        // Strict comparison keeps all ties: a future topic can win the
++        // identifier tie-break even when its bound equals the current floor.
++        .filter(|arrival| !floor.is_some_and(|floor| floor > worth(1.0, next_hop, arrival.origin)))
++        .filter(|arrival| once.insert((arrival.topic, arrival.origin, arrival.via)))
++        .map(|arrival| graph::RecallPosition {
++            topic: arrival.topic,
++            origin: arrival.origin,
++            via: arrival.via,
++        })
++        .collect();
++    frontier.sort_by(|left, right| {
++        worth(1.0, next_hop, right.origin)
++            .total_cmp(&worth(1.0, next_hop, left.origin))
++            .then_with(|| left.topic.0.cmp(&right.topic.0))
++            .then_with(|| left.origin.0.cmp(&right.origin.0))
++            .then_with(|| left.via.0.cmp(&right.via.0))
++    });
++    frontier
++}
++
+@@ -2590,0 +2752,249 @@ mod tests {
++    fn recall_id(byte: u8) -> TopicId {
++        TopicId::from(uuid::Uuid::from_bytes([byte; 16]))
++    }
++
++    fn recall_arrival(
++        topic: u8,
++        origin: u8,
++        via: u8,
++        hops: u8,
++        confidence: f32,
++    ) -> pamin_store::graph::Neighbor {
++        pamin_store::graph::Neighbor {
++            topic: recall_id(topic),
++            origin: recall_id(origin),
++            via: recall_id(via),
++            hops,
++            confidence,
++            kind: pamin_core::EdgeKind::RelatedTo,
++            derivation: pamin_core::Derivation::Explicit,
++            outbound: true,
++        }
++    }
++
++    fn recall_worth(confidence: f32, hops: u8, origin: TopicId) -> f32 {
++        path_strength(confidence, hops) * if origin == recall_id(2) { 0.25 } else { 1.0 }
++    }
++
++    #[test]
++    fn scored_recall_keeps_the_query_stronger_seed_before_topic_dedup() {
++        let weak_seed = recall_arrival(9, 2, 2, 1, 1.0);
++        let strong_seed = recall_arrival(9, 1, 1, 1, 0.5);
++        for arrivals in [
++            vec![weak_seed.clone(), strong_seed.clone()],
++            vec![strong_seed, weak_seed],
++        ] {
++            let mut reached = std::collections::HashMap::new();
++            super::retain_graph_arrivals(&mut reached, &arrivals, recall_worth);
++            assert_eq!(reached[&recall_id(9)].origin, recall_id(1));
++        }
++    }
++
++    #[test]
++    fn scored_recall_keeps_a_later_stronger_arrival_from_the_same_seed_and_hop() {
++        let mut reached = std::collections::HashMap::new();
++        super::retain_graph_arrivals(
++            &mut reached,
++            &[
++                recall_arrival(9, 1, 3, 2, 0.2),
++                recall_arrival(9, 1, 4, 2, 0.9),
++            ],
++            recall_worth,
++        );
++        assert_eq!(reached[&recall_id(9)].via, recall_id(4));
++        assert_eq!(reached[&recall_id(9)].confidence, 0.9);
++    }
++
++    #[test]
++    fn scored_recall_keeps_a_better_two_hop_arrival_over_a_shorter_one() {
++        let mut reached = std::collections::HashMap::new();
++        super::retain_graph_arrivals(
++            &mut reached,
++            &[recall_arrival(9, 1, 1, 1, 0.2)],
++            recall_worth,
++        );
++        super::retain_graph_arrivals(
++            &mut reached,
++            &[recall_arrival(9, 1, 4, 2, 1.0)],
++            recall_worth,
++        );
++        assert_eq!(reached[&recall_id(9)].hops, 2);
++    }
++
++    #[test]
++    fn scored_recall_does_not_stop_at_keep_when_future_work_can_win() {
++        let arrivals = vec![recall_arrival(9, 1, 1, 1, 0.2)];
++        let mut reached = std::collections::HashMap::new();
++        super::retain_graph_arrivals(&mut reached, &arrivals, recall_worth);
++        let floor = super::graph_floor(&reached, 1, recall_worth);
++        assert_eq!(floor, Some(0.2));
++        assert_eq!(
++            super::recall_frontier(&arrivals, 2, floor, recall_worth).len(),
++            1
++        );
++        super::retain_graph_arrivals(
++            &mut reached,
++            &[recall_arrival(8, 1, 9, 2, 1.0)],
++            recall_worth,
++        );
++        let ranked =
++            pamin_store::graph::strongest(reached.into_values().collect(), 1, recall_worth);
++        assert_eq!(ranked[0].topic, recall_id(8));
++    }
++
++    #[test]
++    fn scored_recall_bounds_unread_descendants_independently_of_the_cut_confidence() {
++        let cut = pamin_store::graph::Unread {
++            hops: 1,
++            via: recall_id(1),
++            confidence: 0.1,
++            after: recall_id(9),
++            origins: vec![recall_id(1)],
++        };
++        assert!(!super::recall_cuts_settled(
++            &[cut.clone()],
++            1,
++            2,
++            Some(0.2),
++            recall_worth
++        ));
++        assert!(super::recall_cuts_settled(
++            &[cut.clone()],
++            1,
++            1,
++            Some(0.2),
++            recall_worth
++        ));
++        assert!(
++            !super::recall_cuts_settled(&[cut], 1, 2, Some(0.5), recall_worth),
++            "ties stay unresolved"
++        );
++        let routes = vec![
++            recall_arrival(9, 1, 3, 2, 0.2),
++            recall_arrival(9, 1, 4, 2, 0.9),
++        ];
++        assert_eq!(
++            super::recall_frontier(&routes, 3, None, recall_worth).len(),
++            2,
++            "each previous topic excludes a different return crossing"
++        );
++    }
++
++    #[test]
++    fn scored_recall_matches_exhaustive_paths_on_a_tiny_cyclic_graph() {
++        // Includes two seeds of different relevance, parallel routes, a weak
++        // direct arrival, and a strong final edge behind weak intermediates.
++        let edges = [
++            (1, 3, 0.2),
++            (1, 4, 0.1),
++            (3, 5, 0.3),
++            (4, 5, 1.0),
++            (1, 5, 0.1),
++            (2, 5, 1.0),
++            (5, 6, 1.0),
++            (3, 6, 0.2),
++        ];
++        // Oracle enumerates paths recursively without frontier reduction,
++        // candidate reduction, pruning, or the production ranking helper.
++        fn enumerate(
++            topic: u8,
++            origin: u8,
++            previous: u8,
++            hop: u8,
++            depth: u8,
++            edges: &[(u8, u8, f32)],
++            scores: &mut std::collections::HashMap<TopicId, f32>,
++        ) {
++            if hop > depth {
++                return;
++            }
++            for &(from, to, confidence) in edges {
++                let other = if from == topic {
++                    to
++                } else if to == topic {
++                    from
++                } else {
++                    continue;
++                };
++                if hop > 1 && (other == origin || other == previous) {
++                    continue;
++                }
++                let score = recall_worth(confidence, hop, recall_id(origin));
++                scores
++                    .entry(recall_id(other))
++                    .and_modify(|held| *held = held.max(score))
++                    .or_insert(score);
++                enumerate(other, origin, topic, hop + 1, depth, edges, scores);
++            }
++        }
++        for depth in 1..=4 {
++            let mut exact = std::collections::HashMap::new();
++            for origin in [1, 2] {
++                enumerate(origin, origin, origin, 1, depth, &edges, &mut exact);
++            }
++            let mut expected: Vec<_> = exact.into_iter().collect();
++            expected.sort_by(|left, right| right.1.total_cmp(&left.1).then(left.0.cmp(&right.0)));
++            for keep in [1, 2, 4, 20] {
++                let mut reached = std::collections::HashMap::new();
++                let mut frontier: Vec<_> = [1, 2]
++                    .into_iter()
++                    .map(|seed| pamin_store::graph::RecallPosition {
++                        topic: recall_id(seed),
++                        origin: recall_id(seed),
++                        via: recall_id(seed),
++                    })
++                    .collect();
++                for hop in 1..=depth {
++                    let mut arrivals = Vec::new();
++                    for step in &frontier {
++                        for &(from, to, confidence) in &edges {
++                            let (topic, outbound) = if step.topic == recall_id(from) {
++                                (to, true)
++                            } else if step.topic == recall_id(to) {
++                                (from, false)
++                            } else {
++                                continue;
++                            };
++                            if hop > 1
++                                && (recall_id(topic) == step.origin || recall_id(topic) == step.via)
++                            {
++                                continue;
++                            }
++                            arrivals.push(pamin_store::graph::Neighbor {
++                                topic: recall_id(topic),
++                                origin: step.origin,
++                                via: step.topic,
++                                hops: hop,
++                                confidence,
++                                outbound,
++                                kind: pamin_core::EdgeKind::RelatedTo,
++                                derivation: pamin_core::Derivation::Explicit,
++                            });
++                        }
++                    }
++                    super::retain_graph_arrivals(&mut reached, &arrivals, recall_worth);
++                    let floor = super::graph_floor(&reached, keep, recall_worth);
++                    frontier = super::recall_frontier(&arrivals, hop + 1, floor, recall_worth);
++                }
++                let actual: Vec<_> = pamin_store::graph::strongest(
++                    reached.into_values().collect(),
++                    keep,
++                    recall_worth,
++                )
++                .into_iter()
++                .map(|arrival| {
++                    (
++                        arrival.topic,
++                        recall_worth(arrival.confidence, arrival.hops, arrival.origin),
++                    )
++                })
++                .collect();
++                assert_eq!(
++                    actual,
++                    expected[..keep.min(expected.len())],
++                    "depth={depth}, keep={keep}"
++                );
++            }
++        }
++    }
++
+diff --git a/crates/pamin-store/src/graph.rs b/crates/pamin-store/src/graph.rs
+index 7f28a7f..7027fd0 100644
+--- a/crates/pamin-store/src/graph.rs
++++ b/crates/pamin-store/src/graph.rs
+@@ -791,0 +792,2 @@ const MAX_FRONTIER: usize = 2_000;
++///
++/// Keeping the previous topic preserves the rule against immediate backtracking.
+@@ -793,2 +795,2 @@ const MAX_FRONTIER: usize = 2_000;
+-struct Step {
+-    topic: TopicId,
++pub struct RecallPosition {
++    pub topic: TopicId,
+@@ -796 +798 @@ struct Step {
+-    origin: TopicId,
++    pub origin: TopicId,
+@@ -798 +800 @@ struct Step {
+-    via: TopicId,
++    pub via: TopicId,
+@@ -800,0 +803,2 @@ struct Step {
++type Step = RecallPosition;
++
+@@ -1170,0 +1175,83 @@ fn cross(
++    let mut next: Vec<(Step, f32)> = Vec::new();
++    visit_arrivals(hop, frontier, edges, |arrival| {
++        if !seen.insert((arrival.topic, arrival.origin)) {
++            return;
++        }
++        let neighbour = arrival.topic;
++        let crossing_confidence = arrival.confidence;
++        // Breadth first, so the first arrival is the shortest. Among
++        // arrivals at the same distance the most confident one wins, which
++        // is the order the ranking below expects.
++        reached
++            .entry(neighbour)
++            .and_modify(|held| {
++                if held.hops == hop && crossing_confidence > held.confidence {
++                    *held = arrival.clone();
++                }
++            })
++            .or_insert_with(|| arrival.clone());
++
++        next.push((
++            Step {
++                topic: neighbour,
++                origin: arrival.origin,
++                via: arrival.via,
++            },
++            crossing_confidence,
++        ));
++    });
++    next
++}
++
++/// All explored arrivals from a recall hop, and bounds on unread crossings.
++/// Unlike [`Walk`], arrivals are not reduced by the neighbor API's policy.
++pub struct RecallHop {
++    pub arrivals: Vec<Neighbor>,
++    pub unread: Vec<Unread>,
++}
++
++/// Reads a single hop without selecting an arrival or suppressing revisits.
++/// Recall ranking and future-hop pruning belong to the caller. The neighbor
++/// API uses the same crossings with its own breadth-first visited policy.
++pub async fn recall_hop(
++    connection: &mut sqlx::PgConnection,
++    project: ProjectId,
++    frontier: &[RecallPosition],
++    hop: u8,
++    per_topic: Option<usize>,
++) -> Result<RecallHop> {
++    let mut positions: Vec<_> = frontier.iter().map(|step| step.topic.0).collect();
++    positions.sort_unstable();
++    positions.dedup();
++    let (edges, cuts) = match per_topic {
++        Some(limit) => strongest_edges(connection, project, &positions, None, limit.max(1)).await?,
++        None => (
++            every_edge(connection, project, &positions, None, None).await?,
++            Vec::new(),
++        ),
++    };
++    let unread = cuts
++        .into_iter()
++        .map(|cut| {
++            let mut origins: Vec<_> = frontier
++                .iter()
++                .filter(|step| step.topic == cut.standing)
++                .map(|step| step.origin)
++                .collect();
++            origins.sort_unstable_by_key(|origin| origin.0);
++            origins.dedup();
++            Unread {
++                hops: hop,
++                via: cut.standing,
++                confidence: cut.confidence,
++                after: cut.after,
++                origins,
++            }
++        })
++        .collect();
++    let mut arrivals = Vec::new();
++    visit_arrivals(hop, frontier, &edges, |arrival| arrivals.push(arrival));
++    Ok(RecallHop { arrivals, unread })
++}
++
++fn visit_arrivals(hop: u8, frontier: &[Step], edges: &[Edge], mut visit: impl FnMut(Neighbor)) {
+@@ -1202 +1288,0 @@ fn cross(
+-    let mut next: Vec<(Step, f32)> = Vec::new();
+@@ -1207,7 +1293,2 @@ fn cross(
+-
+-        for (neighbour, crossing) in crossings {
+-            // Never back to where this walk started, and never straight back
+-            // along the edge just taken. Both would return a topic already
+-            // reached at a shorter distance; the first is the seed itself,
+-            // which this channel must not hand back.
+-            if hop > 1 && (*neighbour == step.origin || *neighbour == step.via) {
++        for (topic, crossing) in crossings {
++            if hop > 1 && (*topic == step.origin || *topic == step.via) {
+@@ -1216,7 +1297,2 @@ fn cross(
+-
+-            if !seen.insert((*neighbour, step.origin)) {
+-                continue;
+-            }
+-
+-            let arrival = Neighbor {
+-                topic: *neighbour,
++            visit(Neighbor {
++                topic: *topic,
+@@ -1230,22 +1306 @@ fn cross(
+-            };
+-
+-            // Breadth first, so the first arrival is the shortest. Among
+-            // arrivals at the same distance the most confident one wins, which
+-            // is the order the ranking below expects.
+-            reached
+-                .entry(*neighbour)
+-                .and_modify(|held| {
+-                    if held.hops == hop && crossing.confidence > held.confidence {
+-                        *held = arrival.clone();
+-                    }
+-                })
+-                .or_insert_with(|| arrival.clone());
+-
+-            next.push((
+-                Step {
+-                    topic: *neighbour,
+-                    origin: step.origin,
+-                    via: step.topic,
+-                },
+-                crossing.confidence,
+-            ));
++            });
+@@ -1254 +1308,0 @@ fn cross(
+-    next
+@@ -1600,0 +1655,66 @@ impl Walk {
++
++#[cfg(test)]
++mod recall_tests {
++    use super::*;
++
++    fn id(byte: u8) -> TopicId {
++        TopicId::from(uuid::Uuid::from_bytes([byte; 16]))
++    }
++
++    fn edge(from: u8, to: u8, confidence: f32) -> Edge {
++        Edge {
++            from: id(from),
++            to: id(to),
++            confidence,
++            kind: EdgeKind::RelatedTo,
++            derivation: Derivation::Explicit,
++        }
++    }
++
++    #[test]
++    fn recall_crossings_preserve_competing_routes_but_neighbors_keep_their_policy() {
++        let frontier = [
++            Step {
++                topic: id(3),
++                origin: id(1),
++                via: id(1),
++            },
++            Step {
++                topic: id(4),
++                origin: id(1),
++                via: id(1),
++            },
++        ];
++        let edges = [edge(3, 9, 0.2), edge(4, 9, 0.9)];
++        let mut arrivals = Vec::new();
++        visit_arrivals(2, &frontier, &edges, |arrival| arrivals.push(arrival));
++        assert_eq!(arrivals.len(), 2);
++        assert_eq!(arrivals[0].confidence, 0.2);
++        assert_eq!(arrivals[1].confidence, 0.9);
++        let mut reached = HashMap::new();
++        let next = cross(2, &frontier, &edges, &mut HashSet::new(), &mut reached);
++        assert_eq!(next.len(), 1);
++        assert_eq!(
++            reached[&id(9)].confidence,
++            0.2,
++            "breadth-first neighbor behavior is preserved"
++        );
++    }
++
++    #[test]
++    fn recall_crossings_preserve_direction_and_bar_seed_return_and_backtracking() {
++        let frontier = [Step {
++            topic: id(3),
++            origin: id(1),
++            via: id(4),
++        }];
++        let edges = [edge(1, 3, 1.0), edge(3, 4, 1.0), edge(9, 3, 0.8)];
++        let mut arrivals = Vec::new();
++        visit_arrivals(3, &frontier, &edges, |arrival| arrivals.push(arrival));
++        assert_eq!(arrivals.len(), 1);
++        assert_eq!(arrivals[0].topic, id(9));
++        assert_eq!(arrivals[0].origin, id(1));
++        assert_eq!(arrivals[0].via, id(3));
++        assert!(!arrivals[0].outbound);
++    }
++}

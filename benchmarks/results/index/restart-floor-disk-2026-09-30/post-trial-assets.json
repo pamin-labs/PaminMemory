@@ -1,0 +1,131 @@
+{
+  "assets": [
+    {
+      "path": "<MODEL_CACHE>/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/config.json",
+      "bytes": 679,
+      "sha256": "68bf436cb7a210655f599b3944065f12a81317291b32e78bd4338b5745cda63a",
+      "posttrial_sha256": "68bf436cb7a210655f599b3944065f12a81317291b32e78bd4338b5745cda63a",
+      "unchanged": true
+    },
+    {
+      "path": "<MODEL_CACHE>/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/model_quantized.onnx",
+      "bytes": 569958496,
+      "sha256": "16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb",
+      "posttrial_sha256": "16de7ea1146ca427e14938ec3e9abfdcaff0e6ac76434cd693ac35d761250bcb",
+      "unchanged": true
+    },
+    {
+      "path": "<MODEL_CACHE>/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/special_tokens_map.json",
+      "bytes": 964,
+      "sha256": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+      "posttrial_sha256": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+      "unchanged": true
+    },
+    {
+      "path": "<MODEL_CACHE>/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer.json",
+      "bytes": 17082799,
+      "sha256": "249df0778f236f6ece390de0de746838ef25b9d6954b68c2ee71249e0a9d8fd4",
+      "posttrial_sha256": "249df0778f236f6ece390de0de746838ef25b9d6954b68c2ee71249e0a9d8fd4",
+      "unchanged": true
+    },
+    {
+      "path": "<MODEL_CACHE>/models--gpahal--bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer_config.json",
+      "bytes": 1203,
+      "sha256": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
+      "posttrial_sha256": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
+      "unchanged": true
+    },
+    {
+      "path": "<MODEL_CACHE>/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/config.json",
+      "bytes": 848,
+      "sha256": "122e922dcfed6503c8721e6fe1daf090340c3d95ca7f3aa3a72730b321a51cfd",
+      "posttrial_sha256": "122e922dcfed6503c8721e6fe1daf090340c3d95ca7f3aa3a72730b321a51cfd",
+      "unchanged": true
+    },
+    {
+      "path": "<MODEL_CACHE>/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/onnx/model_int8.onnx",
+      "bytes": 570727094,
+      "sha256": "912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d",
+      "posttrial_sha256": "912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d",
+      "unchanged": true
+    },
+    {
+      "path": "<MODEL_CACHE>/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/special_tokens_map.json",
+      "bytes": 964,
+      "sha256": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+      "posttrial_sha256": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835",
+      "unchanged": true
+    },
+    {
+      "path": "<MODEL_CACHE>/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer.json",
+      "bytes": 17082900,
+      "sha256": "8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3",
+      "posttrial_sha256": "8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3",
+      "unchanged": true
+    },
+    {
+      "path": "<MODEL_CACHE>/models--onnx-community--bge-reranker-v2-m3-ONNX/snapshots/6f5ff65298512715a1e669753bc754d2bc8f367b/tokenizer_config.json",
+      "bytes": 1203,
+      "sha256": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
+      "posttrial_sha256": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
+      "unchanged": true
+    },
+    {
+      "path": "<MODEL_CACHE>/prepared/ac146c082d1526dd1cd10597ae4a0ffc/attention.unfused",
+      "bytes": 27,
+      "sha256": "c322eb636cc49901f92d208231cf74bf77ed9fceec62697739fb2064d81170a8",
+      "posttrial_sha256": "c322eb636cc49901f92d208231cf74bf77ed9fceec62697739fb2064d81170a8",
+      "unchanged": true
+    },
+    {
+      "path": "<MODEL_CACHE>/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx",
+      "bytes": 592479,
+      "sha256": "51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4",
+      "posttrial_sha256": "51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4",
+      "unchanged": true
+    },
+    {
+      "path": "<MODEL_CACHE>/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx.data",
+      "bytes": 872738832,
+      "sha256": "2600d5896ddedb06f0d1627179ea1c39da1ef075e170598cd467016dc06e8c0b",
+      "posttrial_sha256": "2600d5896ddedb06f0d1627179ea1c39da1ef075e170598cd467016dc06e8c0b",
+      "unchanged": true
+    },
+    {
+      "path": "<MODEL_CACHE>/prepared/eecdcf109c0c08402aa8f893fc25d2d4/attention.onnx",
+      "bytes": 347238,
+      "sha256": "24cc5ad23811a65c6a4648d8be0b79a7ad67a180e2db234b08c899c882ac5164",
+      "posttrial_sha256": "24cc5ad23811a65c6a4648d8be0b79a7ad67a180e2db234b08c899c882ac5164",
+      "unchanged": true
+    },
+    {
+      "path": "<MODEL_CACHE>/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx",
+      "bytes": 484362,
+      "sha256": "7231486a34a1d71b151f9f0f8a224f1d7d454dfaad450117b5cc179a2d350bb8",
+      "posttrial_sha256": "7231486a34a1d71b151f9f0f8a224f1d7d454dfaad450117b5cc179a2d350bb8",
+      "unchanged": true
+    },
+    {
+      "path": "<MODEL_CACHE>/prepared/eecdcf109c0c08402aa8f893fc25d2d4/model.onnx.data",
+      "bytes": 874217472,
+      "sha256": "06b529ab95974bcf4b21c0ac9e649816534c2e2ebb44990cb15462872754199c",
+      "posttrial_sha256": "06b529ab95974bcf4b21c0ac9e649816534c2e2ebb44990cb15462872754199c",
+      "unchanged": true
+    },
+    {
+      "path": "<MODEL_CACHE>/prepared/gpahal--bge-m3-onnx-int8--model_quantized.onnx.source",
+      "bytes": 123,
+      "sha256": "591316921104b9fa4710cb8d6bee8d22564b9e5c69d8222fecb68abf111c53ef",
+      "posttrial_sha256": "591316921104b9fa4710cb8d6bee8d22564b9e5c69d8222fecb68abf111c53ef",
+      "unchanged": true
+    },
+    {
+      "path": "<MODEL_CACHE>/prepared/onnx-community--bge-reranker-v2-m3-ONNX--onnx--model_int8.onnx.source",
+      "bytes": 118,
+      "sha256": "4d43f6a0ab9060262c835a88fa6f6810ca124f5ab1d1eece767beeead17b15a7",
+      "posttrial_sha256": "4d43f6a0ab9060262c835a88fa6f6810ca124f5ab1d1eece767beeead17b15a7",
+      "unchanged": true
+    }
+  ],
+  "all_recorded_source_graphs_and_prepared_external_weights_unchanged": true
+}

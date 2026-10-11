@@ -1,0 +1,35 @@
+"""Before-write trial output containment, no product/model/native process."""
+import os,runpy,subprocess,sys,tempfile
+from pathlib import Path
+from unittest.mock import patch
+sys.dont_write_bytecode=True
+root=Path(__file__).resolve().parent;repo=root.parents[2];source=root/'run-guarded.py.in';text=source.read_text();before='--before' in sys.argv
+if before:text=subprocess.check_output(['git','show','741423999d7acdeeefd48afb54d991b27342cc86:'+str(source.relative_to(repo))],cwd=repo,text=True)
+g={'__file__':str(source),'__name__':'fixture'};exec(compile(text,str(source),'exec'),g)
+with tempfile.TemporaryDirectory() as directory:
+ p=Path(directory);seed=p/'seed';(seed/'index/project/memories').mkdir(parents=True);(seed/'index/project/memories/.pamin-optimized-files').write_text('v1 271\n');models=p/'models';models.mkdir();(seed/'models').symlink_to(models,target_is_directory=True);alias=p/'alias';alias.symlink_to(seed,target_is_directory=True)
+ for output in [seed/'result',seed/'index/result',alias/'result']:
+  record=p/'record';args=['guard','--attestation',str(p/'attestation'),'--model-manifest',str(p/'model.json'),'--record',str(record),'--documents','18000','--index','memory','trials','--seed',str(seed),'--output',str(output),'--fixture-manifest',str(p/'fixture.json')]
+  for name in ['main','predecessor','candidate']:args+=['--arm',name+',commit,'+str(p/'binary')]
+  with patch.dict(os.environ,{},clear=True),patch.dict(g,{'MODEL':{'load':lambda path:(_ for _ in ()).throw(RuntimeError('model boundary'))}}),patch.object(sys,'argv',args):
+   try:g['main']()
+   except RuntimeError as error:assert before and str(error)=='model boundary'
+   except AssertionError as error:assert not before and 'trial output must be outside source seed' in str(error)
+   else:raise AssertionError('unsafe output accepted')
+  assert not output.exists() and not record.exists()
+  if before:
+   runner=runpy.run_path(str(root/'run.py.in'));a=['runner','--seed',str(seed),'--output',str(output),'--documents','18000','--index','memory']
+   for name in ['main','predecessor','candidate']:a+=['--arm',name+',commit,'+str(p/'binary')]
+   with patch.object(sys,'argv',a),patch.object(runner['shutil'],'copytree',side_effect=RuntimeError('first copy boundary')):
+    try:runner['main']()
+    except RuntimeError as error:assert str(error)=='first copy boundary'
+    else:raise AssertionError('original runner did not reach copy boundary')
+   assert (output/'raw.jsonl').is_file(), 'baseline pollution not reproduced'
+   (output/'raw.jsonl').unlink();output.rmdir()
+ output=p/'external-result';args=['guard','--attestation',str(p/'attestation'),'--model-manifest',str(p/'model.json'),'--record',str(p/'record'),'--documents','18000','--index','memory','trials','--seed',str(seed),'--output',str(output),'--fixture-manifest',str(p/'fixture.json'),'--arm','main,commit,'+str(p/'binary')]
+ with patch.dict(os.environ,{},clear=True),patch.dict(g,{'MODEL':{'load':lambda path:(_ for _ in ()).throw(RuntimeError('model boundary'))}}),patch.object(sys,'argv',args):
+  try:g['main']()
+  except RuntimeError as error:assert str(error)=='model boundary'
+  else:raise AssertionError('external output refused')
+ assert not output.exists()
+print('BEFORE: three unsafe outputs passed preflight and original runner polluted seed before first copy' if before else 'PASS: three direct/index/alias unsafe outputs rejected before model/record/write; external output positive')

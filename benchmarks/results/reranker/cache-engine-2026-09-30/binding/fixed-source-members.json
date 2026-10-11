@@ -1,0 +1,607 @@
+{
+  "Cargo.lock": {
+    "original_sha256": "a9d3ef6df00c0cadb3c901b7d3c6bc50f21d53c72d7d2604592b871d413970ef",
+    "payload_sha256": "a9d3ef6df00c0cadb3c901b7d3c6bc50f21d53c72d7d2604592b871d413970ef",
+    "bytes": 97540
+  },
+  "Cargo.toml": {
+    "original_sha256": "986e728a929f2294b48df88da4b7ba92dc44b785534f5f6f7022109d4e92d769",
+    "payload_sha256": "986e728a929f2294b48df88da4b7ba92dc44b785534f5f6f7022109d4e92d769",
+    "bytes": 4420
+  },
+  "LICENSE": {
+    "original_sha256": "c19bc532d07bc0b03e2dc39efd61b5fca9f4cafd48bd65cf99d84297c3689ebf",
+    "payload_sha256": "c19bc532d07bc0b03e2dc39efd61b5fca9f4cafd48bd65cf99d84297c3689ebf",
+    "bytes": 11341
+  },
+  "crates/pamin-cli/Cargo.toml": {
+    "original_sha256": "327baead6dc7c8ac8b73da4cd1062021edb94d974e9fdf8715205dedd2ceee63",
+    "payload_sha256": "327baead6dc7c8ac8b73da4cd1062021edb94d974e9fdf8715205dedd2ceee63",
+    "bytes": 957
+  },
+  "crates/pamin-cli/build.rs": {
+    "original_sha256": "3e4762dbbbbf1f82f5e9f0bff2edb971785cc45e312b670aa7568045bde8cfd0",
+    "payload_sha256": "3e4762dbbbbf1f82f5e9f0bff2edb971785cc45e312b670aa7568045bde8cfd0",
+    "bytes": 5808
+  },
+  "crates/pamin-cli/src/client.rs": {
+    "original_sha256": "14a4a1db3ec13a6fb2e004244bda0d6303e07ebf1487fccd7c898b235a5592cd",
+    "payload_sha256": "14a4a1db3ec13a6fb2e004244bda0d6303e07ebf1487fccd7c898b235a5592cd",
+    "bytes": 13159
+  },
+  "crates/pamin-cli/src/command/cascade.rs": {
+    "original_sha256": "b5f8fb45009f36255ec7063835daaa5327d32481473f0061914342dc3154a1d2",
+    "payload_sha256": "b5f8fb45009f36255ec7063835daaa5327d32481473f0061914342dc3154a1d2",
+    "bytes": 8067
+  },
+  "crates/pamin-cli/src/command/grep.rs": {
+    "original_sha256": "a6fa712875b57c4e4b5a20d19994e64aa1d6f26645ae5e7ecdfaa520dceb0929",
+    "payload_sha256": "a6fa712875b57c4e4b5a20d19994e64aa1d6f26645ae5e7ecdfaa520dceb0929",
+    "bytes": 4657
+  },
+  "crates/pamin-cli/src/command/import.rs": {
+    "original_sha256": "78e4fe5dbd564d51fb1647f8da58137f6521373fd2e967b969479d6241ed0126",
+    "payload_sha256": "78e4fe5dbd564d51fb1647f8da58137f6521373fd2e967b969479d6241ed0126",
+    "bytes": 12291
+  },
+  "crates/pamin-cli/src/command/init.rs": {
+    "original_sha256": "90ab852550d4043cafb314f83b86c47de42ea2de781cef7364fdc25beae17592",
+    "payload_sha256": "90ab852550d4043cafb314f83b86c47de42ea2de781cef7364fdc25beae17592",
+    "bytes": 917
+  },
+  "crates/pamin-cli/src/command/link.rs": {
+    "original_sha256": "f08a378b496629e2767d4562fe95fb9816d9533728dbf6bfcbcc10f9ce42c590",
+    "payload_sha256": "f08a378b496629e2767d4562fe95fb9816d9533728dbf6bfcbcc10f9ce42c590",
+    "bytes": 2423
+  },
+  "crates/pamin-cli/src/command/mod.rs": {
+    "original_sha256": "b9b12249cfaf6588aac48bba5d94d672801f446045809970856a1a42be0e8387",
+    "payload_sha256": "b9b12249cfaf6588aac48bba5d94d672801f446045809970856a1a42be0e8387",
+    "bytes": 270
+  },
+  "crates/pamin-cli/src/command/neighbors.rs": {
+    "original_sha256": "e62c160114f04f055fecd63291ea491a53b11ceb9f58e0055f3ed4d05fb7df44",
+    "payload_sha256": "e62c160114f04f055fecd63291ea491a53b11ceb9f58e0055f3ed4d05fb7df44",
+    "bytes": 5212
+  },
+  "crates/pamin-cli/src/command/read.rs": {
+    "original_sha256": "2030d6c8ac4750b1cd835a776bf813d58c31e50657077ef4e81e1511b677e1fc",
+    "payload_sha256": "2030d6c8ac4750b1cd835a776bf813d58c31e50657077ef4e81e1511b677e1fc",
+    "bytes": 4381
+  },
+  "crates/pamin-cli/src/command/reindex.rs": {
+    "original_sha256": "06b00a2f6539ffad60f08c5e2b74e06e049e98f194099645ad0f5a4384e9e858",
+    "payload_sha256": "06b00a2f6539ffad60f08c5e2b74e06e049e98f194099645ad0f5a4384e9e858",
+    "bytes": 2307
+  },
+  "crates/pamin-cli/src/command/resolve.rs": {
+    "original_sha256": "5ab252f0db3592d592067d064b4918d8e41e0c663e7d2f04f37ab0f4b9dd439c",
+    "payload_sha256": "5ab252f0db3592d592067d064b4918d8e41e0c663e7d2f04f37ab0f4b9dd439c",
+    "bytes": 2381
+  },
+  "crates/pamin-cli/src/command/search.rs": {
+    "original_sha256": "d92495d288096d24d6514ca986559577cb107e24b5360a3c612cef637a91a3db",
+    "payload_sha256": "d92495d288096d24d6514ca986559577cb107e24b5360a3c612cef637a91a3db",
+    "bytes": 9952
+  },
+  "crates/pamin-cli/src/command/stop.rs": {
+    "original_sha256": "958516fef8a2f7593cc022ea49e6311e3e9b9e45c72e6bb287e3f9e09d95cada",
+    "payload_sha256": "958516fef8a2f7593cc022ea49e6311e3e9b9e45c72e6bb287e3f9e09d95cada",
+    "bytes": 758
+  },
+  "crates/pamin-cli/src/command/topics.rs": {
+    "original_sha256": "5de97ebbd237362469a0ebc2ec89ff05ffb89dc77b97386cdb4d49e20ed61324",
+    "payload_sha256": "5de97ebbd237362469a0ebc2ec89ff05ffb89dc77b97386cdb4d49e20ed61324",
+    "bytes": 5117
+  },
+  "crates/pamin-cli/src/command/unlink.rs": {
+    "original_sha256": "7645feaefd4a14b01a42b1d190fe8207f71f1b4b1c348344ad688ee216df5b40",
+    "payload_sha256": "7645feaefd4a14b01a42b1d190fe8207f71f1b4b1c348344ad688ee216df5b40",
+    "bytes": 2864
+  },
+  "crates/pamin-cli/src/command/validity.rs": {
+    "original_sha256": "74daf0fa69ea6978988722f10480995490a759a2b11213f2224237aa340dbc50",
+    "payload_sha256": "74daf0fa69ea6978988722f10480995490a759a2b11213f2224237aa340dbc50",
+    "bytes": 1701
+  },
+  "crates/pamin-cli/src/command/write.rs": {
+    "original_sha256": "3575f88f4aaaa84dc235356d97a2575b741477c3d0988d6e4ff5d7a95afbfeaa",
+    "payload_sha256": "3575f88f4aaaa84dc235356d97a2575b741477c3d0988d6e4ff5d7a95afbfeaa",
+    "bytes": 6203
+  },
+  "crates/pamin-cli/src/main.rs": {
+    "original_sha256": "dde094ec259c3a05da5536c8174cf3d14aaf65301181ce573cb881f56a456e7d",
+    "payload_sha256": "dde094ec259c3a05da5536c8174cf3d14aaf65301181ce573cb881f56a456e7d",
+    "bytes": 19620
+  },
+  "crates/pamin-cli/src/output.rs": {
+    "original_sha256": "ed311db63f4f4473fe72ff5662c35c632cf1ca3699a85a786f665d171f350cac",
+    "payload_sha256": "ed311db63f4f4473fe72ff5662c35c632cf1ca3699a85a786f665d171f350cac",
+    "bytes": 1509
+  },
+  "crates/pamin-cli/src/protocol.rs": {
+    "original_sha256": "85523d1f8aa3d19980f3a4e901e3bebe3967e5a685051a89f3ae1b7569292d87",
+    "payload_sha256": "85523d1f8aa3d19980f3a4e901e3bebe3967e5a685051a89f3ae1b7569292d87",
+    "bytes": 6664
+  },
+  "crates/pamin-cli/src/registry.rs": {
+    "original_sha256": "9456036b5fd8de559ea64b3e314476e250b126c3f20b877bb73229cf34f6918f",
+    "payload_sha256": "9456036b5fd8de559ea64b3e314476e250b126c3f20b877bb73229cf34f6918f",
+    "bytes": 23617
+  },
+  "crates/pamin-cli/src/server.rs": {
+    "original_sha256": "546d5ac16111b622919b37a46f934bef9da52ec64fbcc44396e68963b6f1b2e9",
+    "payload_sha256": "546d5ac16111b622919b37a46f934bef9da52ec64fbcc44396e68963b6f1b2e9",
+    "bytes": 31444
+  },
+  "crates/pamin-cli/src/session.rs": {
+    "original_sha256": "eb6ef8d43bf3889388e4e7cfc91ca98f2e638aeac66391a70f502a926824623b",
+    "payload_sha256": "eb6ef8d43bf3889388e4e7cfc91ca98f2e638aeac66391a70f502a926824623b",
+    "bytes": 17836
+  },
+  "crates/pamin-cli/tests/end_to_end.rs": {
+    "original_sha256": "6e6b26927e82ab2e7c5fac37a09cf1d9c7fb8e7dd0dec1f1856a40e0951ad1cf",
+    "payload_sha256": "6e6b26927e82ab2e7c5fac37a09cf1d9c7fb8e7dd0dec1f1856a40e0951ad1cf",
+    "bytes": 96964
+  },
+  "crates/pamin-cli/tests/install.rs": {
+    "original_sha256": "c0d5ffe2525870b019c5d429c8bcf1a6fa22d9d9604154d35a06312227e1f110",
+    "payload_sha256": "c0d5ffe2525870b019c5d429c8bcf1a6fa22d9d9604154d35a06312227e1f110",
+    "bytes": 4129
+  },
+  "crates/pamin-core/Cargo.toml": {
+    "original_sha256": "b0bf263868ae18b4f680f4ad61782e91cb59915f55ee1f0342cd5318d56ed851",
+    "payload_sha256": "b0bf263868ae18b4f680f4ad61782e91cb59915f55ee1f0342cd5318d56ed851",
+    "bytes": 514
+  },
+  "crates/pamin-core/src/cascade.rs": {
+    "original_sha256": "bfcfd7745e84c64c7220d62b00ad7da794e0f0ccd86706824631cbd9cb58a92d",
+    "payload_sha256": "bfcfd7745e84c64c7220d62b00ad7da794e0f0ccd86706824631cbd9cb58a92d",
+    "bytes": 7802
+  },
+  "crates/pamin-core/src/channel.rs": {
+    "original_sha256": "17ed5d2bbd0119002a0beb421316f852e99d1e9dde3bfdbfa811cfaf5737345c",
+    "payload_sha256": "17ed5d2bbd0119002a0beb421316f852e99d1e9dde3bfdbfa811cfaf5737345c",
+    "bytes": 8085
+  },
+  "crates/pamin-core/src/env.rs": {
+    "original_sha256": "48dc84c0f65481312bf0120fe8f422275a22a38912e157d9ae0463efc78356e7",
+    "payload_sha256": "48dc84c0f65481312bf0120fe8f422275a22a38912e157d9ae0463efc78356e7",
+    "bytes": 3085
+  },
+  "crates/pamin-core/src/filter.rs": {
+    "original_sha256": "0dae0f26de508e94325b24745d7303d85ec819b2c7dfccbc146b8f2718dccc80",
+    "payload_sha256": "0dae0f26de508e94325b24745d7303d85ec819b2c7dfccbc146b8f2718dccc80",
+    "bytes": 6547
+  },
+  "crates/pamin-core/src/fusion.rs": {
+    "original_sha256": "fa0a810d174ef4d87f3fbcf413dc9a739a2ed0cccc896fa763048397cfe9085a",
+    "payload_sha256": "fa0a810d174ef4d87f3fbcf413dc9a739a2ed0cccc896fa763048397cfe9085a",
+    "bytes": 49022
+  },
+  "crates/pamin-core/src/graph.rs": {
+    "original_sha256": "98a55efa6f9d45084c683a22ad2cc3927e1aafab3e07ab2f0d341aec8720ceb5",
+    "payload_sha256": "98a55efa6f9d45084c683a22ad2cc3927e1aafab3e07ab2f0d341aec8720ceb5",
+    "bytes": 7339
+  },
+  "crates/pamin-core/src/id.rs": {
+    "original_sha256": "5040618538f744f1e09b505d173b7bb7c0aec8a79319888cb23eb85aeee52904",
+    "payload_sha256": "5040618538f744f1e09b505d173b7bb7c0aec8a79319888cb23eb85aeee52904",
+    "bytes": 3548
+  },
+  "crates/pamin-core/src/ledger.rs": {
+    "original_sha256": "d372263bf89b564b67702dac7555baa7caeb0b2ef3f03c99fd5e8c1c4a81188a",
+    "payload_sha256": "d372263bf89b564b67702dac7555baa7caeb0b2ef3f03c99fd5e8c1c4a81188a",
+    "bytes": 8065
+  },
+  "crates/pamin-core/src/lib.rs": {
+    "original_sha256": "9ed8b6589970d617e75cab8d1f0b660379a6aa0864f077bdea9ccf4c36351f88",
+    "payload_sha256": "9ed8b6589970d617e75cab8d1f0b660379a6aa0864f077bdea9ccf4c36351f88",
+    "bytes": 1158
+  },
+  "crates/pamin-core/src/version.rs": {
+    "original_sha256": "741dae19af31858360cf5ab05745090b40336cc1c3f9889d1dc773a7dbca2f8e",
+    "payload_sha256": "741dae19af31858360cf5ab05745090b40336cc1c3f9889d1dc773a7dbca2f8e",
+    "bytes": 4328
+  },
+  "crates/pamin-engine/Cargo.toml": {
+    "original_sha256": "749e8cc88ea59ccb91be4e49c45a2796bc05bf623e54dc90b32e14b849b07d7d",
+    "payload_sha256": "749e8cc88ea59ccb91be4e49c45a2796bc05bf623e54dc90b32e14b849b07d7d",
+    "bytes": 1346
+  },
+  "crates/pamin-engine/src/cascade.rs": {
+    "original_sha256": "a5ba901daf2d9402e25b2f64c10ad170d6745b0160e21e2c6d49e96daf718828",
+    "payload_sha256": "a5ba901daf2d9402e25b2f64c10ad170d6745b0160e21e2c6d49e96daf718828",
+    "bytes": 32500
+  },
+  "crates/pamin-engine/src/engine.rs": {
+    "original_sha256": "ed8bcf4049f5a7fa377fdb48e390d8c7ca033e0a7402435ba892cd7411e2f297",
+    "payload_sha256": "ed8bcf4049f5a7fa377fdb48e390d8c7ca033e0a7402435ba892cd7411e2f297",
+    "bytes": 137960
+  },
+  "crates/pamin-engine/src/lib.rs": {
+    "original_sha256": "19ab9ed7610bb38b84db716e126010e23b7494b4056eb5c70fcea63ad2ac43d4",
+    "payload_sha256": "19ab9ed7610bb38b84db716e126010e23b7494b4056eb5c70fcea63ad2ac43d4",
+    "bytes": 619
+  },
+  "crates/pamin-engine/src/reshape.rs": {
+    "original_sha256": "425cc1e6b6787677ef0f1e1dbd6740348a793a59e7b9e477dde7e8ee48fa5005",
+    "payload_sha256": "425cc1e6b6787677ef0f1e1dbd6740348a793a59e7b9e477dde7e8ee48fa5005",
+    "bytes": 3630
+  },
+  "crates/pamin-engine/tests/channels/mod.rs": {
+    "original_sha256": "d0aecef871eb16740860a518faf5efc4d67c5fa277f5010d7da30ab0a4db4e1e",
+    "payload_sha256": "d0aecef871eb16740860a518faf5efc4d67c5fa277f5010d7da30ab0a4db4e1e",
+    "bytes": 44374
+  },
+  "crates/pamin-engine/tests/cold/mod.rs": {
+    "original_sha256": "0cabc3c9cf641ee464820243944afa1b3451b8f5b6ffe66b94fc8c8779383721",
+    "payload_sha256": "0cabc3c9cf641ee464820243944afa1b3451b8f5b6ffe66b94fc8c8779383721",
+    "bytes": 17511
+  },
+  "crates/pamin-engine/tests/corpus/memories.json": {
+    "original_sha256": "67473f12f4f504e9e0ec4f605218cbc9d5fbd01265deadfbc2b7f4982808fd70",
+    "payload_sha256": "67473f12f4f504e9e0ec4f605218cbc9d5fbd01265deadfbc2b7f4982808fd70",
+    "bytes": 39589
+  },
+  "crates/pamin-engine/tests/corpus/queries.json": {
+    "original_sha256": "0662914901425b03c2f95667f68eede6caad1392ba367a2c8d5856efa1ed4faf",
+    "payload_sha256": "0662914901425b03c2f95667f68eede6caad1392ba367a2c8d5856efa1ed4faf",
+    "bytes": 25721
+  },
+  "crates/pamin-engine/tests/crosslingual.rs": {
+    "original_sha256": "83cb2ec3f2b210d932e302783925d8b49548a3da4fa247628b9783fede731809",
+    "payload_sha256": "83cb2ec3f2b210d932e302783925d8b49548a3da4fa247628b9783fede731809",
+    "bytes": 134581
+  },
+  "crates/pamin-engine/tests/esci.rs": {
+    "original_sha256": "e891ed917829260a7263aa84d9c94d323771d6bf0d11f86ec086389006b65f6c",
+    "payload_sha256": "e891ed917829260a7263aa84d9c94d323771d6bf0d11f86ec086389006b65f6c",
+    "bytes": 20974
+  },
+  "crates/pamin-engine/tests/features/mod.rs": {
+    "original_sha256": "c66c6e9ebd644e4261b3b80ff984dc7d8070deb8ed439007e25b7f6380a0ae54",
+    "payload_sha256": "c66c6e9ebd644e4261b3b80ff984dc7d8070deb8ed439007e25b7f6380a0ae54",
+    "bytes": 14481
+  },
+  "crates/pamin-engine/tests/graphupkeep.rs": {
+    "original_sha256": "500f4c15e529574baa2239606f9679957c3ca513f54c6535de679a4fb93e8e68",
+    "payload_sha256": "500f4c15e529574baa2239606f9679957c3ca513f54c6535de679a4fb93e8e68",
+    "bytes": 5997
+  },
+  "crates/pamin-engine/tests/harness/mod.rs": {
+    "original_sha256": "923246f094436890e52232b00a8f2d10f74bf0a7e9bf1ca9cb86f0ea41dbbaab",
+    "payload_sha256": "923246f094436890e52232b00a8f2d10f74bf0a7e9bf1ca9cb86f0ea41dbbaab",
+    "bytes": 3142
+  },
+  "crates/pamin-engine/tests/memory/mod.rs": {
+    "original_sha256": "5b9c7e0cd354bcb7f45660e7339b65686eecda506411291f5ecaf4131a8d454b",
+    "payload_sha256": "5b9c7e0cd354bcb7f45660e7339b65686eecda506411291f5ecaf4131a8d454b",
+    "bytes": 4130
+  },
+  "crates/pamin-engine/tests/monolingual.rs": {
+    "original_sha256": "0523c8d4c7f68518063abb7b5f777d65ffd8dd8e503c7243589d90671f29a24e",
+    "payload_sha256": "0523c8d4c7f68518063abb7b5f777d65ffd8dd8e503c7243589d90671f29a24e",
+    "bytes": 60145
+  },
+  "crates/pamin-engine/tests/multihop.rs": {
+    "original_sha256": "d458bd377e56ffc8005c62b41ff181bb230f067e10eb8eee3e9427efe383ef71",
+    "payload_sha256": "d458bd377e56ffc8005c62b41ff181bb230f067e10eb8eee3e9427efe383ef71",
+    "bytes": 36490
+  },
+  "crates/pamin-engine/tests/reranking/mod.rs": {
+    "original_sha256": "22ce4b1fc7da8b8146e96884cc63cdbb49bf136f72d09010bd14f0dbad301a56",
+    "payload_sha256": "22ce4b1fc7da8b8146e96884cc63cdbb49bf136f72d09010bd14f0dbad301a56",
+    "bytes": 25354
+  },
+  "crates/pamin-engine/tests/reranking/router.rs": {
+    "original_sha256": "39cc653aa9746e09ebf6f9f9645a7194735cf617e6ee1a300ca7da09c77e1fd6",
+    "payload_sha256": "39cc653aa9746e09ebf6f9f9645a7194735cf617e6ee1a300ca7da09c77e1fd6",
+    "bytes": 16208
+  },
+  "crates/pamin-engine/tests/retrieval.rs": {
+    "original_sha256": "1e0dd4e1f6d137ebf3ca80c3eca2ab3a0313beafbc84e43e10b1e63f7ab0b73f",
+    "payload_sha256": "1e0dd4e1f6d137ebf3ca80c3eca2ab3a0313beafbc84e43e10b1e63f7ab0b73f",
+    "bytes": 44959
+  },
+  "crates/pamin-engine/tests/scoring/mod.rs": {
+    "original_sha256": "2e0fa849405d093c98db6aac9c7cb267c6f0af5427002a5ce4edf70e8ee5515a",
+    "payload_sha256": "2e0fa849405d093c98db6aac9c7cb267c6f0af5427002a5ce4edf70e8ee5515a",
+    "bytes": 11599
+  },
+  "crates/pamin-engine/tests/scratch_cache_engine.rs": {
+    "original_sha256": "f4481f5739bc97e80c329d72e920bf0ac930b8d5855100c0a9bca5d067a29b4b",
+    "payload_sha256": "f4481f5739bc97e80c329d72e920bf0ac930b8d5855100c0a9bca5d067a29b4b",
+    "bytes": 52074
+  },
+  "crates/pamin-engine/tests/statistics/mod.rs": {
+    "original_sha256": "958150d26e32019a90ff9cfb2a4005e0b9adcc348c313294161b1694607902b9",
+    "payload_sha256": "958150d26e32019a90ff9cfb2a4005e0b9adcc348c313294161b1694607902b9",
+    "bytes": 32819
+  },
+  "crates/pamin-engine/tests/writecost.rs": {
+    "original_sha256": "af3623f830f5d036bdfd9af21bf46e0fa2194fc306730d05d96c3fc3599daf8b",
+    "payload_sha256": "af3623f830f5d036bdfd9af21bf46e0fa2194fc306730d05d96c3fc3599daf8b",
+    "bytes": 19519
+  },
+  "crates/pamin-index/Cargo.toml": {
+    "original_sha256": "a30da5feba2e964e3176bc825e11e0c13b3872b398a44a71e6345210a1e09334",
+    "payload_sha256": "a30da5feba2e964e3176bc825e11e0c13b3872b398a44a71e6345210a1e09334",
+    "bytes": 3248
+  },
+  "crates/pamin-index/src/attention.rs": {
+    "original_sha256": "8c5ac9c253c549792b0d27221a7cfc73d854a617269e7df7e7162abd11d9cc94",
+    "payload_sha256": "8c5ac9c253c549792b0d27221a7cfc73d854a617269e7df7e7162abd11d9cc94",
+    "bytes": 27955
+  },
+  "crates/pamin-index/src/descriptors.rs": {
+    "original_sha256": "81cd23cdb2f1e2848b597a9e313a345bec2bc5b3febc04a99879c3027a10651e",
+    "payload_sha256": "81cd23cdb2f1e2848b597a9e313a345bec2bc5b3febc04a99879c3027a10651e",
+    "bytes": 6614
+  },
+  "crates/pamin-index/src/embedding.rs": {
+    "original_sha256": "788cf9fe2a1608c66c315e513d495cdfc742e4b1806182d5707a21a7d2a5eb9b",
+    "payload_sha256": "788cf9fe2a1608c66c315e513d495cdfc742e4b1806182d5707a21a7d2a5eb9b",
+    "bytes": 24710
+  },
+  "crates/pamin-index/src/encoder.rs": {
+    "original_sha256": "bbd5f95fd8a5a0ec00fe795778d815b75efb724059d1f215d7aaeef8a8c0503b",
+    "payload_sha256": "bbd5f95fd8a5a0ec00fe795778d815b75efb724059d1f215d7aaeef8a8c0503b",
+    "bytes": 15177
+  },
+  "crates/pamin-index/src/error.rs": {
+    "original_sha256": "b8aedaef9998baf6bf659c3d654866ec3e862bafa64a3ebff44699c7598c0b92",
+    "payload_sha256": "b8aedaef9998baf6bf659c3d654866ec3e862bafa64a3ebff44699c7598c0b92",
+    "bytes": 1720
+  },
+  "crates/pamin-index/src/half.rs": {
+    "original_sha256": "b25ed578dd4d9e2ba5113411b6f4e9a316233185ca3f2785982322f916898964",
+    "payload_sha256": "b25ed578dd4d9e2ba5113411b6f4e9a316233185ca3f2785982322f916898964",
+    "bytes": 8364
+  },
+  "crates/pamin-index/src/hub.rs": {
+    "original_sha256": "2eed22ebb43cd7753fa6f1ec6cf5e098bc3915c937fa27f7e0123e29a51fe697",
+    "payload_sha256": "2eed22ebb43cd7753fa6f1ec6cf5e098bc3915c937fa27f7e0123e29a51fe697",
+    "bytes": 8729
+  },
+  "crates/pamin-index/src/inference.rs": {
+    "original_sha256": "78ec6898ec65209fcde3ff860911d83302616f143f6a68cdb22cde4fad010000",
+    "payload_sha256": "78ec6898ec65209fcde3ff860911d83302616f143f6a68cdb22cde4fad010000",
+    "bytes": 41267
+  },
+  "crates/pamin-index/src/lib.rs": {
+    "original_sha256": "d9229a506adfdd3c599f1f9d010bd7882856e9860867cee5c22b26dea72b7d1e",
+    "payload_sha256": "d9229a506adfdd3c599f1f9d010bd7882856e9860867cee5c22b26dea72b7d1e",
+    "bytes": 1057
+  },
+  "crates/pamin-index/src/native.rs": {
+    "original_sha256": "d3c1c6cc4c3834784dfde984dc9c4bf45521211b59db5b8b3a66b853526b8d27",
+    "payload_sha256": "d3c1c6cc4c3834784dfde984dc9c4bf45521211b59db5b8b3a66b853526b8d27",
+    "bytes": 26714
+  },
+  "crates/pamin-index/src/onnx.rs": {
+    "original_sha256": "3fe1b5a703c2ff2f1f53085f72d262e17f5eb5f8420de7477d99510238948894",
+    "payload_sha256": "3fe1b5a703c2ff2f1f53085f72d262e17f5eb5f8420de7477d99510238948894",
+    "bytes": 12899
+  },
+  "crates/pamin-index/src/prepared.rs": {
+    "original_sha256": "1170263cf2ec4570bb1fc32606fe2865facc2d5a6df0c9359b614650d9ddbb03",
+    "payload_sha256": "1170263cf2ec4570bb1fc32606fe2865facc2d5a6df0c9359b614650d9ddbb03",
+    "bytes": 65327
+  },
+  "crates/pamin-index/src/projection.rs": {
+    "original_sha256": "0fee9f7161eb6b339cd5f6b7eb8ef934ed4082dc3ddcb925c2645cdd001a9273",
+    "payload_sha256": "0fee9f7161eb6b339cd5f6b7eb8ef934ed4082dc3ddcb925c2645cdd001a9273",
+    "bytes": 98026
+  },
+  "crates/pamin-index/src/reranking.rs": {
+    "original_sha256": "b5c19119c702987c840bc96437f720622cf8554e8fe2a9e62f3f6e854b1fae03",
+    "payload_sha256": "b5c19119c702987c840bc96437f720622cf8554e8fe2a9e62f3f6e854b1fae03",
+    "bytes": 69931
+  },
+  "crates/pamin-index/src/reshape.rs": {
+    "original_sha256": "f025bf6e1e170e4ccad5bb152ccaf6b9cd25c950c5bfda5de49e20c3fd15c8bd",
+    "payload_sha256": "f025bf6e1e170e4ccad5bb152ccaf6b9cd25c950c5bfda5de49e20c3fd15c8bd",
+    "bytes": 35268
+  },
+  "crates/pamin-index/src/segmentation.rs": {
+    "original_sha256": "1b5afa16352c4f13b8bfe6292c4f5d321054d461bc0c5392adf2b1e114215815",
+    "payload_sha256": "1b5afa16352c4f13b8bfe6292c4f5d321054d461bc0c5392adf2b1e114215815",
+    "bytes": 12030
+  },
+  "crates/pamin-index/src/tokenizer.rs": {
+    "original_sha256": "4b205de6c491c4c6705a8a88f15ae19e02bc82d9b70cddff52c505382d6daebf",
+    "payload_sha256": "4b205de6c491c4c6705a8a88f15ae19e02bc82d9b70cddff52c505382d6daebf",
+    "bytes": 18865
+  },
+  "crates/pamin-index/tests/embedding.rs": {
+    "original_sha256": "edc9181d0f33097a777549e0f3d8606bf320faeec5bd351503b8f9823534c2f1",
+    "payload_sha256": "edc9181d0f33097a777549e0f3d8606bf320faeec5bd351503b8f9823534c2f1",
+    "bytes": 6276
+  },
+  "crates/pamin-index/tests/prepared.rs": {
+    "original_sha256": "62d1468c712aa35e9c8b922231c9641b77ade547441244daec120602ba419e86",
+    "payload_sha256": "62d1468c712aa35e9c8b922231c9641b77ade547441244daec120602ba419e86",
+    "bytes": 13380
+  },
+  "crates/pamin-index/tests/projection.rs": {
+    "original_sha256": "c2a1a9be65dd058460856f181c2410a6894a95c9fce42450cfad8f39b341ff6d",
+    "payload_sha256": "c2a1a9be65dd058460856f181c2410a6894a95c9fce42450cfad8f39b341ff6d",
+    "bytes": 66113
+  },
+  "crates/pamin-index/tests/recall.rs": {
+    "original_sha256": "7e47a921f0550d0c8c4219ef15728f98a8dbeb6653977c1527624c522a0344a3",
+    "payload_sha256": "7e47a921f0550d0c8c4219ef15728f98a8dbeb6653977c1527624c522a0344a3",
+    "bytes": 8760
+  },
+  "crates/pamin-index/tests/reranking.rs": {
+    "original_sha256": "bb941a55b4feab0f438ecf675390d1ddf78879a655db4341380c6362144075dd",
+    "payload_sha256": "bb941a55b4feab0f438ecf675390d1ddf78879a655db4341380c6362144075dd",
+    "bytes": 10537
+  },
+  "crates/pamin-index/tests/sendcheck.rs": {
+    "original_sha256": "7c77f6e056b63d25741ea894a1b23e8648fb8bbfb60e420f4d5a2658343fb6a1",
+    "payload_sha256": "7c77f6e056b63d25741ea894a1b23e8648fb8bbfb60e420f4d5a2658343fb6a1",
+    "bytes": 1359
+  },
+  "crates/pamin-index/tests/shared_vocabulary.rs": {
+    "original_sha256": "bb67fa778ea44371ade14a22a179bab3d082dc95575f50814066ec9319b46c73",
+    "payload_sha256": "bb67fa778ea44371ade14a22a179bab3d082dc95575f50814066ec9319b46c73",
+    "bytes": 26754
+  },
+  "crates/pamin-store/Cargo.toml": {
+    "original_sha256": "551e9c88b325710e5d3775e99bd67128e061b48c19050b635a2f3c59cb87a8b4",
+    "payload_sha256": "551e9c88b325710e5d3775e99bd67128e061b48c19050b635a2f3c59cb87a8b4",
+    "bytes": 643
+  },
+  "crates/pamin-store/migrations/.gitattributes": {
+    "original_sha256": "bd4619499954ec62a319bd880789a746650dbf353d77bb0f0c4735d73074e452",
+    "payload_sha256": "bd4619499954ec62a319bd880789a746650dbf353d77bb0f0c4735d73074e452",
+    "bytes": 336
+  },
+  "crates/pamin-store/migrations/V10__settled_jobs_leave.sql": {
+    "original_sha256": "a2e8042045bcd48e6956a5560f87ff7cc59e9fb0bf3628bdddf12b416795eb37",
+    "payload_sha256": "a2e8042045bcd48e6956a5560f87ff7cc59e9fb0bf3628bdddf12b416795eb37",
+    "bytes": 2292
+  },
+  "crates/pamin-store/migrations/V11__retrieval_signals_leave.sql": {
+    "original_sha256": "8b51e796b7ec83b3ec3465b1c2577f424d2a49e4d9f68441ef799c32f228f767",
+    "payload_sha256": "8b51e796b7ec83b3ec3465b1c2577f424d2a49e4d9f68441ef799c32f228f767",
+    "bytes": 1576
+  },
+  "crates/pamin-store/migrations/V12__job_subject_once.sql": {
+    "original_sha256": "8c8422ed729e0968adafffe32fee7be9df0d28aaeb81a7159ba4c19bd1cb500e",
+    "payload_sha256": "8c8422ed729e0968adafffe32fee7be9df0d28aaeb81a7159ba4c19bd1cb500e",
+    "bytes": 1878
+  },
+  "crates/pamin-store/migrations/V13__edge_endpoints_on_versions.sql": {
+    "original_sha256": "2375dbf149ca7df83fbe6b77a1d3cee56b0bee11150d63a02559367cebb03892",
+    "payload_sha256": "2375dbf149ca7df83fbe6b77a1d3cee56b0bee11150d63a02559367cebb03892",
+    "bytes": 1990
+  },
+  "crates/pamin-store/migrations/V14__source_versions_index_once.sql": {
+    "original_sha256": "3c0c628bb5fef9c1534107b7f15e2841575d8f87c4322606b7741e53d6755095",
+    "payload_sha256": "3c0c628bb5fef9c1534107b7f15e2841575d8f87c4322606b7741e53d6755095",
+    "bytes": 980
+  },
+  "crates/pamin-store/migrations/V1__initial.sql": {
+    "original_sha256": "dee3b2a82cc54b141f773530847b4beaee2be07e4988b39ace0cd2ba18c7154e",
+    "payload_sha256": "dee3b2a82cc54b141f773530847b4beaee2be07e4988b39ace0cd2ba18c7154e",
+    "bytes": 5806
+  },
+  "crates/pamin-store/migrations/V2__relationships.sql": {
+    "original_sha256": "b64c0411482c1c423ebd528cbab5d77ad9b0479df774e89513cdf9ac738237f3",
+    "payload_sha256": "b64c0411482c1c423ebd528cbab5d77ad9b0479df774e89513cdf9ac738237f3",
+    "bytes": 4617
+  },
+  "crates/pamin-store/migrations/V3__shard_key_and_indexes.sql": {
+    "original_sha256": "5d16448f5958b7cdb83bf93bc4de64a8ea1f697ed127a8c73b0432c899799837",
+    "payload_sha256": "5d16448f5958b7cdb83bf93bc4de64a8ea1f697ed127a8c73b0432c899799837",
+    "bytes": 2787
+  },
+  "crates/pamin-store/migrations/V4__current_state_pointer.sql": {
+    "original_sha256": "b7013d7acd21adae65f9f5d0cf328efcf0dd8d94b02498475e54f3bdee521271",
+    "payload_sha256": "b7013d7acd21adae65f9f5d0cf328efcf0dd8d94b02498475e54f3bdee521271",
+    "bytes": 2075
+  },
+  "crates/pamin-store/migrations/V5__cascade_outbox.sql": {
+    "original_sha256": "7a91d48123d6a50f5ba1930da4e306d07da737a4708f0db1a1166420282dda26",
+    "payload_sha256": "7a91d48123d6a50f5ba1930da4e306d07da737a4708f0db1a1166420282dda26",
+    "bytes": 2505
+  },
+  "crates/pamin-store/migrations/V6__topic_name_index.sql": {
+    "original_sha256": "9ca74922402d46030d7bcc6afbee09ebfecc31c705497b139d2a0e004b4bb192",
+    "payload_sha256": "9ca74922402d46030d7bcc6afbee09ebfecc31c705497b139d2a0e004b4bb192",
+    "bytes": 1607
+  },
+  "crates/pamin-store/migrations/V7__one_document_per_topic.sql": {
+    "original_sha256": "f6fb1925caf96201b27aa904bfb28f3454ff099e304bfd4d3f350d6499518b33",
+    "payload_sha256": "f6fb1925caf96201b27aa904bfb28f3454ff099e304bfd4d3f350d6499518b33",
+    "bytes": 714
+  },
+  "crates/pamin-store/migrations/V8__topics_by_recency.sql": {
+    "original_sha256": "76a897b2a4f416e718832bda82814b95a608154081bf96be236b47804843f05e",
+    "payload_sha256": "76a897b2a4f416e718832bda82814b95a608154081bf96be236b47804843f05e",
+    "bytes": 488
+  },
+  "crates/pamin-store/migrations/V9__state_content_from_span.sql": {
+    "original_sha256": "74534a631805065f6d570fc6223d75b664614ccc38d22fa6ca54b40ed3f6015f",
+    "payload_sha256": "74534a631805065f6d570fc6223d75b664614ccc38d22fa6ca54b40ed3f6015f",
+    "bytes": 2691
+  },
+  "crates/pamin-store/src/database.rs": {
+    "original_sha256": "e93860054f9f1fc9c4c07c734cef47e92c69c6e1b5cf3b1f5e654ed6285492b2",
+    "payload_sha256": "e93860054f9f1fc9c4c07c734cef47e92c69c6e1b5cf3b1f5e654ed6285492b2",
+    "bytes": 35439
+  },
+  "crates/pamin-store/src/error.rs": {
+    "original_sha256": "abbf76705dc76564e9f033fb8b4bf9427441f0b8e00762fb6c5a73736c5e0667",
+    "payload_sha256": "abbf76705dc76564e9f033fb8b4bf9427441f0b8e00762fb6c5a73736c5e0667",
+    "bytes": 569
+  },
+  "crates/pamin-store/src/graph.rs": {
+    "original_sha256": "5040e0fd5d1efc630dde1572fb29b83822b6dce385d138ca5879fe368f232bc9",
+    "payload_sha256": "5040e0fd5d1efc630dde1572fb29b83822b6dce385d138ca5879fe368f232bc9",
+    "bytes": 64221
+  },
+  "crates/pamin-store/src/jobs.rs": {
+    "original_sha256": "f2273c2665bbb3ba413d06a27fe7d4e9367fa4ba8b15f0e408aaf0d9a30bfb1d",
+    "payload_sha256": "f2273c2665bbb3ba413d06a27fe7d4e9367fa4ba8b15f0e408aaf0d9a30bfb1d",
+    "bytes": 25171
+  },
+  "crates/pamin-store/src/lib.rs": {
+    "original_sha256": "adade3b56a5192ba70438ab2e48bb16feddebe7b7fa576ec36cb2b0405e55040",
+    "payload_sha256": "adade3b56a5192ba70438ab2e48bb16feddebe7b7fa576ec36cb2b0405e55040",
+    "bytes": 1127
+  },
+  "crates/pamin-store/src/migrate.rs": {
+    "original_sha256": "0521db229a4474daa6b1bb29317abf864acd3ea46f5a379eef504bdf9f733210",
+    "payload_sha256": "0521db229a4474daa6b1bb29317abf864acd3ea46f5a379eef504bdf9f733210",
+    "bytes": 13322
+  },
+  "crates/pamin-store/src/repository.rs": {
+    "original_sha256": "35ab99e25dd97426eb4247ff6be51335aad5b2633fe28292af607a899405004a",
+    "payload_sha256": "35ab99e25dd97426eb4247ff6be51335aad5b2633fe28292af607a899405004a",
+    "bytes": 50283
+  },
+  "crates/pamin-store/src/sql.rs": {
+    "original_sha256": "7260e4dada33b5a8b43b0f074c7ae2a9588800646e8e8a26ea5e144e1c39c155",
+    "payload_sha256": "7260e4dada33b5a8b43b0f074c7ae2a9588800646e8e8a26ea5e144e1c39c155",
+    "bytes": 3502
+  },
+  "crates/pamin-store/src/workspace.rs": {
+    "original_sha256": "20ea73fa37dd1e7ef1dfd832fb6af66c4c04e3e292abd1194b60bf476c29f5a7",
+    "payload_sha256": "20ea73fa37dd1e7ef1dfd832fb6af66c4c04e3e292abd1194b60bf476c29f5a7",
+    "bytes": 5132
+  },
+  "crates/pamin-store/tests/common/mod.rs": {
+    "original_sha256": "66fb85f770fdea4005fdf72ab3ec7118b8705dc887f92889f1ad49b135a737d7",
+    "payload_sha256": "66fb85f770fdea4005fdf72ab3ec7118b8705dc887f92889f1ad49b135a737d7",
+    "bytes": 1382
+  },
+  "crates/pamin-store/tests/hubcost.rs": {
+    "original_sha256": "ee6b161f230c05b06429aa718a76ad627e66c8f73283157fab9bdb48ba632601",
+    "payload_sha256": "ee6b161f230c05b06429aa718a76ad627e66c8f73283157fab9bdb48ba632601",
+    "bytes": 31743
+  },
+  "crates/pamin-store/tests/jobsettle.rs": {
+    "original_sha256": "8a1e35ed7390cddf4b0a3d2e4ecf20f7b4d76a99551158b945c8ec4526f27e81",
+    "payload_sha256": "8a1e35ed7390cddf4b0a3d2e4ecf20f7b4d76a99551158b945c8ec4526f27e81",
+    "bytes": 5014
+  },
+  "crates/pamin-store/tests/namebatch.rs": {
+    "original_sha256": "ef8a67443ff3d93c8f77c23331320cced19d11478de94eb23cbbf73677bc74a2",
+    "payload_sha256": "ef8a67443ff3d93c8f77c23331320cced19d11478de94eb23cbbf73677bc74a2",
+    "bytes": 6967
+  },
+  "crates/pamin-store/tests/store.rs": {
+    "original_sha256": "5d95b3e3dc6049f01856fca53dad78bf2c8513e675f2a2ae94a1fc2f46dba626",
+    "payload_sha256": "5d95b3e3dc6049f01856fca53dad78bf2c8513e675f2a2ae94a1fc2f46dba626",
+    "bytes": 166011
+  },
+  "rust-toolchain.toml": {
+    "original_sha256": "94342e46c88b37332d333c15a6e114b8cad748f3faa01c60ac4a3728edf729c6",
+    "payload_sha256": "94342e46c88b37332d333c15a6e114b8cad748f3faa01c60ac4a3728edf729c6",
+    "bytes": 181
+  }
+}

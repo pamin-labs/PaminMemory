@@ -1,0 +1,11 @@
+
+running 1 test
+PROBE_VERSION native-readonly-v2-project-path
+PROBE_STAGE initialized
+PROBE_OPTIONS read_only=true enable_mmap=true max_buffer_size=67108864
+PROBE_STAGE options_readonly
+PROBE_STAGE opened
+PROBE_STAGE dropped
+.
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.62s
+

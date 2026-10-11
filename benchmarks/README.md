@@ -47,8 +47,17 @@ than a convention.
 | One embedder for every arm | An arm keeps its own 384-dimension model and says nothing | The shim counts embedded texts; an arm whose count does not move during ingest fails |
 | The corpus is actually there | Every query returns nothing, quickly, and a full latency table is the cost of searching an empty index | The project is discovered, its size asserted against the documents claimed, and one real query asserted to return hits |
 | One server, not two | Two copies of a model resident, and a measurement that dies of memory | Wait on the socket, then assert the process count is exactly one |
-| Cells do not share queries | A repeated query is answered from cache in microseconds and reported as search latency | Every cell draws a disjoint slice, and asserts its own p50 is above a floor no forward pass can beat |
+| Cells do not share queries | Repeated query/candidate pairs reuse scores and change the work being timed | Retain project/query text and order; assert query sets are disjoint across cells and from warmup. Record reranker offered/scored/batch counter deltas to distinguish cached calls from forward passes; a p50 floor does not prove isolation |
 | The shortlist an arm reports | A library takes the size under a different keyword, drops the one you passed into `**kwargs`, and serves its own default to both the narrow arm and the wide one | Each arm counts the passages it received and fails if there are more than it asked for |
+
+Reranker score-cache hits still tokenize each offered pair before lookup, so a
+repeated query is not guaranteed to cost microseconds. Treat query-set checks
+and cache/work counter deltas as separate premises: counters alone do not prove
+query uniqueness, and elapsed time alone does not prove cache state. The
+[Engine cache evidence](results/reranker/cache-engine-2026-09-30/README.md)
+records that workload separately; its timings are not a portable latency floor.
+These assertions are requirements for a new comparison, not a retroactive
+certification of historical runs.
 
 ## Running it
 

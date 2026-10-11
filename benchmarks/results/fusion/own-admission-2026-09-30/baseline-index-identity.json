@@ -1,0 +1,19 @@
+{
+  "before": {
+    "documents": 230,
+    "mode": "native-default-flat-buffer",
+    "project": "eval-accuracy-8257bd6e24a243c4",
+    "vector_completeness": 0.0
+  },
+  "after": {
+    "documents": 230,
+    "project": "eval-accuracy-8257bd6e24a243c4",
+    "vector_completeness": 0.0
+  },
+  "graph": [
+    [
+      "mentions",
+      11
+    ]
+  ]
+}

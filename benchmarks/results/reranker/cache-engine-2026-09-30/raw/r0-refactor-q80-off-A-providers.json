@@ -1,0 +1,9 @@
+[
+  {
+    "graph": "${MODEL_CACHE}/prepared/ac146c082d1526dd1cd10597ae4a0ffc/model.onnx",
+    "nodes": {
+      "CPUExecutionProvider": 1023
+    },
+    "sha256": "51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4"
+  }
+]

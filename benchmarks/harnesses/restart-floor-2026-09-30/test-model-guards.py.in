@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""Tiny model-role/identity and fake setup guards; no genuine model loads."""
+import copy,json,os,runpy,stat,subprocess,sys,tempfile,types
+from pathlib import Path
+if sys.flags.optimize:raise SystemExit('Negative guard checks require assertions; remove -O/PYTHONOPTIMIZE')
+sys.dont_write_bytecode=True
+here=Path(__file__).parent;guard=runpy.run_path(str(here/'run-guarded.py.in'));model=guard['MODEL']
+def refuse(operation):
+    try:operation()
+    except (AssertionError,OSError):return
+    raise AssertionError('negative case passed')
+with tempfile.TemporaryDirectory() as directory:
+    root=Path(directory);models=root/'models';(models/'revision').mkdir(parents=True);(models/'prepared/key').mkdir(parents=True)
+    files=['revision/source.onnx','revision/tokenizer.json','revision/config.json','prepared/key/model.onnx','prepared/key/attention.onnx','prepared/key/model.onnx.data','prepared/native.source']
+    for name in files:(models/name).write_bytes(b'tiny fake asset')
+    plan={'version':1,'selection_provenance':'fake role map from fake executable, no real inference','models':[{'name':'embedding','asset_directories':['revision','prepared/key'],'load_graph':'prepared/key/attention.onnx','assets':{'source':['revision/source.onnx'],'tokenizer':['revision/tokenizer.json'],'metadata':['revision/config.json','prepared/native.source'],'prepared_graph':['prepared/key/model.onnx','prepared/key/attention.onnx'],'external_weights':['prepared/key/model.onnx.data']},'graph_external_weights':{name:['prepared/key/model.onnx.data'] for name in ['prepared/key/model.onnx','prepared/key/attention.onnx']}}]}
+    expected=model['prepare'](models,plan);manifest=root/'manifest.json';manifest.write_text(json.dumps(expected));manifest.chmod(0o600)
+    # Current format is common per role, not an arm-keyed graph union.
+    union=copy.deepcopy(plan);other=copy.deepcopy(union['models'][0]);other['name']='embedding-candidate';union['models'].append(other)
+    refuse(lambda:model['validate_plan'](union))
+    duplicate=copy.deepcopy(plan);duplicate['models'].append(copy.deepcopy(duplicate['models'][0]));refuse(lambda:model['validate_plan'](duplicate))
+    assert model['verify'](expected['model'])['assets']==len(files)
+    for name in files:
+        path=models/name;prior=path.read_bytes();path.write_bytes(b'changed');refuse(lambda:model['verify'](expected['model']));path.write_bytes(prior)
+    for name in ['revision/new-config.json','prepared/key/attention.unfused']:
+        path=models/name;path.write_bytes(b'new selection');refuse(lambda:model['verify'](expected['model']));path.unlink()
+    (models/'prepared/key/used').write_bytes(b'');model['verify'](expected['model'])
+    (models/'prepared/key/used').write_bytes(b'not empty');refuse(lambda:model['verify'](expected['model']));(models/'prepared/key/used').unlink()
+    path=models/'revision/tokenizer.json';prior=path.read_bytes();path.unlink();path.symlink_to(models/'revision/config.json');refuse(lambda:model['verify'](expected['model']));path.unlink();path.write_bytes(prior)
+    outside=root/'outside';outside.write_bytes(b'outside');path.unlink();path.symlink_to(outside);refuse(lambda:model['prepare'](models,plan));path.unlink();path.write_bytes(prior)
+    # Safe hub leaf links are content-bound, including the target bytes.
+    blob=models/'blob';blob.write_bytes(prior);path.unlink();path.symlink_to('../blob');linked=model['prepare'](models,plan)
+    blob.write_bytes(b'mutated blob');refuse(lambda:model['verify'](linked['model']));blob.write_bytes(prior)
+    path.unlink();path.write_bytes(prior)
+    # Only expressly permitted source release, backed by an unchanged native digest record.
+    released=copy.deepcopy(plan);selected=released['models'][0];selected.update(allow_source_release=True,source_release_provenance='fake native owned-cache release policy',source_records={'revision/source.onnx':'prepared/native.source'},source_origins={'revision/source.onnx':'revision/source.onnx'},source_blob_targets={})
+    source=models/'revision/source.onnx';source_bytes=source.read_bytes();record=models/'prepared/native.source'
+    record.write_text(f'source.onnx\n{len(source_bytes)}\n123\nsha256 {model["digest"](source)}\n')
+    release_expected=model['prepare'](models,released);source.unlink();assert model['verify'](release_expected['model'])['permitted_released_sources']==1
+    already_released=model['prepare'](models,released);model['verify'](already_released['model'])
+    graph=models/'prepared/key/attention.onnx';graph.unlink();refuse(lambda:model['verify'](release_expected['model']));graph.write_bytes(b'tiny fake asset')
+    source.write_bytes(b'wrong resurrected source');refuse(lambda:model['verify'](release_expected['model']));source.write_bytes(source_bytes)
+    record.write_bytes(b'tiny fake asset');refuse(lambda:model['prepare'](models,released))
+    # Realistic HF leaf basename differs from its 64-hex owned blob basename.
+    hf_repo='models--fake--embedding';hf_revision=hf_repo+'/snapshots/'+'c'*40
+    hf_leaf=hf_revision+'/onnx/model_int8.onnx';hf_blob=hf_repo+'/blobs/'+'a'*64
+    (models/hf_revision/'onnx').mkdir(parents=True);(models/hf_repo/'blobs').mkdir();blob=models/hf_blob
+    source.unlink();source=models/hf_leaf;selected['asset_directories'].append(hf_revision)
+    selected['assets']['source']=[hf_leaf,hf_blob]
+    selected['source_records']={name:'prepared/native.source' for name in selected['assets']['source']}
+    selected['source_origins']={name:hf_leaf for name in selected['assets']['source']}
+    selected['source_blob_targets']={hf_leaf:hf_blob}
+    blob.write_bytes(source_bytes);source.symlink_to('../../../blobs/'+blob.name)
+    record.write_text(f'model_int8.onnx\n{len(source_bytes)}\n123\nsha256 {model["digest"](blob)}\n')
+    pair_expected=model['prepare'](models,released)
+    bad_origin=copy.deepcopy(released);bad_origin['models'][0]['source_origins'][hf_blob]=hf_blob;refuse(lambda:model['prepare'](models,bad_origin))
+    bad_blob=copy.deepcopy(released);bad_blob['models'][0]['source_blob_targets']={};refuse(lambda:model['prepare'](models,bad_blob))
+    required=copy.deepcopy(released);required['models'][0]['allow_source_release']=False
+    required_expected=model['prepare'](models,required);source.unlink();refuse(lambda:model['verify'](required_expected['model']));source.symlink_to('../../../blobs/'+blob.name)
+    for order in ['leaf_first','blob_first','both']:
+        if order=='leaf_first':
+            source.unlink();assert model['verify'](pair_expected['model'])['permitted_released_sources']==1;blob.unlink()
+        elif order=='blob_first':
+            blob.unlink();assert model['verify'](pair_expected['model'])['permitted_released_sources']==2;source.unlink()
+        else:source.unlink();blob.unlink()
+        assert model['verify'](pair_expected['model'])['permitted_released_sources']==2
+        model['verify'](model['prepare'](models,released)['model'])
+        blob.write_bytes(source_bytes);source.symlink_to('../../../blobs/'+blob.name)
+    prior_record=record.read_text();record.write_text(prior_record.replace(str(len(source_bytes)),str(len(source_bytes)+1),1));refuse(lambda:model['prepare'](models,released));record.write_text(prior_record)
+    blob.write_bytes(b'x'*len(source_bytes));refuse(lambda:model['verify'](pair_expected['model']));blob.write_bytes(source_bytes)
+    source.unlink();source.write_bytes(source_bytes);refuse(lambda:model['verify'](pair_expected['model']));source.unlink()
+    wrong=models/hf_repo/'blobs'/('b'*64);wrong.write_bytes(source_bytes);source.symlink_to('../../../blobs/'+wrong.name);refuse(lambda:model['verify'](pair_expected['model']));source.unlink();wrong.unlink();source.symlink_to('../../../blobs/'+blob.name)
+    source.unlink();source.symlink_to('../../../blobs/../blobs/'+blob.name);refuse(lambda:model['verify'](pair_expected['model']));source.unlink();source.symlink_to('../../../blobs/'+blob.name)
+    blob.unlink();blob.symlink_to(models/'revision/config.json');refuse(lambda:model['prepare'](models,released));blob.unlink();blob.write_bytes(source_bytes)
+    prior_record=record.read_text();record.write_text(prior_record.replace('model_int8.onnx',blob.name));refuse(lambda:model['prepare'](models,released));record.write_text(prior_record)
+    # Restore the plain fake model for the existing setup contract tests.
+    source.unlink();blob.unlink();source=models/'revision/source.onnx';source.write_bytes(source_bytes);record.write_bytes(b'tiny fake asset')
+    for edit in ['missing_role','wrong_graph','missing_weight_relation','no_provenance']:
+        bad=copy.deepcopy(plan)
+        if edit=='missing_role':bad['models'][0]['assets']['tokenizer']=[]
+        elif edit=='wrong_graph':bad['models'][0]['load_graph']='revision/source.onnx'
+        elif edit=='missing_weight_relation':bad['models'][0]['graph_external_weights']={}
+        else:bad['selection_provenance']=''
+        refuse(lambda:model['prepare'](models,bad))
+    model['load'](manifest);manifest.chmod(0o644);refuse(lambda:model['load'](manifest));manifest.chmod(0o600)
+    # Distinct setup contract: mock the subprocess only; verify pre/post checks.
+    executable=root/'binary';executable.write_bytes(b'never executed');home=root/'home';home.mkdir();(home/'models').symlink_to(models)
+    libs=root/'libs';libs.mkdir();(libs/'libfake.so').write_bytes(b'fake native')
+    native=guard['NATIVE']['snapshot']([str(libs)],[str(libs)])
+    restart_source='crates/pamin-engine/tests/scratch_restart_floor.rs'
+    helper={'scratch_source':restart_source,'scratch_sha256':'fake-harness','checkout':str(root),
+            'inputs_before':{restart_source:{'sha256':'fake-harness'}},'inputs_after':{restart_source:{'sha256':'fake-harness'}},
+            'compiler_artifacts':[{'target':{'name':'scratch_restart_floor','src_path':str(root/restart_source)},'executable':str(executable),'fresh':False}]}
+    attestation=root/'attestation';attestation.write_text(json.dumps({'scope':'prospective build-time inputs/outputs only; no historical binary binding','native_loader_inputs':native,'build_kind':'restart-trial','scratch_target':restart_source,'harness_sha256':'fake-harness','arms':{'fake':dict(helper,**{'commit':'fake','binary':str(executable),'binary_sha256':guard['digest'](executable),'binary_bytes':executable.stat().st_size})}}))
+    # A conversion-only attestation and a mismatched artifact must fail before launch.
+    attested=json.loads(attestation.read_text())
+    attested['arms']['candidate']=copy.deepcopy(attested['arms']['fake']);attestation.write_text(json.dumps(attested))
+    for field,value in [('build_kind','disk-schema-conversion'),('scratch_target','crates/pamin-index/tests/scratch_disk_schema.rs')]:
+        bad=copy.deepcopy(attested);bad[field]=value
+        refuse(lambda:guard['binary'](f'fake,fake,{executable}',bad))
+    bad=copy.deepcopy(attested);bad['arms']['fake']['compiler_artifacts'][0]['target']['name']='scratch_disk_schema'
+    refuse(lambda:guard['binary'](f'fake,fake,{executable}',bad))
+    guard['setup_rows']('RESTART_JSON {"phase":"open","extra":{"documents":1}}\nRESTART_JSON {"phase":"seed_complete","extra":{"completeness":1.0,"index_disk":[1,1,1]}}\n','seed',1)
+    refuse(lambda:guard['setup_rows']('RESTART_JSON {"phase":"open","extra":{"documents":1}}\n','seed',1))
+    refuse(lambda:guard['setup_rows']('running 0 tests\n','bootstrap',1))
+    bootstrap_open={'phase':'open','extra':{'documents':0},'wall_ms':0.0,'process_before':{},'process_after':{}}
+    def bootstrap_output(row):return 'RESTART_JSON '+json.dumps(row)+'\nCOLLECTION_PATH fake\n'
+    assert guard['setup_rows'](bootstrap_output(bootstrap_open),'bootstrap',1)['opened_documents']==0
+    for kind in ['top_level_only','contradictory_top_level','missing_extra','missing_count','nonzero','negative','bool','float','string','null']:
+        bad=copy.deepcopy(bootstrap_open)
+        if kind=='top_level_only':bad.pop('extra');bad['documents']=0
+        elif kind=='contradictory_top_level':bad['documents']=1
+        elif kind=='missing_extra':bad.pop('extra')
+        elif kind=='missing_count':bad['extra']={}
+        else:bad['extra']['documents']={'nonzero':1,'negative':-1,'bool':False,'float':0.0,'string':'0','null':None}[kind]
+        refuse(lambda:guard['setup_rows'](bootstrap_output(bad),'bootstrap',1))
+    for invalid in [0,-1,False,1.0]:refuse(lambda:guard['setup_rows'](bootstrap_output(bootstrap_open),'bootstrap',invalid))
+    for count in [-1,False,1.0,'1',2]:
+        bad=copy.deepcopy(bootstrap_open);bad['extra']['documents']=count
+        refuse(lambda:guard['setup_rows'](bootstrap_output(bad)+'RESTART_JSON {"phase":"seed_complete","extra":{"completeness":1.0}}\n','seed',1))
+    for completeness in [None,False,True,0,.5,'1',float('nan')]:
+        output=bootstrap_output(bootstrap_open)+'RESTART_JSON '+json.dumps({'phase':'seed_complete','extra':{'completeness':completeness}})+'\n'
+        refuse(lambda:guard['setup_rows'](output,'seed',1))
+    previous_run=subprocess.run;previous_env=dict(os.environ);previous_argv=sys.argv
+    try:
+        os.environ.clear();os.environ.update({key:value for key,value in previous_env.items() if not key.startswith('PAMIN_') and key not in {'HF_HOME','HF_HUB_CACHE','TOKIO_WORKER_THREADS','TOKENIZERS_PARALLELISM','RAYON_NUM_THREADS'}})
+        subprocess.run=lambda *args,**kwargs:(_ for _ in ()).throw(AssertionError('unexpected setup launch'))
+        for key,message in [('TOKIO_WORKER_THREADS','inherited Tokio worker concurrency'),('TOKENIZERS_PARALLELISM','inherited tokenizer/Rayon concurrency'),('RAYON_NUM_THREADS','inherited tokenizer/Rayon concurrency')]:
+            for at,value in enumerate(['','1','64']):
+                private=root/f'{key}-rejected-{at}.json';os.environ[key]=value
+                sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'candidate,fake,{executable}','--stage','bootstrap']
+                try:guard['main']()
+                except AssertionError as error:assert message in str(error)
+                else:raise AssertionError('inherited concurrency reached setup')
+                assert not private.exists(), 'concurrency rejection must precede record creation'
+            os.environ.pop(key)
+        for kind in ['conversion','wrong_artifact']:
+            bad=copy.deepcopy(attested)
+            if kind=='conversion':bad['build_kind']='disk-schema-conversion'
+            else:bad['arms']['candidate']['compiler_artifacts'][0]['target']['name']='scratch_disk_schema'
+            attestation.write_text(json.dumps(bad));private=root/(kind+'.json')
+            sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'candidate,fake,{executable}','--stage','bootstrap']
+            refuse(guard['main']);assert not private.exists()
+        attestation.write_text(json.dumps(attested))
+        alias=root/'home-alias';alias.symlink_to(home,target_is_directory=True)
+        for stage in ['bootstrap','seed']:
+            for at,private in enumerate([home/'setup-record.json',home/'index/project/setup-record.json',alias/'linked-record.json']):
+                sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'candidate,fake,{executable}','--stage',stage]
+                try:guard['main']()
+                except AssertionError as error:assert 'private setup record must be outside measured home' in str(error),str(error)
+                else:raise AssertionError('setup record contaminated seed')
+                assert not private.exists(), 'record exclusion must precede creation and launch'
+        for invalid in ['0','-1']:
+            private=root/('invalid-documents-'+invalid+'.json')
+            sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents',invalid,'--index','memory','setup','--home',str(home),'--arm',f'candidate,fake,{executable}','--stage','bootstrap']
+            refuse(guard['main']);assert not private.exists()
+        for kind in ['normal','zero_tests','changed_during_setup','manifest_changed','manifest_mode_changed']:
+            private=root/(kind+'.json');calls=[]
+            def fake_run(command,env,**kwargs):
+                assert env['TOKIO_WORKER_THREADS']=='4', 'setup must receive explicit Tokio concurrency'
+                assert env['TOKENIZERS_PARALLELISM']=='false' and env['RAYON_NUM_THREADS']=='4', 'setup tokenizer/Rayon pins missing'
+                calls.append(command)
+                if kind=='changed_during_setup':(models/'prepared/key/model.onnx.data').write_bytes(b'changed during setup')
+                if kind=='manifest_changed':manifest.write_text(manifest.read_text()+' ')
+                if kind=='manifest_mode_changed':manifest.chmod(0o644)
+                return types.SimpleNamespace(returncode=0,stdout='running 0 tests\n' if kind=='zero_tests' else 'RESTART_JSON {"phase":"open","extra":{"documents":0}}\nCOLLECTION_PATH fake\n',stderr='')
+            subprocess.run=fake_run
+            sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'candidate,fake,{executable}','--stage','bootstrap']
+            if kind=='normal':guard['main']()
+            else:refuse(guard['main'])
+            data=json.loads(private.read_text());assert data['status']==('finished' if kind=='normal' else 'failed') and len(calls)==1
+            assert data['controlled_environment']['TOKIO_WORKER_THREADS']=='4'
+            assert data['controlled_environment']['TOKENIZERS_PARALLELISM']=='false' and data['controlled_environment']['RAYON_NUM_THREADS']=='4'
+            assert '_expected_models' not in data and 'entries' not in data['models_before_launch'] and stat.S_IMODE(private.stat().st_mode)==0o600
+            (models/'prepared/key/model.onnx.data').write_bytes(b'tiny fake asset');manifest.write_text(json.dumps(expected));manifest.chmod(0o600)
+        # Provider text uses the retained native log syntax; the real frozen
+        # parser is loaded by main. No fake provider reader or model execution.
+        seed_plan=copy.deepcopy(plan)
+        embedding=seed_plan['models'][0]
+        reranker=copy.deepcopy(embedding);reranker['name']='reranker'
+        for selected,directory in [(embedding,'prepared/seed-embedding'),(reranker,'prepared/seed-reranker')]:
+            (models/directory).mkdir()
+            for name in ['model.onnx','attention.onnx','model.onnx.data']:(models/directory/name).write_bytes(b'fake seed model')
+            selected['asset_directories']=['revision',directory]
+            selected['assets']['prepared_graph']=[directory+'/model.onnx',directory+'/attention.onnx']
+            selected['assets']['external_weights']=[directory+'/model.onnx.data']
+            selected['graph_external_weights']={name:selected['assets']['external_weights'] for name in selected['assets']['prepared_graph']}
+            selected['load_graph']=directory+'/attention.onnx'
+        seed_plan['models'].append(reranker)
+        seed_expected=model['prepare'](models,seed_plan);manifest.write_text(json.dumps(seed_expected))
+        def assignment(graph,nodes):
+            return '2026-09-30T20:08:18.958166Z  INFO pamin_index::inference: ONNX graph execution-provider assignment model_graph='+json.dumps(str(graph))+' assigned_nodes='+json.dumps(nodes)+'\n'
+        for kind in ['seed_normal','seed_reverse_load','seed_empty','seed_missing','seed_swapped_roles','seed_inventory_graph','seed_non_cpu','seed_zero_tests']:
+            private=root/(kind+'.json');calls=[]
+            embed_graph=models/embedding['load_graph'];rerank_graph=models/reranker['load_graph']
+            first=assignment(embed_graph,{'CPUExecutionProvider':1023})
+            second=assignment(rerank_graph,{'CPUExecutionProvider':295})
+            if kind=='seed_empty':first=second=''
+            elif kind=='seed_missing':second=''
+            elif kind=='seed_inventory_graph':first=assignment(models/'prepared/seed-embedding/model.onnx',{'CPUExecutionProvider':1023})
+            elif kind=='seed_non_cpu':first=assignment(embed_graph,{'CUDAExecutionProvider':1023})
+            bad=copy.deepcopy(seed_expected)
+            if kind=='seed_swapped_roles':
+                # Role attribution is independently explicit in repository paths;
+                # exchange the plan roles while preserving its valid asset maps.
+                bad['model']['plan']['models'][0]['name']='reranker'
+                bad['model']['plan']['models'][1]['name']='embedding'
+                bad['manifest_sha256']=model['identity'](bad['model'])
+                embedding_dir=models/'prepared/seed-embedding';reranker_dir=models/'prepared/seed-reranker'
+                embed_repo=embedding_dir/'models--gpahal--bge-m3-onnx-int8.onnx'
+                rerank_repo=reranker_dir/'models--onnx-community--bge-reranker-v2-m3-ONNX.onnx'
+                embed_repo.write_bytes(b'fake seed model');rerank_repo.write_bytes(b'fake seed model')
+                for selected,path in zip(bad['model']['plan']['models'],[embed_repo,rerank_repo]):
+                    name=str(path.relative_to(models));selected['assets']['prepared_graph'].append(name);selected['graph_external_weights'][name]=selected['assets']['external_weights'];selected['load_graph']=name
+                bad=model['prepare'](models,bad['model']['plan'])
+                first=assignment(embed_repo,{'CPUExecutionProvider':1023});second=assignment(rerank_repo,{'CPUExecutionProvider':295})
+            manifest.write_text(json.dumps(bad))
+            opening='RESTART_JSON {"phase":"open","extra":{"documents":0}}\n'
+            completed='RESTART_JSON {"phase":"seed_complete","extra":{"completeness":1.0,"index_disk":[1,1,1]}}\n'
+            # Fresh seed loads embedding while ingesting; a resumed seed may
+            # load both models after seed_complete, with reranker first.
+            output=opening+first+completed+second
+            if kind=='seed_reverse_load':output=opening+completed+second+first
+            if kind=='seed_zero_tests':output='running 0 tests\n'
+            def fake_seed_run(command,env,**kwargs):
+                calls.append(command);assert env['FLOOR_MODE']=='seed'
+                return types.SimpleNamespace(returncode=0,stdout=output,stderr='')
+            subprocess.run=fake_seed_run
+            sys.argv=['guards','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(private),'--documents','1','--index','memory','setup','--home',str(home),'--arm',f'candidate,fake,{executable}','--stage','seed']
+            good=kind in ['seed_normal','seed_reverse_load']
+            if good:guard['main']()
+            else:refuse(guard['main'])
+            data=json.loads(private.read_text());assert data['status']==('finished' if good else 'failed') and len(calls)==1
+            if good:
+                assert set(data['setup_actual_providers'])=={'embedding','reranker'}
+                assert data['setup_actual_providers']['embedding']['model_graph']==str(embed_graph)
+                assert 'seed load order not inferred' in data['setup_actual_providers']['embedding']['role_identity']
+                assert 'native_after_setup' in data and 'models_after_setup' in data
+                assert data['setup_output']['seed_final_document_count'].startswith('N/A:')
+            else:
+                assert 'setup_actual_providers' not in data and 'native_after_setup' not in data and 'models_after_setup' not in data
+            if kind=='seed_swapped_roles':embed_repo.unlink();rerank_repo.unlink()
+        manifest.write_text(json.dumps(expected));manifest.chmod(0o600)
+        source.write_bytes(b'changed before setup');private=root/'prelaunch.json';sys.argv[sys.argv.index('--record')+1]=str(private);calls.clear();refuse(guard['main']);assert not calls and not private.exists()
+    finally:subprocess.run=previous_run;sys.argv=previous_argv;os.environ.clear();os.environ.update(previous_env)
+for name in ['model-guards.py.in','run-guarded.py.in','test-model-guards.py.in','test-fixture-guards.py.in','test-native-build-guards.py.in']:
+    result=subprocess.run([sys.executable,'-O',str(here/name)],capture_output=True,text=True);assert result.returncode!=0 and 'remove -O' in result.stderr
+print('passed every asset role mutation, graph selection/inventory, safe/unsafe links, explicit source release/provenance, private immutable manifest, bootstrap/seed pre/post/failure, real parser seed role/graph/provider checks with both load orders, and -O rejection; no real model/trial executed')

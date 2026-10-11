@@ -1,0 +1,26 @@
+"""Mock setup preflight; no model, executable or product process is used."""
+import os,runpy,sys,tempfile,json
+from pathlib import Path
+from unittest.mock import patch
+sys.dont_write_bytecode=True
+root=Path(__file__).resolve().parent
+# Optional prior template permits an explicit before/after regression receipt.
+source=Path(sys.argv[1]) if len(sys.argv)>1 else root/'run-guarded.py.in'
+guard=runpy.run_path(str(source));g=guard['main'].__globals__
+with tempfile.TemporaryDirectory(prefix='setup-record-fixture-') as directory:
+ parent=Path(directory);home=parent/'home';home.mkdir();models=parent/'models';models.mkdir();(home/'models').symlink_to(models,target_is_directory=True)
+ manifest=parent/'model.json';manifest.write_text('{}');attestation=parent/'build.json';attestation.write_text(json.dumps({'scope':'prospective build-time inputs/outputs only; no historical binary binding','native_loader_inputs':{}}))
+ alias=parent/'alias';alias.symlink_to(home,target_is_directory=True)
+ for stage in ['bootstrap','seed']:
+  for record in [home/'record.json',home/'index/project/record.json',alias/'record.json']:
+   record.parent.mkdir(parents=True,exist_ok=True);launches=[]
+   def launched(*args,**kwargs):launches.append(args);raise RuntimeError('mock launch boundary')
+   with patch.dict(os.environ,{},clear=True), patch.dict(g,{'MODEL':{'load':lambda p:({'root':str(models)},b'{}','fixture')},'NATIVE':{'environment':lambda env,native:dict(env,LD_LIBRARY_PATH=''),'verify':lambda x:None},'binary':lambda *args:parent/'fake-executable','verify_models':lambda x:None}),patch.object(g['subprocess'],'run',side_effect=launched),patch.object(sys,'argv',['guard','--attestation',str(attestation),'--model-manifest',str(manifest),'--record',str(record),'--documents','1','--index','memory','setup','--home',str(home),'--arm','fake','--stage',stage]):
+    try:guard['main']()
+    except AssertionError as error:assert 'private setup record must be outside measured home' in str(error)
+    except RuntimeError:
+     assert len(sys.argv)>1 and source!=root/'run-guarded.py.in', 'new setup guard reached launch'
+     assert record.exists() and launches,'prior setup did not reproduce contamination';record.unlink()
+    else:raise AssertionError('setup inside-home record passed')
+   if source==root/'run-guarded.py.in':assert not record.exists() and not launches
+print(('BEFORE: inside-home records reached launch and were written' if source!=root/'run-guarded.py.in' else 'PASS: bootstrap/seed reject direct/index/symlink-ancestor inside-home records before writing or launch'))

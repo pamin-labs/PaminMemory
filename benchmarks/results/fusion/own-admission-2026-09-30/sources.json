@@ -1,0 +1,22 @@
+{
+  "revision": "13ee710c9df865f1dac98dc77a8108e438ddc539",
+  "binding": "Retained source snapshots, not prospective build-input attestation",
+  "variants": {
+    "baseline": {
+      "channel_pool": false,
+      "overlaid_sha256": {
+        "crates/pamin-engine/src/candidate_pool.rs": "32c3feecfc9a9f33e113c5b4f54f856371454870985a32178529e445991e14e1",
+        "crates/pamin-engine/src/engine.rs": "aac959ede9d68a7b550c9b6611758de3de6fe14ecee6f4c6446ebb2ae7ac40d2",
+        "crates/pamin-engine/src/lib.rs": "638794c1c969414dd96a6ee021f0f039995f1cb1bf3b0c39da9dc5b9d3ad727c"
+      }
+    },
+    "pooled": {
+      "channel_pool": true,
+      "overlaid_sha256": {
+        "crates/pamin-engine/src/candidate_pool.rs": "32c3feecfc9a9f33e113c5b4f54f856371454870985a32178529e445991e14e1",
+        "crates/pamin-engine/src/engine.rs": "c200cc1069f044fbf1a559e99a2b06c6972094b3c63b71bfd042944bacb9c016",
+        "crates/pamin-engine/src/lib.rs": "638794c1c969414dd96a6ee021f0f039995f1cb1bf3b0c39da9dc5b9d3ad727c"
+      }
+    }
+  }
+}

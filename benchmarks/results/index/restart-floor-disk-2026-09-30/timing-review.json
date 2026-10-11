@@ -1,0 +1,5025 @@
+{
+  "predecessor": {
+    "open_ms": {
+      "before_process_values": [
+        514.131634,
+        491.523231,
+        534.138682
+      ],
+      "after_process_values": [
+        447.744798,
+        477.707146,
+        491.098932
+      ],
+      "reference_spread_fraction": 0.08288821029829883,
+      "candidate_spread_fraction": 0.09075462731302744,
+      "paired_deltas": [
+        -66.38683599999996,
+        -13.816084999999987,
+        -43.039750000000026
+      ],
+      "withhold_comparison": false,
+      "reasons": []
+    },
+    "write_ms": {
+      "before_process_values": [
+        1421.857852,
+        1389.6777280000001,
+        1611.727838
+      ],
+      "after_process_values": [
+        1387.231162,
+        1409.891071,
+        1388.00918
+      ],
+      "reference_spread_fraction": 0.15616899374832857,
+      "candidate_spread_fraction": 0.016325474879063818,
+      "paired_deltas": [
+        -34.62669000000005,
+        20.213342999999895,
+        -223.718658
+      ],
+      "withhold_comparison": true,
+      "reasons": [
+        "reference spread >10% of median",
+        "paired delta sign reversal"
+      ]
+    },
+    "durability_flush_ms": {
+      "before_process_values": [
+        61.930304,
+        87.842086,
+        71.15400299999999
+      ],
+      "after_process_values": [
+        64.986683,
+        56.829339,
+        70.248864
+      ],
+      "reference_spread_fraction": 0.3641647821275775,
+      "candidate_spread_fraction": 0.20649653714438695,
+      "paired_deltas": [
+        3.0563789999999997,
+        -31.012746999999997,
+        -0.9051389999999913
+      ],
+      "withhold_comparison": true,
+      "reasons": [
+        "reference spread >10% of median",
+        "candidate spread >10% of median",
+        "paired delta sign reversal"
+      ]
+    },
+    "maintenance_ms": {
+      "before_process_values": [
+        8063.7459929999995,
+        8463.866316000001,
+        8683.19881
+      ],
+      "after_process_values": [
+        0.388897,
+        0.402627,
+        0.327805
+      ],
+      "reference_spread_fraction": 0.07318792545541432,
+      "candidate_spread_fraction": 0.19239541575275715,
+      "paired_deltas": [
+        -8063.357096,
+        -8463.463689000002,
+        -8682.871004999999
+      ],
+      "withhold_comparison": true,
+      "reasons": [
+        "candidate spread >10% of median"
+      ]
+    },
+    "maintenance_cpu_s": {
+      "before_process_values": [
+        27.32,
+        26.67,
+        28.65
+      ],
+      "after_process_values": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "reference_spread_fraction": 0.07247437774524147,
+      "candidate_spread_fraction": 0,
+      "paired_deltas": [
+        -27.32,
+        -26.67,
+        -28.65
+      ],
+      "withhold_comparison": false,
+      "reasons": []
+    },
+    "first_search_ms": {
+      "before_process_values": [
+        3286.225253,
+        2837.04292,
+        3434.918857
+      ],
+      "after_process_values": [
+        2786.0317280000004,
+        3081.8640259999997,
+        2846.2511619999996
+      ],
+      "reference_spread_fraction": 0.18193394882295374,
+      "candidate_spread_fraction": 0.10393752383824215,
+      "paired_deltas": [
+        -500.1935249999997,
+        244.82110599999987,
+        -588.6676950000005
+      ],
+      "withhold_comparison": true,
+      "reasons": [
+        "reference spread >10% of median",
+        "candidate spread >10% of median",
+        "paired delta sign reversal"
+      ]
+    },
+    "warm_p50_ms": {
+      "before_process_values": [
+        2743.0283115,
+        2745.414007,
+        2690.7327399999995
+      ],
+      "after_process_values": [
+        2795.3391485,
+        2876.1902595,
+        2860.084011
+      ],
+      "reference_spread_fraction": 0.01993463456820773,
+      "candidate_spread_fraction": 0.028268788849923034,
+      "paired_deltas": [
+        52.31083699999999,
+        130.77625250000028,
+        169.35127100000045
+      ],
+      "withhold_comparison": false,
+      "reasons": []
+    },
+    "warm_p95_ms": {
+      "before_process_values": [
+        2999.1545896,
+        3046.7361294499997,
+        2976.6128367499996
+      ],
+      "after_process_values": [
+        2913.3084228999996,
+        3070.5811047499997,
+        3074.781901
+      ],
+      "reference_spread_fraction": 0.023381019752420466,
+      "candidate_spread_fraction": 0.052587270158801755,
+      "paired_deltas": [
+        -85.84616670000014,
+        23.844975299999987,
+        98.16906425000025
+      ],
+      "withhold_comparison": true,
+      "reasons": [
+        "paired delta sign reversal"
+      ]
+    },
+    "episode": {
+      "before_process_values": [
+        88.68052574799913,
+        88.39977175700005,
+        89.04015931899994
+      ],
+      "after_process_values": [
+        80.2596307549993,
+        82.18011751799895,
+        80.92644889400071
+      ],
+      "reference_spread_fraction": 0.00722128738636099,
+      "candidate_spread_fraction": 0.023731262019357123,
+      "paired_deltas": [
+        -8.42089499299982,
+        -6.219654239001102,
+        -8.113710424999226
+      ],
+      "withhold_comparison": false,
+      "reasons": []
+    },
+    "raw_call_timing": {
+      "durability_flush/wall_ms": {
+        "before_process_values": [
+          61.930304,
+          87.842086,
+          71.15400299999999
+        ],
+        "after_process_values": [
+          64.986683,
+          56.829339,
+          70.248864
+        ],
+        "reference_spread_fraction": 0.3641647821275775,
+        "candidate_spread_fraction": 0.20649653714438695,
+        "paired_deltas": [
+          3.0563789999999997,
+          -31.012746999999997,
+          -0.9051389999999913
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "durability_flush/cpu_user_seconds": {
+        "before_process_values": [
+          0.01,
+          0.01,
+          0.01
+        ],
+        "after_process_values": [
+          0.01,
+          0.01,
+          0.02
+        ],
+        "reference_spread_fraction": 0.0,
+        "candidate_spread_fraction": 1.0,
+        "paired_deltas": [
+          0.0,
+          0.0,
+          0.01
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median"
+        ]
+      },
+      "durability_flush/cpu_system_seconds": {
+        "before_process_values": [
+          0.04,
+          0.07,
+          0.04
+        ],
+        "after_process_values": [
+          0.04,
+          0.04,
+          0.04
+        ],
+        "reference_spread_fraction": 0.7500000000000001,
+        "candidate_spread_fraction": 0.0,
+        "paired_deltas": [
+          0.0,
+          -0.030000000000000006,
+          0.0
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median"
+        ]
+      },
+      "maintenance/wall_ms": {
+        "before_process_values": [
+          8063.7459929999995,
+          8463.866316000001,
+          8683.19881
+        ],
+        "after_process_values": [
+          0.388897,
+          0.402627,
+          0.327805
+        ],
+        "reference_spread_fraction": 0.07318792545541432,
+        "candidate_spread_fraction": 0.19239541575275715,
+        "paired_deltas": [
+          -8063.357096,
+          -8463.463689000002,
+          -8682.871004999999
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median"
+        ]
+      },
+      "maintenance/cpu_user_seconds": {
+        "before_process_values": [
+          24.94,
+          23.16,
+          25.66
+        ],
+        "after_process_values": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "reference_spread_fraction": 0.10024057738572574,
+        "candidate_spread_fraction": 0,
+        "paired_deltas": [
+          -24.94,
+          -23.16,
+          -25.66
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median"
+        ]
+      },
+      "maintenance/cpu_system_seconds": {
+        "before_process_values": [
+          2.38,
+          3.51,
+          2.99
+        ],
+        "after_process_values": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "reference_spread_fraction": 0.3779264214046822,
+        "candidate_spread_fraction": 0,
+        "paired_deltas": [
+          -2.38,
+          -3.51,
+          -2.99
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median"
+        ]
+      },
+      "new_write_search/wall_ms": {
+        "before_process_values": [
+          2901.439493,
+          3032.0712940000003,
+          2701.568585
+        ],
+        "after_process_values": [
+          3272.9340420000003,
+          2685.122132,
+          2748.169689
+        ],
+        "reference_spread_fraction": 0.11390990913212896,
+        "candidate_spread_fraction": 0.21389214514402585,
+        "paired_deltas": [
+          371.49454900000046,
+          -346.94916200000034,
+          46.60110399999985
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "new_write_search/cpu_user_seconds": {
+        "before_process_values": [
+          7.5,
+          8.05,
+          7.01
+        ],
+        "after_process_values": [
+          8.4,
+          6.87,
+          7.01
+        ],
+        "reference_spread_fraction": 0.1386666666666668,
+        "candidate_spread_fraction": 0.2182596291012839,
+        "paired_deltas": [
+          0.9000000000000004,
+          -1.1800000000000006,
+          0.0
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "new_write_search/cpu_system_seconds": {
+        "before_process_values": [
+          0.22,
+          0.2,
+          0.2
+        ],
+        "after_process_values": [
+          0.24,
+          0.22,
+          0.3
+        ],
+        "reference_spread_fraction": 0.09999999999999995,
+        "candidate_spread_fraction": 0.3333333333333333,
+        "paired_deltas": [
+          0.01999999999999999,
+          0.01999999999999999,
+          0.09999999999999998
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median"
+        ]
+      },
+      "open/wall_ms": {
+        "before_process_values": [
+          514.131634,
+          491.523231,
+          534.138682
+        ],
+        "after_process_values": [
+          447.744798,
+          477.707146,
+          491.098932
+        ],
+        "reference_spread_fraction": 0.08288821029829883,
+        "candidate_spread_fraction": 0.09075462731302744,
+        "paired_deltas": [
+          -66.38683599999996,
+          -13.816084999999987,
+          -43.039750000000026
+        ],
+        "withhold_comparison": false,
+        "reasons": []
+      },
+      "open/cpu_user_seconds": {
+        "before_process_values": [
+          0.07,
+          0.09,
+          0.06
+        ],
+        "after_process_values": [
+          0.06,
+          0.07,
+          0.07
+        ],
+        "reference_spread_fraction": 0.4285714285714285,
+        "candidate_spread_fraction": 0.14285714285714296,
+        "paired_deltas": [
+          -0.010000000000000009,
+          -0.01999999999999999,
+          0.010000000000000009
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "open/cpu_system_seconds": {
+        "before_process_values": [
+          0.28,
+          0.24,
+          0.31
+        ],
+        "after_process_values": [
+          0.23,
+          0.24,
+          0.27
+        ],
+        "reference_spread_fraction": 0.25,
+        "candidate_spread_fraction": 0.1666666666666667,
+        "paired_deltas": [
+          -0.05000000000000002,
+          0.0,
+          -0.03999999999999998
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_cold/query-0/wall_ms": {
+        "before_process_values": [
+          3286.225253,
+          2837.04292,
+          3434.918857
+        ],
+        "after_process_values": [
+          2786.0317280000004,
+          3081.8640259999997,
+          2846.2511619999996
+        ],
+        "reference_spread_fraction": 0.18193394882295374,
+        "candidate_spread_fraction": 0.10393752383824215,
+        "paired_deltas": [
+          -500.1935249999997,
+          244.82110599999987,
+          -588.6676950000005
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_cold/query-0/cpu_user_seconds": {
+        "before_process_values": [
+          8.34,
+          7.22,
+          8.4
+        ],
+        "after_process_values": [
+          7.2,
+          7.74,
+          7.06
+        ],
+        "reference_spread_fraction": 0.14148681055155882,
+        "candidate_spread_fraction": 0.09444444444444453,
+        "paired_deltas": [
+          -1.1399999999999997,
+          0.5200000000000005,
+          -1.3400000000000007
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_cold/query-0/cpu_system_seconds": {
+        "before_process_values": [
+          0.47,
+          0.33,
+          0.34
+        ],
+        "after_process_values": [
+          0.36,
+          0.77,
+          0.78
+        ],
+        "reference_spread_fraction": 0.4117647058823528,
+        "candidate_spread_fraction": 0.5454545454545455,
+        "paired_deltas": [
+          -0.10999999999999999,
+          0.44,
+          0.44
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-10079/wall_ms": {
+        "before_process_values": [
+          2549.773471,
+          2745.74591,
+          2660.237863
+        ],
+        "after_process_values": [
+          2713.537217,
+          2813.3655270000004,
+          2754.185746
+        ],
+        "reference_spread_fraction": 0.07366726176094582,
+        "candidate_spread_fraction": 0.036246033930349274,
+        "paired_deltas": [
+          163.76374600000008,
+          67.61961700000029,
+          93.94788300000027
+        ],
+        "withhold_comparison": false,
+        "reasons": []
+      },
+      "search_warm/query-10079/cpu_user_seconds": {
+        "before_process_values": [
+          6.49,
+          6.96,
+          6.67
+        ],
+        "after_process_values": [
+          6.79,
+          7.42,
+          6.77
+        ],
+        "reference_spread_fraction": 0.07046476761619187,
+        "candidate_spread_fraction": 0.0957290132547865,
+        "paired_deltas": [
+          0.2999999999999998,
+          0.45999999999999996,
+          0.09999999999999964
+        ],
+        "withhold_comparison": false,
+        "reasons": []
+      },
+      "search_warm/query-10079/cpu_system_seconds": {
+        "before_process_values": [
+          0.18,
+          0.21,
+          0.22
+        ],
+        "after_process_values": [
+          0.25,
+          0.16,
+          0.33
+        ],
+        "reference_spread_fraction": 0.19047619047619052,
+        "candidate_spread_fraction": 0.68,
+        "paired_deltas": [
+          0.07,
+          -0.04999999999999999,
+          0.11000000000000001
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-10799/wall_ms": {
+        "before_process_values": [
+          2641.508863,
+          2473.1457,
+          2636.513778
+        ],
+        "after_process_values": [
+          2919.049829,
+          2720.5916650000004,
+          2708.896077
+        ],
+        "reference_spread_fraction": 0.06385825266868754,
+        "candidate_spread_fraction": 0.077245606058269,
+        "paired_deltas": [
+          277.540966,
+          247.44596500000034,
+          72.38229899999988
+        ],
+        "withhold_comparison": false,
+        "reasons": []
+      },
+      "search_warm/query-10799/cpu_user_seconds": {
+        "before_process_values": [
+          6.54,
+          6.27,
+          6.77
+        ],
+        "after_process_values": [
+          7.39,
+          6.96,
+          6.97
+        ],
+        "reference_spread_fraction": 0.0764525993883792,
+        "candidate_spread_fraction": 0.06169296987087514,
+        "paired_deltas": [
+          0.8499999999999996,
+          0.6900000000000004,
+          0.20000000000000018
+        ],
+        "withhold_comparison": false,
+        "reasons": []
+      },
+      "search_warm/query-10799/cpu_system_seconds": {
+        "before_process_values": [
+          0.2,
+          0.14,
+          0.26
+        ],
+        "after_process_values": [
+          0.24,
+          0.25,
+          0.25
+        ],
+        "reference_spread_fraction": 0.6,
+        "candidate_spread_fraction": 0.040000000000000036,
+        "paired_deltas": [
+          0.03999999999999998,
+          0.10999999999999999,
+          -0.010000000000000009
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-11519/wall_ms": {
+        "before_process_values": [
+          3001.912792,
+          2830.1193279999998,
+          2779.946242
+        ],
+        "after_process_values": [
+          2850.608331,
+          3043.6824850000003,
+          2457.377412
+        ],
+        "reference_spread_fraction": 0.07843010285960639,
+        "candidate_spread_fraction": 0.2056771765605285,
+        "paired_deltas": [
+          -151.30446100000017,
+          213.5631570000005,
+          -322.56883000000016
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-11519/cpu_user_seconds": {
+        "before_process_values": [
+          7.68,
+          7.26,
+          7.2
+        ],
+        "after_process_values": [
+          7.21,
+          7.82,
+          6.19
+        ],
+        "reference_spread_fraction": 0.06611570247933878,
+        "candidate_spread_fraction": 0.22607489597780858,
+        "paired_deltas": [
+          -0.46999999999999975,
+          0.5600000000000005,
+          -1.0099999999999998
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-11519/cpu_system_seconds": {
+        "before_process_values": [
+          0.16,
+          0.18,
+          0.16
+        ],
+        "after_process_values": [
+          0.27,
+          0.19,
+          0.24
+        ],
+        "reference_spread_fraction": 0.12499999999999993,
+        "candidate_spread_fraction": 0.3333333333333334,
+        "paired_deltas": [
+          0.11000000000000001,
+          0.010000000000000009,
+          0.07999999999999999
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-12239/wall_ms": {
+        "before_process_values": [
+          2791.2287380000002,
+          3092.041912,
+          2564.430035
+        ],
+        "after_process_values": [
+          2387.885345,
+          3075.3279199999997,
+          2831.905689
+        ],
+        "reference_spread_fraction": 0.18902495156238974,
+        "candidate_spread_fraction": 0.24274910625386986,
+        "paired_deltas": [
+          -403.3433930000001,
+          -16.713992000000417,
+          267.4756540000003
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-12239/cpu_user_seconds": {
+        "before_process_values": [
+          7.34,
+          7.83,
+          6.41
+        ],
+        "after_process_values": [
+          5.79,
+          7.69,
+          7.12
+        ],
+        "reference_spread_fraction": 0.19346049046321526,
+        "candidate_spread_fraction": 0.2668539325842697,
+        "paired_deltas": [
+          -1.5499999999999998,
+          -0.13999999999999968,
+          0.71
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-12239/cpu_system_seconds": {
+        "before_process_values": [
+          0.19,
+          0.21,
+          0.16
+        ],
+        "after_process_values": [
+          0.31,
+          0.26,
+          0.27
+        ],
+        "reference_spread_fraction": 0.26315789473684204,
+        "candidate_spread_fraction": 0.18518518518518512,
+        "paired_deltas": [
+          0.12,
+          0.05000000000000002,
+          0.11000000000000001
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-12959/wall_ms": {
+        "before_process_values": [
+          2716.6728519999997,
+          3059.15432,
+          2503.163865
+        ],
+        "after_process_values": [
+          2508.868049,
+          2858.1658279999997,
+          2989.7624920000003
+        ],
+        "reference_spread_fraction": 0.20465859722148105,
+        "candidate_spread_fraction": 0.16825281384618115,
+        "paired_deltas": [
+          -207.80480299999954,
+          -200.9884920000004,
+          486.5986270000003
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-12959/cpu_user_seconds": {
+        "before_process_values": [
+          7.13,
+          8.05,
+          6.44
+        ],
+        "after_process_values": [
+          6.38,
+          6.71,
+          7.63
+        ],
+        "reference_spread_fraction": 0.22580645161290328,
+        "candidate_spread_fraction": 0.18628912071535023,
+        "paired_deltas": [
+          -0.75,
+          -1.3400000000000007,
+          1.1899999999999995
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-12959/cpu_system_seconds": {
+        "before_process_values": [
+          0.16,
+          0.23,
+          0.16
+        ],
+        "after_process_values": [
+          0.2,
+          0.19,
+          0.29
+        ],
+        "reference_spread_fraction": 0.43750000000000006,
+        "candidate_spread_fraction": 0.4999999999999999,
+        "paired_deltas": [
+          0.04000000000000001,
+          -0.04000000000000001,
+          0.12999999999999998
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-13679/wall_ms": {
+        "before_process_values": [
+          2905.790204,
+          2651.2504799999997,
+          2675.521414
+        ],
+        "after_process_values": [
+          2792.784114,
+          2698.304873,
+          3078.6070419999996
+        ],
+        "reference_spread_fraction": 0.09513649289745517,
+        "candidate_spread_fraction": 0.13617313529304886,
+        "paired_deltas": [
+          -113.00608999999986,
+          47.054393000000346,
+          403.0856279999998
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-13679/cpu_user_seconds": {
+        "before_process_values": [
+          7.53,
+          6.65,
+          6.89
+        ],
+        "after_process_values": [
+          7.06,
+          7.05,
+          7.99
+        ],
+        "reference_spread_fraction": 0.12772133526850507,
+        "candidate_spread_fraction": 0.13314447592067996,
+        "paired_deltas": [
+          -0.47000000000000064,
+          0.39999999999999947,
+          1.1000000000000005
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-13679/cpu_system_seconds": {
+        "before_process_values": [
+          0.21,
+          0.25,
+          0.18
+        ],
+        "after_process_values": [
+          0.21,
+          0.23,
+          0.26
+        ],
+        "reference_spread_fraction": 0.33333333333333337,
+        "candidate_spread_fraction": 0.21739130434782614,
+        "paired_deltas": [
+          0.0,
+          -0.01999999999999999,
+          0.08000000000000002
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-14399/wall_ms": {
+        "before_process_values": [
+          2945.909024,
+          2887.9720949999996,
+          2989.2677179999996
+        ],
+        "after_process_values": [
+          2904.103982,
+          2590.38664,
+          2897.6309069999998
+        ],
+        "reference_spread_fraction": 0.0343851837157073,
+        "candidate_spread_fraction": 0.10826684007343104,
+        "paired_deltas": [
+          -41.80504199999996,
+          -297.58545499999946,
+          -91.63681099999985
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-14399/cpu_user_seconds": {
+        "before_process_values": [
+          7.74,
+          7.68,
+          8.04
+        ],
+        "after_process_values": [
+          7.44,
+          6.58,
+          7.16
+        ],
+        "reference_spread_fraction": 0.04651162790697667,
+        "candidate_spread_fraction": 0.12011173184357546,
+        "paired_deltas": [
+          -0.2999999999999998,
+          -1.0999999999999996,
+          -0.879999999999999
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-14399/cpu_system_seconds": {
+        "before_process_values": [
+          0.18,
+          0.18,
+          0.23
+        ],
+        "after_process_values": [
+          0.22,
+          0.23,
+          0.27
+        ],
+        "reference_spread_fraction": 0.2777777777777779,
+        "candidate_spread_fraction": 0.21739130434782614,
+        "paired_deltas": [
+          0.04000000000000001,
+          0.05000000000000002,
+          0.04000000000000001
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-1440/wall_ms": {
+        "before_process_values": [
+          2630.349567,
+          2516.771177,
+          2695.3971279999996
+        ],
+        "after_process_values": [
+          2846.292377,
+          3009.440586,
+          2528.003443
+        ],
+        "reference_spread_fraction": 0.06790958633065956,
+        "candidate_spread_fraction": 0.16914535797177524,
+        "paired_deltas": [
+          215.94281,
+          492.6694090000001,
+          -167.39368499999955
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-1440/cpu_user_seconds": {
+        "before_process_values": [
+          6.79,
+          6.6,
+          6.77
+        ],
+        "after_process_values": [
+          7.45,
+          7.66,
+          6.36
+        ],
+        "reference_spread_fraction": 0.028064992614475686,
+        "candidate_spread_fraction": 0.17449664429530198,
+        "paired_deltas": [
+          0.6600000000000001,
+          1.0600000000000005,
+          -0.40999999999999925
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-1440/cpu_system_seconds": {
+        "before_process_values": [
+          0.17,
+          0.15,
+          0.15
+        ],
+        "after_process_values": [
+          0.17,
+          0.2,
+          0.26
+        ],
+        "reference_spread_fraction": 0.13333333333333347,
+        "candidate_spread_fraction": 0.44999999999999996,
+        "paired_deltas": [
+          0.0,
+          0.05000000000000002,
+          0.11000000000000001
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-15119/wall_ms": {
+        "before_process_values": [
+          2965.47289,
+          2861.0629599999997,
+          3041.278718
+        ],
+        "after_process_values": [
+          2674.1768490000004,
+          2680.997321,
+          2982.4523149999995
+        ],
+        "reference_spread_fraction": 0.06077133890102778,
+        "candidate_spread_fraction": 0.1149853689092885,
+        "paired_deltas": [
+          -291.2960409999996,
+          -180.06563899999992,
+          -58.82640300000048
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-15119/cpu_user_seconds": {
+        "before_process_values": [
+          7.95,
+          7.31,
+          8.0
+        ],
+        "after_process_values": [
+          7.06,
+          6.63,
+          7.44
+        ],
+        "reference_spread_fraction": 0.08679245283018873,
+        "candidate_spread_fraction": 0.11473087818696892,
+        "paired_deltas": [
+          -0.8900000000000006,
+          -0.6799999999999997,
+          -0.5599999999999996
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-15119/cpu_system_seconds": {
+        "before_process_values": [
+          0.18,
+          0.22,
+          0.27
+        ],
+        "after_process_values": [
+          0.17,
+          0.21,
+          0.23
+        ],
+        "reference_spread_fraction": 0.4090909090909092,
+        "candidate_spread_fraction": 0.2857142857142857,
+        "paired_deltas": [
+          -0.009999999999999981,
+          -0.010000000000000009,
+          -0.04000000000000001
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-15839/wall_ms": {
+        "before_process_values": [
+          2864.711527,
+          2793.94969,
+          2901.5475969999998
+        ],
+        "after_process_values": [
+          2847.770964,
+          2428.6671690000003,
+          3145.041748
+        ],
+        "reference_spread_fraction": 0.03755977032447632,
+        "candidate_spread_fraction": 0.25155624804663884,
+        "paired_deltas": [
+          -16.94056300000011,
+          -365.28252099999963,
+          243.49415100000033
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-15839/cpu_user_seconds": {
+        "before_process_values": [
+          7.38,
+          7.22,
+          7.49
+        ],
+        "after_process_values": [
+          7.49,
+          6.17,
+          7.98
+        ],
+        "reference_spread_fraction": 0.0365853658536586,
+        "candidate_spread_fraction": 0.24165554072096135,
+        "paired_deltas": [
+          0.11000000000000032,
+          -1.0499999999999998,
+          0.4900000000000002
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-15839/cpu_system_seconds": {
+        "before_process_values": [
+          0.19,
+          0.17,
+          0.21
+        ],
+        "after_process_values": [
+          0.22,
+          0.2,
+          0.22
+        ],
+        "reference_spread_fraction": 0.2105263157894736,
+        "candidate_spread_fraction": 0.09090909090909087,
+        "paired_deltas": [
+          0.03,
+          0.03,
+          0.010000000000000009
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median"
+        ]
+      },
+      "search_warm/query-16559/wall_ms": {
+        "before_process_values": [
+          2938.0244869999997,
+          2736.723254,
+          2576.261551
+        ],
+        "after_process_values": [
+          2406.789476,
+          2658.949643,
+          2669.6720269999996
+        ],
+        "reference_spread_fraction": 0.13218835169805576,
+        "candidate_spread_fraction": 0.09886706643432273,
+        "paired_deltas": [
+          -531.2350109999998,
+          -77.77361100000007,
+          93.41047599999956
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-16559/cpu_user_seconds": {
+        "before_process_values": [
+          7.58,
+          6.99,
+          6.59
+        ],
+        "after_process_values": [
+          6.11,
+          6.85,
+          6.77
+        ],
+        "reference_spread_fraction": 0.14163090128755368,
+        "candidate_spread_fraction": 0.10930576070901024,
+        "paired_deltas": [
+          -1.4699999999999998,
+          -0.14000000000000057,
+          0.17999999999999972
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-16559/cpu_system_seconds": {
+        "before_process_values": [
+          0.17,
+          0.19,
+          0.24
+        ],
+        "after_process_values": [
+          0.19,
+          0.15,
+          0.21
+        ],
+        "reference_spread_fraction": 0.3684210526315788,
+        "candidate_spread_fraction": 0.3157894736842105,
+        "paired_deltas": [
+          0.01999999999999999,
+          -0.04000000000000001,
+          -0.03
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-17279/wall_ms": {
+        "before_process_values": [
+          2843.972492,
+          2902.877169,
+          2588.546605
+        ],
+        "after_process_values": [
+          2655.4305,
+          2496.433052,
+          2384.2914419999997
+        ],
+        "reference_spread_fraction": 0.11052517733002035,
+        "candidate_spread_fraction": 0.10861058652575484,
+        "paired_deltas": [
+          -188.54199199999994,
+          -406.444117,
+          -204.25516300000027
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-17279/cpu_user_seconds": {
+        "before_process_values": [
+          7.51,
+          7.32,
+          6.41
+        ],
+        "after_process_values": [
+          6.81,
+          6.4,
+          5.78
+        ],
+        "reference_spread_fraction": 0.1502732240437158,
+        "candidate_spread_fraction": 0.1609374999999999,
+        "paired_deltas": [
+          -0.7000000000000002,
+          -0.9199999999999999,
+          -0.6299999999999999
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-17279/cpu_system_seconds": {
+        "before_process_values": [
+          0.27,
+          0.21,
+          0.25
+        ],
+        "after_process_values": [
+          0.2,
+          0.16,
+          0.26
+        ],
+        "reference_spread_fraction": 0.2400000000000001,
+        "candidate_spread_fraction": 0.5,
+        "paired_deltas": [
+          -0.07,
+          -0.04999999999999999,
+          0.010000000000000009
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-2160/wall_ms": {
+        "before_process_values": [
+          2605.496772,
+          2503.553151,
+          2823.058192
+        ],
+        "after_process_values": [
+          2741.070404,
+          2908.298253,
+          2922.912653
+        ],
+        "reference_spread_fraction": 0.12262730256800329,
+        "candidate_spread_fraction": 0.06252530971072993,
+        "paired_deltas": [
+          135.5736320000001,
+          404.74510199999986,
+          99.8544609999999
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median"
+        ]
+      },
+      "search_warm/query-2160/cpu_user_seconds": {
+        "before_process_values": [
+          6.59,
+          6.43,
+          7.31
+        ],
+        "after_process_values": [
+          6.92,
+          7.57,
+          7.37
+        ],
+        "reference_spread_fraction": 0.13353566009104703,
+        "candidate_spread_fraction": 0.08819538670284943,
+        "paired_deltas": [
+          0.33000000000000007,
+          1.1400000000000006,
+          0.0600000000000005
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median"
+        ]
+      },
+      "search_warm/query-2160/cpu_system_seconds": {
+        "before_process_values": [
+          0.21,
+          0.16,
+          0.23
+        ],
+        "after_process_values": [
+          0.21,
+          0.22,
+          0.21
+        ],
+        "reference_spread_fraction": 0.33333333333333337,
+        "candidate_spread_fraction": 0.047619047619047665,
+        "paired_deltas": [
+          0.0,
+          0.06,
+          -0.020000000000000018
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-2880/wall_ms": {
+        "before_process_values": [
+          2604.279155,
+          2809.8285020000003,
+          2626.286818
+        ],
+        "after_process_values": [
+          2860.4221230000003,
+          2894.214691,
+          2596.396642
+        ],
+        "reference_spread_fraction": 0.07826614579611393,
+        "candidate_spread_fraction": 0.10411681779598653,
+        "paired_deltas": [
+          256.1429680000001,
+          84.38618899999983,
+          -29.890175999999883
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-2880/cpu_user_seconds": {
+        "before_process_values": [
+          6.41,
+          7.0,
+          6.48
+        ],
+        "after_process_values": [
+          7.3,
+          7.59,
+          6.6
+        ],
+        "reference_spread_fraction": 0.09104938271604936,
+        "candidate_spread_fraction": 0.1356164383561644,
+        "paired_deltas": [
+          0.8899999999999997,
+          0.5899999999999999,
+          0.11999999999999922
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-2880/cpu_system_seconds": {
+        "before_process_values": [
+          0.22,
+          0.17,
+          0.17
+        ],
+        "after_process_values": [
+          0.24,
+          0.23,
+          0.22
+        ],
+        "reference_spread_fraction": 0.29411764705882343,
+        "candidate_spread_fraction": 0.08695652173913039,
+        "paired_deltas": [
+          0.01999999999999999,
+          0.06,
+          0.04999999999999999
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median"
+        ]
+      },
+      "search_warm/query-3600/wall_ms": {
+        "before_process_values": [
+          2592.064374,
+          2638.7441360000003,
+          2818.675651
+        ],
+        "after_process_values": [
+          2914.9327359999997,
+          2920.183652,
+          2698.9424
+        ],
+        "reference_spread_fraction": 0.08587845782710626,
+        "candidate_spread_fraction": 0.07589926493590289,
+        "paired_deltas": [
+          322.8683619999997,
+          281.4395159999999,
+          -119.73325100000011
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-3600/cpu_user_seconds": {
+        "before_process_values": [
+          6.61,
+          7.05,
+          7.41
+        ],
+        "after_process_values": [
+          7.41,
+          7.27,
+          6.71
+        ],
+        "reference_spread_fraction": 0.11347517730496452,
+        "candidate_spread_fraction": 0.09628610729023387,
+        "paired_deltas": [
+          0.7999999999999998,
+          0.21999999999999975,
+          -0.7000000000000002
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-3600/cpu_system_seconds": {
+        "before_process_values": [
+          0.13,
+          0.15,
+          0.19
+        ],
+        "after_process_values": [
+          0.19,
+          0.22,
+          0.25
+        ],
+        "reference_spread_fraction": 0.4,
+        "candidate_spread_fraction": 0.2727272727272727,
+        "paired_deltas": [
+          0.06,
+          0.07,
+          0.06
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-4320/wall_ms": {
+        "before_process_values": [
+          2598.7784239999996,
+          2976.366383,
+          2686.068352
+        ],
+        "after_process_values": [
+          2544.928098,
+          3020.061143,
+          2703.604098
+        ],
+        "reference_spread_fraction": 0.14057272917826347,
+        "candidate_spread_fraction": 0.1757406142975894,
+        "paired_deltas": [
+          -53.85032599999977,
+          43.69475999999986,
+          17.535746000000017
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-4320/cpu_user_seconds": {
+        "before_process_values": [
+          6.69,
+          7.68,
+          6.79
+        ],
+        "after_process_values": [
+          6.17,
+          7.9,
+          6.81
+        ],
+        "reference_spread_fraction": 0.14580265095729003,
+        "candidate_spread_fraction": 0.2540381791483114,
+        "paired_deltas": [
+          -0.5200000000000005,
+          0.22000000000000064,
+          0.019999999999999574
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-4320/cpu_system_seconds": {
+        "before_process_values": [
+          0.18,
+          0.25,
+          0.23
+        ],
+        "after_process_values": [
+          0.24,
+          0.25,
+          0.18
+        ],
+        "reference_spread_fraction": 0.30434782608695654,
+        "candidate_spread_fraction": 0.2916666666666667,
+        "paired_deltas": [
+          0.06,
+          0.0,
+          -0.05000000000000002
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-5040/wall_ms": {
+        "before_process_values": [
+          2769.3837710000003,
+          2608.083931,
+          2770.3697389999998
+        ],
+        "after_process_values": [
+          2802.376057,
+          2948.69253,
+          2888.262333
+        ],
+        "reference_spread_fraction": 0.05859997075862102,
+        "candidate_spread_fraction": 0.05065899704755103,
+        "paired_deltas": [
+          32.992285999999694,
+          340.6085989999997,
+          117.89259400000037
+        ],
+        "withhold_comparison": false,
+        "reasons": []
+      },
+      "search_warm/query-5040/cpu_user_seconds": {
+        "before_process_values": [
+          7.2,
+          6.56,
+          7.14
+        ],
+        "after_process_values": [
+          7.32,
+          7.65,
+          7.26
+        ],
+        "reference_spread_fraction": 0.08963585434173678,
+        "candidate_spread_fraction": 0.05327868852459024,
+        "paired_deltas": [
+          0.1200000000000001,
+          1.0900000000000007,
+          0.1200000000000001
+        ],
+        "withhold_comparison": false,
+        "reasons": []
+      },
+      "search_warm/query-5040/cpu_system_seconds": {
+        "before_process_values": [
+          0.18,
+          0.16,
+          0.21
+        ],
+        "after_process_values": [
+          0.18,
+          0.21,
+          0.23
+        ],
+        "reference_spread_fraction": 0.27777777777777773,
+        "candidate_spread_fraction": 0.2380952380952382,
+        "paired_deltas": [
+          0.0,
+          0.04999999999999999,
+          0.020000000000000018
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-5760/wall_ms": {
+        "before_process_values": [
+          2983.5247759999997,
+          2630.8278400000004,
+          2697.704937
+        ],
+        "after_process_values": [
+          2748.836472,
+          2649.67615,
+          2939.086755
+        ],
+        "reference_spread_fraction": 0.13073962654797164,
+        "candidate_spread_fraction": 0.10528476609939277,
+        "paired_deltas": [
+          -234.6883039999998,
+          18.8483099999994,
+          241.38181799999984
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-5760/cpu_user_seconds": {
+        "before_process_values": [
+          7.82,
+          6.55,
+          6.68
+        ],
+        "after_process_values": [
+          7.08,
+          6.43,
+          7.65
+        ],
+        "reference_spread_fraction": 0.190119760479042,
+        "candidate_spread_fraction": 0.17231638418079104,
+        "paired_deltas": [
+          -0.7400000000000002,
+          -0.1200000000000001,
+          0.9700000000000006
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-5760/cpu_system_seconds": {
+        "before_process_values": [
+          0.2,
+          0.3,
+          0.21
+        ],
+        "after_process_values": [
+          0.2,
+          0.29,
+          0.24
+        ],
+        "reference_spread_fraction": 0.4761904761904761,
+        "candidate_spread_fraction": 0.3749999999999999,
+        "paired_deltas": [
+          0.0,
+          -0.010000000000000009,
+          0.03
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-6480/wall_ms": {
+        "before_process_values": [
+          2871.413353,
+          2632.8231739999997,
+          2614.674255
+        ],
+        "after_process_values": [
+          2894.533477,
+          2633.252519,
+          2983.163303
+        ],
+        "reference_spread_fraction": 0.09751475166862081,
+        "candidate_spread_fraction": 0.12088676354251739,
+        "paired_deltas": [
+          23.120124000000033,
+          0.4293450000004668,
+          368.4890479999999
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-6480/cpu_user_seconds": {
+        "before_process_values": [
+          7.36,
+          6.5,
+          6.52
+        ],
+        "after_process_values": [
+          7.47,
+          6.68,
+          7.81
+        ],
+        "reference_spread_fraction": 0.13190184049079762,
+        "candidate_spread_fraction": 0.15127175368139223,
+        "paired_deltas": [
+          0.10999999999999943,
+          0.17999999999999972,
+          1.29
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-6480/cpu_system_seconds": {
+        "before_process_values": [
+          0.19,
+          0.22,
+          0.22
+        ],
+        "after_process_values": [
+          0.3,
+          0.27,
+          0.24
+        ],
+        "reference_spread_fraction": 0.13636363636363635,
+        "candidate_spread_fraction": 0.2222222222222222,
+        "paired_deltas": [
+          0.10999999999999999,
+          0.05000000000000002,
+          0.01999999999999999
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-720/wall_ms": {
+        "before_process_values": [
+          2422.998614,
+          2437.198203,
+          2767.8729909999997
+        ],
+        "after_process_values": [
+          2833.402861,
+          2953.407056,
+          2604.6431669999997
+        ],
+        "reference_spread_fraction": 0.1415044441504537,
+        "candidate_spread_fraction": 0.1230901167640207,
+        "paired_deltas": [
+          410.40424699999994,
+          516.2088530000001,
+          -163.229824
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-720/cpu_user_seconds": {
+        "before_process_values": [
+          6.05,
+          6.22,
+          7.11
+        ],
+        "after_process_values": [
+          7.02,
+          7.17,
+          6.6
+        ],
+        "reference_spread_fraction": 0.17041800643086824,
+        "candidate_spread_fraction": 0.08119658119658124,
+        "paired_deltas": [
+          0.9699999999999998,
+          0.9500000000000002,
+          -0.5100000000000007
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-720/cpu_system_seconds": {
+        "before_process_values": [
+          0.14,
+          0.15,
+          0.19
+        ],
+        "after_process_values": [
+          0.17,
+          0.24,
+          0.22
+        ],
+        "reference_spread_fraction": 0.33333333333333326,
+        "candidate_spread_fraction": 0.31818181818181807,
+        "paired_deltas": [
+          0.03,
+          0.09,
+          0.03
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-7200/wall_ms": {
+        "before_process_values": [
+          3068.3187580000003,
+          2896.7334029999997,
+          2651.336949
+        ],
+        "after_process_values": [
+          2819.608398,
+          3018.128815,
+          3053.106102
+        ],
+        "reference_spread_fraction": 0.14394897665354825,
+        "candidate_spread_fraction": 0.07736505573901435,
+        "paired_deltas": [
+          -248.7103600000005,
+          121.3954120000003,
+          401.7691530000002
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-7200/cpu_user_seconds": {
+        "before_process_values": [
+          7.95,
+          7.44,
+          6.72
+        ],
+        "after_process_values": [
+          7.27,
+          7.98,
+          7.39
+        ],
+        "reference_spread_fraction": 0.16532258064516134,
+        "candidate_spread_fraction": 0.09607577807848455,
+        "paired_deltas": [
+          -0.6800000000000006,
+          0.54,
+          0.6699999999999999
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-7200/cpu_system_seconds": {
+        "before_process_values": [
+          0.24,
+          0.21,
+          0.17
+        ],
+        "after_process_values": [
+          0.23,
+          0.23,
+          0.28
+        ],
+        "reference_spread_fraction": 0.33333333333333326,
+        "candidate_spread_fraction": 0.21739130434782614,
+        "paired_deltas": [
+          -0.009999999999999981,
+          0.020000000000000018,
+          0.11000000000000001
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-7920/wall_ms": {
+        "before_process_values": [
+          2699.607301,
+          2745.0821039999996,
+          2666.333165
+        ],
+        "after_process_values": [
+          2773.963979,
+          3166.6741150000003,
+          2957.686291
+        ],
+        "reference_spread_fraction": 0.029170516382449066,
+        "candidate_spread_fraction": 0.13277612882575995,
+        "paired_deltas": [
+          74.3566780000001,
+          421.59201100000064,
+          291.353126
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-7920/cpu_user_seconds": {
+        "before_process_values": [
+          6.9,
+          6.74,
+          6.78
+        ],
+        "after_process_values": [
+          7.18,
+          8.24,
+          7.39
+        ],
+        "reference_spread_fraction": 0.02359882005899707,
+        "candidate_spread_fraction": 0.14343707713125853,
+        "paired_deltas": [
+          0.27999999999999936,
+          1.5,
+          0.6099999999999994
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-7920/cpu_system_seconds": {
+        "before_process_values": [
+          0.14,
+          0.19,
+          0.18
+        ],
+        "after_process_values": [
+          0.21,
+          0.29,
+          0.25
+        ],
+        "reference_spread_fraction": 0.27777777777777773,
+        "candidate_spread_fraction": 0.31999999999999995,
+        "paired_deltas": [
+          0.06999999999999998,
+          0.09999999999999998,
+          0.07
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-8640/wall_ms": {
+        "before_process_values": [
+          2638.440213,
+          2357.654759,
+          2732.750911
+        ],
+        "after_process_values": [
+          2797.894183,
+          2946.5731729999998,
+          2730.301798
+        ],
+        "reference_spread_fraction": 0.14216587139319806,
+        "candidate_spread_fraction": 0.07729791080522784,
+        "paired_deltas": [
+          159.45397000000003,
+          588.9184139999998,
+          -2.449113000000125
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-8640/cpu_user_seconds": {
+        "before_process_values": [
+          6.64,
+          5.78,
+          7.08
+        ],
+        "after_process_values": [
+          7.36,
+          7.58,
+          6.85
+        ],
+        "reference_spread_fraction": 0.19578313253012047,
+        "candidate_spread_fraction": 0.0991847826086957,
+        "paired_deltas": [
+          0.7200000000000006,
+          1.7999999999999998,
+          -0.23000000000000043
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-8640/cpu_system_seconds": {
+        "before_process_values": [
+          0.23,
+          0.22,
+          0.21
+        ],
+        "after_process_values": [
+          0.2,
+          0.21,
+          0.29
+        ],
+        "reference_spread_fraction": 0.090909090909091,
+        "candidate_spread_fraction": 0.42857142857142844,
+        "paired_deltas": [
+          -0.03,
+          -0.010000000000000009,
+          0.07999999999999999
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-9359/wall_ms": {
+        "before_process_values": [
+          2698.7790729999997,
+          2894.402355,
+          2904.901843
+        ],
+        "after_process_values": [
+          2791.410162,
+          2809.9826759999996,
+          3052.671288
+        ],
+        "reference_spread_fraction": 0.07121427663432107,
+        "candidate_spread_fraction": 0.09297606288872363,
+        "paired_deltas": [
+          92.63108900000043,
+          -84.41967900000054,
+          147.7694449999999
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-9359/cpu_user_seconds": {
+        "before_process_values": [
+          6.71,
+          7.69,
+          7.43
+        ],
+        "after_process_values": [
+          7.08,
+          7.47,
+          7.54
+        ],
+        "reference_spread_fraction": 0.13189771197846575,
+        "candidate_spread_fraction": 0.06157965194109772,
+        "paired_deltas": [
+          0.3700000000000001,
+          -0.22000000000000064,
+          0.11000000000000032
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-9359/cpu_system_seconds": {
+        "before_process_values": [
+          0.23,
+          0.17,
+          0.18
+        ],
+        "after_process_values": [
+          0.21,
+          0.24,
+          0.24
+        ],
+        "reference_spread_fraction": 0.3333333333333333,
+        "candidate_spread_fraction": 0.125,
+        "paired_deltas": [
+          -0.020000000000000018,
+          0.06999999999999998,
+          0.06
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warmup/query-17999/wall_ms": {
+        "before_process_values": [
+          2835.7509,
+          3043.23087,
+          2933.5339400000003
+        ],
+        "after_process_values": [
+          2948.594459,
+          3132.02023,
+          2630.886476
+        ],
+        "reference_spread_fraction": 0.07072697103344229,
+        "candidate_spread_fraction": 0.16995682552084723,
+        "paired_deltas": [
+          112.84355899999991,
+          88.78936000000022,
+          -302.6474640000001
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warmup/query-17999/cpu_user_seconds": {
+        "before_process_values": [
+          7.09,
+          7.74,
+          7.89
+        ],
+        "after_process_values": [
+          7.6,
+          8.04,
+          6.36
+        ],
+        "reference_spread_fraction": 0.10335917312661497,
+        "candidate_spread_fraction": 0.22105263157894722,
+        "paired_deltas": [
+          0.5099999999999998,
+          0.29999999999999893,
+          -1.5299999999999994
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warmup/query-17999/cpu_system_seconds": {
+        "before_process_values": [
+          0.21,
+          0.19,
+          0.18
+        ],
+        "after_process_values": [
+          0.27,
+          0.29,
+          0.27
+        ],
+        "reference_spread_fraction": 0.15789473684210525,
+        "candidate_spread_fraction": 0.07407407407407393,
+        "paired_deltas": [
+          0.060000000000000026,
+          0.09999999999999998,
+          0.09000000000000002
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median"
+        ]
+      },
+      "search_warmup/query-9000/wall_ms": {
+        "before_process_values": [
+          2838.875449,
+          2933.530546,
+          3251.525577
+        ],
+        "after_process_values": [
+          2874.413667,
+          2999.0835110000003,
+          2743.377647
+        ],
+        "reference_spread_fraction": 0.1406667227524413,
+        "candidate_spread_fraction": 0.08895931261935532,
+        "paired_deltas": [
+          35.53821799999969,
+          65.55296500000031,
+          -508.1479300000001
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warmup/query-9000/cpu_user_seconds": {
+        "before_process_values": [
+          7.24,
+          7.55,
+          8.2
+        ],
+        "after_process_values": [
+          7.33,
+          7.45,
+          6.48
+        ],
+        "reference_spread_fraction": 0.1271523178807946,
+        "candidate_spread_fraction": 0.13233287858117324,
+        "paired_deltas": [
+          0.08999999999999986,
+          -0.09999999999999964,
+          -1.7199999999999989
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warmup/query-9000/cpu_system_seconds": {
+        "before_process_values": [
+          0.18,
+          0.23,
+          0.29
+        ],
+        "after_process_values": [
+          0.29,
+          0.39,
+          0.32
+        ],
+        "reference_spread_fraction": 0.4782608695652173,
+        "candidate_spread_fraction": 0.3125000000000001,
+        "paired_deltas": [
+          0.10999999999999999,
+          0.16,
+          0.030000000000000027
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "write_and_memory_drain/wall_ms": {
+        "before_process_values": [
+          1421.857852,
+          1389.6777280000001,
+          1611.727838
+        ],
+        "after_process_values": [
+          1387.231162,
+          1409.891071,
+          1388.00918
+        ],
+        "reference_spread_fraction": 0.15616899374832857,
+        "candidate_spread_fraction": 0.016325474879063818,
+        "paired_deltas": [
+          -34.62669000000005,
+          20.213342999999895,
+          -223.718658
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "write_and_memory_drain/cpu_user_seconds": {
+        "before_process_values": [
+          1.29,
+          1.23,
+          1.49
+        ],
+        "after_process_values": [
+          1.3,
+          1.29,
+          1.21
+        ],
+        "reference_spread_fraction": 0.20155038759689922,
+        "candidate_spread_fraction": 0.06976744186046517,
+        "paired_deltas": [
+          0.010000000000000009,
+          0.06000000000000005,
+          -0.28
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "write_and_memory_drain/cpu_system_seconds": {
+        "before_process_values": [
+          0.21,
+          0.24,
+          0.23
+        ],
+        "after_process_values": [
+          0.19,
+          0.22,
+          0.26
+        ],
+        "reference_spread_fraction": 0.13043478260869565,
+        "candidate_spread_fraction": 0.31818181818181823,
+        "paired_deltas": [
+          -0.01999999999999999,
+          -0.01999999999999999,
+          0.03
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      }
+    }
+  },
+  "main": {
+    "open_ms": {
+      "before_process_values": [
+        482.58813499999997,
+        510.071716,
+        534.944471
+      ],
+      "after_process_values": [
+        447.744798,
+        477.707146,
+        491.098932
+      ],
+      "reference_spread_fraction": 0.1026450484464817,
+      "candidate_spread_fraction": 0.09075462731302744,
+      "paired_deltas": [
+        -34.84333699999996,
+        -32.36456999999996,
+        -43.84553900000003
+      ],
+      "withhold_comparison": true,
+      "reasons": [
+        "reference spread >10% of median"
+      ]
+    },
+    "write_ms": {
+      "before_process_values": [
+        1405.1992950000001,
+        1684.502113,
+        1475.758326
+      ],
+      "after_process_values": [
+        1387.231162,
+        1409.891071,
+        1388.00918
+      ],
+      "reference_spread_fraction": 0.18926054021124317,
+      "candidate_spread_fraction": 0.016325474879063818,
+      "paired_deltas": [
+        -17.96813300000008,
+        -274.611042,
+        -87.74914599999988
+      ],
+      "withhold_comparison": true,
+      "reasons": [
+        "reference spread >10% of median"
+      ]
+    },
+    "durability_flush_ms": {
+      "before_process_values": [
+        62.073218,
+        83.339881,
+        65.17495600000001
+      ],
+      "after_process_values": [
+        64.986683,
+        56.829339,
+        70.248864
+      ],
+      "reference_spread_fraction": 0.3263011485577375,
+      "candidate_spread_fraction": 0.20649653714438695,
+      "paired_deltas": [
+        2.913465000000002,
+        -26.510542000000008,
+        5.073907999999989
+      ],
+      "withhold_comparison": true,
+      "reasons": [
+        "reference spread >10% of median",
+        "candidate spread >10% of median",
+        "paired delta sign reversal"
+      ]
+    },
+    "maintenance_ms": {
+      "before_process_values": [
+        8243.09469,
+        9692.595637,
+        8725.24169
+      ],
+      "after_process_values": [
+        0.388897,
+        0.402627,
+        0.327805
+      ],
+      "reference_spread_fraction": 0.16612731182693466,
+      "candidate_spread_fraction": 0.19239541575275715,
+      "paired_deltas": [
+        -8242.705793,
+        -9692.19301,
+        -8724.913885
+      ],
+      "withhold_comparison": true,
+      "reasons": [
+        "reference spread >10% of median",
+        "candidate spread >10% of median"
+      ]
+    },
+    "maintenance_cpu_s": {
+      "before_process_values": [
+        27.99,
+        30.06,
+        27.42
+      ],
+      "after_process_values": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "reference_spread_fraction": 0.09431939978563762,
+      "candidate_spread_fraction": 0,
+      "paired_deltas": [
+        -27.99,
+        -30.06,
+        -27.42
+      ],
+      "withhold_comparison": false,
+      "reasons": []
+    },
+    "first_search_ms": {
+      "before_process_values": [
+        2959.966939,
+        3284.901616,
+        3088.230447
+      ],
+      "after_process_values": [
+        2786.0317280000004,
+        3081.8640259999997,
+        2846.2511619999996
+      ],
+      "reference_spread_fraction": 0.10521710817133208,
+      "candidate_spread_fraction": 0.10393752383824215,
+      "paired_deltas": [
+        -173.93521099999953,
+        -203.03759000000036,
+        -241.97928500000035
+      ],
+      "withhold_comparison": true,
+      "reasons": [
+        "reference spread >10% of median",
+        "candidate spread >10% of median"
+      ]
+    },
+    "warm_p50_ms": {
+      "before_process_values": [
+        2746.0176979999997,
+        2740.7603655000003,
+        2991.960989
+      ],
+      "after_process_values": [
+        2795.3391485,
+        2876.1902595,
+        2860.084011
+      ],
+      "reference_spread_fraction": 0.09147815168232755,
+      "candidate_spread_fraction": 0.028268788849923034,
+      "paired_deltas": [
+        49.32145050000054,
+        135.42989399999988,
+        -131.87697800000024
+      ],
+      "withhold_comparison": true,
+      "reasons": [
+        "paired delta sign reversal"
+      ]
+    },
+    "warm_p95_ms": {
+      "before_process_values": [
+        3000.4152864,
+        2920.7380328,
+        3161.07094745
+      ],
+      "after_process_values": [
+        2913.3084228999996,
+        3070.5811047499997,
+        3074.781901
+      ],
+      "reference_spread_fraction": 0.08009988341925814,
+      "candidate_spread_fraction": 0.052587270158801755,
+      "paired_deltas": [
+        -87.10686350000014,
+        149.84307194999974,
+        -86.28904645000011
+      ],
+      "withhold_comparison": true,
+      "reasons": [
+        "paired delta sign reversal"
+      ]
+    },
+    "episode": {
+      "before_process_values": [
+        88.60569450299954,
+        89.83000090400128,
+        94.07301332699899
+      ],
+      "after_process_values": [
+        80.2596307549993,
+        82.18011751799895,
+        80.92644889400071
+      ],
+      "reference_spread_fraction": 0.06086294967137108,
+      "candidate_spread_fraction": 0.023731262019357123,
+      "paired_deltas": [
+        -8.346063748000233,
+        -7.64988338600233,
+        -13.146564432998275
+      ],
+      "withhold_comparison": false,
+      "reasons": []
+    },
+    "raw_call_timing": {
+      "durability_flush/wall_ms": {
+        "before_process_values": [
+          62.073218,
+          83.339881,
+          65.17495600000001
+        ],
+        "after_process_values": [
+          64.986683,
+          56.829339,
+          70.248864
+        ],
+        "reference_spread_fraction": 0.3263011485577375,
+        "candidate_spread_fraction": 0.20649653714438695,
+        "paired_deltas": [
+          2.913465000000002,
+          -26.510542000000008,
+          5.073907999999989
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "durability_flush/cpu_user_seconds": {
+        "before_process_values": [
+          0.02,
+          0.02,
+          0.02
+        ],
+        "after_process_values": [
+          0.01,
+          0.01,
+          0.02
+        ],
+        "reference_spread_fraction": 0.0,
+        "candidate_spread_fraction": 1.0,
+        "paired_deltas": [
+          -0.01,
+          -0.01,
+          0.0
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median"
+        ]
+      },
+      "durability_flush/cpu_system_seconds": {
+        "before_process_values": [
+          0.02,
+          0.05,
+          0.03
+        ],
+        "after_process_values": [
+          0.04,
+          0.04,
+          0.04
+        ],
+        "reference_spread_fraction": 1.0000000000000002,
+        "candidate_spread_fraction": 0.0,
+        "paired_deltas": [
+          0.02,
+          -0.010000000000000002,
+          0.010000000000000002
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "maintenance/wall_ms": {
+        "before_process_values": [
+          8243.09469,
+          9692.595637,
+          8725.24169
+        ],
+        "after_process_values": [
+          0.388897,
+          0.402627,
+          0.327805
+        ],
+        "reference_spread_fraction": 0.16612731182693466,
+        "candidate_spread_fraction": 0.19239541575275715,
+        "paired_deltas": [
+          -8242.705793,
+          -9692.19301,
+          -8724.913885
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "maintenance/cpu_user_seconds": {
+        "before_process_values": [
+          25.49,
+          26.08,
+          24.09
+        ],
+        "after_process_values": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "reference_spread_fraction": 0.07806983130639461,
+        "candidate_spread_fraction": 0,
+        "paired_deltas": [
+          -25.49,
+          -26.08,
+          -24.09
+        ],
+        "withhold_comparison": false,
+        "reasons": []
+      },
+      "maintenance/cpu_system_seconds": {
+        "before_process_values": [
+          2.5,
+          3.98,
+          3.33
+        ],
+        "after_process_values": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "reference_spread_fraction": 0.4444444444444444,
+        "candidate_spread_fraction": 0,
+        "paired_deltas": [
+          -2.5,
+          -3.98,
+          -3.33
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median"
+        ]
+      },
+      "new_write_search/wall_ms": {
+        "before_process_values": [
+          3028.582584,
+          3197.962183,
+          3066.707705
+        ],
+        "after_process_values": [
+          3272.9340420000003,
+          2685.122132,
+          2748.169689
+        ],
+        "reference_spread_fraction": 0.05523173882005161,
+        "candidate_spread_fraction": 0.21389214514402585,
+        "paired_deltas": [
+          244.3514580000001,
+          -512.8400510000001,
+          -318.53801599999997
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "new_write_search/cpu_user_seconds": {
+        "before_process_values": [
+          7.83,
+          8.59,
+          8.04
+        ],
+        "after_process_values": [
+          8.4,
+          6.87,
+          7.01
+        ],
+        "reference_spread_fraction": 0.09452736318407959,
+        "candidate_spread_fraction": 0.2182596291012839,
+        "paired_deltas": [
+          0.5700000000000003,
+          -1.7199999999999998,
+          -1.0299999999999994
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "new_write_search/cpu_system_seconds": {
+        "before_process_values": [
+          0.22,
+          0.15,
+          0.21
+        ],
+        "after_process_values": [
+          0.24,
+          0.22,
+          0.3
+        ],
+        "reference_spread_fraction": 0.33333333333333337,
+        "candidate_spread_fraction": 0.3333333333333333,
+        "paired_deltas": [
+          0.01999999999999999,
+          0.07,
+          0.09
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "open/wall_ms": {
+        "before_process_values": [
+          482.58813499999997,
+          510.071716,
+          534.944471
+        ],
+        "after_process_values": [
+          447.744798,
+          477.707146,
+          491.098932
+        ],
+        "reference_spread_fraction": 0.1026450484464817,
+        "candidate_spread_fraction": 0.09075462731302744,
+        "paired_deltas": [
+          -34.84333699999996,
+          -32.36456999999996,
+          -43.84553900000003
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median"
+        ]
+      },
+      "open/cpu_user_seconds": {
+        "before_process_values": [
+          0.07,
+          0.1,
+          0.09
+        ],
+        "after_process_values": [
+          0.06,
+          0.07,
+          0.07
+        ],
+        "reference_spread_fraction": 0.3333333333333333,
+        "candidate_spread_fraction": 0.14285714285714296,
+        "paired_deltas": [
+          -0.010000000000000009,
+          -0.03,
+          -0.01999999999999999
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "open/cpu_system_seconds": {
+        "before_process_values": [
+          0.24,
+          0.25,
+          0.28
+        ],
+        "after_process_values": [
+          0.23,
+          0.24,
+          0.27
+        ],
+        "reference_spread_fraction": 0.16000000000000014,
+        "candidate_spread_fraction": 0.1666666666666667,
+        "paired_deltas": [
+          -0.009999999999999981,
+          -0.010000000000000009,
+          -0.010000000000000009
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_cold/query-0/wall_ms": {
+        "before_process_values": [
+          2959.966939,
+          3284.901616,
+          3088.230447
+        ],
+        "after_process_values": [
+          2786.0317280000004,
+          3081.8640259999997,
+          2846.2511619999996
+        ],
+        "reference_spread_fraction": 0.10521710817133208,
+        "candidate_spread_fraction": 0.10393752383824215,
+        "paired_deltas": [
+          -173.93521099999953,
+          -203.03759000000036,
+          -241.97928500000035
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_cold/query-0/cpu_user_seconds": {
+        "before_process_values": [
+          7.55,
+          7.85,
+          7.76
+        ],
+        "after_process_values": [
+          7.2,
+          7.74,
+          7.06
+        ],
+        "reference_spread_fraction": 0.03865979381443297,
+        "candidate_spread_fraction": 0.09444444444444453,
+        "paired_deltas": [
+          -0.34999999999999964,
+          -0.10999999999999943,
+          -0.7000000000000002
+        ],
+        "withhold_comparison": false,
+        "reasons": []
+      },
+      "search_cold/query-0/cpu_system_seconds": {
+        "before_process_values": [
+          0.42,
+          0.44,
+          0.36
+        ],
+        "after_process_values": [
+          0.36,
+          0.77,
+          0.78
+        ],
+        "reference_spread_fraction": 0.19047619047619052,
+        "candidate_spread_fraction": 0.5454545454545455,
+        "paired_deltas": [
+          -0.06,
+          0.33,
+          0.42000000000000004
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-10079/wall_ms": {
+        "before_process_values": [
+          2587.138159,
+          2658.6641640000003,
+          3012.4930499999996
+        ],
+        "after_process_values": [
+          2713.537217,
+          2813.3655270000004,
+          2754.185746
+        ],
+        "reference_spread_fraction": 0.15998819887053606,
+        "candidate_spread_fraction": 0.036246033930349274,
+        "paired_deltas": [
+          126.39905799999997,
+          154.70136300000013,
+          -258.3073039999995
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-10079/cpu_user_seconds": {
+        "before_process_values": [
+          6.43,
+          6.75,
+          7.86
+        ],
+        "after_process_values": [
+          6.79,
+          7.42,
+          6.77
+        ],
+        "reference_spread_fraction": 0.21185185185185193,
+        "candidate_spread_fraction": 0.0957290132547865,
+        "paired_deltas": [
+          0.3600000000000003,
+          0.6699999999999999,
+          -1.0900000000000007
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-10079/cpu_system_seconds": {
+        "before_process_values": [
+          0.14,
+          0.18,
+          0.2
+        ],
+        "after_process_values": [
+          0.25,
+          0.16,
+          0.33
+        ],
+        "reference_spread_fraction": 0.3333333333333333,
+        "candidate_spread_fraction": 0.68,
+        "paired_deltas": [
+          0.10999999999999999,
+          -0.01999999999999999,
+          0.13
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-10799/wall_ms": {
+        "before_process_values": [
+          2918.349424,
+          2845.164124,
+          2967.094732
+        ],
+        "after_process_values": [
+          2919.049829,
+          2720.5916650000004,
+          2708.896077
+        ],
+        "reference_spread_fraction": 0.04178067471882014,
+        "candidate_spread_fraction": 0.077245606058269,
+        "paired_deltas": [
+          0.7004050000000461,
+          -124.57245899999953,
+          -258.19865500000014
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-10799/cpu_user_seconds": {
+        "before_process_values": [
+          7.4,
+          7.38,
+          8.13
+        ],
+        "after_process_values": [
+          7.39,
+          6.96,
+          6.97
+        ],
+        "reference_spread_fraction": 0.10135135135135147,
+        "candidate_spread_fraction": 0.06169296987087514,
+        "paired_deltas": [
+          -0.010000000000000675,
+          -0.41999999999999993,
+          -1.160000000000001
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median"
+        ]
+      },
+      "search_warm/query-10799/cpu_system_seconds": {
+        "before_process_values": [
+          0.19,
+          0.2,
+          0.23
+        ],
+        "after_process_values": [
+          0.24,
+          0.25,
+          0.25
+        ],
+        "reference_spread_fraction": 0.20000000000000004,
+        "candidate_spread_fraction": 0.040000000000000036,
+        "paired_deltas": [
+          0.04999999999999999,
+          0.04999999999999999,
+          0.01999999999999999
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median"
+        ]
+      },
+      "search_warm/query-11519/wall_ms": {
+        "before_process_values": [
+          3004.104054,
+          2690.798334,
+          3004.686132
+        ],
+        "after_process_values": [
+          2850.608331,
+          3043.6824850000003,
+          2457.377412
+        ],
+        "reference_spread_fraction": 0.1044863268241506,
+        "candidate_spread_fraction": 0.2056771765605285,
+        "paired_deltas": [
+          -153.495723,
+          352.8841510000002,
+          -547.30872
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-11519/cpu_user_seconds": {
+        "before_process_values": [
+          7.96,
+          6.63,
+          8.02
+        ],
+        "after_process_values": [
+          7.21,
+          7.82,
+          6.19
+        ],
+        "reference_spread_fraction": 0.1746231155778894,
+        "candidate_spread_fraction": 0.22607489597780858,
+        "paired_deltas": [
+          -0.75,
+          1.1900000000000004,
+          -1.8299999999999992
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-11519/cpu_system_seconds": {
+        "before_process_values": [
+          0.26,
+          0.23,
+          0.19
+        ],
+        "after_process_values": [
+          0.27,
+          0.19,
+          0.24
+        ],
+        "reference_spread_fraction": 0.30434782608695654,
+        "candidate_spread_fraction": 0.3333333333333334,
+        "paired_deltas": [
+          0.010000000000000009,
+          -0.04000000000000001,
+          0.04999999999999999
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-12239/wall_ms": {
+        "before_process_values": [
+          2861.5695690000002,
+          2615.062149,
+          2946.9091230000004
+        ],
+        "after_process_values": [
+          2387.885345,
+          3075.3279199999997,
+          2831.905689
+        ],
+        "reference_spread_fraction": 0.11596676788674659,
+        "candidate_spread_fraction": 0.24274910625386986,
+        "paired_deltas": [
+          -473.6842240000001,
+          460.26577099999986,
+          -115.0034340000002
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-12239/cpu_user_seconds": {
+        "before_process_values": [
+          7.31,
+          6.46,
+          8.05
+        ],
+        "after_process_values": [
+          5.79,
+          7.69,
+          7.12
+        ],
+        "reference_spread_fraction": 0.21751025991792078,
+        "candidate_spread_fraction": 0.2668539325842697,
+        "paired_deltas": [
+          -1.5199999999999996,
+          1.2300000000000004,
+          -0.9300000000000006
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-12239/cpu_system_seconds": {
+        "before_process_values": [
+          0.26,
+          0.13,
+          0.19
+        ],
+        "after_process_values": [
+          0.31,
+          0.26,
+          0.27
+        ],
+        "reference_spread_fraction": 0.6842105263157895,
+        "candidate_spread_fraction": 0.18518518518518512,
+        "paired_deltas": [
+          0.04999999999999999,
+          0.13,
+          0.08000000000000002
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-12959/wall_ms": {
+        "before_process_values": [
+          2844.253893,
+          2403.344867,
+          2977.971705
+        ],
+        "after_process_values": [
+          2508.868049,
+          2858.1658279999997,
+          2989.7624920000003
+        ],
+        "reference_spread_fraction": 0.202030781926401,
+        "candidate_spread_fraction": 0.16825281384618115,
+        "paired_deltas": [
+          -335.3858439999999,
+          454.8209609999999,
+          11.790787000000364
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-12959/cpu_user_seconds": {
+        "before_process_values": [
+          7.44,
+          5.88,
+          8.19
+        ],
+        "after_process_values": [
+          6.38,
+          6.71,
+          7.63
+        ],
+        "reference_spread_fraction": 0.3104838709677419,
+        "candidate_spread_fraction": 0.18628912071535023,
+        "paired_deltas": [
+          -1.0600000000000005,
+          0.8300000000000001,
+          -0.5599999999999996
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-12959/cpu_system_seconds": {
+        "before_process_values": [
+          0.21,
+          0.22,
+          0.11
+        ],
+        "after_process_values": [
+          0.2,
+          0.19,
+          0.29
+        ],
+        "reference_spread_fraction": 0.5238095238095238,
+        "candidate_spread_fraction": 0.4999999999999999,
+        "paired_deltas": [
+          -0.009999999999999981,
+          -0.03,
+          0.18
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-13679/wall_ms": {
+        "before_process_values": [
+          2940.8146349999997,
+          2478.599967,
+          2911.8135270000002
+        ],
+        "after_process_values": [
+          2792.784114,
+          2698.304873,
+          3078.6070419999996
+        ],
+        "reference_spread_fraction": 0.15873772949884354,
+        "candidate_spread_fraction": 0.13617313529304886,
+        "paired_deltas": [
+          -148.03052099999968,
+          219.70490599999994,
+          166.7935149999994
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-13679/cpu_user_seconds": {
+        "before_process_values": [
+          7.64,
+          6.13,
+          7.75
+        ],
+        "after_process_values": [
+          7.06,
+          7.05,
+          7.99
+        ],
+        "reference_spread_fraction": 0.21204188481675396,
+        "candidate_spread_fraction": 0.13314447592067996,
+        "paired_deltas": [
+          -0.5800000000000001,
+          0.9199999999999999,
+          0.2400000000000002
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-13679/cpu_system_seconds": {
+        "before_process_values": [
+          0.18,
+          0.22,
+          0.27
+        ],
+        "after_process_values": [
+          0.21,
+          0.23,
+          0.26
+        ],
+        "reference_spread_fraction": 0.4090909090909092,
+        "candidate_spread_fraction": 0.21739130434782614,
+        "paired_deltas": [
+          0.03,
+          0.010000000000000009,
+          -0.010000000000000009
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-14399/wall_ms": {
+        "before_process_values": [
+          2688.792196,
+          2735.925005,
+          3024.232857
+        ],
+        "after_process_values": [
+          2904.103982,
+          2590.38664,
+          2897.6309069999998
+        ],
+        "reference_spread_fraction": 0.12260594145927625,
+        "candidate_spread_fraction": 0.10826684007343104,
+        "paired_deltas": [
+          215.3117860000002,
+          -145.53836499999989,
+          -126.60195000000022
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-14399/cpu_user_seconds": {
+        "before_process_values": [
+          6.72,
+          6.99,
+          8.01
+        ],
+        "after_process_values": [
+          7.44,
+          6.58,
+          7.16
+        ],
+        "reference_spread_fraction": 0.18454935622317598,
+        "candidate_spread_fraction": 0.12011173184357546,
+        "paired_deltas": [
+          0.7200000000000006,
+          -0.41000000000000014,
+          -0.8499999999999996
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-14399/cpu_system_seconds": {
+        "before_process_values": [
+          0.21,
+          0.22,
+          0.19
+        ],
+        "after_process_values": [
+          0.22,
+          0.23,
+          0.27
+        ],
+        "reference_spread_fraction": 0.14285714285714285,
+        "candidate_spread_fraction": 0.21739130434782614,
+        "paired_deltas": [
+          0.010000000000000009,
+          0.010000000000000009,
+          0.08000000000000002
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-1440/wall_ms": {
+        "before_process_values": [
+          2736.846909,
+          2920.871483,
+          2892.371999
+        ],
+        "after_process_values": [
+          2846.292377,
+          3009.440586,
+          2528.003443
+        ],
+        "reference_spread_fraction": 0.06362410300736701,
+        "candidate_spread_fraction": 0.16914535797177524,
+        "paired_deltas": [
+          109.44546800000035,
+          88.56910300000027,
+          -364.3685559999999
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-1440/cpu_user_seconds": {
+        "before_process_values": [
+          6.8,
+          7.73,
+          7.4
+        ],
+        "after_process_values": [
+          7.45,
+          7.66,
+          6.36
+        ],
+        "reference_spread_fraction": 0.12567567567567575,
+        "candidate_spread_fraction": 0.17449664429530198,
+        "paired_deltas": [
+          0.6500000000000004,
+          -0.07000000000000028,
+          -1.04
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-1440/cpu_system_seconds": {
+        "before_process_values": [
+          0.19,
+          0.22,
+          0.25
+        ],
+        "after_process_values": [
+          0.17,
+          0.2,
+          0.26
+        ],
+        "reference_spread_fraction": 0.2727272727272727,
+        "candidate_spread_fraction": 0.44999999999999996,
+        "paired_deltas": [
+          -0.01999999999999999,
+          -0.01999999999999999,
+          0.010000000000000009
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-15119/wall_ms": {
+        "before_process_values": [
+          2600.555232,
+          2763.109794,
+          2859.335133
+        ],
+        "after_process_values": [
+          2674.1768490000004,
+          2680.997321,
+          2982.4523149999995
+        ],
+        "reference_spread_fraction": 0.0936553087980549,
+        "candidate_spread_fraction": 0.1149853689092885,
+        "paired_deltas": [
+          73.62161700000024,
+          -82.11247300000014,
+          123.1171819999995
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-15119/cpu_user_seconds": {
+        "before_process_values": [
+          6.39,
+          7.14,
+          7.35
+        ],
+        "after_process_values": [
+          7.06,
+          6.63,
+          7.44
+        ],
+        "reference_spread_fraction": 0.13445378151260504,
+        "candidate_spread_fraction": 0.11473087818696892,
+        "paired_deltas": [
+          0.6699999999999999,
+          -0.5099999999999998,
+          0.09000000000000075
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-15119/cpu_system_seconds": {
+        "before_process_values": [
+          0.21,
+          0.16,
+          0.19
+        ],
+        "after_process_values": [
+          0.17,
+          0.21,
+          0.23
+        ],
+        "reference_spread_fraction": 0.26315789473684204,
+        "candidate_spread_fraction": 0.2857142857142857,
+        "paired_deltas": [
+          -0.03999999999999998,
+          0.04999999999999999,
+          0.04000000000000001
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-15839/wall_ms": {
+        "before_process_values": [
+          2853.5682260000003,
+          2407.931386,
+          3025.3229969999998
+        ],
+        "after_process_values": [
+          2847.770964,
+          2428.6671690000003,
+          3145.041748
+        ],
+        "reference_spread_fraction": 0.21635775355735248,
+        "candidate_spread_fraction": 0.25155624804663884,
+        "paired_deltas": [
+          -5.797262000000501,
+          20.735783000000083,
+          119.71875100000034
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-15839/cpu_user_seconds": {
+        "before_process_values": [
+          7.23,
+          5.84,
+          7.98
+        ],
+        "after_process_values": [
+          7.49,
+          6.17,
+          7.98
+        ],
+        "reference_spread_fraction": 0.29598893499308443,
+        "candidate_spread_fraction": 0.24165554072096135,
+        "paired_deltas": [
+          0.2599999999999998,
+          0.33000000000000007,
+          0.0
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-15839/cpu_system_seconds": {
+        "before_process_values": [
+          0.22,
+          0.15,
+          0.23
+        ],
+        "after_process_values": [
+          0.22,
+          0.2,
+          0.22
+        ],
+        "reference_spread_fraction": 0.3636363636363637,
+        "candidate_spread_fraction": 0.09090909090909087,
+        "paired_deltas": [
+          0.0,
+          0.05000000000000002,
+          -0.010000000000000009
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-16559/wall_ms": {
+        "before_process_values": [
+          2899.022446,
+          2777.486242,
+          2609.73314
+        ],
+        "after_process_values": [
+          2406.789476,
+          2658.949643,
+          2669.6720269999996
+        ],
+        "reference_spread_fraction": 0.10415508153577387,
+        "candidate_spread_fraction": 0.09886706643432273,
+        "paired_deltas": [
+          -492.23297,
+          -118.53659900000002,
+          59.938886999999795
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-16559/cpu_user_seconds": {
+        "before_process_values": [
+          7.53,
+          7.07,
+          6.83
+        ],
+        "after_process_values": [
+          6.11,
+          6.85,
+          6.77
+        ],
+        "reference_spread_fraction": 0.09900990099009903,
+        "candidate_spread_fraction": 0.10930576070901024,
+        "paired_deltas": [
+          -1.42,
+          -0.22000000000000064,
+          -0.0600000000000005
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-16559/cpu_system_seconds": {
+        "before_process_values": [
+          0.19,
+          0.23,
+          0.19
+        ],
+        "after_process_values": [
+          0.19,
+          0.15,
+          0.21
+        ],
+        "reference_spread_fraction": 0.21052631578947373,
+        "candidate_spread_fraction": 0.3157894736842105,
+        "paired_deltas": [
+          0.0,
+          -0.08000000000000002,
+          0.01999999999999999
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-17279/wall_ms": {
+        "before_process_values": [
+          2833.171686,
+          2884.1332859999998,
+          2679.628765
+        ],
+        "after_process_values": [
+          2655.4305,
+          2496.433052,
+          2384.2914419999997
+        ],
+        "reference_spread_fraction": 0.07218218437327692,
+        "candidate_spread_fraction": 0.10861058652575484,
+        "paired_deltas": [
+          -177.7411860000002,
+          -387.7002339999999,
+          -295.3373230000002
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-17279/cpu_user_seconds": {
+        "before_process_values": [
+          7.17,
+          7.56,
+          6.78
+        ],
+        "after_process_values": [
+          6.81,
+          6.4,
+          5.78
+        ],
+        "reference_spread_fraction": 0.108786610878661,
+        "candidate_spread_fraction": 0.1609374999999999,
+        "paired_deltas": [
+          -0.3600000000000003,
+          -1.1599999999999993,
+          -1.0
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-17279/cpu_system_seconds": {
+        "before_process_values": [
+          0.15,
+          0.22,
+          0.21
+        ],
+        "after_process_values": [
+          0.2,
+          0.16,
+          0.26
+        ],
+        "reference_spread_fraction": 0.33333333333333337,
+        "candidate_spread_fraction": 0.5,
+        "paired_deltas": [
+          0.05000000000000002,
+          -0.06,
+          0.05000000000000002
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-2160/wall_ms": {
+        "before_process_values": [
+          2689.666752,
+          2919.981815,
+          2797.5849980000003
+        ],
+        "after_process_values": [
+          2741.070404,
+          2908.298253,
+          2922.912653
+        ],
+        "reference_spread_fraction": 0.08232638620976762,
+        "candidate_spread_fraction": 0.06252530971072993,
+        "paired_deltas": [
+          51.403651999999965,
+          -11.683562000000165,
+          125.3276549999996
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-2160/cpu_user_seconds": {
+        "before_process_values": [
+          6.79,
+          7.64,
+          7.43
+        ],
+        "after_process_values": [
+          6.92,
+          7.57,
+          7.37
+        ],
+        "reference_spread_fraction": 0.11440107671601611,
+        "candidate_spread_fraction": 0.08819538670284943,
+        "paired_deltas": [
+          0.1299999999999999,
+          -0.0699999999999994,
+          -0.05999999999999961
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-2160/cpu_system_seconds": {
+        "before_process_values": [
+          0.14,
+          0.18,
+          0.19
+        ],
+        "after_process_values": [
+          0.21,
+          0.22,
+          0.21
+        ],
+        "reference_spread_fraction": 0.27777777777777773,
+        "candidate_spread_fraction": 0.047619047619047665,
+        "paired_deltas": [
+          0.06999999999999998,
+          0.04000000000000001,
+          0.01999999999999999
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median"
+        ]
+      },
+      "search_warm/query-2880/wall_ms": {
+        "before_process_values": [
+          2979.5122699999997,
+          2508.3632580000003,
+          3038.421801
+        ],
+        "after_process_values": [
+          2860.4221230000003,
+          2894.214691,
+          2596.396642
+        ],
+        "reference_spread_fraction": 0.1779011109761262,
+        "candidate_spread_fraction": 0.10411681779598653,
+        "paired_deltas": [
+          -119.09014699999943,
+          385.8514329999998,
+          -442.0251589999998
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-2880/cpu_user_seconds": {
+        "before_process_values": [
+          7.69,
+          6.45,
+          7.94
+        ],
+        "after_process_values": [
+          7.3,
+          7.59,
+          6.6
+        ],
+        "reference_spread_fraction": 0.19375812743823148,
+        "candidate_spread_fraction": 0.1356164383561644,
+        "paired_deltas": [
+          -0.39000000000000057,
+          1.1399999999999997,
+          -1.3400000000000007
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-2880/cpu_system_seconds": {
+        "before_process_values": [
+          0.25,
+          0.17,
+          0.22
+        ],
+        "after_process_values": [
+          0.24,
+          0.23,
+          0.22
+        ],
+        "reference_spread_fraction": 0.3636363636363636,
+        "candidate_spread_fraction": 0.08695652173913039,
+        "paired_deltas": [
+          -0.010000000000000009,
+          0.06,
+          0.0
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-3600/wall_ms": {
+        "before_process_values": [
+          2701.1071319999996,
+          2834.766231,
+          3145.01887
+        ],
+        "after_process_values": [
+          2914.9327359999997,
+          2920.183652,
+          2698.9424
+        ],
+        "reference_spread_fraction": 0.15659553621936745,
+        "candidate_spread_fraction": 0.07589926493590289,
+        "paired_deltas": [
+          213.8256040000001,
+          85.4174210000001,
+          -446.07647
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-3600/cpu_user_seconds": {
+        "before_process_values": [
+          6.8,
+          7.43,
+          8.4
+        ],
+        "after_process_values": [
+          7.41,
+          7.27,
+          6.71
+        ],
+        "reference_spread_fraction": 0.21534320323014813,
+        "candidate_spread_fraction": 0.09628610729023387,
+        "paired_deltas": [
+          0.6100000000000003,
+          -0.16000000000000014,
+          -1.6900000000000004
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-3600/cpu_system_seconds": {
+        "before_process_values": [
+          0.21,
+          0.23,
+          0.26
+        ],
+        "after_process_values": [
+          0.19,
+          0.22,
+          0.25
+        ],
+        "reference_spread_fraction": 0.21739130434782614,
+        "candidate_spread_fraction": 0.2727272727272727,
+        "paired_deltas": [
+          -0.01999999999999999,
+          -0.010000000000000009,
+          -0.010000000000000009
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-4320/wall_ms": {
+        "before_process_values": [
+          3055.395196,
+          2788.994157,
+          3167.418633
+        ],
+        "after_process_values": [
+          2544.928098,
+          3020.061143,
+          2703.604098
+        ],
+        "reference_spread_fraction": 0.12385451037411402,
+        "candidate_spread_fraction": 0.1757406142975894,
+        "paired_deltas": [
+          -510.4670980000001,
+          231.06698599999982,
+          -463.81453500000043
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-4320/cpu_user_seconds": {
+        "before_process_values": [
+          8.05,
+          7.19,
+          8.31
+        ],
+        "after_process_values": [
+          6.17,
+          7.9,
+          6.81
+        ],
+        "reference_spread_fraction": 0.1391304347826087,
+        "candidate_spread_fraction": 0.2540381791483114,
+        "paired_deltas": [
+          -1.8800000000000008,
+          0.71,
+          -1.5000000000000009
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-4320/cpu_system_seconds": {
+        "before_process_values": [
+          0.19,
+          0.18,
+          0.23
+        ],
+        "after_process_values": [
+          0.24,
+          0.25,
+          0.18
+        ],
+        "reference_spread_fraction": 0.2631578947368422,
+        "candidate_spread_fraction": 0.2916666666666667,
+        "paired_deltas": [
+          0.04999999999999999,
+          0.07,
+          -0.05000000000000002
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-5040/wall_ms": {
+        "before_process_values": [
+          2658.157349,
+          3058.4301219999998,
+          3163.903667
+        ],
+        "after_process_values": [
+          2802.376057,
+          2948.69253,
+          2888.262333
+        ],
+        "reference_spread_fraction": 0.1653614102091295,
+        "candidate_spread_fraction": 0.05065899704755103,
+        "paired_deltas": [
+          144.21870799999988,
+          -109.73759199999995,
+          -275.6413339999999
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-5040/cpu_user_seconds": {
+        "before_process_values": [
+          6.84,
+          7.93,
+          8.24
+        ],
+        "after_process_values": [
+          7.32,
+          7.65,
+          7.26
+        ],
+        "reference_spread_fraction": 0.17654476670870117,
+        "candidate_spread_fraction": 0.05327868852459024,
+        "paired_deltas": [
+          0.4800000000000004,
+          -0.27999999999999936,
+          -0.9800000000000004
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-5040/cpu_system_seconds": {
+        "before_process_values": [
+          0.16,
+          0.18,
+          0.28
+        ],
+        "after_process_values": [
+          0.18,
+          0.21,
+          0.23
+        ],
+        "reference_spread_fraction": 0.6666666666666669,
+        "candidate_spread_fraction": 0.2380952380952382,
+        "paired_deltas": [
+          0.01999999999999999,
+          0.03,
+          -0.05000000000000002
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-5760/wall_ms": {
+        "before_process_values": [
+          2679.836461,
+          2894.450487,
+          3018.591197
+        ],
+        "after_process_values": [
+          2748.836472,
+          2649.67615,
+          2939.086755
+        ],
+        "reference_spread_fraction": 0.11703594085352903,
+        "candidate_spread_fraction": 0.10528476609939277,
+        "paired_deltas": [
+          69.00001100000009,
+          -244.7743370000003,
+          -79.50444200000038
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-5760/cpu_user_seconds": {
+        "before_process_values": [
+          6.69,
+          7.56,
+          8.28
+        ],
+        "after_process_values": [
+          7.08,
+          6.43,
+          7.65
+        ],
+        "reference_spread_fraction": 0.21031746031746018,
+        "candidate_spread_fraction": 0.17231638418079104,
+        "paired_deltas": [
+          0.3899999999999997,
+          -1.13,
+          -0.629999999999999
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-5760/cpu_system_seconds": {
+        "before_process_values": [
+          0.2,
+          0.21,
+          0.24
+        ],
+        "after_process_values": [
+          0.2,
+          0.29,
+          0.24
+        ],
+        "reference_spread_fraction": 0.19047619047619038,
+        "candidate_spread_fraction": 0.3749999999999999,
+        "paired_deltas": [
+          0.0,
+          0.07999999999999999,
+          0.0
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-6480/wall_ms": {
+        "before_process_values": [
+          2668.657106,
+          2405.2869499999997,
+          3057.0054990000003
+        ],
+        "after_process_values": [
+          2894.533477,
+          2633.252519,
+          2983.163303
+        ],
+        "reference_spread_fraction": 0.2442121723074604,
+        "candidate_spread_fraction": 0.12088676354251739,
+        "paired_deltas": [
+          225.87637099999984,
+          227.96556900000041,
+          -73.84219600000051
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-6480/cpu_user_seconds": {
+        "before_process_values": [
+          6.62,
+          6.05,
+          8.3
+        ],
+        "after_process_values": [
+          7.47,
+          6.68,
+          7.81
+        ],
+        "reference_spread_fraction": 0.33987915407854996,
+        "candidate_spread_fraction": 0.15127175368139223,
+        "paired_deltas": [
+          0.8499999999999996,
+          0.6299999999999999,
+          -0.4900000000000011
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-6480/cpu_system_seconds": {
+        "before_process_values": [
+          0.16,
+          0.12,
+          0.23
+        ],
+        "after_process_values": [
+          0.3,
+          0.27,
+          0.24
+        ],
+        "reference_spread_fraction": 0.6875000000000001,
+        "candidate_spread_fraction": 0.2222222222222222,
+        "paired_deltas": [
+          0.13999999999999999,
+          0.15000000000000002,
+          0.009999999999999981
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-720/wall_ms": {
+        "before_process_values": [
+          2626.0175390000004,
+          2700.795665,
+          2637.663299
+        ],
+        "after_process_values": [
+          2833.402861,
+          2953.407056,
+          2604.6431669999997
+        ],
+        "reference_spread_fraction": 0.028350140834256535,
+        "candidate_spread_fraction": 0.1230901167640207,
+        "paired_deltas": [
+          207.38532199999963,
+          252.6113909999999,
+          -33.0201320000001
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-720/cpu_user_seconds": {
+        "before_process_values": [
+          6.52,
+          7.09,
+          6.46
+        ],
+        "after_process_values": [
+          7.02,
+          7.17,
+          6.6
+        ],
+        "reference_spread_fraction": 0.09662576687116563,
+        "candidate_spread_fraction": 0.08119658119658124,
+        "paired_deltas": [
+          0.5,
+          0.08000000000000007,
+          0.13999999999999968
+        ],
+        "withhold_comparison": false,
+        "reasons": []
+      },
+      "search_warm/query-720/cpu_system_seconds": {
+        "before_process_values": [
+          0.19,
+          0.2,
+          0.19
+        ],
+        "after_process_values": [
+          0.17,
+          0.24,
+          0.22
+        ],
+        "reference_spread_fraction": 0.05263157894736847,
+        "candidate_spread_fraction": 0.31818181818181807,
+        "paired_deltas": [
+          -0.01999999999999999,
+          0.03999999999999998,
+          0.03
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-7200/wall_ms": {
+        "before_process_values": [
+          2673.312136,
+          2698.7073280000004,
+          2979.235846
+        ],
+        "after_process_values": [
+          2819.608398,
+          3018.128815,
+          3053.106102
+        ],
+        "reference_spread_fraction": 0.11335935054014126,
+        "candidate_spread_fraction": 0.07736505573901435,
+        "paired_deltas": [
+          146.29626199999984,
+          319.4214869999996,
+          73.87025600000015
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median"
+        ]
+      },
+      "search_warm/query-7200/cpu_user_seconds": {
+        "before_process_values": [
+          6.85,
+          6.81,
+          7.84
+        ],
+        "after_process_values": [
+          7.27,
+          7.98,
+          7.39
+        ],
+        "reference_spread_fraction": 0.15036496350364967,
+        "candidate_spread_fraction": 0.09607577807848455,
+        "paired_deltas": [
+          0.41999999999999993,
+          1.1700000000000008,
+          -0.4500000000000002
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-7200/cpu_system_seconds": {
+        "before_process_values": [
+          0.19,
+          0.22,
+          0.21
+        ],
+        "after_process_values": [
+          0.23,
+          0.23,
+          0.28
+        ],
+        "reference_spread_fraction": 0.14285714285714285,
+        "candidate_spread_fraction": 0.21739130434782614,
+        "paired_deltas": [
+          0.04000000000000001,
+          0.010000000000000009,
+          0.07000000000000003
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-7920/wall_ms": {
+        "before_process_values": [
+          2780.603821,
+          2856.1260819999998,
+          3022.159558
+        ],
+        "after_process_values": [
+          2773.963979,
+          3166.6741150000003,
+          2957.686291
+        ],
+        "reference_spread_fraction": 0.0845746056248506,
+        "candidate_spread_fraction": 0.13277612882575995,
+        "paired_deltas": [
+          -6.639842000000044,
+          310.5480330000005,
+          -64.47326699999985
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-7920/cpu_user_seconds": {
+        "before_process_values": [
+          7.03,
+          7.51,
+          8.22
+        ],
+        "after_process_values": [
+          7.18,
+          8.24,
+          7.39
+        ],
+        "reference_spread_fraction": 0.1584553928095873,
+        "candidate_spread_fraction": 0.14343707713125853,
+        "paired_deltas": [
+          0.14999999999999947,
+          0.7300000000000004,
+          -0.830000000000001
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-7920/cpu_system_seconds": {
+        "before_process_values": [
+          0.19,
+          0.19,
+          0.22
+        ],
+        "after_process_values": [
+          0.21,
+          0.29,
+          0.25
+        ],
+        "reference_spread_fraction": 0.15789473684210525,
+        "candidate_spread_fraction": 0.31999999999999995,
+        "paired_deltas": [
+          0.01999999999999999,
+          0.09999999999999998,
+          0.03
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-8640/wall_ms": {
+        "before_process_values": [
+          2608.01636,
+          2715.372102,
+          3067.9258790000004
+        ],
+        "after_process_values": [
+          2797.894183,
+          2946.5731729999998,
+          2730.301798
+        ],
+        "reference_spread_fraction": 0.16937255805981624,
+        "candidate_spread_fraction": 0.07729791080522784,
+        "paired_deltas": [
+          189.8778229999998,
+          231.20107099999996,
+          -337.6240810000004
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-8640/cpu_user_seconds": {
+        "before_process_values": [
+          6.45,
+          6.87,
+          8.11
+        ],
+        "after_process_values": [
+          7.36,
+          7.58,
+          6.85
+        ],
+        "reference_spread_fraction": 0.24163027656477426,
+        "candidate_spread_fraction": 0.0991847826086957,
+        "paired_deltas": [
+          0.9100000000000001,
+          0.71,
+          -1.2599999999999998
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-8640/cpu_system_seconds": {
+        "before_process_values": [
+          0.2,
+          0.17,
+          0.25
+        ],
+        "after_process_values": [
+          0.2,
+          0.21,
+          0.29
+        ],
+        "reference_spread_fraction": 0.3999999999999999,
+        "candidate_spread_fraction": 0.42857142857142844,
+        "paired_deltas": [
+          0.0,
+          0.03999999999999998,
+          0.03999999999999998
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warm/query-9359/wall_ms": {
+        "before_process_values": [
+          2755.188487,
+          2745.595726,
+          2966.300562
+        ],
+        "after_process_values": [
+          2791.410162,
+          2809.9826759999996,
+          3052.671288
+        ],
+        "reference_spread_fraction": 0.08010516777395342,
+        "candidate_spread_fraction": 0.09297606288872363,
+        "paired_deltas": [
+          36.22167500000023,
+          64.38694999999962,
+          86.3707260000001
+        ],
+        "withhold_comparison": false,
+        "reasons": []
+      },
+      "search_warm/query-9359/cpu_user_seconds": {
+        "before_process_values": [
+          7.25,
+          6.91,
+          8.0
+        ],
+        "after_process_values": [
+          7.08,
+          7.47,
+          7.54
+        ],
+        "reference_spread_fraction": 0.15034482758620688,
+        "candidate_spread_fraction": 0.06157965194109772,
+        "paired_deltas": [
+          -0.16999999999999993,
+          0.5599999999999996,
+          -0.45999999999999996
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warm/query-9359/cpu_system_seconds": {
+        "before_process_values": [
+          0.15,
+          0.22,
+          0.21
+        ],
+        "after_process_values": [
+          0.21,
+          0.24,
+          0.24
+        ],
+        "reference_spread_fraction": 0.33333333333333337,
+        "candidate_spread_fraction": 0.125,
+        "paired_deltas": [
+          0.06,
+          0.01999999999999999,
+          0.03
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      },
+      "search_warmup/query-17999/wall_ms": {
+        "before_process_values": [
+          2642.373746,
+          2923.426902,
+          2802.3132090000004
+        ],
+        "after_process_values": [
+          2948.594459,
+          3132.02023,
+          2630.886476
+        ],
+        "reference_spread_fraction": 0.10029327025164798,
+        "candidate_spread_fraction": 0.16995682552084723,
+        "paired_deltas": [
+          306.2207129999997,
+          208.59332799999993,
+          -171.42673300000024
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warmup/query-17999/cpu_user_seconds": {
+        "before_process_values": [
+          6.52,
+          7.74,
+          7.34
+        ],
+        "after_process_values": [
+          7.6,
+          8.04,
+          6.36
+        ],
+        "reference_spread_fraction": 0.1662125340599456,
+        "candidate_spread_fraction": 0.22105263157894722,
+        "paired_deltas": [
+          1.08,
+          0.29999999999999893,
+          -0.9799999999999995
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warmup/query-17999/cpu_system_seconds": {
+        "before_process_values": [
+          0.21,
+          0.18,
+          0.15
+        ],
+        "after_process_values": [
+          0.27,
+          0.29,
+          0.27
+        ],
+        "reference_spread_fraction": 0.3333333333333333,
+        "candidate_spread_fraction": 0.07407407407407393,
+        "paired_deltas": [
+          0.060000000000000026,
+          0.10999999999999999,
+          0.12000000000000002
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median"
+        ]
+      },
+      "search_warmup/query-9000/wall_ms": {
+        "before_process_values": [
+          2720.3169479999997,
+          2721.4192869999997,
+          2889.486893
+        ],
+        "after_process_values": [
+          2874.413667,
+          2999.0835110000003,
+          2743.377647
+        ],
+        "reference_spread_fraction": 0.0621623965877332,
+        "candidate_spread_fraction": 0.08895931261935532,
+        "paired_deltas": [
+          154.09671900000012,
+          277.66422400000056,
+          -146.10924599999998
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warmup/query-9000/cpu_user_seconds": {
+        "before_process_values": [
+          6.73,
+          6.9,
+          7.75
+        ],
+        "after_process_values": [
+          7.33,
+          7.45,
+          6.48
+        ],
+        "reference_spread_fraction": 0.14782608695652166,
+        "candidate_spread_fraction": 0.13233287858117324,
+        "paired_deltas": [
+          0.5999999999999996,
+          0.5499999999999998,
+          -1.2699999999999996
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median",
+          "paired delta sign reversal"
+        ]
+      },
+      "search_warmup/query-9000/cpu_system_seconds": {
+        "before_process_values": [
+          0.17,
+          0.16,
+          0.17
+        ],
+        "after_process_values": [
+          0.29,
+          0.39,
+          0.32
+        ],
+        "reference_spread_fraction": 0.058823529411764754,
+        "candidate_spread_fraction": 0.3125000000000001,
+        "paired_deltas": [
+          0.11999999999999997,
+          0.23,
+          0.15
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "candidate spread >10% of median"
+        ]
+      },
+      "write_and_memory_drain/wall_ms": {
+        "before_process_values": [
+          1405.1992950000001,
+          1684.502113,
+          1475.758326
+        ],
+        "after_process_values": [
+          1387.231162,
+          1409.891071,
+          1388.00918
+        ],
+        "reference_spread_fraction": 0.18926054021124317,
+        "candidate_spread_fraction": 0.016325474879063818,
+        "paired_deltas": [
+          -17.96813300000008,
+          -274.611042,
+          -87.74914599999988
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median"
+        ]
+      },
+      "write_and_memory_drain/cpu_user_seconds": {
+        "before_process_values": [
+          1.23,
+          1.27,
+          1.27
+        ],
+        "after_process_values": [
+          1.3,
+          1.29,
+          1.21
+        ],
+        "reference_spread_fraction": 0.03149606299212601,
+        "candidate_spread_fraction": 0.06976744186046517,
+        "paired_deltas": [
+          0.07000000000000006,
+          0.020000000000000018,
+          -0.06000000000000005
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "paired delta sign reversal"
+        ]
+      },
+      "write_and_memory_drain/cpu_system_seconds": {
+        "before_process_values": [
+          0.27,
+          0.51,
+          0.29
+        ],
+        "after_process_values": [
+          0.19,
+          0.22,
+          0.26
+        ],
+        "reference_spread_fraction": 0.8275862068965517,
+        "candidate_spread_fraction": 0.31818181818181823,
+        "paired_deltas": [
+          -0.08000000000000002,
+          -0.29000000000000004,
+          -0.02999999999999997
+        ],
+        "withhold_comparison": true,
+        "reasons": [
+          "reference spread >10% of median",
+          "candidate spread >10% of median"
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "scope": "Subprocess elapsed including spawn/open/write/flush/upkeep/28searchcalls/shutdown/log output/in-process diagnostics; excludes copying and parent postparse/provider checks. Descriptive medians of3 rotated processes, not a pure-search latency or stable gain claim.",
+  "arms": {
+    "predecessor": {
+      "process_seconds": [
+        88.68052574799913,
+        88.39977175700005,
+        89.04015931899994
+      ],
+      "median_seconds": 88.68052574799913
+    },
+    "candidate": {
+      "process_seconds": [
+        80.2596307549993,
+        82.18011751799895,
+        80.92644889400071
+      ],
+      "median_seconds": 80.92644889400071
+    },
+    "main": {
+      "process_seconds": [
+        88.60569450299954,
+        89.83000090400128,
+        94.07301332699899
+      ],
+      "median_seconds": 89.83000090400128
+    }
+  },
+  "comparisons": {
+    "predecessor": {
+      "before": 88.68052574799913,
+      "after": 80.92644889400071,
+      "absolute_difference": -7.754076853998413,
+      "percentage_change": -8.743832750871311
+    },
+    "main": {
+      "before": 89.83000090400128,
+      "after": 80.92644889400071,
+      "absolute_difference": -8.903552010000567,
+      "percentage_change": -9.91155729756202
+    }
+  }
+}

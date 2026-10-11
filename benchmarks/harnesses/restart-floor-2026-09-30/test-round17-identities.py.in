@@ -1,0 +1,52 @@
+"""Tiny prospective identity mocks, no native process or product execution."""
+import ast,hashlib,json,os,runpy,subprocess,sys,tempfile
+from pathlib import Path
+from unittest.mock import patch
+sys.dont_write_bytecode=True
+root=Path(__file__).resolve().parent;repo=root.parents[2]
+before='--before' in sys.argv;base='3a84478496fcfb0e225c9fe65c54c41b8ada1679'
+source=root/'run-guarded.py.in';text=source.read_text()
+if before:text=subprocess.check_output(['git','show',base+':'+str(source.relative_to(repo))],cwd=repo,text=True)
+g={'__file__':str(source),'__name__':'fixture'};exec(compile(text,str(source),'exec'),g)
+with tempfile.TemporaryDirectory() as tmp:
+ p=Path(tmp);att=p/'attestation.json';first=b'{"commit":"first"}';second=b'{"commit":"second"}'
+ att.write_bytes(first)
+ if before:
+  original=Path.read_text
+  def read(path,*args,**kwargs):
+   value=original(path,*args,**kwargs)
+   if path==att:att.write_bytes(second)
+   return value
+  with patch.object(Path,'read_text',read):value=json.loads(att.read_text());digest=g['digest'](att)
+  assert value['commit']=='first' and digest==hashlib.sha256(second).hexdigest()
+ else:
+  original=Path.read_bytes
+  def read(path):
+   value=original(path)
+   if path==att:att.write_bytes(second)
+   return value
+  with patch.object(Path,'read_bytes',read):value,digest=g['read_attestation'](att)
+  assert value['commit']=='first' and digest==hashlib.sha256(first).hexdigest()
+  tree=ast.parse(text);main=next(x for x in tree.body if isinstance(x,ast.FunctionDef) and x.name=='main')
+  assert any(isinstance(x,ast.Call) and isinstance(x.func,ast.Name) and x.func.id=='read_attestation' for x in ast.walk(main))
+  assert not any(isinstance(x,ast.Call) and isinstance(x.func,ast.Name) and x.func.id=='digest' and ast.unparse(x.args[0])=='a.attestation' for x in ast.walk(main))
+ models=p/'models';models.mkdir();seed=p/'seed';(seed/'index').mkdir(parents=True);(seed/'postgres/data').mkdir(parents=True);(seed/'models').symlink_to(models,target_is_directory=True)
+ index=seed/'index/data';index.write_bytes(b'fixture');expected=g['fixture_snapshot'](seed,models)
+ original_stat=Path.stat;original_lstat=Path.lstat
+ class Allocation:
+  def __init__(self,actual):self.actual=actual
+  def __getattr__(self,key):return self.actual.st_blocks+8 if key=='st_blocks' else getattr(self.actual,key)
+ def stat(path,*args,**kwargs):
+  actual=original_stat(path,*args,**kwargs);return Allocation(actual) if path==index else actual
+ def lstat(path,*args,**kwargs):
+  actual=original_stat(path,follow_symlinks=False);return Allocation(actual) if path==index else actual
+ with patch.object(Path,'stat',stat),patch.object(Path,'lstat',lstat):
+  if before:g['verify_fixture'](seed,expected)
+  else:
+   try:g['verify_fixture'](seed,expected)
+   except AssertionError as error:assert 'fixture differs' in str(error)
+   else:raise AssertionError('changed allocation accepted')
+ if not before:
+  actual=g['verify_fixture'](seed,expected)
+  assert expected['version']==2 and actual['index_allocated_bytes']==original_stat(index).st_blocks*512
+print('BEFORE: attestation parsed/hash bytes diverge; changed allocation accepted' if before else 'PASS: attestation hash binds parsed bytes; changed index allocation rejected; positive allocation receipt matches')

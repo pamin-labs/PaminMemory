@@ -1,0 +1,125 @@
+{
+  "method": "exact native compare/family,12 prespecified group-metric cells, signs aligned over157 query IDs; zero differences outside each group",
+  "cells": [
+    {
+      "group": "cross_lingual",
+      "metric": "ndcg10",
+      "delta": -0.000870480770636835,
+      "wins": 1,
+      "losses": 1,
+      "ties": 41,
+      "raw_p": 1,
+      "family_p": 1
+    },
+    {
+      "group": "cross_lingual",
+      "metric": "recall10",
+      "delta": 0,
+      "wins": 0,
+      "losses": 0,
+      "ties": 43,
+      "raw_p": 1,
+      "family_p": 1
+    },
+    {
+      "group": "cross_lingual",
+      "metric": "recall50",
+      "delta": 0,
+      "wins": 0,
+      "losses": 0,
+      "ties": 43,
+      "raw_p": 1,
+      "family_p": 1
+    },
+    {
+      "group": "monolingual",
+      "metric": "ndcg10",
+      "delta": 0,
+      "wins": 0,
+      "losses": 0,
+      "ties": 62,
+      "raw_p": 1,
+      "family_p": 1
+    },
+    {
+      "group": "monolingual",
+      "metric": "recall10",
+      "delta": 0,
+      "wins": 0,
+      "losses": 0,
+      "ties": 62,
+      "raw_p": 1,
+      "family_p": 1
+    },
+    {
+      "group": "monolingual",
+      "metric": "recall50",
+      "delta": 0,
+      "wins": 0,
+      "losses": 0,
+      "ties": 62,
+      "raw_p": 1,
+      "family_p": 1
+    },
+    {
+      "group": "lexical",
+      "metric": "ndcg10",
+      "delta": 0,
+      "wins": 0,
+      "losses": 0,
+      "ties": 32,
+      "raw_p": 1,
+      "family_p": 1
+    },
+    {
+      "group": "lexical",
+      "metric": "recall10",
+      "delta": 0,
+      "wins": 0,
+      "losses": 0,
+      "ties": 32,
+      "raw_p": 1,
+      "family_p": 1
+    },
+    {
+      "group": "lexical",
+      "metric": "recall50",
+      "delta": 0,
+      "wins": 0,
+      "losses": 0,
+      "ties": 32,
+      "raw_p": 1,
+      "family_p": 1
+    },
+    {
+      "group": "relational",
+      "metric": "ndcg10",
+      "delta": 0,
+      "wins": 0,
+      "losses": 0,
+      "ties": 20,
+      "raw_p": 1,
+      "family_p": 1
+    },
+    {
+      "group": "relational",
+      "metric": "recall10",
+      "delta": 0,
+      "wins": 0,
+      "losses": 0,
+      "ties": 20,
+      "raw_p": 1,
+      "family_p": 1
+    },
+    {
+      "group": "relational",
+      "metric": "recall50",
+      "delta": 0,
+      "wins": 0,
+      "losses": 0,
+      "ties": 20,
+      "raw_p": 1,
+      "family_p": 1
+    }
+  ]
+}

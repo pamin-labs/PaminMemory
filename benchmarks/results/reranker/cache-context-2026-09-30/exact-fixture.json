@@ -1,0 +1,942 @@
+{
+  "cases": [
+    {
+      "baseline": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29
+      ],
+      "documents": [
+        {
+          "fused_position": 0,
+          "shown": "feature_flag_ko: 기능 플래그의 기본값은 항상 꺼짐이며 예외는 문서로 남깁니다",
+          "topic": "feature_flag_ko",
+          "topic_id": "01a0f417-f9cc-73d2-a6ad-71c9b3ea8ce9"
+        },
+        {
+          "fused_position": 1,
+          "shown": "feature_flag_en: a feature flag that has been fully on for a month is removed rather than left in the code",
+          "topic": "feature_flag_en",
+          "topic_id": "01a0f417-f9c9-7422-bfa4-55db34f51c81"
+        },
+        {
+          "fused_position": 2,
+          "shown": "rollout control_en: gradual rollouts are gated by the feature flag service. it evaluates rules in under a millisecond and caches each answer for thirty seconds",
+          "topic": "rollout control_en",
+          "topic_id": "01a0f417-fa29-78a3-9d0c-251e567ae243"
+        },
+        {
+          "fused_position": 3,
+          "shown": "feature flag service: it evaluates rules in under a millisecond and caches each answer for thirty seconds. gradual rollouts are gated by the feature flag service",
+          "topic": "feature flag service",
+          "topic_id": "01a0f417-fa29-78a3-9d0c-2495a6b77f45"
+        },
+        {
+          "fused_position": 4,
+          "shown": "feature_flag_zh: 功能开关必须写明负责人和下线日期，过期会被自动提醒",
+          "topic": "feature_flag_zh",
+          "topic_id": "01a0f417-f9ca-7063-9ef4-6313b062aee8"
+        },
+        {
+          "fused_position": 5,
+          "shown": "feature_flag_ru: флаг функциональности нельзя включать сразу на всех, минимум две ступени",
+          "topic": "feature_flag_ru",
+          "topic_id": "01a0f417-f9cc-73d2-a6ad-7147b5c91129"
+        },
+        {
+          "fused_position": 6,
+          "shown": "cfg_ef_search: ef_search defaults to 300 in the engine and we had never set it from our side",
+          "topic": "cfg_ef_search",
+          "topic_id": "01a0f417-f9f7-7643-8acc-bff64a70dcb2"
+        },
+        {
+          "fused_position": 7,
+          "shown": "cache_invalidation_ja: キャッシュの無効化に失敗した場合は古い値が最大五分間返り続けます",
+          "topic": "cache_invalidation_ja",
+          "topic_id": "01a0f417-f969-7053-b504-9a83ebae3e28"
+        },
+        {
+          "fused_position": 8,
+          "shown": "expense_policy_ja: 経費精算は月末締めで、領収書の原本は不要になりました",
+          "topic": "expense_policy_ja",
+          "topic_id": "01a0f417-f9ab-7b10-82fa-02a070c8a1d7"
+        },
+        {
+          "fused_position": 9,
+          "shown": "search_indexing_th: การจัดทำดัชนีการค้นหาจะข้ามเอกสารที่ถูกลบไปแล้ว",
+          "topic": "search_indexing_th",
+          "topic_id": "01a0f417-f978-7962-a536-8bf66d12ec7d"
+        },
+        {
+          "fused_position": 10,
+          "shown": "password_reset_ja: パスワード再設定のリンクは一度使うと無効になり再送は三回までです",
+          "topic": "password_reset_ja",
+          "topic_id": "01a0f417-f96e-7920-a4ef-6e7c4bbe35a4"
+        },
+        {
+          "fused_position": 11,
+          "shown": "fn_retract_derived: retract_derived closes the derived edges of a kind out of a topic that the content no longer implies",
+          "topic": "fn_retract_derived",
+          "topic_id": "01a0f417-f9f8-7581-b699-94f40f7b9041"
+        },
+        {
+          "fused_position": 12,
+          "shown": "fn_repair_current_state: repair_current_state_pointers recomputes the pointer from the ledger and returns how many were wrong",
+          "topic": "fn_repair_current_state",
+          "topic_id": "01a0f417-f9f9-7950-ab74-78801c202960"
+        },
+        {
+          "fused_position": 13,
+          "shown": "cfg_max_connections: set max_connections=300 on the cluster or thirty agents exhaust the default of one hundred",
+          "topic": "cfg_max_connections",
+          "topic_id": "01a0f417-f98c-7741-b704-54f3825baa92"
+        },
+        {
+          "fused_position": 14,
+          "shown": "log_retention_fr: les journaux applicatifs sont anonymisés avant d'être exportés vers l'outil d'analyse",
+          "topic": "log_retention_fr",
+          "topic_id": "01a0f417-f9d3-7d92-9da5-44a5e2cee149"
+        },
+        {
+          "fused_position": 15,
+          "shown": "metric_ndcg10: nDCG@10 and recall@50 fail differently and a reranker can only fix the first of them",
+          "topic": "metric_ndcg10",
+          "topic_id": "01a0f417-fa06-7d91-ac1f-2311c385de27"
+        },
+        {
+          "fused_position": 16,
+          "shown": "api_versioning_ja: APIのバージョン廃止は半年前に告知し、利用者には個別に連絡します",
+          "topic": "api_versioning_ja",
+          "topic_id": "01a0f417-f9cf-7180-9197-d8e30fd4aeb1"
+        },
+        {
+          "fused_position": 17,
+          "shown": "path_projection_rs: the flush interval is decided in crates/pamin-index/src/projection.rs",
+          "topic": "path_projection_rs",
+          "topic_id": "01a0f417-f98b-7442-99f2-60ca592cd756"
+        },
+        {
+          "fused_position": 18,
+          "shown": "cfg_work_mem: work_mem defaults to 4MB which is why the two large sorts spill to disk",
+          "topic": "cfg_work_mem",
+          "topic_id": "01a0f417-f98d-79f2-a614-242ca3cc6b16"
+        },
+        {
+          "fused_position": 19,
+          "shown": "payment_refund_zh: 退款超过一万元需要财务二次审批，且不能拆单规避",
+          "topic": "payment_refund_zh",
+          "topic_id": "01a0f417-f979-74f2-8ddb-141f5a4f1048"
+        },
+        {
+          "fused_position": 20,
+          "shown": "fn_derive_mentions: derive_mentions segments the content once rather than once per topic",
+          "topic": "fn_derive_mentions",
+          "topic_id": "01a0f417-f98f-7423-b820-286143a87f04"
+        },
+        {
+          "fused_position": 21,
+          "shown": "log_retention_ru: логи с уровнем debug не выгружаются в централизованное хранилище",
+          "topic": "log_retention_ru",
+          "topic_id": "01a0f417-f9d3-7d92-9da5-44293db8747d"
+        },
+        {
+          "fused_position": 22,
+          "shown": "password_reset_en: the password reset flow sends a single use link that expires after fifteen minutes",
+          "topic": "password_reset_en",
+          "topic_id": "01a0f417-f96c-7bd0-9f6d-0e23fc097c45"
+        },
+        {
+          "fused_position": 23,
+          "shown": "shared build cache: entries are evicted after fourteen days with no reads",
+          "topic": "shared build cache",
+          "topic_id": "01a0f417-fa2e-7ed3-b2de-876c88bd76b7"
+        },
+        {
+          "fused_position": 24,
+          "shown": "payment_refund_es: los reembolsos parciales conservan el número de pedido original para la conciliación",
+          "topic": "payment_refund_es",
+          "topic_id": "01a0f417-f97b-7ff1-89f2-692e43f38a5c"
+        },
+        {
+          "fused_position": 25,
+          "shown": "cache_invalidation_ar: إبطال ذاكرة التخزين المؤقت يتم يدويا عند نشر إصدار كبير",
+          "topic": "cache_invalidation_ar",
+          "topic_id": "01a0f417-f96a-70e3-a7a5-1669885c931d"
+        },
+        {
+          "fused_position": 26,
+          "shown": "queue_backlog_ko: 큐 적체가 발생하면 오래된 메시지부터 처리하지 않고 우선순위 순으로 처리합니다",
+          "topic": "queue_backlog_ko",
+          "topic_id": "01a0f417-f9dd-7390-abcc-00c38be7a642"
+        },
+        {
+          "fused_position": 27,
+          "shown": "payment_refund_de: Rückerstattungen werden storniert, wenn die Bestellung bereits versandt wurde",
+          "topic": "payment_refund_de",
+          "topic_id": "01a0f417-f97c-7192-89eb-1f3e863ebf80"
+        },
+        {
+          "fused_position": 28,
+          "shown": "data_retention_en: raw event data is deleted after ninety days and only aggregates survive past that",
+          "topic": "data_retention_en",
+          "topic_id": "01a0f417-f9c5-7742-ba03-76cf6ce25b6d"
+        },
+        {
+          "fused_position": 29,
+          "shown": "log_retention_ko: 로그 보관 비용은 팀별로 청구되며 매월 검토합니다",
+          "topic": "log_retention_ko",
+          "topic_id": "01a0f417-f9d4-7fc0-9bb6-eb87a034380e"
+        },
+        {
+          "fused_position": 30,
+          "shown": "err_e5521: error E5521 is raised when the signing key has expired and is not the same as E5522",
+          "topic": "err_e5521",
+          "topic_id": "01a0f417-f989-7a33-bf85-657a7acac330"
+        },
+        {
+          "fused_position": 31,
+          "shown": "access_review_zh: 权限复核每季度一次，未通过复核的账号会被降级为只读",
+          "topic": "access_review_zh",
+          "topic_id": "01a0f417-f982-7322-aee4-d0f15f3dc0f5"
+        },
+        {
+          "fused_position": 32,
+          "shown": "translation_workflow_fr: la traduction part une semaine avant le gel du code et revient par lots",
+          "topic": "translation_workflow_fr",
+          "topic_id": "01a0f417-f9e4-7fa2-a70f-72ae30d386bb"
+        },
+        {
+          "fused_position": 33,
+          "shown": "queue_backlog_zh: 队列积压超过阈值会自动扩容消费者，但上限是八个实例",
+          "topic": "queue_backlog_zh",
+          "topic_id": "01a0f417-f9da-71f2-bf75-fdd065811b6c"
+        },
+        {
+          "fused_position": 34,
+          "shown": "build speed_en: compilation reuses the shared build cache across branches. entries are evicted after fourteen days with no reads",
+          "topic": "build speed_en",
+          "topic_id": "01a0f417-fa2f-73b1-9895-7a92192ea8b9"
+        },
+        {
+          "fused_position": 35,
+          "shown": "cfg_synchronous_commit: synchronous_commit stays on; measured it saves 0.22ms per write and costs 600ms of evidence",
+          "topic": "cfg_synchronous_commit",
+          "topic_id": "01a0f417-f9f6-7163-a678-1bc23dd93012"
+        },
+        {
+          "fused_position": 36,
+          "shown": "secret rotation schedule: every credential is replaced on the first of the month without anyone asking. service accounts follow the secret rotation schedule",
+          "topic": "secret rotation schedule",
+          "topic_id": "01a0f417-fa31-7050-b995-200fa6310744"
+        },
+        {
+          "fused_position": 37,
+          "shown": "schema migration window: it runs between two and four in the morning utc and only on tuesdays. deployments are frozen during the schema migration window",
+          "topic": "schema migration window",
+          "topic_id": "01a0f417-fa27-7f31-aa8d-79f5c1ff5353"
+        },
+        {
+          "fused_position": 38,
+          "shown": "translation_workflow_th: กระบวนการแปลจะข้ามข้อความที่ยังไม่ผ่านการรีวิว",
+          "topic": "translation_workflow_th",
+          "topic_id": "01a0f417-f9e7-72a3-84ed-f88b4cc430bd"
+        },
+        {
+          "fused_position": 39,
+          "shown": "rate_limiting_de: die Ratenbegrenzung zählt fehlgeschlagene Anfragen nicht gegen das Kontingent",
+          "topic": "rate_limiting_de",
+          "topic_id": "01a0f417-f965-7f30-b21a-8c5853834f32"
+        },
+        {
+          "fused_position": 40,
+          "shown": "laptop_replacement_ko: 노트북 교체 시 기존 기기의 디스크는 물리적으로 파쇄됩니다",
+          "topic": "laptop_replacement_ko",
+          "topic_id": "01a0f417-f9a8-79a3-8e29-7714ca5e4007"
+        },
+        {
+          "fused_position": 41,
+          "shown": "deploy_pipeline_zh: 部署流水线在每次合并到主干后自动触发，失败时会把变更回滚到上一个标签",
+          "topic": "deploy_pipeline_zh",
+          "topic_id": "01a0f417-f954-79f1-a858-3c8bf4e03f80"
+        },
+        {
+          "fused_position": 42,
+          "shown": "credential handling_en: service accounts follow the secret rotation schedule",
+          "topic": "credential handling_en",
+          "topic_id": "01a0f417-fa32-7692-a678-3fd70cdb7103"
+        },
+        {
+          "fused_position": 43,
+          "shown": "access_review_en: the quarterly access review removes permissions nobody has used in ninety days",
+          "topic": "access_review_en",
+          "topic_id": "01a0f417-f981-7450-977a-3a75206d936c"
+        },
+        {
+          "fused_position": 44,
+          "shown": "rate_limiting_ru: ограничение частоты запросов не применяется к внутренним сервисам внутри кластера",
+          "topic": "rate_limiting_ru",
+          "topic_id": "01a0f417-f964-7f20-8148-498bc82cfae0"
+        },
+        {
+          "fused_position": 45,
+          "shown": "office_wifi_ja: オフィスの無線ネットワークはゲスト用と社員用で完全に分離されています",
+          "topic": "office_wifi_ja",
+          "topic_id": "01a0f417-f9bc-7473-8f97-bca23beba4cd"
+        },
+        {
+          "fused_position": 46,
+          "shown": "noise_deploy_parachute: the reserve parachute deploys automatically below a set altitude and cannot be disabled",
+          "topic": "noise_deploy_parachute",
+          "topic_id": "01a0f417-fa1d-7120-9544-7ef603ae727c"
+        },
+        {
+          "fused_position": 47,
+          "shown": "deploy freeze_en: deployments are frozen during the schema migration window",
+          "topic": "deploy freeze_en",
+          "topic_id": "01a0f417-fa28-7583-ba3f-3c62642315ca"
+        },
+        {
+          "fused_position": 48,
+          "shown": "access_review_ko: 접근 권한 검토는 퇴사자 계정을 가장 먼저 확인합니다",
+          "topic": "access_review_ko",
+          "topic_id": "01a0f417-f982-7322-aee4-d17187b457ca"
+        },
+        {
+          "fused_position": 49,
+          "shown": "release bucket: objects in it expire after ninety days and the expiry cannot be set per team",
+          "topic": "release bucket",
+          "topic_id": "01a0f417-fa22-7920-973e-f4d9486f9f4a"
+        },
+        {
+          "fused_position": 50,
+          "shown": "rate_limiting_zh: 接口限流按令牌桶实现，超出配额返回 429 并带上重试等待秒数",
+          "topic": "rate_limiting_zh",
+          "topic_id": "01a0f417-f962-72d3-af57-a363bf82e28b"
+        },
+        {
+          "fused_position": 51,
+          "shown": "noise_reset_button: the reset button on the panel is recessed so it cannot be pressed by accident",
+          "topic": "noise_reset_button",
+          "topic_id": "01a0f417-fa1a-7e42-9238-2c051633943d"
+        },
+        {
+          "fused_position": 52,
+          "shown": "tbl_relationship_versions: relationship_versions carries tombstone_reason which is what separates closed from deleted",
+          "topic": "tbl_relationship_versions",
+          "topic_id": "01a0f417-fa02-7d73-9125-2a8af62af572"
+        },
+        {
+          "fused_position": 53,
+          "shown": "translation_workflow_zh: 翻译流程要求源文案冻结后才送翻，术语表由产品维护",
+          "topic": "translation_workflow_zh",
+          "topic_id": "01a0f417-f9e5-76f0-b2bf-31215f0d6b35"
+        },
+        {
+          "fused_position": 54,
+          "shown": "mobile_release_ja: モバイルアプリのリリースノートは社内向けと公開用で別々に書かれます",
+          "topic": "mobile_release_ja",
+          "topic_id": "01a0f417-f972-7771-a461-78f2297761ed"
+        },
+        {
+          "fused_position": 55,
+          "shown": "code_review_ja: コードレビューでは指摘の重要度を必ず明示することになっています",
+          "topic": "code_review_ja",
+          "topic_id": "01a0f417-f9b1-74c1-88d3-d546e2d61488"
+        },
+        {
+          "fused_position": 56,
+          "shown": "rate_limiting_ja: レート制限の上限は契約プランごとに異なり、上位プランでは十倍になります",
+          "topic": "rate_limiting_ja",
+          "topic_id": "01a0f417-f963-7af2-a034-31bad0c224b1"
+        },
+        {
+          "fused_position": 57,
+          "shown": "incident_postmortem_ja: 障害の事後検証では再発防止策に必ず担当チームと期限を書きます",
+          "topic": "incident_postmortem_ja",
+          "topic_id": "01a0f417-f986-7592-9eac-3e2788ae1237"
+        },
+        {
+          "fused_position": 58,
+          "shown": "oncall_rota_ja: オンコール担当者は深夜のアラートに十五分以内に応答することになっています",
+          "topic": "oncall_rota_ja",
+          "topic_id": "01a0f417-f95f-71a2-9c26-335c8eb5522a"
+        },
+        {
+          "fused_position": 59,
+          "shown": "laptop_replacement_zh: 笔记本更换申请由直属主管批准，旧机需要在两周内交还并抹除",
+          "topic": "laptop_replacement_zh",
+          "topic_id": "01a0f417-f9a8-79a3-8e29-7695de0bd3fd"
+        },
+        {
+          "fused_position": 60,
+          "shown": "ssl_certificate_ja: 証明書の有効期限切れは過去二回とも監視ではなく利用者から報告されました",
+          "topic": "ssl_certificate_ja",
+          "topic_id": "01a0f417-f9e0-7170-8723-c40f37b17249"
+        },
+        {
+          "fused_position": 61,
+          "shown": "hiring_loop_zh: 面试流程固定为四轮，其中一轮由未来的同级同事主持",
+          "topic": "hiring_loop_zh",
+          "topic_id": "01a0f417-f9b3-7982-8cbb-5d1a35a41212"
+        },
+        {
+          "fused_position": 62,
+          "shown": "data_retention_ja: データ保持期間の延長には法務の承認が必要です",
+          "topic": "data_retention_ja",
+          "topic_id": "01a0f417-f9c7-7c13-ac4b-9b5b104571db"
+        },
+        {
+          "fused_position": 63,
+          "shown": "database_backup_ja: データベースのバックアップからの復旧には平均で四十分かかります",
+          "topic": "database_backup_ja",
+          "topic_id": "01a0f417-f95b-7fe2-b900-96acb9622af2"
+        },
+        {
+          "fused_position": 64,
+          "shown": "password_reset_zh: 密码重置流程要求二次验证，连续失败五次会锁定账号一小时",
+          "topic": "password_reset_zh",
+          "topic_id": "01a0f417-f96d-78f3-a6e0-9e8cbee1370f"
+        },
+        {
+          "fused_position": 65,
+          "shown": "security_patch_zh: 安全补丁按严重级别定时限，最高级别要求二十四小时内上线",
+          "topic": "security_patch_zh",
+          "topic_id": "01a0f417-f9ed-7622-bdd1-c039eed88028"
+        },
+        {
+          "fused_position": 66,
+          "shown": "deploy_pipeline_ja: デプロイパイプラインの実行ログは東京リージョンのバケットに三十日間保存されます",
+          "topic": "deploy_pipeline_ja",
+          "topic_id": "01a0f417-f956-7341-9720-e2681173db4f"
+        },
+        {
+          "fused_position": 67,
+          "shown": "warehouse_stock_ja: 倉庫の在庫データは深夜のバッチで会計システムに転記されます",
+          "topic": "warehouse_stock_ja",
+          "topic_id": "01a0f417-f97f-75c3-8d13-3671ed69d783"
+        },
+        {
+          "fused_position": 68,
+          "shown": "translation_workflow_ja: 翻訳の品質確認は母語話者が担当し、機械翻訳の下訳は許容されます",
+          "topic": "translation_workflow_ja",
+          "topic_id": "01a0f417-f9e6-7a43-9bcb-a4e25490767c"
+        },
+        {
+          "fused_position": 69,
+          "shown": "search_indexing_ja: 検索インデックスは言語ごとに分かち書きしてから登録されます",
+          "topic": "search_indexing_ja",
+          "topic_id": "01a0f417-f976-7a43-924c-94338efe3801"
+        },
+        {
+          "fused_position": 70,
+          "shown": "payment_refund_ja: 返金処理は元の通貨で行われ、為替差額は請求されません",
+          "topic": "payment_refund_ja",
+          "topic_id": "01a0f417-f97a-75f2-83ec-3016e8aeb0ec"
+        },
+        {
+          "fused_position": 71,
+          "shown": "vpn_access_ja: VPN の同時接続は一人あたり二台までに制限されています",
+          "topic": "vpn_access_ja",
+          "topic_id": "01a0f417-f9a5-75b0-9630-498b325e6f3a"
+        },
+        {
+          "fused_position": 72,
+          "shown": "disaster_recovery_ja: 災害復旧の訓練は年二回、うち一回は予告なしで実施されます",
+          "topic": "disaster_recovery_ja",
+          "topic_id": "01a0f417-f9d6-7400-b352-5d180ab630e5"
+        }
+      ],
+      "pooled": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        45
+      ],
+      "query": "フィーチャーフラグの既定値と削除",
+      "query_id": 80,
+      "targets": [
+        5
+      ]
+    },
+    {
+      "baseline": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29
+      ],
+      "documents": [
+        {
+          "fused_position": 0,
+          "shown": "rate_limiting_zh: 接口限流按令牌桶实现，超出配额返回 429 并带上重试等待秒数",
+          "topic": "rate_limiting_zh",
+          "topic_id": "01a0f417-f962-72d3-af57-a363bf82e28b"
+        },
+        {
+          "fused_position": 1,
+          "shown": "rate_limiting_en: api rate limiting allows six hundred requests per minute per token before it starts rejecting",
+          "topic": "rate_limiting_en",
+          "topic_id": "01a0f417-f961-77d2-97a1-5972c988c03e"
+        },
+        {
+          "fused_position": 2,
+          "shown": "rate limit budget: each tenant gets six hundred requests a minute and may burst to nine hundred. the gateway enforces the rate limit budget on every route",
+          "topic": "rate limit budget",
+          "topic_id": "01a0f417-fa2f-73b1-9895-7b113281f538"
+        },
+        {
+          "fused_position": 3,
+          "shown": "queue_backlog_zh: 队列积压超过阈值会自动扩容消费者，但上限是八个实例",
+          "topic": "queue_backlog_zh",
+          "topic_id": "01a0f417-f9da-71f2-bf75-fdd065811b6c"
+        },
+        {
+          "fused_position": 4,
+          "shown": "expense_policy_ko: 출장 경비는 사전 승인 없이는 상한선을 넘을 수 없습니다",
+          "topic": "expense_policy_ko",
+          "topic_id": "01a0f417-f9ac-7893-a1b8-0e452ac0751c"
+        },
+        {
+          "fused_position": 5,
+          "shown": "api gateway_en: the gateway enforces the rate limit budget on every route. each tenant gets six hundred requests a minute and may burst to nine hundred",
+          "topic": "api gateway_en",
+          "topic_id": "01a0f417-fa30-7fe3-9c9c-4c07dd118cc9"
+        },
+        {
+          "fused_position": 6,
+          "shown": "rate_limiting_ja: レート制限の上限は契約プランごとに異なり、上位プランでは十倍になります",
+          "topic": "rate_limiting_ja",
+          "topic_id": "01a0f417-f963-7af2-a034-31bad0c224b1"
+        },
+        {
+          "fused_position": 7,
+          "shown": "oncall_rota_ja: オンコール担当者は深夜のアラートに十五分以内に応答することになっています",
+          "topic": "oncall_rota_ja",
+          "topic_id": "01a0f417-f95f-71a2-9c26-335c8eb5522a"
+        },
+        {
+          "fused_position": 8,
+          "shown": "cfg_max_connections: set max_connections=300 on the cluster or thirty agents exhaust the default of one hundred",
+          "topic": "cfg_max_connections",
+          "topic_id": "01a0f417-f98c-7741-b704-54f3825baa92"
+        },
+        {
+          "fused_position": 9,
+          "shown": "cache_invalidation_zh: 缓存失效采用写时广播，跨区域传播大约需要两秒",
+          "topic": "cache_invalidation_zh",
+          "topic_id": "01a0f417-f968-7980-bb8c-4d0e3a72d8fd"
+        },
+        {
+          "fused_position": 10,
+          "shown": "customer_support_sla_es: el soporte al cliente escala automáticamente si no hay respuesta en cuatro horas",
+          "topic": "customer_support_sla_es",
+          "topic_id": "01a0f417-f9e9-7f73-8e89-b5520e5379cd"
+        },
+        {
+          "fused_position": 11,
+          "shown": "feature flag service: it evaluates rules in under a millisecond and caches each answer for thirty seconds. gradual rollouts are gated by the feature flag service",
+          "topic": "feature flag service",
+          "topic_id": "01a0f417-fa29-78a3-9d0c-2495a6b77f45"
+        },
+        {
+          "fused_position": 12,
+          "shown": "payment_refund_zh: 退款超过一万元需要财务二次审批，且不能拆单规避",
+          "topic": "payment_refund_zh",
+          "topic_id": "01a0f417-f979-74f2-8ddb-141f5a4f1048"
+        },
+        {
+          "fused_position": 13,
+          "shown": "queue_backlog_en: a queue backlog over ten thousand messages pages the oncall rather than waiting for business hours",
+          "topic": "queue_backlog_en",
+          "topic_id": "01a0f417-f9d9-7201-b4f2-dd0fd8ca8d16"
+        },
+        {
+          "fused_position": 14,
+          "shown": "feature_flag_zh: 功能开关必须写明负责人和下线日期，过期会被自动提醒",
+          "topic": "feature_flag_zh",
+          "topic_id": "01a0f417-f9ca-7063-9ef4-6313b062aee8"
+        },
+        {
+          "fused_position": 15,
+          "shown": "translation_workflow_th: กระบวนการแปลจะข้ามข้อความที่ยังไม่ผ่านการรีวิว",
+          "topic": "translation_workflow_th",
+          "topic_id": "01a0f417-f9e7-72a3-84ed-f88b4cc430bd"
+        },
+        {
+          "fused_position": 16,
+          "shown": "customer_support_sla_en: support answers within one business day and within two hours for anything marked outage",
+          "topic": "customer_support_sla_en",
+          "topic_id": "01a0f417-f9e8-74f3-b427-8520db37434c"
+        },
+        {
+          "fused_position": 17,
+          "shown": "queue_backlog_ko: 큐 적체가 발생하면 오래된 메시지부터 처리하지 않고 우선순위 순으로 처리합니다",
+          "topic": "queue_backlog_ko",
+          "topic_id": "01a0f417-f9dd-7390-abcc-00c38be7a642"
+        },
+        {
+          "fused_position": 18,
+          "shown": "rate_limiting_de: die Ratenbegrenzung zählt fehlgeschlagene Anfragen nicht gegen das Kontingent",
+          "topic": "rate_limiting_de",
+          "topic_id": "01a0f417-f965-7f30-b21a-8c5853834f32"
+        },
+        {
+          "fused_position": 19,
+          "shown": "access_review_th: การตรวจสอบสิทธิ์เข้าถึงครอบคลุมทั้งบัญชีคนและบัญชีบริการ",
+          "topic": "access_review_th",
+          "topic_id": "01a0f417-f984-76e1-a8cd-6295f6e59f25"
+        },
+        {
+          "fused_position": 20,
+          "shown": "access_review_zh: 权限复核每季度一次，未通过复核的账号会被降级为只读",
+          "topic": "access_review_zh",
+          "topic_id": "01a0f417-f982-7322-aee4-d0f15f3dc0f5"
+        },
+        {
+          "fused_position": 21,
+          "shown": "rollout control_en: gradual rollouts are gated by the feature flag service. it evaluates rules in under a millisecond and caches each answer for thirty seconds",
+          "topic": "rollout control_en",
+          "topic_id": "01a0f417-fa29-78a3-9d0c-251e567ae243"
+        },
+        {
+          "fused_position": 22,
+          "shown": "rate_limiting_ru: ограничение частоты запросов не применяется к внутренним сервисам внутри кластера",
+          "topic": "rate_limiting_ru",
+          "topic_id": "01a0f417-f964-7f20-8148-498bc82cfae0"
+        },
+        {
+          "fused_position": 23,
+          "shown": "vpn_access_th: การเข้าถึง VPN จากต่างประเทศต้องขออนุมัติล่วงหน้า",
+          "topic": "vpn_access_th",
+          "topic_id": "01a0f417-f9a5-75b0-9630-4a0b73991c30"
+        },
+        {
+          "fused_position": 24,
+          "shown": "noise_deploy_parachute: the reserve parachute deploys automatically below a set altitude and cannot be disabled",
+          "topic": "noise_deploy_parachute",
+          "topic_id": "01a0f417-fa1d-7120-9544-7ef603ae727c"
+        },
+        {
+          "fused_position": 25,
+          "shown": "data_retention_ja: データ保持期間の延長には法務の承認が必要です",
+          "topic": "data_retention_ja",
+          "topic_id": "01a0f417-f9c7-7c13-ac4b-9b5b104571db"
+        },
+        {
+          "fused_position": 26,
+          "shown": "access_review_fr: la revue des accès est signée par le responsable de chaque équipe",
+          "topic": "access_review_fr",
+          "topic_id": "01a0f417-f983-7e90-bcf6-506627452ac2"
+        },
+        {
+          "fused_position": 27,
+          "shown": "incident escalation_en: a sev one escalates to the platform rota within five minutes",
+          "topic": "incident escalation_en",
+          "topic_id": "01a0f417-fa24-7442-af93-080893819341"
+        },
+        {
+          "fused_position": 28,
+          "shown": "security_patch_zh: 安全补丁按严重级别定时限，最高级别要求二十四小时内上线",
+          "topic": "security_patch_zh",
+          "topic_id": "01a0f417-f9ed-7622-bdd1-c039eed88028"
+        },
+        {
+          "fused_position": 29,
+          "shown": "oncall_rota_ko: 온콜 순번은 휴가 일정과 자동으로 맞춰지며 주말은 두 명이 함께 담당합니다",
+          "topic": "oncall_rota_ko",
+          "topic_id": "01a0f417-f960-7472-8354-6571af20367a"
+        },
+        {
+          "fused_position": 30,
+          "shown": "code_review_th: การรีวิวโค้ดจะต้องเสร็จภายในสองวันทำการ",
+          "topic": "code_review_th",
+          "topic_id": "01a0f417-f9b2-7511-a77a-e4d8d6e41053"
+        },
+        {
+          "fused_position": 31,
+          "shown": "translation_workflow_ja: 翻訳の品質確認は母語話者が担当し、機械翻訳の下訳は許容されます",
+          "topic": "translation_workflow_ja",
+          "topic_id": "01a0f417-f9e6-7a43-9bcb-a4e25490767c"
+        },
+        {
+          "fused_position": 32,
+          "shown": "cache_invalidation_ja: キャッシュの無効化に失敗した場合は古い値が最大五分間返り続けます",
+          "topic": "cache_invalidation_ja",
+          "topic_id": "01a0f417-f969-7053-b504-9a83ebae3e28"
+        },
+        {
+          "fused_position": 33,
+          "shown": "mobile_release_en: the mobile app release goes to five percent of users first and widens over three days",
+          "topic": "mobile_release_en",
+          "topic_id": "01a0f417-f970-7581-8bb2-682307f28335"
+        },
+        {
+          "fused_position": 34,
+          "shown": "warehouse_stock_en: warehouse inventory counts happen quarterly and discrepancies over one percent are investigated",
+          "topic": "warehouse_stock_en",
+          "topic_id": "01a0f417-f97d-7b23-995d-35fea590b6e7"
+        },
+        {
+          "fused_position": 35,
+          "shown": "compliance export_en: the quarterly compliance export reads from the audit log stream",
+          "topic": "compliance export_en",
+          "topic_id": "01a0f417-fa2b-71f0-bf03-7f9af6a2339f"
+        },
+        {
+          "fused_position": 36,
+          "shown": "translation_workflow_zh: 翻译流程要求源文案冻结后才送翻，术语表由产品维护",
+          "topic": "translation_workflow_zh",
+          "topic_id": "01a0f417-f9e5-76f0-b2bf-31215f0d6b35"
+        },
+        {
+          "fused_position": 37,
+          "shown": "password_reset_en: the password reset flow sends a single use link that expires after fifteen minutes",
+          "topic": "password_reset_en",
+          "topic_id": "01a0f417-f96c-7bd0-9f6d-0e23fc097c45"
+        },
+        {
+          "fused_position": 38,
+          "shown": "incident_postmortem_ja: 障害の事後検証では再発防止策に必ず担当チームと期限を書きます",
+          "topic": "incident_postmortem_ja",
+          "topic_id": "01a0f417-f986-7592-9eac-3e2788ae1237"
+        },
+        {
+          "fused_position": 39,
+          "shown": "release bucket: objects in it expire after ninety days and the expiry cannot be set per team",
+          "topic": "release bucket",
+          "topic_id": "01a0f417-fa22-7920-973e-f4d9486f9f4a"
+        },
+        {
+          "fused_position": 40,
+          "shown": "laptop_replacement_ko: 노트북 교체 시 기존 기기의 디스크는 물리적으로 파쇄됩니다",
+          "topic": "laptop_replacement_ko",
+          "topic_id": "01a0f417-f9a8-79a3-8e29-7714ca5e4007"
+        },
+        {
+          "fused_position": 41,
+          "shown": "meeting_notes_th: บันทึกการประชุมต้องระบุผู้รับผิดชอบของทุกข้อสรุป",
+          "topic": "meeting_notes_th",
+          "topic_id": "01a0f417-f9ae-7c20-8066-746cb274c14e"
+        },
+        {
+          "fused_position": 42,
+          "shown": "password_reset_ko: 비밀번호 재설정 요청은 감사 로그에 기록되고 관리자에게 알림이 갑니다",
+          "topic": "password_reset_ko",
+          "topic_id": "01a0f417-f96f-7f53-be29-96ab94fe616f"
+        },
+        {
+          "fused_position": 43,
+          "shown": "ssl_certificate_ja: 証明書の有効期限切れは過去二回とも監視ではなく利用者から報告されました",
+          "topic": "ssl_certificate_ja",
+          "topic_id": "01a0f417-f9e0-7170-8723-c40f37b17249"
+        },
+        {
+          "fused_position": 44,
+          "shown": "payment_refund_en: payment refunds are issued to the original method and settle within five business days",
+          "topic": "payment_refund_en",
+          "topic_id": "01a0f417-f978-7962-a536-8c7f4b50cd1a"
+        },
+        {
+          "fused_position": 45,
+          "shown": "noise_recovery_room: the recovery room holds four beds and visiting is limited to one person at a time",
+          "topic": "noise_recovery_room",
+          "topic_id": "01a0f417-fa10-74d3-9a5e-b0a1ce0335b5"
+        },
+        {
+          "fused_position": 46,
+          "shown": "noise_certificate_birth: a replacement birth certificate takes six weeks and cannot be ordered by phone",
+          "topic": "noise_certificate_birth",
+          "topic_id": "01a0f417-fa09-7012-a982-60195d17a2a3"
+        },
+        {
+          "fused_position": 47,
+          "shown": "warehouse_stock_zh: 仓库库存在系统里按批次管理，临期批次会自动优先出库",
+          "topic": "warehouse_stock_zh",
+          "topic_id": "01a0f417-f97e-7900-948e-a269d32c1eb7"
+        },
+        {
+          "fused_position": 48,
+          "shown": "platform rota: it pages ines on weekends and mikhail on weekdays. a sev one escalates to the platform rota within five minutes",
+          "topic": "platform rota",
+          "topic_id": "01a0f417-fa24-7442-af93-078ad90f4c3c"
+        },
+        {
+          "fused_position": 49,
+          "shown": "password_reset_zh: 密码重置流程要求二次验证，连续失败五次会锁定账号一小时",
+          "topic": "password_reset_zh",
+          "topic_id": "01a0f417-f96d-78f3-a6e0-9e8cbee1370f"
+        },
+        {
+          "fused_position": 50,
+          "shown": "audit log stream: it keeps events for seven years in an append only store. the quarterly compliance export reads from the audit log stream",
+          "topic": "audit log stream",
+          "topic_id": "01a0f417-fa2a-7343-9e13-d5540277623c"
+        },
+        {
+          "fused_position": 51,
+          "shown": "deploy_pipeline_en: the deployment pipeline runs on continuous integration and publishes signed artifacts to the release bucket. objects in it expire after ninety days and the expiry cannot be set per team",
+          "topic": "deploy_pipeline_en",
+          "topic_id": "01a0f417-f950-72e3-a30c-b96f4b258f63"
+        },
+        {
+          "fused_position": 52,
+          "shown": "artifact publishing_en: the publisher uploads signed artifacts to the release bucket after every green build. objects in it expire after ninety days and the expiry cannot be set per team",
+          "topic": "artifact publishing_en",
+          "topic_id": "01a0f417-fa23-7a22-b47b-d6cacc60b8cf"
+        },
+        {
+          "fused_position": 53,
+          "shown": "vpn_access_ja: VPN の同時接続は一人あたり二台までに制限されています",
+          "topic": "vpn_access_ja",
+          "topic_id": "01a0f417-f9a5-75b0-9630-498b325e6f3a"
+        },
+        {
+          "fused_position": 54,
+          "shown": "env_https_proxy: HTTPS_PROXY has to be honoured or the model download fails with a CONNECT error",
+          "topic": "env_https_proxy",
+          "topic_id": "01a0f417-f9fe-71c1-9659-2cc339f72208"
+        },
+        {
+          "fused_position": 55,
+          "shown": "customer_support_sla_ko: 고객 지원 응대 시간은 고객의 현지 시간 기준으로 계산됩니다",
+          "topic": "customer_support_sla_ko",
+          "topic_id": "01a0f417-f9ea-7163-bf5f-27e44b6bebe6"
+        },
+        {
+          "fused_position": 56,
+          "shown": "search_indexing_ko: 검색 색인은 실패한 문서를 따로 모아 두었다가 나중에 다시 시도합니다",
+          "topic": "search_indexing_ko",
+          "topic_id": "01a0f417-f977-7b53-bf05-4b7e76b4aa82"
+        },
+        {
+          "fused_position": 57,
+          "shown": "parental_leave_ko: 육아휴직 기간에도 주식 보상은 계속 적립됩니다",
+          "topic": "parental_leave_ko",
+          "topic_id": "01a0f417-f9c2-78b2-8ea0-058b42b00f13"
+        }
+      ],
+      "pooled": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        40,
+        55
+      ],
+      "query": "한도 초과 시 응답",
+      "query_id": 101,
+      "targets": [
+        18,
+        6,
+        22,
+        1
+      ]
+    }
+  ],
+  "project": "eval-accuracy-8257bd6e24a243c4",
+  "provenance": "actual Engine::fused and Fused::shown; exact saved fused traces asserted; read-only native clone",
+  "schema": "exact-product-shown-v1"
+}

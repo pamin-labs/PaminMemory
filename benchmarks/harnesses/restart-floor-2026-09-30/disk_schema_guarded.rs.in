@@ -1,0 +1,131 @@
+//! Ignored pamin-index scratch integration test. Setup only, never timing.
+//! Compile/freeze after active measurements finish; no tracked Cargo.toml edit.
+use std::{collections::BTreeMap, ffi::{CStr,CString,c_void}, path::Path};
+use sha2::{Digest,Sha256};
+use serde_json::{json,Value};
+use zvec_rust::{Collection,CollectionOptions,DataType,IndexParams,IndexType,MetricType,sys};
+
+fn schema_evidence(c:&Collection)->Value {
+    let mut raw=std::ptr::null_mut();
+    // The returned schema is owned, as Collection::schema also documents.
+    assert_eq!(unsafe {sys::zvec_collection_get_schema(c.as_raw(),&mut raw)},sys::ZVEC_OK);
+    assert!(!raw.is_null());
+    let mut native_names=std::ptr::null_mut();let mut count=0usize;
+    assert_eq!(unsafe {sys::zvec_collection_schema_get_all_field_names(raw,&mut native_names,&mut count)},sys::ZVEC_OK);
+    assert!(!native_names.is_null() && count>0);
+    let names:Result<Vec<String>,_>=unsafe {std::slice::from_raw_parts(native_names,count)}.iter().map(|name| unsafe {CStr::from_ptr(*name)}.to_str().map(str::to_owned)).collect();
+    // This native ABI allocates both the pointer array and every strdup name.
+    unsafe {sys::zvec_free_str_array(native_names.cast(),count)};
+    let mut names=names.unwrap();names.sort_unstable();
+    assert_eq!(names,["content_ngram","content_segmented","embedding","id"],"exact reference field set required");
+    let mut fields=BTreeMap::new();
+    for name in ["id","content_segmented","content_ngram","embedding"] {
+        let key=CString::new(name).unwrap();
+        let field=unsafe {sys::zvec_collection_schema_get_field(raw,key.as_ptr())};
+        assert!(!field.is_null(),"missing field {name}");
+        let params=unsafe {sys::zvec_field_schema_get_index_params(field)};
+        let dtype=unsafe {sys::zvec_field_schema_get_data_type(field)};
+        let dimension=unsafe {sys::zvec_field_schema_get_dimension(field)};
+        let nullable=unsafe {sys::zvec_field_schema_is_nullable(field)};
+        let mut row=json!({"dtype":dtype,"dimension":dimension,"nullable":nullable});
+        if !params.is_null() {
+            row["index_type"]=json!(unsafe {sys::zvec_field_schema_get_index_type(field)});
+            row["metric"]=json!(unsafe {sys::zvec_index_params_get_metric_type(params)});
+            row["quantize"]=json!(unsafe {sys::zvec_index_params_get_quantize_type(params)});
+            row["quantizer_rotate"]=json!(unsafe {sys::zvec_index_params_get_quantizer_enable_rotate(params)});
+            if name=="embedding" && row["index_type"]==json!(IndexType::Diskann as u32) {
+                row["degree"]=json!(unsafe {sys::zvec_index_params_get_diskann_max_degree(params)});
+                row["build_list"]=json!(unsafe {sys::zvec_index_params_get_diskann_list_size(params)});
+                row["pq_chunks"]=json!(unsafe {sys::zvec_index_params_get_diskann_pq_chunk_num(params)});
+            }
+        }
+        assert_eq!(dtype,if name=="embedding" {DataType::VectorFp16 as u32} else {DataType::String as u32});
+        assert!(!nullable);
+        if name=="embedding" { assert_eq!(dimension,1024); }
+        fields.insert(name,row);
+    }
+    let segment=unsafe {sys::zvec_collection_schema_get_max_doc_count_per_segment(raw)};
+    assert_eq!(segment,2000);
+    unsafe {sys::zvec_collection_schema_destroy(raw)};
+    json!({"segment_documents":segment,"fields":fields})
+}
+fn frame(hash:&mut Sha256,bytes:&[u8]) {hash.update((bytes.len() as u64).to_le_bytes());hash.update(bytes);}
+fn logical_digest(c:&Collection)->(usize,String) {
+    let mut documents=BTreeMap::new();
+    // Read-only handle: iterator cannot seal an active writable segment.
+    for doc in c.iter_with_options(Some(&["id","content_segmented","content_ngram"]),true).unwrap() {
+        let doc=doc.unwrap(); let pk=doc.get_pk().expect("document key").to_owned();
+        let mut hash=Sha256::new(); frame(&mut hash,pk.as_bytes());
+        for field in ["id","content_segmented","content_ngram"] {
+            let text=doc.get_string(field).unwrap().expect("required scalar field");
+            if field=="id" {assert_eq!(text,pk);}
+            frame(&mut hash,text.as_bytes());
+        }
+        let key=CString::new("embedding").unwrap();
+        let mut pointer:*const c_void=std::ptr::null(); let mut bytes=0usize;
+        // Same dtype-specific read as product half::get; preserve actual fp16
+        // codes instead of widening/rounding or trusting the profile marker.
+        assert_eq!(unsafe {sys::zvec_doc_get_field_value_pointer(doc.as_raw(),key.as_ptr(),DataType::VectorFp16 as u32,&mut pointer,&mut bytes)},sys::ZVEC_OK);
+        assert!(!pointer.is_null()); assert_eq!(bytes,1024*2);
+        let codes=unsafe {std::slice::from_raw_parts(pointer.cast::<u16>(),1024)};
+        let bits:Vec<_>=codes.iter().flat_map(|v|v.to_le_bytes()).collect();
+        frame(&mut hash,&bits);
+        assert!(documents.insert(pk,hash.finalize().to_vec()).is_none(),"duplicate primary key");
+    }
+    assert_eq!(documents.len() as u64,c.stats().unwrap().doc_count);
+    let mut hash=Sha256::new();
+    for (pk,digest) in &documents {frame(&mut hash,pk.as_bytes());frame(&mut hash,digest);}
+    (documents.len(),format!("{:x}",hash.finalize()))
+}
+fn read_only(path:&Path)->Collection {
+    let mut options=CollectionOptions::new().unwrap();options.set_read_only(true).unwrap();
+    Collection::open(path.to_str().unwrap(),Some(&options)).unwrap()
+}
+
+#[test]
+#[ignore="converts only an explicitly copied stopped seed-disk fixture"]
+fn disk_schema() {
+    let root=std::fs::canonicalize(std::env::var("FLOOR_DISK_HOME").unwrap()).unwrap();
+    assert_eq!(root,Path::new("/workspace/scratch/restart-floor/seed-disk"),"only exact disk clone allowed");
+    assert!(!root.join("postgres/data/postmaster.pid").exists(),"stop clone database first");
+    let dirs:Vec<_>=std::fs::read_dir(root.join("index")).unwrap().map(|x|x.unwrap().path()).filter(|p|p.join("memories").is_dir()).collect();
+    assert_eq!(dirs.len(),1,"exactly one real project required");
+    let dir=&dirs[0]; let path=dir.join("memories");
+    assert_eq!(std::fs::canonicalize(&path).unwrap(),path,"no symlinked source collection");
+    let profile_path=dir.join("profile");
+    assert_eq!(std::fs::canonicalize(&profile_path).unwrap(),profile_path,"no symlinked marker");
+    let profile=std::fs::read_to_string(&profile_path).unwrap();
+    let mut lines:Vec<_>=profile.lines().map(str::to_owned).collect();
+    assert_eq!(lines.len(),5,"product Marker layout changed");
+    assert_eq!(lines,["gpahal/bge-m3-onnx-int8","topic","memory","named","reversed-keys"],"complete reference profile required before conversion");
+    let _=zvec_rust::initialize(None);
+    let before=read_only(&path); let before_schema=schema_evidence(&before);let before_digest=logical_digest(&before);
+    let expected_schema:Value=serde_json::from_str(r#"{"fields":{"content_ngram":{"dimension":0,"dtype":2,"index_type":11,"metric":1,"nullable":false,"quantize":0,"quantizer_rotate":false},"content_segmented":{"dimension":0,"dtype":2,"index_type":11,"metric":1,"nullable":false,"quantize":0,"quantizer_rotate":false},"embedding":{"dimension":1024,"dtype":22,"index_type":1,"metric":3,"nullable":false,"quantize":0,"quantizer_rotate":false},"id":{"dimension":0,"dtype":2,"nullable":false}},"segment_documents":2000}"#).unwrap();
+    assert_eq!(before_schema,expected_schema,"native schema differs from retained reference; refusing conversion");
+    assert_eq!(before_digest,(18000,"eb2483ff691e5e245079745e4745934620caf7ae692deea3766c84511c061d6b".to_string()),"input differs from the retained reference seed; refusing conversion");assert_eq!(before_schema["fields"]["embedding"]["index_type"],json!(IndexType::Hnsw as u32));
+    println!("DISK_SETUP_JSON {}",json!({"phase":"before","schema":before_schema,"logical_digest":before_digest}));
+    drop(before);
+    let c=Collection::open(path.to_str().unwrap(),None).unwrap();
+    // Exact shipped VectorIndex::Disk params from projection.rs; no separate
+    // quantizer is requested. FP16 is the stored FIELD dtype, not Int8 codes.
+    let params=IndexParams::diskann(MetricType::Cosine,64,100,0).unwrap();
+    c.drop_index("embedding").unwrap();c.create_index("embedding",&params).unwrap();
+    c.flush().unwrap();drop(c);
+    let after=read_only(&path);let after_schema=schema_evidence(&after);let after_digest=logical_digest(&after);
+    assert_eq!(before_digest,after_digest,"conversion changed real ids/text/vector bits");
+    for field in ["id","content_segmented","content_ngram"] {assert_eq!(before_schema["fields"][field],after_schema["fields"][field]);}
+    let embedding=&after_schema["fields"]["embedding"];
+    assert_eq!(embedding["index_type"],json!(IndexType::Diskann as u32));
+    assert_eq!(embedding["metric"],json!(MetricType::Cosine as u32));
+    assert_eq!(embedding["quantize"],json!(params.quantize_type() as u32));
+    assert_eq!(embedding["quantizer_rotate"],json!(params.quantizer_enable_rotate()));
+    assert_eq!(embedding["degree"],json!(64));assert_eq!(embedding["build_list"],json!(100));assert_eq!(embedding["pq_chunks"],json!(0));
+    println!("DISK_SETUP_JSON {}",json!({"phase":"after","schema":after_schema,"logical_digest":after_digest,"same_all_stored_document_bits":true,"floor_written":false}));
+    drop(after);
+    // Only after validated native conversion: preserve model/grain/passage/keys.
+    lines[2]="disk".into();std::fs::write(&profile_path,lines.join("\n")).unwrap();
+    let floor=path.join(".pamin-optimized-files");
+    if floor.exists() {std::fs::remove_file(floor).unwrap();}
+    // Parent runs candidate setup FLOOR_MODE=seed, same document count: skip
+    // existing topics, enqueue actual OptimizeIndex, generate real disk floor.
+}

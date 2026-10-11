@@ -1,0 +1,16 @@
+-- One btree over a source's versions, not two.
+--
+-- V1 indexed `(project_id, source_id, version DESC)` for reading a source's
+-- newest version, and V3 then made `(project_id, source_id, version)` the
+-- unique key. Those are the same columns: a btree reads backward as cheaply as
+-- forward, so the key answers `ORDER BY version DESC LIMIT 1` and the
+-- `MAX(version)` a write numbers from by a backward scan, and the planner
+-- chose it for both. EXPLAIN on every statement over this table -- numbering,
+-- `latest_source_version`, both `grep` forms, the join by id, and the cascades
+-- from a project and a source -- under custom and generic plans, on a copy of
+-- the evaluation workspace's 815,362 versions, gives the same plan with the
+-- index as without it, and none of them names it. That workspace's statistics
+-- agree: zero scans, against 173,295 of the key.
+--
+-- So it was 59 MB there, maintained on every write, for nothing.
+DROP INDEX source_versions_by_source;

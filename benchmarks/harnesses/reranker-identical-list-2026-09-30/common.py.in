@@ -1,0 +1,23 @@
+"""PR216 schedule over the explicitly supplied, hash-bound shared controller."""
+from shared_common import *
+
+
+def schedule():
+    jobs = []
+    for round_, order in enumerate([['main', 'stack'], ['stack', 'main']]):
+        for source in order:
+            for limit in [5, 10]:
+                for qid in [80, 101]:
+                    for initial in ['A', 'B']:
+                        sequence = ','.join([initial] * 6 + [('B' if initial == 'A' else 'A')] * 6 + ['N'])
+                        jobs.append({'round': round_, 'source': source, 'limit': limit,
+                                     'query_id': qid, 'tier': 'accurate', 'sequence': sequence,
+                                     'name': f'r{round_}-{source}-l{limit}-q{qid}-accurate-{initial}'})
+    for source in ['main', 'stack']:
+        for limit in [5, 10]:
+            jobs.append({'round': 0, 'source': source, 'limit': limit, 'query_id': 80,
+                         'tier': 'off', 'sequence': 'A,A,N',
+                         'name': f'r0-{source}-l{limit}-q80-off-A'})
+    require(len(jobs) == 36 and sum(len(j['sequence'].split(',')) for j in jobs) == 428,
+            'exact PR216 36-process/428-call schedule required')
+    return jobs

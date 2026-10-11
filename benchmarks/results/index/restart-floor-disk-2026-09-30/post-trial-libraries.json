@@ -1,0 +1,16 @@
+{
+  "recorded_utc": "2026-09-30T21:18:28.263094+00:00",
+  "scope": "Dated post-trial rehash during review; not per-process or immediate end-of-trial attestation. Equal endpoint hashes cannot exclude intervening replacement.",
+  "libraries": {
+    "runtime_library": {
+      "path": "<ORT_ROOT>/onnxruntime-linux-x64-1.28.0/lib/libonnxruntime.so.1.28.0",
+      "bytes": 24268848,
+      "sha256": "1461ef7cc3d9e49982591721683cc3e3a55580aeca9a5254e7aac47b75ee4bab"
+    },
+    "native_zvec_library": {
+      "path": "<SCRATCH>/bin/libzvec_c_api.so",
+      "bytes": 38067280,
+      "sha256": "58381ac7b12afd5eeae3dc10325914a28fc3157061291bb693a9ed757d815b8a"
+    }
+  }
+}
