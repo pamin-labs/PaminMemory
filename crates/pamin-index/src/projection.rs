@@ -185,6 +185,27 @@ pub trait Projection {
     /// flushed is read back like any other, because a query sees it too.
     fn stored(&self, topics: &[TopicId]) -> Result<Vec<Option<Stored>>>;
 
+    /// Whether this index already holds each topic with exactly the text
+    /// given for it, in the order asked.
+    ///
+    /// The rule a rebuild lends a stored vector by ([`Previous::lend`]), asked
+    /// of a served index: a document holding the same text was embedded from
+    /// it under this index's encoding, so writing it again would write what is
+    /// there. Read through [`stored`](Self::stored), so a buffered write
+    /// counts, a deleted topic does not, and a document missing a vector it
+    /// should have is an error rather than a match.
+    fn holds(&self, wanted: &[(TopicId, &str)]) -> Result<Vec<bool>> {
+        let topics: Vec<TopicId> = wanted.iter().map(|(topic, _)| *topic).collect();
+        Ok(self
+            .stored(&topics)?
+            .iter()
+            .zip(wanted)
+            .map(|(stored, (_, text))| {
+                holds_exactly(stored.as_ref().map(|stored| stored.content.as_str()), text)
+            })
+            .collect())
+    }
+
     /// Removes these topics.
     ///
     /// The projection had no way to shrink: the only route out was deleting the
@@ -1618,7 +1639,7 @@ impl Previous {
             let Some(content) = wanted.get(&topic) else {
                 continue;
             };
-            if doc.get_string(FIELD_NGRAM)?.as_deref() == Some(*content) {
+            if holds_exactly(doc.get_string(FIELD_NGRAM)?.as_deref(), content) {
                 visit(topic, doc)?;
             }
         }
@@ -1631,6 +1652,16 @@ impl Previous {
         drop(index);
         ProjectionIndex::discard(&dir)
     }
+}
+
+/// Whether a document holding `stored` as its text already holds `wanted`.
+///
+/// Raw text, not normalised: the lexical fields are derived from this text and
+/// the vector was embedded from it, so a difference in whitespace or case is a
+/// different document. One rule for both a rebuild lending a vector and a
+/// served index skipping a write, so the two cannot drift apart.
+fn holds_exactly(stored: Option<&str>, wanted: &str) -> bool {
+    stored == Some(wanted)
 }
 
 impl Projection for ProjectionIndex {
