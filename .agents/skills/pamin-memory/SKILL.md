@@ -168,6 +168,26 @@ evaluation harness. Raising them costs latency for recall you have no way to
 measure from outside. If you want more control over retrieval, use `grep`,
 `read` and `neighbors` — paths whose behaviour you can actually verify.
 
+### When to stop searching
+
+Every `search` at the default tier costs about a second and a half and a page
+of results in your context. A second search pays off only when it can find
+something the first could not. Most of them can't.
+
+- **Before searching again, name what is missing.** List the facts the
+  question needs, then check them against the results you already have. Stop
+  when each one is either backed by a hit or is plainly not there. A result
+  that answers the question but that you have not read in full calls for
+  `read`, not another `search`.
+- **Rephrase at most once.** If the second phrasing brings back mostly the same
+  topics, the ranking is not the problem. Switch to a path that does not rank:
+  - `grep` for an exact string you expect the answer to contain;
+  - `neighbors` from the best topic you found;
+  - `topics` to see what the workspace calls things.
+- **Two misses and a `grep` miss mean it is not in memory.** Say so. Searching
+  more after that will not make up a memory nobody wrote, and an answer built
+  from the closest near-miss is worse than an honest "not recorded".
+
 ## Relationships
 
 Writing a memory that names another topic derives an edge automatically — no
