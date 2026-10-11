@@ -55,5 +55,18 @@ class CostHistory(unittest.TestCase):
         matching=[r for r in self.rows(self.new_query('changed-hot','A')) if r['metric'] in self.metrics.COST_METRICS]
         self.assertTrue(all(r['same_successful_work'] for r in matching))
 
+    def test_changed_hot_gate_accepts_several_calls_per_block(self):
+        # Five changed-hot calls per block and arm, matching histories.
+        observations=[]
+        for item in self.new_query('changed-hot','A'):
+            for step in range(5):
+                copied=copy.deepcopy(item);copied['row']['before']['tokens']=30+step;observations.append(copied)
+        cost=[r for r in self.rows(observations) if r['metric'] in self.metrics.COST_METRICS]
+        self.assertTrue(cost and all(r['same_successful_work'] for r in cost))
+        self.assertEqual({r['samples_per_arm'] for r in cost},{20})
+        observations[0]['row']['before']['tokens']+=1
+        cost=[r for r in self.rows(observations) if r['metric'] in self.metrics.COST_METRICS]
+        self.assertTrue(all(not r['same_successful_work'] for r in cost))
+
 
 if __name__=='__main__':unittest.main()
