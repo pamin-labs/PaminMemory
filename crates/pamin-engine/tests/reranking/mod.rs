@@ -58,7 +58,26 @@ pub enum Rule {
     /// time and cannot see that it is relevant because another memory names
     /// it, which is what this keeps after the pass.
     GraphBlend { graph: f64 },
+    /// The shipped blend over only the first `n` movable candidates in fused
+    /// order; the rest keep the place fusion gave them. What a shallower depth
+    /// would have cost, priced without rescoring: the model's score for a pair
+    /// does not depend on which other pairs were scored, up to batching.
+    Prefix { n: usize },
+    /// [`Rule::Prefix`] with `n` only when the fused list looks settled -- its
+    /// first candidate leads the second by at least `lead` of its score, and
+    /// both a lexical channel and the vector channel rank it in their top
+    /// three -- and the shipped pass otherwise. `n` of zero skips the model.
+    Confident { lead: f64, n: usize },
+    /// Score in fused order, [`BATCH`] at a time, and stop after the first
+    /// batch past the second that put nothing into the model's top `top` so
+    /// far: the remaining candidates are behind in fusion, and the last batch
+    /// says they are behind in the model too. An anytime stop, not a safe one
+    /// -- a cross-encoder's score has no bound to stop against.
+    Patience { top: usize },
 }
+
+/// Pairs per model pass, as the engine batches them at most.
+pub const BATCH: usize = 4;
 
 /// Every rule measured, labelled. The shipped rule is found by value, not by
 /// position, by [`shipped`].
@@ -84,6 +103,23 @@ pub fn rules() -> Vec<(String, Rule)> {
         rules.push((
             format!("shipped blend + graph {graph:.2}"),
             Rule::GraphBlend { graph },
+        ));
+    }
+    for n in [4, 8, 12, 16, 20] {
+        rules.push((format!("shipped blend, first {n} only"), Rule::Prefix { n }));
+    }
+    for lead in [0.05, 0.1, 0.2] {
+        for n in [0, 8] {
+            rules.push((
+                format!("settled (lead {lead:.2}): first {n}, else shipped"),
+                Rule::Confident { lead, n },
+            ));
+        }
+    }
+    for top in [3, 5, 10] {
+        rules.push((
+            format!("patience: stop when a batch misses the top {top}"),
+            Rule::Patience { top },
         ));
     }
     rules
@@ -303,6 +339,108 @@ impl Routes {
     }
 }
 
+/// Every rule in [`rules`], measured over shipped searches one at a time, with
+/// what each costs in model pairs.
+///
+/// With `SUFFICIENCY_OUT` set, also writes one row a query -- group, whether
+/// the shipped first result is relevant, the model's best score and its lead
+/// over the second -- to that file, for asking whether those two numbers
+/// predict a right first answer before anything exposes them. The scores are
+/// the ones the product computed in its own batches, which is the condition
+/// the withdrawn abstention experiment did not hold.
+pub struct Priced {
+    rules: Vec<(String, Rule)>,
+    measured: Vec<BTreeMap<String, crate::scoring::Scores>>,
+    pairs: Vec<u64>,
+    queries: u64,
+    sufficiency: Option<std::io::BufWriter<std::fs::File>>,
+    /// Whether queries come in linked sets, for the cross-validated choice.
+    linked: bool,
+}
+
+impl Priced {
+    /// `linked` as [`report`] takes it.
+    pub fn new(linked: bool) -> Self {
+        let rules = rules();
+        let sufficiency = std::env::var("SUFFICIENCY_OUT").ok().map(|path| {
+            let mut file = std::io::BufWriter::new(
+                std::fs::File::create(path).expect("create the sufficiency output"),
+            );
+            use std::io::Write;
+            writeln!(file, "group\tfirst_relevant\tbest\tgap\tscored").expect("write the header");
+            file
+        });
+        Self {
+            measured: vec![BTreeMap::new(); rules.len()],
+            pairs: vec![0; rules.len()],
+            queries: 0,
+            rules,
+            sufficiency,
+            linked,
+        }
+    }
+
+    /// One shipped search. `score` scores one ranking into its group; `group`
+    /// only labels the sufficiency row.
+    pub fn observe(
+        &mut self,
+        group: &str,
+        replayed: &Replayed,
+        score: impl Fn(&mut BTreeMap<String, crate::scoring::Scores>, &[String]),
+    ) {
+        self.queries += 1;
+        for (((_, rule), into), pairs) in self
+            .rules
+            .iter()
+            .zip(&mut self.measured)
+            .zip(&mut self.pairs)
+        {
+            score(into, &replayed.order(*rule));
+            *pairs += replayed.pairs(*rule) as u64;
+        }
+        if let Some(file) = &mut self.sufficiency {
+            use std::io::Write;
+            let shipped = replayed.order(shipped_rule(Rerank::default()));
+            // A one-result list scores above zero exactly when that result is
+            // relevant, whatever the corpus's own judgements are.
+            let mut first = BTreeMap::new();
+            score(&mut first, &shipped[..shipped.len().min(1)]);
+            let first = first.values().any(|scores| scores.ndcg > 0.0);
+            let mut model = replayed.model.clone();
+            model.sort_by(|left, right| right.total_cmp(left));
+            let (best, gap) = match model.as_slice() {
+                [best, second, ..] => (*best, best - second),
+                [best] => (*best, 0.0),
+                [] => (f64::NAN, f64::NAN),
+            };
+            writeln!(
+                file,
+                "{group}\t{}\t{best}\t{gap}\t{}",
+                u8::from(first),
+                u8::from(!model.is_empty())
+            )
+            .expect("write a sufficiency row");
+        }
+    }
+
+    pub fn report(&self, title: &str) {
+        report(
+            title,
+            &self.rules,
+            shipped(&self.rules),
+            &self.measured,
+            self.linked,
+        );
+        println!("  model pairs a search");
+        for ((label, _), pairs) in self.rules.iter().zip(&self.pairs) {
+            println!(
+                "  {label:<52}  {:>6.2}",
+                *pairs as f64 / self.queries.max(1) as f64
+            );
+        }
+    }
+}
+
 /// Every row against the one that ships, group by group and as one
 /// cross-validated choice. `measured` is indexed like `labels`.
 pub fn report<T>(
@@ -476,6 +614,12 @@ pub struct Replayed {
     graph: Vec<f64>,
     /// How deep the tier reads, which is where a graph find is inserted.
     head: usize,
+    /// How far the fused first leads the fused second, as a share of the
+    /// first's score; zero with fewer than two.
+    lead: f64,
+    /// Whether a lexical channel and the vector channel both rank the fused
+    /// first in their top three.
+    agree: bool,
 }
 
 /// Rebuilds one shipped search at `tier` and checks the rebuild.
@@ -506,6 +650,22 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
         .map(|result| named[&result.topic].to_string())
         .collect();
 
+    let lead = match results.as_slice() {
+        [first, second, ..] if first.score > 0.0 => {
+            f64::from((first.score - second.score) / first.score)
+        }
+        _ => 0.0,
+    };
+    let agree = results.first().is_some_and(|first| {
+        let near = |wanted: &dyn Fn(Channel) -> bool| {
+            first.why.iter().any(|why| {
+                matches!(why, Why::Channel { channel, rank, .. } if wanted(*channel) && *rank <= 3)
+            })
+        };
+        near(&|channel| matches!(channel, Channel::LexicalSegmented | Channel::LexicalNgram))
+            && near(&|channel| channel == Channel::Vector)
+    });
+
     // The engine declines to rerank fewer than two, and then no candidate
     // carries a model score and every rule is fusion alone.
     let replayed = if movable.len() < 2 {
@@ -520,6 +680,8 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
             model: Vec::new(),
             graph: Vec::new(),
             head: tier.depth(),
+            lead,
+            agree,
         }
     } else {
         assert_eq!(
@@ -556,6 +718,8 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
                 })
                 .collect(),
             head: tier.depth(),
+            lead,
+            agree,
             fused,
             movable,
         }
@@ -602,12 +766,17 @@ impl Replayed {
             model,
             graph: self.graph.clone(),
             head: self.head,
+            lead: self.lead,
+            agree: self.agree,
         }
     }
 
     /// The whole list under `rule`: unmovable positions stay, movable ones are
     /// refilled in the rule's order, ties to the earlier position.
     pub fn order(&self, rule: Rule) -> Vec<String> {
+        if let Some(keep) = self.scored(rule) {
+            return cascade_order(self, &keep);
+        }
         if let Rule::Blend {
             fusion,
             scale: Scale::Score,
@@ -655,7 +824,10 @@ impl Replayed {
             Rule::Blend {
                 scale: Scale::Score,
                 ..
-            } => unreachable!("handled above"),
+            }
+            | Rule::Prefix { .. }
+            | Rule::Confident { .. }
+            | Rule::Patience { .. } => unreachable!("handled above"),
         };
         let mut picks: Vec<usize> = (0..self.movable.len()).collect();
         picks.sort_by(|left, right| {
@@ -664,6 +836,54 @@ impl Replayed {
                 .then_with(|| left.cmp(right))
         });
         pamin_engine::place(self.fused.clone(), &self.movable, self.head, &picks)
+    }
+}
+
+impl Replayed {
+    /// Which movable candidates a rule that scores only some of them has the
+    /// model score, as indices into the movable ones; `None` for a rule that
+    /// reads every score.
+    fn scored(&self, rule: Rule) -> Option<Vec<usize>> {
+        let count = self.movable.len();
+        match rule {
+            Rule::Prefix { n } => Some((0..n.min(count)).collect()),
+            Rule::Confident { lead, n } => (self.lead >= lead && self.agree)
+                .then(|| (0..n.min(count)).collect())
+                .or_else(|| Some((0..count).collect())),
+            Rule::Patience { top } => {
+                let mut scored = 0;
+                while scored < count {
+                    let batch = scored..(scored + BATCH).min(count);
+                    scored = batch.end;
+                    if batch.start < 2 * BATCH {
+                        continue;
+                    }
+                    let mut best: Vec<usize> = (0..scored).collect();
+                    best.sort_by(|left, right| {
+                        self.model[*right]
+                            .total_cmp(&self.model[*left])
+                            .then(left.cmp(right))
+                    });
+                    best.truncate(top);
+                    if !best.iter().any(|at| batch.contains(at)) {
+                        break;
+                    }
+                }
+                Some((0..scored).collect())
+            }
+            Rule::Substitute | Rule::Blend { .. } | Rule::GraphBlend { .. } => None,
+        }
+    }
+
+    /// How many pairs the model scores under `rule` -- what the reranker's
+    /// time is proportional to, up to batching and length.
+    pub fn pairs(&self, rule: Rule) -> usize {
+        match self.scored(rule) {
+            // The engine declines to rerank fewer than two.
+            Some(keep) if keep.len() < 2 => 0,
+            Some(keep) => keep.len(),
+            None => self.movable.len(),
+        }
     }
 }
 
@@ -699,6 +919,8 @@ mod tests {
             model: model.to_vec(),
             graph: vec![0.0; fusion.len()],
             head: 4,
+            lead: 0.0,
+            agree: false,
         }
     }
 
@@ -746,6 +968,61 @@ mod tests {
         assert_eq!(
             cascade_order(&scores, &[0, 1, 2]),
             scores.order(shipped_rule(Rerank::Accurate))
+        );
+    }
+
+    #[test]
+    fn scoring_every_candidate_first_is_the_shipped_pass() {
+        let scores = replayed(&[1.0, 0.5, 0.0], &[0.0, 1.0, 2.0]);
+        let shipped = scores.order(shipped_rule(Rerank::Accurate));
+        assert_eq!(scores.order(Rule::Prefix { n: 3 }), shipped);
+        assert_eq!(scores.pairs(Rule::Prefix { n: 3 }), 3);
+        // Unsettled: the fused first leads by nothing and nothing agrees.
+        assert_eq!(scores.order(Rule::Confident { lead: 0.1, n: 0 }), shipped);
+        assert_eq!(scores.pairs(Rule::Confident { lead: 0.1, n: 0 }), 3);
+    }
+
+    #[test]
+    fn a_prefix_too_short_to_rerank_is_fusion_alone() {
+        let scores = replayed(&[1.0, 0.5, 0.0], &[0.0, 1.0, 2.0]);
+        assert_eq!(scores.order(Rule::Prefix { n: 1 }), scores.fused);
+        assert_eq!(scores.pairs(Rule::Prefix { n: 1 }), 0);
+        let settled = Replayed {
+            lead: 0.5,
+            agree: true,
+            ..scores.rescored(scores.model.clone())
+        };
+        assert_eq!(
+            settled.order(Rule::Confident { lead: 0.1, n: 0 }),
+            settled.fused
+        );
+        assert_eq!(settled.pairs(Rule::Confident { lead: 0.1, n: 0 }), 0);
+    }
+
+    #[test]
+    fn patience_stops_after_a_batch_that_reaches_nothing() {
+        let count = 6 * BATCH;
+        let fusion: Vec<f64> = (0..count)
+            .map(|at| 1.0 - at as f64 / count as f64)
+            .collect();
+        // The model agrees with fusion, so the third batch reaches nothing in
+        // the top three and the pass stops there.
+        let mut scores = replayed(&fusion, &fusion);
+        scores.fused = (0..=count).map(|at| at.to_string()).collect();
+        scores.movable = (1..=count).collect();
+        scores.graph = vec![0.0; count];
+        scores.head = count + 1;
+        assert_eq!(scores.pairs(Rule::Patience { top: 3 }), 3 * BATCH);
+        // A model that prefers the last candidate keeps reading to the end.
+        let mut model = fusion.clone();
+        model[count - 1] = 9.0;
+        model[2 * BATCH] = 8.0;
+        model[3 * BATCH] = 7.0;
+        model[4 * BATCH] = 6.0;
+        model[5 * BATCH] = 5.0;
+        assert_eq!(
+            scores.rescored(model).pairs(Rule::Patience { top: 3 }),
+            count
         );
     }
 }
