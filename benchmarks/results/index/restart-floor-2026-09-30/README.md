@@ -15,8 +15,8 @@ Before: `f57f9c218d03d88666b3cc89fae9ae7e9eed2e50`; after: `11493c1388f74b087db2
 | Known-topic recall@10 (synthetic) | 0.875000 | 0.875000 | +0.000000 | +0.000% |
 | Known-topic MRR@10 (synthetic) | 0.826389 | 0.826389 | +0.000000 | +0.000% |
 | Optimize jobs per first upkeep tick | 1.000 | 0.000 | -1.000 | -100.000% |
-| Maintenance wall median | 500.255 ms | 0.479 ms | -499.776 ms | -99.904% |
-| First-search wall median (model load included) | 2618.299 ms | 2621.711 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
+| Maintenance wall median, includes pre-snapshot /proc read | 500.255 ms | 0.479 ms | -499.776 ms | -99.904% |
+| First-search wall median (model load and pre-snapshot /proc read included) | 2618.299 ms | 2621.711 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p50: median across processes | 2126.304 ms | 2139.206 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p95: median across processes | 2289.523 ms | 2368.295 ms | +78.771 ms | +3.441% |
 | Peak process RSS | N/A: historical HWM chronology uncertified | N/A: historical HWM chronology uncertified | N/A | N/A |
@@ -34,8 +34,8 @@ Before: `315c10242ddf7a1cec3bccbf550a942320e09557`; after: `11493c1388f74b087db2
 | Known-topic recall@10 (synthetic) | 0.875000 | 0.875000 | +0.000000 | +0.000% |
 | Known-topic MRR@10 (synthetic) | 0.826389 | 0.826389 | +0.000000 | +0.000% |
 | Optimize jobs per first upkeep tick | 1.000 | 0.000 | -1.000 | -100.000% |
-| Maintenance wall median | 478.813 ms | 0.479 ms | -478.334 ms | -99.900% |
-| First-search wall median (model load included) | 2731.516 ms | 2621.711 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
+| Maintenance wall median, includes pre-snapshot /proc read | 478.813 ms | 0.479 ms | -478.334 ms | -99.900% |
+| First-search wall median (model load and pre-snapshot /proc read included) | 2731.516 ms | 2621.711 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |
 | Warm search p50: median across processes | 2134.241 ms | 2139.206 ms | +4.965 ms | +0.233% |
 | Warm search p95: median across processes | 2248.118 ms | 2368.295 ms | +120.176 ms | +5.346% |
 | Peak process RSS | N/A: historical HWM chronology uncertified | N/A: historical HWM chronology uncertified | N/A | N/A |
@@ -47,6 +47,8 @@ Before: `315c10242ddf7a1cec3bccbf550a942320e09557`; after: `11493c1388f74b087db2
 Warm p50/p95 are descriptive observations; the warm timing comparison screen is retained separately. Historical HWM-derived peak comparisons are uncertified/N/A because retained process observations decrease. Three independent process repetitions are insufficient to assign small timing or sampled-RSS movements to the patch. Individual raw process observations remain retained; the derived machine-readable summary explicitly nulls uncertified HWM peaks. No query-level significance test is reported.
 
 ## Conditions and measurement limits
+
+Phase timers start before the harness reads `/proc/self/stat` and `/proc/self/status` for the before-snapshot, so every phase wall figure, per-query search included, is operation plus that diagnostic read. The retained rows cannot separate the two; the sub-millisecond candidate maintenance figure and its percentage are not pure `Engine::maintain` latency.
 
 - Linux 6.18.44, AMD EPYC 9V74, cgroup 4 CPU cores and 16 GiB RAM. One workload process at a time; no builds or other model experiments during timing. The host is shared, so external interference is not controlled.
 - Actual product calls: `Engine::open`, `remember`, urgent cascade, `flush_what_is_applied`, one `Engine::maintain`, then `search_reranked(Accurate)`. The actual server's flush-before-maintain order is retained. Open, write, durability flush, upkeep, first search, two warmups, 24 unique warm queries and shutdown are separated; diagnostic SQL/disk inspections are outside upkeep timing. A preliminary missing-flush harness failed on the held Sync claim and was excluded, rather than weakening the zero-pending check.
