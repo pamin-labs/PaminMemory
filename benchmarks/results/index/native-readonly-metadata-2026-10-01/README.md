@@ -79,8 +79,10 @@ values, source/input identities and the complete table payload SHA256
 `fcfab93bd3a47ad3e3ae6a76ae3e408bfbc88ca7cfb779ead5b36ccc614d82ea`.
 These are **one shared-host observation per case**, covering the same 16 metadata
 excerpts, with no product search, native/SDK, model or database execution.
-Timers cover metadata validation, logs and the canonical evidence digest;
-interpreter startup/imports, input loading and Git source-byte checks are excluded.
+Timers cover metadata validation, the log and `public-source-binding.json` reads
+that `verify` performs, and the canonical evidence digest; interpreter
+startup/imports, the initial `evidence.json` load and Git source-byte checks are
+excluded.
 They do not establish statistical latency or a product speedup. The historical
 pass ran once in the fixed order before, cold-after, warm-after, so temporal load
 and interpreter warm-up are not separable from the change in that table; the
@@ -123,9 +125,13 @@ process RSS not measured. Values are medians over seven samples, with the range.
 | Process CPU seconds (cold), median [min-max] | 2.151427 [2.135-2.167] | 0.770321 [0.765-0.787] | -1.381106 | -64.195% |
 | Wall seconds (warm), median [min-max] | 2.233038 [2.188-2.251] | 0.702574 [0.677-0.741] | -1.530464 | -68.537% |
 | Process CPU seconds (warm), median [min-max] | 2.151427 [2.135-2.167] | 0.684470 [0.675-0.699] | -1.466958 | -68.185% |
+| Wall seconds (cold), p95 nearest-rank | 2.251057 | 0.800066 | -1.450991 | -64.458% |
+| Process CPU seconds (cold), p95 nearest-rank | 2.166878 | 0.786831 | -1.380047 | -63.688% |
+| Wall seconds (warm), p95 nearest-rank | 2.251057 | 0.741214 | -1.509843 | -67.073% |
+| Process CPU seconds (warm), p95 nearest-rank | 2.166878 | 0.699104 | -1.467775 | -67.737% |
 | Process RSS bytes | N/A: not measured | N/A: not measured | N/A | N/A |
 
-The before and after ranges do not overlap in any round. This is a verifier
+p95 uses the nearest-rank definition over the seven samples per arm, which with seven samples is the maximum; it is retained as its own row rather than read off the range. The before and after ranges do not overlap in any round. This is a verifier
 component cost, not product search latency.
 
 The timing probe asserts no product invariant, so it is kept with the inert
