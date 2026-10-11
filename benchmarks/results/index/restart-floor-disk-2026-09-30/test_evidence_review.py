@@ -32,7 +32,7 @@ def wrong_source_revision(repo):update(repo/DISK/'provider-bindings.json',lambda
 def wrong_external_data(repo):update(repo/DISK/'provider-bindings.json',lambda x:x['roles']['embedding'].update(external_data=x['roles']['reranker']['external_data']))
 def changed_screen(repo):update(repo/DISK/'timing-review.json',lambda x:x['predecessor']['write_ms'].update(withhold_comparison=False))
 def shown_unstable(repo):
-    p=repo/DISK/'README.md';s=p.read_text();s=s.replace('| Write + urgent drain wall median | 1421.857852 ms | 1388.009180 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |','| Write + urgent drain wall median | 1421.857852 ms | 1388.009180 ms | -33.848672 ms | -2.381% |');p.write_text(s)
+    p=repo/DISK/'README.md';s=p.read_text();s=s.replace('| Write + urgent drain wall median, includes pre-snapshot /proc read | 1421.857852 ms | 1388.009180 ms | Withheld: unstable three-process sample | Withheld: unstable three-process sample |','| Write + urgent drain wall median, includes pre-snapshot /proc read | 1421.857852 ms | 1388.009180 ms | -33.848672 ms | -2.381% |');p.write_text(s)
 def hnsw_screen(repo):update(repo/HNSW/'timing-review.json',lambda x:x['predecessor']['warm_p50_ms'].update(withhold_comparison=False))
 def hnsw_readme_cell(repo,reference,column,replacement):
     p=repo/HNSW/'README.md';lines=p.read_text().splitlines();section='predecessor';changed=0
