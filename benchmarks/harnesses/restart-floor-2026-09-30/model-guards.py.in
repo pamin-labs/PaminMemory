@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""Private prospective identity of explicitly selected executable model assets."""
+import hashlib,json,os,stat,sys
+from datetime import datetime,timezone
+from pathlib import Path
+if sys.flags.optimize:raise SystemExit('Model guards require assertions; remove -O/PYTHONOPTIMIZE')
+ROLES={'source','tokenizer','prepared_graph','external_weights','metadata'}
+def digest(path):
+    h=hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda:stream.read(4*1024*1024),b''):h.update(block)
+    return h.hexdigest()
+def identity(value):
+    return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+def asset(root,name,may_be_absent=False):
+    relative=Path(name)
+    assert name and not relative.is_absolute() and '..' not in relative.parts, 'model asset must be relative'
+    path=root/relative
+    # Bind every parent link as well as the leaf: hub snapshots commonly link blobs.
+    links={}
+    for part in [*path.parents[:len(relative.parts)-1],path]:
+        if part.is_symlink():links[part.relative_to(root).as_posix()]=os.readlink(part)
+    resolved=path.resolve()
+    assert resolved.is_relative_to(root), 'model symlink escapes pinned cache'
+    if not path.exists():
+        assert may_be_absent, 'required model asset missing'
+        return {'absent':True,'links':links,'resolved':str(resolved)}
+    before=path.stat();assert stat.S_ISREG(before.st_mode), 'model asset must be a regular file'
+    hashed=digest(path);after=path.stat()
+    assert (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)==(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns), 'model asset changed while hashing'
+    return {'bytes':after.st_size,'sha256':hashed,'mode':stat.S_IMODE(after.st_mode),'links':links,'resolved':str(resolved)}
+def validate_plan(plan):
+    assert plan['version']==1 and plan['selection_provenance'].strip(), 'explicit executable model selection provenance required'
+    assert plan['models'], 'no selected models'
+    seen=set()
+    for model in plan['models']:
+        assert model['name'] in {'embedding','reranker'} and model['name'] not in seen, 'current model plan supports one common selection per role; arm-specific graph unions are unsupported'
+        seen.add(model['name'])
+        assert set(model['assets'])==ROLES and all(model['assets'].values()), 'complete source/tokenizer/graph/weights/metadata role map required'
+        names=[name for role in ROLES for name in model['assets'][role]]
+        assert len(names)==len(set(names)), 'asset roles must be unambiguous'
+        assert model['asset_directories'], 'explicit selected revision/prepared directories required'
+        for directory in model['asset_directories']:
+            assert directory and not Path(directory).is_absolute() and '..' not in Path(directory).parts and directory!='.', 'narrow relative model inventory directory required'
+        for role in ['tokenizer','prepared_graph','external_weights']:
+            assert all(any(Path(name).is_relative_to(Path(directory)) for directory in model['asset_directories']) for name in model['assets'][role]), 'required executable assets must belong to selected inventory directories'
+        assert model['load_graph'] in model['assets']['prepared_graph'], 'selected executable graph must be prepared and bound'
+        assert set(model['graph_external_weights'])==set(model['assets']['prepared_graph']), 'every prepared graph needs an explicit external-weight relationship'
+        for weights in model['graph_external_weights'].values():
+            assert weights and set(weights)<=set(model['assets']['external_weights']), 'unbound graph external weights'
+        assert set(model['assets']['external_weights'])=={name for weights in model['graph_external_weights'].values() for name in weights}, 'unreferenced declared weights'
+        if model.get('allow_source_release',False):
+            assert model['source_release_provenance'].strip(), 'source release needs explicit policy/provenance'
+            assert set(model['source_records'])==set(model['assets']['source']), 'each released source needs its native digest record'
+            assert set(model['source_records'].values())<=set(model['assets']['metadata']), 'source provenance record must be bound metadata'
+            origins=model['source_origins'];blobs=model['source_blob_targets']
+            assert set(origins)==set(model['assets']['source']) and set(origins.values())<=set(origins), 'explicit declared source leaf origins required'
+            assert all(origins[origin]==origin for origin in origins.values()), 'source origins must identify original leaves'
+            assert set(blobs)<=set(origins.values()) and set(blobs.values())<=set(origins), 'source blobs must be explicitly declared assets'
+            assert all(blob!=origin and origins[blob]==origin for origin,blob in blobs.items()), 'owned source blob must identify the same original leaf'
+            for name,origin in origins.items():
+                assert name==origin or blobs.get(origin)==name, 'source blob must bind to its declared original leaf'
+                assert model['source_records'][name]==model['source_records'][origin], 'source leaf/blob must share native provenance'
+    return plan
+
+def snapshot(root,plan):
+    assert root.is_absolute() and not root.is_symlink() and root.is_dir(), 'pin resolved external model cache directory'
+    validate_plan(plan);root=root.resolve()
+    entries={}
+    for model in plan['models']:
+        for role,names in model['assets'].items():
+            for name in names:
+                entry=asset(root,name,role=='source' and model.get('allow_source_release',False))
+                if role=='source' and model.get('allow_source_release',False):
+                    provenance=root/model['source_records'][name]
+                    asset(root,model['source_records'][name])
+                    lines=provenance.read_text().splitlines()
+                    assert len(lines)==4 and lines[0] and lines[2].isdigit(), 'native source provenance record required'
+                    length=int(lines[1]);hashed=lines[3].removeprefix('sha256 ')
+                    assert lines[3].startswith('sha256 ') and len(hashed)==64 and all(c in '0123456789abcdef' for c in hashed), 'native source digest required'
+                    origin=model['source_origins'][name]
+                    assert lines[0]==Path(origin).name, 'native provenance must name the declared original source leaf'
+                    blob=model['source_blob_targets'].get(origin)
+                    if blob is not None:
+                        leaf=root/origin;target=root/blob
+                        assert target.resolve()==target.absolute(), 'owned source blob must not redirect'
+                        if leaf.is_symlink():assert leaf.resolve()==target.absolute(), 'source leaf redirects its declared owned blob'
+                        else:assert not leaf.exists(), 'declared hub source leaf must remain a symlink or be released'
+                    else:assert not (root/origin).is_symlink(), 'source link needs an explicitly bound owned blob'
+                    if not entry.get('absent'):assert entry['bytes']==length and entry['sha256']==hashed, 'source differs from native release provenance'
+                if name in entries:assert entries[name]==entry, 'inconsistent shared model asset'
+                entries[name]=entry
+        # Scan only selected revision/prepared directories, never the whole hub cache.
+        for selected in model['asset_directories']:
+            directory=root/selected
+            assert directory.is_dir() and not directory.is_symlink() and directory.resolve().is_relative_to(root), 'selected model asset directory must be real and internal'
+            declared={x for names in model['assets'].values() for x in names if Path(x).is_relative_to(Path(selected))}
+            actual=set()
+            for parent,dirs,files in os.walk(directory,followlinks=False):
+                assert not any((Path(parent)/x).is_symlink() for x in dirs), 'directory links in selected model inventory refused'
+                for filename in files:
+                    path=Path(parent)/filename;name=path.relative_to(root).as_posix()
+                    # The native loader creates/touches only this empty usage stamp.
+                    if filename=='used' and path.parent in {root/Path(x).parent for x in model['assets']['prepared_graph']}:
+                        assert not path.is_symlink() and path.is_file() and path.stat().st_size==0, 'invalid prepared usage stamp'
+                    else:actual.add(name)
+            absent_sources={x for x in model['assets']['source'] if model.get('allow_source_release',False) and entries[x].get('absent') and not (root/x).is_symlink()}
+            assert actual==declared-absent_sources, 'selected model directory has undeclared or missing assets'
+    return {'version':1,'root':str(root),'plan':plan,'entries':entries}
+def prepare(root,plan):
+    expected=snapshot(root,plan)
+    return {'recorded_utc':datetime.now(timezone.utc).isoformat(),'model':expected,'manifest_sha256':identity(expected)}
+def verify(expected):
+    actual=snapshot(Path(expected['root']),expected['plan'])
+    released=0
+    for model in expected['plan']['models']:
+        if not model.get('allow_source_release',False):continue
+        for name in model['assets']['source']:
+            before=expected['entries'][name];after=actual['entries'][name]
+            if after.get('absent') and not before.get('absent'):
+                # Release may remove a source leaf and its owned blob, never redirect it.
+                unchanged_dangling_link=after['links']==before['links'] and after['resolved']==before['resolved']
+                removed_leaf=not after['links'] and after['resolved']==str((Path(expected['root'])/name).absolute())
+                assert unchanged_dangling_link or removed_leaf, 'changed released source location'
+                actual['entries'][name]=before;released+=1
+    assert actual==expected, 'model assets differ from separately prepared expected manifest'
+    return {'selected_models':len(expected['plan']['models']),'assets':len(expected['entries']),'permitted_released_sources':released}
+def load(path):
+    assert stat.S_IMODE(path.stat().st_mode)==0o600 and not path.is_symlink(), 'model manifest must remain private mode0600'
+    data=path.read_bytes();record=json.loads(data)
+    assert not path.resolve().is_relative_to(Path(record['model']['root'])), 'model manifest must be external to cache'
+    prepared=datetime.fromisoformat(record['recorded_utc'])
+    assert prepared.tzinfo is not None and prepared<=datetime.now(timezone.utc), 'model manifest must be prepared separately beforehand'
+    assert record['manifest_sha256']==identity(record['model']), 'malformed expected model manifest'
+    verify(record['model'])
+    return record['model'],data,record['recorded_utc']
+if __name__=='__main__':
+    assert len(sys.argv)==4, 'usage: model-guards.py.in MODEL_CACHE PRIVATE_PLAN NEW_PRIVATE_MANIFEST'
+    root,plan_path,output=map(Path,sys.argv[1:]);assert not output.resolve().is_relative_to(root.resolve()), 'manifest must be external to models'
+    assert stat.S_IMODE(plan_path.stat().st_mode)==0o600, 'model plan must be private'
+    record=prepare(root,json.loads(plan_path.read_text()))
+    descriptor=os.open(output,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    with os.fdopen(descriptor,'w') as stream:json.dump(record,stream,indent=2);stream.write('\n')

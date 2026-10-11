@@ -1,0 +1,37 @@
+{
+  "command": [
+    "${ENGINE_EXPERIMENT}/fixed-pamin-engine-frozen",
+    "--ignored",
+    "--exact",
+    "cache_engine_probe",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "environment": {
+    "HOME": "${RUN_HOME}",
+    "USER": "agent",
+    "PATH": "${RUN_HOME}/.local/bin:${RUNTIME_TOOLS}/runtimes/codex-primary-runtime/dependencies/bin/override:${RUNTIME_TOOLS}/runtimes/codex-primary-runtime/dependencies/python/bin:${RUNTIME_TOOLS}/runtimes/codex-primary-runtime/dependencies/node/bin:${RUNTIME_TOOLS}/runtimes/codex-primary-runtime/dependencies/bin:${RUNTIME_TOOLS}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${RUN_HOME}/.local/bin:${RUNTIME_TOOLS}/runtimes/codex-primary-runtime/dependencies/bin/fallback",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "RUSTUP_HOME": "${RUSTUP_HOME}",
+    "CARGO_HOME": "${CARGO_HOME}",
+    "ORT_LIB_LOCATION": "${ORT_RUNTIME}/onnxruntime-linux-x64-1.28.0/lib",
+    "ORT_PREFER_DYNAMIC_LINK": "1",
+    "CARGO_TARGET_DIR": "${REPOSITORY}/target",
+    "LD_LIBRARY_PATH": "${CARGO_HOME}/lib/pamin:${ORT_RUNTIME}/onnxruntime-linux-x64-1.28.0/lib",
+    "PAMIN_DEVICE": "cpu",
+    "PAMIN_PROFILE": "accuracy",
+    "HF_HUB_OFFLINE": "1",
+    "HF_HUB_DISABLE_TELEMETRY": "1",
+    "PAMIN_EVAL_HOME": "${ENGINE_EXPERIMENT}/results/r0-fixed-q101-accurate-A-home",
+    "CACHE_QUERY_ID": "101",
+    "CACHE_SEQUENCE": "A,A,A,A,A,A,B,B,B,B,B,B,N",
+    "CACHE_TIER": "accurate"
+  },
+  "headroom": {
+    "disk_free": 11492192256,
+    "mem_available": "MemAvailable:   17033720 kB",
+    "utc": 1790807567.8748572
+  },
+  "binary_sha256": "471e095da967364ce017f094d1d3d753f67a48b0fcdd546d7748c195cf431bfc"
+}

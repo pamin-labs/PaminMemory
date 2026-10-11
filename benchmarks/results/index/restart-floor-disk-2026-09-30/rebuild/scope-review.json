@@ -1,0 +1,16 @@
+{
+  "recorded_utc": "2026-10-01",
+  "scope": "Named-package clean in a shared Cargo target freshly compiled only the four product libraries and selected integration-test helper. All 538 third-party compiler artifacts per arm were cached. Their source-to-artifact provenance is unknown; byte equality does not establish full source-to-artifact attestation.",
+  "historical_audit_sha256": "c57821376d0a0f69df48903985ece1b4402e6d43a434d3c7848f7ba1372fd8c8",
+  "historical_procedure_sha256": "6e661e4b3f3b7efe79dfacb2fe62712553cc9b464a48131b799fe4ad66d0ae29",
+  "target_scope": "shared Cargo target; cargo clean --release -p only for the four product packages",
+  "fresh_product_and_helper_artifacts_per_arm": 5,
+  "cached_third_party_artifacts_per_arm": {
+    "main": 538,
+    "predecessor": 538,
+    "candidate": 538
+  },
+  "third_party_source_to_artifact_provenance": "unknown",
+  "full_source_to_artifact_attestation": false,
+  "future_full_source_claim_requirement": "A separate prospective audit must use an initially empty isolated Cargo target and attest all compiled dependency inputs/artifacts before claiming a full source-to-artifact rebuild. No build was rerun for this qualification."
+}

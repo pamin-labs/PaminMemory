@@ -1460,9 +1460,10 @@ impl Engine {
     /// What the reranker at `tier` has done in this process, or `None` if it
     /// was never loaded.
     ///
-    /// Here because three deferred decisions turn on these counters and none
-    /// of them had a value -- see [`pamin_index::Reranked`]. A caller that
-    /// wants them across a run reads them once at the end: they are lifetime
+    /// Reports offered pairs, actual model work and complete identical-batch
+    /// reuse -- see [`pamin_index::Reranked`]. Reuse does not measure document
+    /// recurrence or establish hot-set/precomputation viability; those need
+    /// separate recurrence and storage/cost measurements. These are lifetime
     /// totals for the loaded model and are lost when an idle tier is released.
     pub fn reranked(&self, tier: Rerank) -> Option<pamin_index::Reranked> {
         self.models.counted(tier)

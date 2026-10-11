@@ -1,0 +1,337 @@
+#!/usr/bin/env python3
+"""Prospective cleared tuning for setup/trials; preserve historical run.py.in."""
+import argparse,hashlib,importlib.machinery,importlib.util,json,os,re,runpy,shutil,stat,subprocess,sys
+from datetime import datetime,timezone
+from pathlib import Path
+if sys.flags.optimize:raise SystemExit('Run guards require assertions; remove -O/PYTHONOPTIMIZE')
+NATIVE=runpy.run_path(str(Path(__file__).with_name('native-guards.py.in')))
+STABLE=runpy.run_path(str(Path(__file__).with_name('stable-executables.py.in')))
+MODEL=runpy.run_path(str(Path(__file__).with_name('model-guards.py.in')))
+def verify_models(record):
+    path=Path(record['model_manifest_path'])
+    assert stat.S_IMODE(path.stat().st_mode)==0o600 and not path.is_symlink(), 'model manifest permissions changed'
+    assert digest(path)==record['model_manifest_sha256'], 'prepared model manifest changed'
+    return MODEL['verify'](record['_expected_models'])
+def controlled_environment(parent):
+    inherited=sorted(key for key in parent if key.startswith('PAMIN_'))
+    assert not inherited, 'refuse inherited PAMIN tuning: '+', '.join(inherited)
+    assert not {'HF_HOME','HF_HUB_CACHE'} & parent.keys(), 'refuse inherited hub-cache location overrides'
+    assert 'TOKIO_WORKER_THREADS' not in parent, 'refuse inherited Tokio worker concurrency'
+    assert not {'TOKENIZERS_PARALLELISM','RAYON_NUM_THREADS'} & parent.keys(), 'refuse inherited tokenizer/Rayon concurrency'
+    assert not any(key.startswith('MALLOC_') or key=='GLIBC_TUNABLES' for key in parent), 'refuse inherited glibc allocator tuning'
+    # Clear setup controls too; every relevant field is explicit below.
+    env={key:value for key,value in parent.items() if not key.startswith('FLOOR_')}
+    env.update(PAMIN_DEVICE='cpu',PAMIN_PROFILE='accuracy',PAMIN_INFERENCE_THREADS='4',
+               TOKIO_WORKER_THREADS='4',TOKENIZERS_PARALLELISM='false',RAYON_NUM_THREADS='4',HF_HUB_OFFLINE='1',HF_HUB_DISABLE_TELEMETRY='1')
+    return env
+def digest(path):
+    h=hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda:stream.read(4*1024*1024),b''):h.update(block)
+    return h.hexdigest()
+def read_attestation(path):
+    raw=path.read_bytes()
+    return json.loads(raw),hashlib.sha256(raw).hexdigest()
+def fixture_digest(entries,models):
+    return hashlib.sha256(json.dumps({'version':2,'models_target':models,'entries':entries},sort_keys=True,separators=(',',':')).encode()).hexdigest()
+def fixture_snapshot(seed,models):
+    """Private full contents, modes and symlink targets; never follow models."""
+    assert not seed.is_symlink(), 'fixture root must not be a symlink'
+    seed=seed.resolve();models=models.resolve(strict=True)
+    assert models.is_dir() and not models.is_relative_to(seed), 'models must be an external pinned directory'
+    assert not (seed/'postgres/data/postmaster.pid').exists(), 'fixture must be stopped'
+    assert (seed/'postgres/data').is_dir() and (seed/'index').is_dir()
+    assert (seed/'models').is_symlink() and (seed/'models').resolve(strict=True)==models
+    entries={}
+    def unreadable(error):raise error
+    for directory,dirs,files in os.walk(seed,followlinks=False,onerror=unreadable):
+        for name in sorted(dirs+files):
+            path=Path(directory)/name;relative=path.relative_to(seed).as_posix()
+            before=path.lstat();mode=stat.S_IMODE(before.st_mode)
+            if path.is_symlink():
+                assert relative!='index' and not relative.startswith('index/'), 'measured index tree symlinks forbidden'
+                target=os.readlink(path);resolved=path.resolve(strict=True)
+                assert relative=='models' or resolved.is_relative_to(seed), 'external fixture symlink refused'
+                entries[relative]={'kind':'symlink','target':target}
+            elif path.is_file():
+                actual=digest(path);after=path.stat()
+                assert (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns,before.st_blocks)==(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns,after.st_blocks), 'fixture changed while hashing'
+                entries[relative]={'kind':'file','bytes':after.st_size,'sha256':actual,'mode':mode}
+                if relative.startswith('index/'):entries[relative]['allocated_bytes']=after.st_blocks*512
+            else:
+                assert path.is_dir(), 'unsupported fixture entry'
+                entries[relative]={'kind':'directory','mode':mode}
+    model=str(models)
+    return {'version':2,'models_target':model,'entries':entries,'tree_sha256':fixture_digest(entries,model)}
+def verify_fixture(seed,expected):
+    assert expected['version']==2 and expected['tree_sha256']==fixture_digest(expected['entries'],expected['models_target']), 'malformed expected fixture manifest'
+    actual=fixture_snapshot(seed,Path(expected['models_target']))
+    assert actual==expected, 'fixture differs from explicitly prepared manifest'
+    return {'tree_sha256':actual['tree_sha256'],'files':sum(x['kind']=='file' for x in actual['entries'].values()),'entries':len(actual['entries']),'models_target':actual['models_target'],'index_allocated_bytes':sum(x.get('allocated_bytes',0) for x in actual['entries'].values()),'allocation_scope':'index regular-file st_blocks*512 endpoints; historical per-copy allocation baseline N/A'}
+def independent_files(source,clone,expected):
+    source_inodes={(path.stat().st_dev,path.stat().st_ino) for name,entry in expected['entries'].items() if entry['kind']=='file' for path in [source/name]}
+    clone_inodes=set()
+    for name,entry in expected['entries'].items():
+        if entry['kind']!='file':continue
+        path=clone/name;info=path.stat();inode=(info.st_dev,info.st_ino)
+        assert inode not in source_inodes, 'clone shares source regular-file inode'
+        assert inode not in clone_inodes or not info.st_mode & 0o222, 'clone has writable shared regular-file inode'
+        clone_inodes.add(inode)
+def write_record(path,record):
+    assert stat.S_IMODE(path.stat().st_mode)==0o600, 'private record permissions changed'
+    path.write_text(json.dumps({key:value for key,value in record.items() if key!='_expected_models'},indent=2)+'\n')
+def guarded_trials(runner,argv,env,seed,output,arms,expected,record_path,record):
+    """Wrap only root copies, outside the unchanged runner's operation clock."""
+    old_argv=sys.argv;old_env=dict(os.environ);original=runner.shutil.copytree
+    original_provider=runner.cpu_provider_assignments
+    native=record['native_loader_inputs'];record['native_after_arms']=[];record['models_after_arms']=[]
+    seed=seed.resolve();output=output.resolve()
+    sequence=[(rep,arm.split(',',2)) for rep in range(3) for arm in arms[rep:]+arms[:rep]]
+    assert expected['models_target']==record['_expected_models']['root'], 'fixture and model manifests pin different caches'
+    record['fixture_before_trials']=verify_fixture(seed,expected)
+    record['copies']=[];write_record(record_path,record)
+    def copytree(source,destination,*args,**kwargs):
+        if Path(source).resolve()!=seed:return original(source,destination,*args,**kwargs)
+        assert len(record['copies'])<len(sequence), 'unexpected extra root fixture copy'
+        rep,(name,commit,executable)=sequence[len(record['copies'])]
+        clone=Path(destination).resolve()
+        assert clone==output/f'{rep}-{name}' and kwargs.get('symlinks') is True, 'unexpected fixture copy destination/options'
+        NATIVE['verify'](native) # before original operation clock
+        assert len(record['native_after_arms'])==len(record['copies']), 'previous arm has no native endpoint check'
+        assert len(record['models_after_arms'])==len(record['copies']), 'previous arm has no model endpoint check'
+        source_identity=verify_fixture(seed,expected)
+        result=original(source,destination,*args,**kwargs)
+        clone_identity=verify_fixture(clone,expected)
+        independent_files(seed,clone,expected)
+        verify_fixture(seed,expected)
+        expected_binary=record['arm_binary_identities'][name]
+        actual_binary=digest(Path(executable))
+        assert expected_binary['commit']==commit and expected_binary['sha256']==actual_binary and expected_binary['bytes']==Path(executable).stat().st_size, 'arm binary changed before launch'
+        NATIVE['verify'](native) # copy/hash preparation may itself take time
+        model_identity=verify_models(record) # immediately before original trial clock
+        record['copies'].append({'models':model_identity,'recorded_utc':datetime.now(timezone.utc).isoformat(),'repetition':rep,'arm':name,'commit':commit,
+                                 'binary_sha256':actual_binary,'binary_bytes':expected_binary['bytes'],'source':source_identity,'clone':clone_identity,
+                                 'independent_regular_files':True,'scope':'hash/copy checks complete before original trial clock'})
+        write_record(record_path,record)
+        return result
+    def providers(log_text):
+        result=original_provider(log_text)
+        verify_provider_graphs(result,record['_expected_models'])
+        assert len(record['copies'])==len(record['native_after_arms'])+1
+        identity=NATIVE['verify'](native) # original runner already stopped its elapsed clock
+        record['models_after_arms'].append(dict(verify_models(record),arm=record['copies'][-1]['arm'],repetition=record['copies'][-1]['repetition']))
+        record['native_after_arms'].append(dict(identity,arm=record['copies'][-1]['arm'],repetition=record['copies'][-1]['repetition'],recorded_utc=datetime.now(timezone.utc).isoformat()))
+        write_record(record_path,record)
+        return result
+    sources={arm.split(',',2)[0]:Path(arm.split(',',2)[2]) for arm in arms}
+    original_run=runner.subprocess.run
+    def execute(command,**kwargs):
+        name=record['copies'][-1]['arm']
+        assert Path(command[0]).resolve()==sources[name].resolve(), 'unexpected trial executable'
+        entry=opened[name]
+        before=STABLE['verify'](entry)
+        command,options=STABLE['invocation'](command,entry,kwargs)
+        endpoint={'arm':name,'repetition':record['copies'][-1]['repetition'],'before':before,'executed_fd':command[0]}
+        record.setdefault('executed_binaries',[]).append(endpoint)
+        try:return original_run(command,**options)
+        finally:
+            try:endpoint['after']=STABLE['verify'](entry)
+            except BaseException as error:endpoint['failure_class']=type(error).__name__;raise
+            finally:write_record(record_path,record)
+    with STABLE['copies'](sources,record['arm_binary_identities'],record_path.parent,excluded=(seed,output)) as opened:
+      try:
+        runner.subprocess.run=execute
+        runner.shutil.copytree=copytree;runner.cpu_provider_assignments=providers;sys.argv=argv
+        os.environ.clear();os.environ.update(env)
+        runner.main()
+        assert len(record['native_after_arms'])==9, 'expected nine native endpoint checks'
+        assert len(record.get('executed_binaries',[]))==9, 'expected nine FD-bound trial executions'
+        assert len(record['copies'])==9, 'expected exactly nine root fixture copies'
+        assert len(record['models_after_arms'])==9, 'expected nine model endpoint checks'
+        record['models_after_trials']=verify_models(record)
+        record['fixture_after_trials']=verify_fixture(seed,expected)
+        write_record(record_path,record)
+      finally:
+        runner.subprocess.run=original_run
+        runner.shutil.copytree=original;runner.cpu_provider_assignments=original_provider;sys.argv=old_argv
+        os.environ.clear();os.environ.update(old_env)
+def load_runner(path):
+    assert digest(path)=='e0798a0b38273d6f6ae540e9f99895992ecab5d82b30228c5cf0692a21f15a6c', 'historical runner changed'
+    loader=importlib.machinery.SourceFileLoader('prospective_restart_runner',str(path))
+    spec=importlib.util.spec_from_loader(loader.name,loader);runner=importlib.util.module_from_spec(spec)
+    prior=sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode=True;loader.exec_module(runner)
+    finally:sys.dont_write_bytecode=prior
+    return runner
+def verify_provider_graphs(providers,expected):
+    models={model['name']:model for model in expected['plan']['models']}
+    assert set(providers)==set(models)=={'embedding','reranker'}, 'actual provider/model roles must be embedding and reranker'
+    root=Path(expected['root'])
+    for role,provider in providers.items():
+        graph=Path(provider['model_graph'])
+        assert graph.is_absolute(), 'actual model graph must be absolute'
+        assert graph.resolve(strict=True)==(root/models[role]['load_graph']).resolve(strict=True), 'actual role graph differs from declared load_graph'
+        nodes=provider['assigned_nodes']
+        assert set(nodes)=={'CPUExecutionProvider'} and type(nodes['CPUExecutionProvider']) is int and nodes['CPUExecutionProvider']>0, 'actual CPU assignment missing'
+def seed_provider_assignments(log_text,expected,reader):
+    """Seed warming can load both roles concurrently; never infer their order.
+
+    Opaque prepared paths get their role from the separately pinned inventory.
+    Only the parser input receives a repository-role tag; the returned evidence
+    retains the actual logged path, which must match that role's load_graph.
+    """
+    identities={'embedding':'gpahal--bge-m3-onnx-int8','reranker':'onnx-community--bge-reranker-v2-m3-ONNX'}
+    models={model['name']:model for model in expected['plan']['models']}
+    assert set(models)==set(identities), 'seed requires embedding and reranker model roles'
+    root=Path(expected['root']);decoder=json.JSONDecoder();lines=[];actual={}
+    clean=re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]','',log_text)
+    for line in clean.splitlines():
+        if 'ONNX graph execution-provider assignment' not in line:continue
+        assert 'model_graph=' in line and 'assigned_nodes=' in line, 'seed provider assignment fields missing'
+        value=line.split('model_graph=',1)[1];graph,length=decoder.raw_decode(value)
+        graph_path=Path(graph);assert graph_path.is_absolute(), 'seed actual graph must be absolute'
+        roles=[role for role,identity in identities.items() if identity in graph]
+        attributed=graph
+        if not roles:
+            roles=[role for role,model in models.items() if any(graph_path.resolve(strict=True)==(root/name).resolve(strict=True) for name in model['assets']['prepared_graph'])]
+            assert len(roles)==1, 'opaque seed graph needs one declared model role'
+            attributed=graph+'/'+identities[roles[0]]
+        assert len(roles)==1, 'seed graph has ambiguous repository role'
+        assert attributed not in actual, 'duplicate seed graph assignment'
+        actual[attributed]=(graph,not any(identity in graph for identity in identities.values()))
+        lines.append(line.replace('model_graph='+value[:length],'model_graph='+json.dumps(attributed),1))
+    providers=reader('\n'.join(lines))
+    for provider in providers.values():
+        graph,from_inventory=actual[provider['model_graph']];provider['model_graph']=graph
+        if from_inventory:provider['role_identity']='separately declared prepared graph role; seed load order not inferred'
+    verify_provider_graphs(providers,expected)
+    return providers
+def setup_rows(output,stage,documents):
+    clean=re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]','',output)
+    rows=[json.loads(line[len('RESTART_JSON '):]) for line in clean.splitlines() if line.startswith('RESTART_JSON ')]
+    opened=[row for row in rows if row['phase']=='open']
+    assert len(opened)==1, 'setup must execute restart_floor and emit exactly one open row'
+    assert type(documents) is int and documents>0, 'setup requested document count must be positive'
+    extra=opened[0].get('extra')
+    assert type(extra) is dict and 'documents' not in opened[0], 'native open count belongs only in extra.documents'
+    opened_documents=extra.get('documents')
+    assert type(opened_documents) is int and opened_documents>=0, 'native open document count must be a nonnegative integer'
+    summary={'phases':[row['phase'] for row in rows],'requested_documents':documents,'opened_documents':opened_documents}
+    if stage=='bootstrap':
+        assert opened_documents==0 and any(line.startswith('COLLECTION_PATH ') for line in clean.splitlines()), 'bootstrap output missing empty collection'
+    else:
+        assert opened_documents<=documents, 'seed opened more documents than requested'
+        completed=[row for row in rows if row['phase']=='seed_complete']
+        assert len(completed)==1, 'seed completion row missing'
+        completion=completed[0].get('extra')
+        assert type(completion) is dict and type(completion.get('completeness')) in {int,float} and completion['completeness']==1, 'seed completion must report full vector completeness'
+        # The retained harness emits final completeness/disk, not final count.
+        # Do not label the requested count as an observed completion count.
+        summary['seed_final_document_count']='N/A: seed_complete does not emit a final document count'
+    return summary
+
+def binary(arm,attestation,excluded=()):
+    source='crates/pamin-engine/tests/scratch_restart_floor.rs'
+    assert attestation['build_kind']=='restart-trial' and attestation['scratch_target']==source, 'restart setup/trials require restart helper build'
+    name,commit,path=arm.split(',',2);entry=attestation['arms'][name];path=Path(path).resolve()
+    assert all(not path.is_relative_to(root.resolve()) for root in excluded), 'arm executable must be outside measured home/seed/output'
+    assert entry['scratch_source']==source and entry['scratch_sha256']==attestation['harness_sha256']
+    assert entry['inputs_before'][source]==entry['inputs_after'][source] and entry['inputs_before'][source]['sha256']==attestation['harness_sha256'], 'restart helper source binding missing'
+    helpers=[x for x in entry['compiler_artifacts'] if x['target']['name']=='scratch_restart_floor' and x.get('executable')]
+    assert len(helpers)==1 and Path(helpers[0]['target']['src_path']).resolve()==(Path(entry['checkout'])/source).resolve() and helpers[0]['fresh'] is False, 'actual restart helper artifact missing'
+    assert entry['commit']==commit and Path(entry['binary']).resolve()==path
+    assert digest(path)==entry['binary_sha256'] and path.stat().st_size==entry['binary_bytes']
+    return path
+def main():
+    env=controlled_environment(os.environ) # before any output/setup/trial
+    p=argparse.ArgumentParser()
+    p.add_argument('--attestation',type=Path,required=True)
+    p.add_argument('--model-manifest',type=Path,required=True,help='separately prepared private external-model manifest for setup and trials')
+    p.add_argument('--record',type=Path,required=True,help='new private safe-config record outside timing')
+    p.add_argument('--documents',type=int,required=True)
+    p.add_argument('--index',choices=['memory','disk'],required=True)
+    sub=p.add_subparsers(dest='mode',required=True)
+    setup=sub.add_parser('setup');setup.add_argument('--home',type=Path,required=True)
+    setup.add_argument('--arm',required=True);setup.add_argument('--stage',choices=['bootstrap','seed'],required=True)
+    trial=sub.add_parser('trials');trial.add_argument('--seed',type=Path,required=True)
+    trial.add_argument('--fixture-manifest',type=Path,required=True,help='private complete expected manifest prepared separately before this run')
+    trial.add_argument('--output',type=Path,required=True);trial.add_argument('--arm',action='append',required=True)
+    a=p.parse_args();assert a.documents>0, 'requested document count must be positive'
+    excluded=[a.home] if a.mode=='setup' else [a.seed,a.output]
+    if a.mode=='trials':assert not a.output.resolve().is_relative_to(a.seed.resolve()), 'trial output must be outside source seed'
+    assert all(not a.attestation.resolve().is_relative_to(root.resolve()) for root in excluded), 'build attestation must be outside measured home/seed/output'
+    assert not a.record.exists(), 'preserve previous configuration evidence'
+    expected_models,model_bytes,model_prepared=MODEL['load'](a.model_manifest)
+    assert not a.record.resolve().is_relative_to(Path(expected_models['root'])), 'record must be outside model cache'
+    attestation,attestation_sha256=read_attestation(a.attestation)
+    assert attestation['scope']=='prospective build-time inputs/outputs only; no historical binary binding'
+    native=attestation['native_loader_inputs']
+    env=NATIVE['environment'](env,native)
+    if a.mode=='setup':
+        assert not a.record.resolve().is_relative_to(a.home.resolve()), 'private setup record must be outside measured home'
+        executable=binary(a.arm,attestation,excluded)
+        name,commit,_=a.arm.split(',',2)
+        assert name=='candidate' and commit==attestation['arms']['candidate']['commit'], 'setup requires attested candidate arm and commit'
+        assert (a.home/'models').is_symlink() and (a.home/'models').resolve(strict=True)==Path(expected_models['root']), 'setup must use the attested model cache'
+        assert not a.model_manifest.resolve().is_relative_to(a.home.resolve()), 'model manifest must be external to setup home'
+        env.update(PAMIN_EVAL_HOME=str(a.home.resolve()),FLOOR_MODE=a.stage,FLOOR_DOCUMENTS=str(a.documents),FLOOR_VECTOR_INDEX=a.index)
+        command=[str(executable),'--ignored','--exact','restart_floor','--nocapture']
+    else:
+        assert len(a.arm)==3 and {x.split(',',1)[0] for x in a.arm}=={'main','predecessor','candidate'}
+        for arm in a.arm:binary(arm,attestation,excluded)
+        assert not a.output.exists()
+        assert not a.model_manifest.resolve().is_relative_to(a.seed.resolve()) and not a.model_manifest.resolve().is_relative_to(a.output.resolve()), 'model manifest must be external to source/copies'
+        assert not a.fixture_manifest.resolve().is_relative_to(a.seed.resolve()) and not a.fixture_manifest.resolve().is_relative_to(a.output.resolve()), 'expected manifest must be external to source/copies'
+        assert not a.record.resolve().is_relative_to(a.seed.resolve()) and not a.record.resolve().is_relative_to(a.output.resolve()), 'private record must be outside fixture/copies'
+        assert stat.S_IMODE(a.fixture_manifest.stat().st_mode)==0o600, 'complete fixture manifest must remain private'
+        manifest_bytes=a.fixture_manifest.read_bytes();fixture_manifest=json.loads(manifest_bytes)
+        prepared=datetime.fromisoformat(fixture_manifest['recorded_utc'])
+        assert prepared.tzinfo is not None and prepared<=datetime.now(timezone.utc), 'manifest must have a prior preparation timestamp'
+        command=[sys.executable,str(Path(__file__).with_name('run.py.in')),'--seed',str(a.seed),'--output',str(a.output),'--documents',str(a.documents),'--index',a.index]
+        for arm in a.arm:command+=['--arm',arm]
+    record={'recorded_utc':datetime.now(timezone.utc).isoformat(),
+            'scope':'prospective setup/trial configuration only; historical inherited tuning remains unknown',
+            'build_attestation_sha256':attestation_sha256,'command':command,
+            'model_manifest_path':str(a.model_manifest.resolve()),'model_manifest_sha256':hashlib.sha256(model_bytes).hexdigest(),'model_prepared_utc':model_prepared,
+            'controlled_environment':{key:env[key] for key in ['PAMIN_DEVICE','PAMIN_PROFILE','PAMIN_INFERENCE_THREADS','TOKIO_WORKER_THREADS','TOKENIZERS_PARALLELISM','RAYON_NUM_THREADS','PAMIN_EVAL_HOME','FLOOR_MODE','FLOOR_DOCUMENTS','FLOOR_VECTOR_INDEX','HF_HUB_OFFLINE','HF_HUB_DISABLE_TELEMETRY'] if key in env},
+            'inherited_pamin_overrides':{},'native_loader_inputs':native,'loader_environment':{'LD_LIBRARY_PATH':env['LD_LIBRARY_PATH'],'removed_inherited_loader_variable_names':sorted(key for key in os.environ if key.startswith('LD_') or key=='GLIBC_TUNABLES')},'status':'prepared'}
+    descriptor=os.open(a.record,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    with os.fdopen(descriptor,'w') as stream:json.dump(record,stream,indent=2);stream.write('\n')
+    try:
+        record['_expected_models']=expected_models
+        record['models_before_launch']=verify_models(record);write_record(a.record,record)
+        if a.mode=='setup':
+            NATIVE['verify'](native)
+            identity={'sha256':attestation['arms']['candidate']['binary_sha256'],'bytes':attestation['arms']['candidate']['binary_bytes']}
+            with STABLE['copies']({'candidate':executable},{'candidate':identity},a.record.parent,excluded) as opened:
+                entry=opened['candidate'];record['setup_binary_before']=STABLE['verify'](entry)
+                actual_command,options=STABLE['invocation'](command,entry)
+                record['setup_executed_fd']=actual_command[0]
+                try:result=subprocess.run(actual_command,env=env,capture_output=True,text=True,**options)
+                finally:
+                    record['setup_binary_after']=STABLE['verify'](entry);write_record(a.record,record)
+            record['returncode']=result.returncode
+            sys.stdout.write(result.stdout);sys.stderr.write(result.stderr)
+            assert result.returncode==0
+            record['setup_output']=setup_rows(result.stdout,a.stage,a.documents)
+            if a.stage=='seed':
+                runner=load_runner(Path(__file__).with_name('run.py.in'))
+                record['setup_actual_providers']=seed_provider_assignments(result.stdout+'\n'+result.stderr,expected_models,runner.cpu_provider_assignments)
+            record['native_after_setup']=NATIVE['verify'](native)
+            record['models_after_setup']=verify_models(record)
+        else:
+            record.update(fixture_manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),fixture_prepared_utc=fixture_manifest['recorded_utc'])
+            record['arm_binary_identities']={arm.split(',',2)[0]:{key:attestation['arms'][arm.split(',',2)[0]][source] for key,source in [('commit','commit'),('sha256','binary_sha256'),('bytes','binary_bytes')]} for arm in a.arm}
+            runner=load_runner(Path(__file__).with_name('run.py.in'))
+            guarded_trials(runner,command[1:],env,a.seed,a.output,a.arm,fixture_manifest['fixture'],a.record,record)
+        record.update(status='finished',finished_utc=datetime.now(timezone.utc).isoformat());write_record(a.record,record)
+    except BaseException as error:
+        try:record['models_failure_endpoint']=verify_models(record)
+        except BaseException as model_error:record['models_failure_endpoint']={'failure_class':type(model_error).__name__}
+        try:record['native_failure_endpoint']=NATIVE['verify'](native)
+        except BaseException as native_error:record['native_failure_endpoint']={'failure_class':type(native_error).__name__}
+        record.update(status='failed',failed_utc=datetime.now(timezone.utc).isoformat(),failure_class=type(error).__name__)
+        write_record(a.record,record)
+        raise
+if __name__=='__main__':main()

@@ -1,0 +1,394 @@
+"""Invariant negatives mutate metadata and refresh CRCs, not just file hashes."""
+import copy
+import hashlib
+import json
+import re
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+import unittest
+
+import verify
+
+
+class CRC32CInvariants(unittest.TestCase):
+    def setUp(self):
+        verify._crc32c_cached.cache_clear()
+
+    def tearDown(self):
+        verify._crc32c_cached.cache_clear()
+
+    def test_raw_castagnoli_known_vector(self):
+        self.assertEqual(verify.crc32c(b''), 0)
+        self.assertEqual(verify.crc32c(b'123456789'), 0x58e3fa20)
+
+    def test_distinct_inputs_with_identical_bytes_reuse_crc(self):
+        data = b'x' * 512
+        self.assertEqual(verify.crc32c(data), verify.crc32c(bytearray(data)))
+        info = verify._crc32c_cached.cache_info()
+        self.assertEqual((info.misses, info.hits), (1, 1))
+
+    def test_mutating_same_buffer_recomputes_crc(self):
+        data = bytearray(512)
+        before = verify.crc32c(data)
+        data[-1] = 1
+        after = verify.crc32c(data)
+        self.assertNotEqual(before, after)
+        self.assertEqual(after, verify._crc32c_scalar(data))
+        self.assertEqual(verify._crc32c_cached.cache_info().misses, 2)
+
+    def test_cache_entry_and_input_size_bounds(self):
+        for byte in range(3):
+            verify.crc32c(bytes([byte]) * 512)
+        self.assertEqual(verify._crc32c_cached.cache_info().currsize, 2)
+        before = verify._crc32c_cached.cache_info()
+        with patch.object(verify, '_MAX_CACHED_CRC_BYTES', 512):
+            data = b'x' * 513
+            self.assertEqual(verify.crc32c(data), verify._crc32c_scalar(data))
+        self.assertEqual(verify._crc32c_cached.cache_info(), before)
+
+
+class MetadataInvariants(unittest.TestCase):
+    def setUp(self):
+        self.evidence = verify.source_binding.load_json(verify.ROOT/'evidence.json')
+
+    def reject(self, mutation, expected_error):
+        changed = copy.deepcopy(self.evidence)
+        mutation(changed)
+        with self.assertRaisesRegex(ValueError, '^' + re.escape(expected_error) + '$'):
+            verify.verify(changed, check_logs=False)
+
+    def rewrite(self, evidence, section, fields):
+        excerpt = evidence['runs'][0]['files'][0]['excerpts']['after']
+        layout = verify.HEADER if section == 'header_hex' else verify.FOOTER
+        values = list(layout.unpack(bytes.fromhex(excerpt[section])))
+        for index, value in fields.items(): values[index] = value
+        values[0] = 0
+        values[0] = verify.crc32c(layout.pack(*values))
+        excerpt[section] = layout.pack(*values).hex()
+
+    def test_valid(self):
+        self.assertTrue(verify.verify(self.evidence))
+
+    def test_duplicate_evidence_members_rejected_before_hashing(self):
+        for field, first in [('storage_type', 'VectorFp32'), ('read_only', False)]:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                text = json.dumps(self.evidence)
+                original = json.dumps(field) + ': ' + json.dumps('VectorFp16' if field == 'storage_type' else True)
+                duplicate = json.dumps(field) + ': ' + json.dumps(first) + ', ' + original
+                self.assertIn(original, text)
+                (root/'evidence.json').write_text(text.replace(original, duplicate, 1))
+                with patch.object(verify, 'ROOT', root):
+                    with self.assertRaisesRegex(ValueError, '^duplicate JSON member: ' + field + '$'):
+                        verify.main()
+
+    def test_duplicate_manifest_members_rejected_before_hashing(self):
+        binding = verify.source_binding.load_json(verify.ROOT/'public-source-binding.json')
+        for field in ['scope', 'sha256']:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                (root/'evidence.json').write_text(json.dumps(self.evidence))
+                text = json.dumps(binding)
+                prefix = json.dumps(field) + ': '
+                self.assertIn(prefix, text)
+                (root/'public-source-binding.json').write_text(text.replace(prefix, prefix + '"conflicting earlier claim", ' + prefix, 1))
+                with patch.object(verify, 'ROOT', root):
+                    with self.assertRaisesRegex(ValueError, '^duplicate JSON member: ' + field + '$'):
+                        verify.main()
+
+    def test_crc_refreshed_unchecked_header_field_all_excerpts(self):
+        changed = copy.deepcopy(self.evidence)
+        for run in changed['runs']:
+            for file in run['files']:
+                for excerpt in file['excerpts'].values():
+                    values = list(verify.HEADER.unpack(bytes.fromhex(excerpt['header_hex'])))
+                    values[9] += 1
+                    values[0] = 0
+                    values[0] = verify.crc32c(verify.HEADER.pack(*values))
+                    excerpt['header_hex'] = verify.HEADER.pack(*values).hex()
+        self.assert_unchanged_file_receipts_rejected(changed)
+
+    def test_unchecked_linear_field_all_excerpts(self):
+        changed = copy.deepcopy(self.evidence)
+        for run in changed['runs']:
+            for file in run['files']:
+                for excerpt in file['excerpts'].values():
+                    data = bytearray.fromhex(excerpt['streamer_and_linear_header_hex'])
+                    values = list(verify.LINEAR.unpack_from(data, 64))
+                    values[2] += 1
+                    verify.LINEAR.pack_into(data, 64, *values)
+                    excerpt['streamer_and_linear_header_hex'] = data.hex()
+        self.assert_unchanged_file_receipts_rejected(changed)
+
+    def test_unchecked_streamer_padding_all_excerpts(self):
+        changed = copy.deepcopy(self.evidence)
+        for run in changed['runs']:
+            for file in run['files']:
+                for excerpt in file['excerpts'].values():
+                    data = bytearray.fromhex(excerpt['streamer_and_linear_header_hex'])
+                    data[63] ^= 1
+                    excerpt['streamer_and_linear_header_hex'] = data.hex()
+        self.assert_unchanged_file_receipts_rejected(changed)
+
+    def assert_unchanged_file_receipts_rejected(self, changed):
+        for before_run, after_run in zip(self.evidence['runs'], changed['runs']):
+            for before_file, after_file in zip(before_run['files'], after_run['files']):
+                for field in ['whole_file_sha256_before', 'whole_file_sha256_after']:
+                    self.assertEqual(before_file[field], after_file[field])
+        with self.assertRaisesRegex(ValueError, 'original evidence/excerpt receipt binding'):
+            verify.verify(changed, check_logs=False)
+
+    def test_invalid_crc(self):
+        def mutate(e):
+            x = e['runs'][0]['files'][0]['excerpts']['after']
+            x['footer_hex'] = '00'*4 + x['footer_hex'][8:]
+        self.reject(mutate, 'footer CRC')
+
+    def test_rehashed_wrong_format(self):
+        self.reject(lambda e:self.rewrite(e, 'header_hex', {2:3}), 'wrong format/revision')
+
+    def test_crc_refreshed_wrong_magic_each_file_both_phases(self):
+        pins = list(verify.HEADER_MAGIC.values())
+        for run_index in range(2):
+            for file_index in range(4):
+                # Zero and another file's legitimate identity must both fail.
+                for magic in [0, pins[(file_index+1) % 4]]:
+                    with self.subTest(arm=run_index, file=file_index, magic=magic):
+                        changed = copy.deepcopy(self.evidence)
+                        file = changed['runs'][run_index]['files'][file_index]
+                        for excerpt in file['excerpts'].values():
+                            values = list(verify.HEADER.unpack(bytes.fromhex(excerpt['header_hex'])))
+                            values[4] = magic; values[0] = 0
+                            values[0] = verify.crc32c(verify.HEADER.pack(*values))
+                            excerpt['header_hex'] = verify.HEADER.pack(*values).hex()
+                        with self.assertRaisesRegex(ValueError, 'header magic identity receipt binding'):
+                            verify.verify(changed, check_logs=False)
+
+    def test_wrong_linear_header_meta_extent_all_excerpts(self):
+        # Both phases agree and the 64-vector counts remain unchanged.
+        for extent in [1, 63, 65]:
+            with self.subTest(extent=extent):
+                changed = copy.deepcopy(self.evidence)
+                for run in changed['runs']:
+                    for file in run['files']:
+                        for excerpt in file['excerpts'].values():
+                            data = bytearray.fromhex(excerpt['streamer_and_linear_header_hex'])
+                            values = list(verify.LINEAR.unpack_from(data, 64))
+                            values[7] = values[0] - extent
+                            verify.LINEAR.pack_into(data, 64, *values)
+                            excerpt['streamer_and_linear_header_hex'] = data.hex()
+                with self.assertRaisesRegex(ValueError, 'linear header bounds'):
+                    verify.verify(changed, check_logs=False)
+
+    def test_rehashed_table_bounds(self):
+        self.reject(lambda e:self.rewrite(e, 'footer_hex', {4:2**30}), 'table bounds')
+
+    def test_rehashed_file_bounds(self):
+        self.reject(lambda e:self.rewrite(e, 'footer_hex', {6:2**30}), 'file bounds or chained format')
+
+    def test_rehashed_chained_format(self):
+        self.reject(lambda e:self.rewrite(e, 'footer_hex', {len(verify.FOOTER.unpack(bytes(128)))-2:64}), 'file bounds or chained format')
+
+    def test_wrong_declared_storage_type(self):
+        self.reject(lambda e:e.update(storage_type='VectorFp32'), 'declared storage/count')
+
+    def test_wrong_linear_count(self):
+        def mutate(e):
+            x = e['runs'][0]['files'][0]['excerpts']['after']
+            data = bytearray.fromhex(x['streamer_and_linear_header_hex'])
+            data[68:72] = (65).to_bytes(4,'little')
+            x['streamer_and_linear_header_hex'] = data.hex()
+        self.reject(mutate, 'linear count/type')
+
+    def test_unallowed_metadata_byte_with_valid_footer_crc(self):
+        self.reject(lambda e:self.rewrite(e, 'footer_hex', {8:1}), 'unallowed metadata byte')
+
+    def test_allowed_mask_range_expansion(self):
+        self.reject(lambda e:e['runs'][0]['files'][0]['allowed_full_field_ranges'][0].__setitem__(1,1052592), 'allowed mask range')
+
+    def test_late_phase_fabrication(self):
+        self.reject(lambda e:e['runs'][1]['phase_delta_file_counts'].update(vector_queried=4), 'late phase fabrication')
+
+    def test_native_binding(self):
+        self.reject(lambda e:e.update(native_sha256='0'*64), 'native/helper binding')
+
+    def test_rehashed_wrong_segment_type(self):
+        def mutate(e):
+            x = e['runs'][0]['files'][0]['excerpts']['after']
+            table = bytearray(x['table_size'])
+            for offset, text in x['table_nonzero_runs']:
+                data = bytes.fromhex(text); table[offset:offset+len(data)] = data
+            offset = table.index(b'flat.linear_meta')
+            table[offset] = ord('X')
+            runs = []; start = None
+            for i, byte in enumerate(table + b'\0'):
+                if byte and start is None: start = i
+                elif not byte and start is not None:
+                    runs.append([start, table[start:i].hex()]); start = None
+            x['table_nonzero_runs'] = runs
+            self.rewrite(e, 'footer_hex', {1:verify.crc32c(table)})
+        self.reject(mutate, 'wrong segment type/name')
+
+    def test_helper_source_binding(self):
+        self.reject(lambda e:e.update(helper_source_sha256='0'*64), 'helper/control binding')
+
+    def test_controller_binding(self):
+        self.reject(lambda e:e.update(controller_sha256='0'*64), 'helper/control binding')
+
+    def test_changed_runtime_receipt(self):
+        self.reject(lambda e:e['runtime_assets']['libzvec_c_api.so'].update(sha256='0'*64), 'source/runtime receipt binding')
+
+    def test_changed_source_receipt(self):
+        self.reject(lambda e:next(iter(e['source_files'].values())).update(sha256='0'*64), 'source/runtime receipt binding')
+
+    def test_broadened_public_proof_scope(self):
+        self.reject(lambda e:e['runs'][0]['private_full_byte_verification'].update(scope='public full payload proof'), 'private receipt scope')
+
+    def test_broadened_component_scope(self):
+        self.reject(lambda e:e['runs'][0]['environment'].update(inference='Engine/model'), 'component environment/scope')
+
+    def test_changed_run_start(self):
+        self.reject(lambda e:e['runs'][0].update(started_utc='2026-10-01T01:02:05.865611+00:00'), 'run start receipt')
+
+    def test_changed_observation_receipt(self):
+        self.reject(lambda e:e['runs'][0]['snapshot_observation_utc'].update(opened='2026-10-01T01:02:06.233628+00:00'), 'observation receipt binding')
+
+    def reject_rehashed_log(self, arm, replace, expected_error):
+        changed = copy.deepcopy(self.evidence)
+        logs = {r['arm']:(verify.ROOT/(r['arm']+'.log')).read_text() for r in changed['runs']}
+        logs[arm] = replace(logs[arm])
+        row = next(r for r in changed['runs'] if r['arm'] == arm)
+        row['log_sha256'] = hashlib.sha256(logs[arm].encode()).hexdigest()
+        with self.assertRaisesRegex(ValueError, '^' + re.escape(expected_error) + '$'):
+            verify.verify(changed, logs=logs)
+
+    def test_rehashed_log_false_read_only_getter(self):
+        self.reject_rehashed_log('vector', lambda log:log.replace('read_only=true','read_only=false'), 'ordered probe events')
+
+    def test_rehashed_log_duplicate_option_getter(self):
+        self.reject_rehashed_log('pure-open', lambda log:log+'PROBE_OPTIONS read_only=true enable_mmap=true max_buffer_size=67108864\n', 'ordered probe events')
+
+    def test_rehashed_log_duplicate_hits(self):
+        self.reject_rehashed_log('vector', lambda log:log+'PROBE_HITS 50\n', 'ordered probe events')
+
+    def test_rehashed_log_pure_open_hits(self):
+        self.reject_rehashed_log('pure-open', lambda log:log+'PROBE_HITS 50\n', 'ordered probe events')
+
+    def change_table_entries(self, evidence, mutations):
+        # Mutate both phases consistently, then refresh table and footer CRCs.
+        for phase in ['before', 'after']:
+            excerpt = evidence['runs'][0]['files'][0]['excerpts'][phase]
+            table = bytearray(excerpt['table_size'])
+            for offset, text in excerpt['table_nonzero_runs']:
+                data = bytes.fromhex(text); table[offset:offset+len(data)] = data
+            for index, fields in mutations.items():
+                values = list(verify.SEGMENT.unpack_from(table,index*32))
+                for field, value in fields.items():values[field] = value
+                verify.SEGMENT.pack_into(table,index*32,*values)
+            runs = []; start = None
+            for i, byte in enumerate(table + b'\0'):
+                if byte and start is None:start = i
+                elif not byte and start is not None:
+                    runs.append([start,table[start:i].hex()]);start = None
+            excerpt['table_nonzero_runs'] = runs
+            values = list(verify.FOOTER.unpack(bytes.fromhex(excerpt['footer_hex'])))
+            values[1] = verify.crc32c(table);values[0] = 0
+            values[0] = verify.crc32c(verify.FOOTER.pack(*values))
+            excerpt['footer_hex'] = verify.FOOTER.pack(*values).hex()
+
+    def test_rehashed_padding_overflow_both_phases(self):
+        self.reject(lambda e:self.change_table_entries(e,{0:{4:2**63}}), 'segment data/padding bounds')
+
+    def test_rehashed_segment_overlap_both_phases(self):
+        self.reject(lambda e:self.change_table_entries(e,{1:{2:4095}}), 'segment append overlap/gap/order')
+
+    def test_rehashed_segment_gap_both_phases(self):
+        self.reject(lambda e:self.change_table_entries(e,{1:{2:4097}}), 'segment append overlap/gap/order')
+
+    def test_rehashed_aggregate_padding_gap_both_phases(self):
+        self.reject(lambda e:self.change_table_entries(e,{4:{4:0}}), 'segment set/aggregate extent')
+
+    def test_rehashed_segment_reordering_both_phases(self):
+        self.reject(lambda e:self.change_table_entries(e,{0:{2:4096},1:{2:0}}), 'segment append overlap/gap/order')
+
+    def test_all_whole_file_identity_receipts_bound(self):
+        # Mutate every one of the sixteen receipts; metadata CRCs stay valid.
+        for run_index in range(2):
+            for file_index in range(4):
+                for field in ['whole_file_sha256_before', 'whole_file_sha256_after']:
+                    with self.subTest(arm=run_index, file=file_index, field=field):
+                        changed = copy.deepcopy(self.evidence)
+                        changed['runs'][run_index]['files'][file_index][field] = '0'*64
+                        with self.assertRaisesRegex(ValueError, 'whole-file identity receipt binding'):
+                            verify.verify(changed, check_logs=False)
+
+    def test_malformed_whole_file_identity_receipts(self):
+        for value in [None, 123, 'x'*64, '0'*63, 'A'*64]:
+            with self.subTest(value=value):
+                changed = copy.deepcopy(self.evidence)
+                changed['runs'][0]['files'][0]['whole_file_sha256_before'] = value
+                with self.assertRaisesRegex(ValueError, 'whole-file identity format'):
+                    verify.verify(changed, check_logs=False)
+
+    def test_rehashed_log_concatenated_failed_summary(self):
+        self.reject_rehashed_log('vector', lambda log:log+'test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.0s\n', 'single positive test completion')
+
+    def test_rehashed_log_duplicate_positive_summary(self):
+        self.reject_rehashed_log('pure-open', lambda log:log+'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.62s\n', 'single positive test completion')
+
+    def test_rehashed_log_concatenated_zero_test_summary(self):
+        self.reject_rehashed_log('vector', lambda log:log+'test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.0s\n', 'single positive test completion')
+
+    def test_rehashed_log_nonzero_ignored_count(self):
+        self.reject_rehashed_log('pure-open', lambda log:log.replace('0 ignored','1 ignored'), 'single positive test completion')
+
+    def test_rehashed_log_missing_summary(self):
+        self.reject_rehashed_log('vector', lambda log:'\n'.join(line for line in log.splitlines() if not line.startswith('test result:')), 'single positive test completion')
+
+    def test_crc_refreshed_unsupported_revision_both_phases(self):
+        def mutate(e):
+            for phase in ['before', 'after']:
+                excerpt = e['runs'][0]['files'][0]['excerpts'][phase]
+                values = list(verify.HEADER.unpack(bytes.fromhex(excerpt['header_hex'])))
+                values[3] = 1; values[0] = 0
+                values[0] = verify.crc32c(verify.HEADER.pack(*values))
+                excerpt['header_hex'] = verify.HEADER.pack(*values).hex()
+        self.reject(mutate, 'wrong format/revision')
+
+    def test_rehashed_options_after_open(self):
+        option = 'PROBE_OPTIONS read_only=true enable_mmap=true max_buffer_size=67108864\n'
+        for arm in ['pure-open', 'vector']:
+            with self.subTest(arm=arm):
+                self.reject_rehashed_log(arm, lambda log:log.replace(option,'').replace('PROBE_STAGE opened\n','PROBE_STAGE opened\n'+option), 'ordered probe events')
+
+    def test_rehashed_options_after_drop(self):
+        option = 'PROBE_OPTIONS read_only=true enable_mmap=true max_buffer_size=67108864\n'
+        self.reject_rehashed_log('vector', lambda log:log.replace(option,'').replace('PROBE_STAGE dropped\n','PROBE_STAGE dropped\n'+option), 'ordered probe events')
+
+    def test_rehashed_hits_after_drop(self):
+        self.reject_rehashed_log('vector', lambda log:log.replace('PROBE_HITS 50\n','').replace('PROBE_STAGE dropped\n','PROBE_STAGE dropped\nPROBE_HITS 50\n'), 'ordered probe events')
+
+    def test_rehashed_hits_before_preparation(self):
+        self.reject_rehashed_log('vector', lambda log:log.replace('PROBE_HITS 50\n','').replace('PROBE_STAGE vector_prepared\n','PROBE_HITS 50\nPROBE_STAGE vector_prepared\n'), 'ordered probe events')
+
+    def test_unverified_file_claim(self):
+        for arm in range(2):
+            for index in range(4):
+                with self.subTest(arm=arm, file=index):
+                    self.reject(lambda e:e['runs'][arm]['files'][index].update(public_full_payload_verified=True), 'file schema/scope')
+
+    def test_unverified_excerpts_claim(self):
+        self.reject(lambda e:e['runs'][0]['files'][0]['excerpts'].update(public_full_payload_verified=True), 'excerpts schema/scope')
+
+    def test_unverified_phase_excerpt_claim(self):
+        for phase in ['before', 'after']:
+            with self.subTest(phase=phase):
+                self.reject(lambda e:e['runs'][0]['files'][0]['excerpts'][phase].update(public_full_payload_verified=True), 'phase excerpt schema/scope')
+
+    def test_source_binding(self):
+        self.reject(lambda e:e.update(vendor_commit='0'*40), 'source binding')
+
+
+if __name__ == '__main__':
+    unittest.main()

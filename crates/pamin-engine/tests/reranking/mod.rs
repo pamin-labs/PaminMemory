@@ -401,15 +401,11 @@ pub fn in_context(
         fusion: 1.0,
         scale: Scale::Rank,
     })];
-    // The shipped rendering first. The model keeps a score cache keyed by
-    // query and text, and renderings share most of their texts -- a candidate
-    // with no seed reads the same with or without one -- so a later rendering
-    // takes those candidates' scores from an earlier one's batches and sends
-    // only the rest to the model. An int8 model quantizes activations per
-    // batch, so that changes the scores: measured at up to half a logit. Scored
-    // first, with nothing cached, the shipped rendering forms exactly the
-    // engine's batches and the premise below can hold; the others are then the
-    // approximation the reranking module's note already states.
+    // Check the shipped rendering against the retained engine trace before
+    // evaluating alternatives. Cached scores require an identical complete
+    // ordered batch; changed renderings or batch membership are rescored.
+    // INT8 scores can depend on that actual batch, but cache history does not
+    // make later renderings approximations or require this evaluation order.
     let mut rendered: Vec<Option<Vec<String>>> = vec![None; RENDERINGS.len()];
     let order = std::iter::once(SHIPPED).chain((0..RENDERINGS.len()).filter(|at| *at != SHIPPED));
     for rendering in order {

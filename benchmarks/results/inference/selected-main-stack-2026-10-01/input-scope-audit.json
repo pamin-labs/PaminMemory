@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "evidence_sha256": "b724a041f55de1485a9eb1d85bc549fa0327d51b0d3a64723a6204fccaa73bc1",
+  "evidence_canonical_sha256": "fe848e91385ee4786b638d4740655aca33bc982fdf3aec93aac5d15eb03aecc6",
+  "validation_scope": "private_source_derived_input_audit_attestation_not_public_independent_proof",
+  "scenario_changed_inputs": {
+    "scenario_1": false,
+    "scenario_2": true
+  },
+  "paired_history_cells": {
+    "total": 32,
+    "changed_input": 16,
+    "unchanged_input_control": 16
+  },
+  "accurate_processes_per_arm": {
+    "total": 32,
+    "changed_input": 16,
+    "unchanged_input_control": 16
+  },
+  "dependent_changed_phase_calls_per_arm": {
+    "changed_input": 96,
+    "unchanged_input_control": 96
+  }
+}
