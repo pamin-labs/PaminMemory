@@ -518,15 +518,15 @@
     "baseline.jsonl": "e123c0733e148df6ee12467ea1573ad1a6f1ce4eddb009ef2c69b4742be01815",
     "scored.trace.jsonl": "c408fab896b09dc234987341d2324fcc7f951f9f940d88710e69a61c286b4a95",
     "baseline.usage.json": "e2a2555392e9c2a7adced007c208e3b8f0ec348390b3f07117f9c27a89fcf58d",
-    "verify.py": "c501302495bcf53f415b1ae0e0bd0dabffb6c6044062c7eb1b0a4d0888596435",
+    "verify.py": "53e439950c85f207e90f479abd6100437b9d194cf2cfd8c63d7d982ec58ce10d",
     "platform-observation.json": "c9cd36af33d603da177bdc4becdb03cf656bad2faf2d7ba0a37c935b56fb3d3d",
     "scored.jsonl": "88b390a83958a81a9a79a7e8d0806c18a34f7b46e74b88c416f8ca3329b262e5",
     "scored.log": "a446ddfcbb31105a96f86beb5be978b4550a099e570b6f8178a756e88fd86182",
     "comparison.json": "b14f2c9ab62fc85abc25f87cf295e1b49e37ca3b723c1943ba498e6e964b24eb",
-    "test_verify.py": "a5c1ceb6799fc07836f2eee8e5d0cfc3cbda11ed1384ee2dd6608ac1c83fa42c",
+    "test_verify.py": "cbeffb3923357f10b98e73db1ee8fa0a153a755146581918b2c9baaaf49851a5",
     "baseline.log": "42e19ed53e10df50e961a2f7c5d3796e36cad1fb57f275b60d2b88537a8e4440",
     "baseline.trace.jsonl": "c408fab896b09dc234987341d2324fcc7f951f9f940d88710e69a61c286b4a95",
-    "README.md": "6922b9f40416583a0f3b974dd00cc2eacfdb6c0c08be691564c192a1e3bab8cf",
+    "README.md": "0188668934bb8ceb5611e20a8ccfc363801be60c8613abc20ee57ed0192ba5c1",
     "source/multihop.rs.in": "70d5127e265a475edc3ededc871dc91cd79a0bfb56a4e6feca4d1501fd206c00",
     "source/fixture.rs.in": "0daa185fcf9eff2d174ce13569407ff972827cacecffce15996740352cdbaab1",
     "source/experimental-traversal.patch": "9ab5997e25a5c7e33fc9c582dbeafc142a0792214216a3d318f7ddb380ab8eba",
@@ -549,7 +549,7 @@
     "source/future-accounting.py.in": "1e8e0e5a786628cd27632762b539c1c9136a97e4daaf9008a0ef45e94ccab38e",
     "test_future_accounting.py": "3728da9133fb4a5b2e8b777d799027e81a1b533cf6800b4b34be3cf85b7dd345",
     "source/fixture-future.rs.in": "ecf3d00607854c0f8773941ad9b813b35ec73a46add2cc37f64b9bbbe1a03373",
-    "source/prepare-future.py": "d9391134d9ea128ca6188d502aa84c7592f1bd8e8b3ea9833cd87dd7d0239123"
+    "source/prepare-future.py": "afbd63b6c17b12f26f6d50e6ec00648a51cfd3f4812b41c698e67288c1c932cd"
   },
   "source_inventory_scope": {
     "original_captured_entries_per_arm": 52,
@@ -578,7 +578,7 @@
       "source/future-accounting.py.in": "1e8e0e5a786628cd27632762b539c1c9136a97e4daaf9008a0ef45e94ccab38e",
       "test_future_accounting.py": "3728da9133fb4a5b2e8b777d799027e81a1b533cf6800b4b34be3cf85b7dd345",
       "source/fixture-future.rs.in": "ecf3d00607854c0f8773941ad9b813b35ec73a46add2cc37f64b9bbbe1a03373",
-      "source/prepare-future.py": "d9391134d9ea128ca6188d502aa84c7592f1bd8e8b3ea9833cd87dd7d0239123"
+      "source/prepare-future.py": "afbd63b6c17b12f26f6d50e6ec00648a51cfd3f4812b41c698e67288c1c932cd"
     },
     "fixture_policy": {
       "scope": "prospective disabled-arm defect assertions; historical fixture and preparation bytes unchanged",
