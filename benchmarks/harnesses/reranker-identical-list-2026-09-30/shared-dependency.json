@@ -3,16 +3,16 @@
   "scope": "Offline explicitly supplied PR228 package, verified by exact file hashes. The local integration source revision is provenance, not a promised remote fetch target; restacking may change its commit SHA without changing file bytes. Not supplied by a bare PR216 checkout. No automatic fetch or download.",
   "files": {
     "common.py.in": {
-      "sha256": "95f32674a874aeee3806744950a7a0955915f0b6e5d969e568466383f9746e47",
-      "bytes": 14898
+      "sha256": "ec7e442a740910d6d1a6a6a88926ead3754d4d51e67858c320116d6f5b9ed6a1",
+      "bytes": 17174
     },
     "build.py.in": {
       "sha256": "756baddf10aad0ba4e43f9095e7892ed9826a81e01fdb8cee1231e1a7585e617",
       "bytes": 6350
     },
     "seed.py.in": {
-      "sha256": "d708387f8ab8b9f4b07257feb81bb2e8a65e15eaf31e800f7b738c3f62b4b328",
-      "bytes": 2489
+      "sha256": "02b803a94643011ad4dee3bd660f2ddf86f10155ae4e03a507837e8f4fb57b22",
+      "bytes": 2380
     },
     "seed.rs.in": {
       "sha256": "238306ace819747e7a8ee148c4efb97673cec36ea22a1e95b41a7603feb19cfe",
@@ -23,8 +23,8 @@
       "bytes": 14775
     },
     "run.py.in": {
-      "sha256": "97c6f2ffb494c005362df96a04ffe1139c35e8e0e8e0a93b7fb205e162edb67f",
-      "bytes": 20613
+      "sha256": "84c2ee31086d70685bcf0979ecec6bb493efadb4a39f9d8773d62d8c2b321cb4",
+      "bytes": 20638
     },
     "sources.json": {
       "sha256": "f9aed95517ba156a99751079e1f2121a7ba98e03ad3b69f52b2d3da646c40f33",

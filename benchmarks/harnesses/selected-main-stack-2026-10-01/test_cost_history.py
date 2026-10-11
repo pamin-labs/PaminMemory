@@ -7,10 +7,10 @@ import test_metric_host_conditions as hosts
 class CostHistory(unittest.TestCase):
     setUp = hosts.HostTimingEligibility.setUp
 
-    def new_query(self):
+    def new_query(self, phase='new-query', arm='N'):
         observations=copy.deepcopy(self.observations)
         for item in observations:
-            item['phase']='new-query'; item['row']['arm']='N'
+            item['phase']=phase; item['row']['arm']=arm
             item['row']['before']={key:30 for key in ['offered','scored','characters','tokens',
                 'padded_tokens','batches','maximum_tokens','remembered','longest']}
         return observations
@@ -43,6 +43,17 @@ class CostHistory(unittest.TestCase):
             with self.subTest(mutation=mutation):
                 cost=[r for r in self.rows(observations) if r['metric'] in self.metrics.COST_METRICS]
                 self.assertTrue(all(not r['stable_claim_eligible'] for r in cost))
+
+    def test_changed_hot_cost_requires_equal_prior_work(self):
+        # Identical zero-work replays still enter with different histories.
+        observations=self.new_query('changed-hot','A')
+        for item in observations:
+            if item['job']['source']=='main':item['row']['before']['scored']=0
+        cost=[r for r in self.rows(observations) if r['metric'] in self.metrics.COST_METRICS]
+        self.assertTrue(cost and all(not r['same_successful_work'] and not r['stable_claim_eligible'] for r in cost))
+        self.assertTrue(all('changed-hot' in r['preceding_work_scope'] for r in cost))
+        matching=[r for r in self.rows(self.new_query('changed-hot','A')) if r['metric'] in self.metrics.COST_METRICS]
+        self.assertTrue(all(r['same_successful_work'] for r in matching))
 
 
 if __name__=='__main__':unittest.main()
