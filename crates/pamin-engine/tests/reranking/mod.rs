@@ -353,15 +353,58 @@ pub struct Priced {
     measured: Vec<BTreeMap<String, crate::scoring::Scores>>,
     pairs: Vec<u64>,
     queries: u64,
+    /// How many of `rules` price the shipped model's own scores; the rest
+    /// price `rescore`'s.
+    firsts: usize,
     sufficiency: Option<std::io::BufWriter<std::fs::File>>,
+    /// `SHORTLIST_OUT`: one JSON line a search with what the model was shown,
+    /// for scoring the same shortlists with another model offline.
+    shortlist: Option<std::io::BufWriter<std::fs::File>>,
+    /// `RESCORE_IN`: another model's scores for those shortlists, one line a
+    /// search in the order they were written, priced as extra rows.
+    rescore: Option<Vec<Rescored>>,
     /// Whether queries come in linked sets, for the cross-validated choice.
     linked: bool,
+}
+
+/// Another model's scores for one dumped shortlist.
+#[derive(serde::Deserialize)]
+pub struct Rescored {
+    query: String,
+    names: Vec<String>,
+    scores: Vec<f64>,
+}
+
+/// The rows priced over another model's scores when `RESCORE_IN` is set.
+fn rescored_rules() -> Vec<(String, Rule)> {
+    vec![
+        (
+            "rescored: shipped blend".to_string(),
+            shipped_rule(Rerank::default()),
+        ),
+        ("rescored: substitute".to_string(), Rule::Substitute),
+    ]
 }
 
 impl Priced {
     /// `linked` as [`report`] takes it.
     pub fn new(linked: bool) -> Self {
-        let rules = rules();
+        let mut rules = rules();
+        let shortlist = std::env::var("SHORTLIST_OUT").ok().map(|path| {
+            std::io::BufWriter::new(
+                std::fs::File::create(path).expect("create the shortlist output"),
+            )
+        });
+        let rescore = std::env::var("RESCORE_IN").ok().map(|path| {
+            let text = std::fs::read_to_string(path).expect("read the rescored shortlists");
+            text.lines()
+                .map(|line| serde_json::from_str(line).expect("parse a rescored shortlist"))
+                .collect::<Vec<Rescored>>()
+        });
+        let firsts = rules.len();
+        if rescore.is_some() {
+            rules.extend(rescored_rules());
+        }
         let sufficiency = std::env::var("SUFFICIENCY_OUT").ok().map(|path| {
             let mut file = std::io::BufWriter::new(
                 std::fs::File::create(path).expect("create the sufficiency output"),
@@ -375,7 +418,10 @@ impl Priced {
             pairs: vec![0; rules.len()],
             queries: 0,
             rules,
+            firsts,
             sufficiency,
+            shortlist,
+            rescore,
             linked,
         }
     }
@@ -385,16 +431,48 @@ impl Priced {
     pub fn observe(
         &mut self,
         group: &str,
+        query: &str,
+        hits: &[SearchHit],
         replayed: &Replayed,
         score: impl Fn(&mut BTreeMap<String, crate::scoring::Scores>, &[String]),
     ) {
+        let at = self.queries as usize;
         self.queries += 1;
-        for (((_, rule), into), pairs) in self
+        if let Some(file) = &mut self.shortlist {
+            use std::io::Write;
+            let names = replayed.movable();
+            let documents = shown(hits, &names);
+            let line = serde_json::json!({
+                "group": group,
+                "query": query,
+                "names": names,
+                "documents": documents,
+                "model": replayed.model(),
+            });
+            writeln!(file, "{line}").expect("write a shortlist");
+        }
+        let rescored = self.rescore.as_ref().map(|rescore| {
+            let other = rescore.get(at).expect("a rescored shortlist for every search");
+            assert_eq!(other.query, query, "rescored shortlists are out of step");
+            assert_eq!(
+                other.names,
+                replayed.movable(),
+                "the rescored shortlist is not the one this search showed the model"
+            );
+            replayed.rescored(other.scores.clone())
+        });
+        for (row, (((_, rule), into), pairs)) in self
             .rules
             .iter()
             .zip(&mut self.measured)
             .zip(&mut self.pairs)
+            .enumerate()
         {
+            let replayed = if row < self.firsts {
+                replayed
+            } else {
+                rescored.as_ref().expect("rescored rows only with RESCORE_IN")
+            };
             score(into, &replayed.order(*rule));
             *pairs += replayed.pairs(*rule) as u64;
         }
@@ -489,6 +567,21 @@ fn render(name: &str, content: &str, seed: Option<&str>, named: bool) -> String 
         text.push_str(seed);
     }
     text
+}
+
+/// What the shipped rendering shows the model for each of `names`.
+fn shown(hits: &[SearchHit], names: &[&str]) -> Vec<String> {
+    let found: HashMap<&str, &SearchHit> =
+        hits.iter().map(|hit| (hit.topic.as_str(), hit)).collect();
+    let (named, with_seed) = (SHIPPED % 2 == 1, SHIPPED >= 2);
+    names
+        .iter()
+        .map(|name| {
+            let hit = found[name];
+            let seed = hit.seed.as_deref().filter(|_| with_seed);
+            render(name, &hit.state.content, seed, named)
+        })
+        .collect()
 }
 
 /// What the model is shown for each candidate, in the order [`in_context`]
