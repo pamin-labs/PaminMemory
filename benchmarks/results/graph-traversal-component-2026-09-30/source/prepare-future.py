@@ -14,6 +14,15 @@ source=a.source.resolve();out=a.out.resolve();assert not out.exists() and source
 artifact=Path(__file__).parent
 assert hashlib.sha256((artifact/'fixture-future.rs.in').read_bytes()).hexdigest() == 'ecf3d00607854c0f8773941ad9b813b35ec73a46add2cc37f64b9bbbe1a03373', 'prospective fixture source differs'
 assert hashlib.sha256((artifact/'multihop.rs.in').read_bytes()).hexdigest() == '70d5127e265a475edc3ededc871dc91cd79a0bfb56a4e6feca4d1501fd206c00', 'preserved multihop source differs'
+# Bind the input to the recorded base plus patch: every source file the
+# preparation does not rewrite must equal the retained baseline arm's bytes.
+provenance=json.loads((artifact.parent/'provenance.json').read_text())
+baseline=next(arm['source_hashes'] for arm in provenance['arms'] if arm['arm']=='baseline')
+rewritten={'Cargo.lock','crates/pamin-engine/Cargo.toml','crates/pamin-engine/tests/scratch_scored_fixture.rs','crates/pamin-engine/tests/graph_trace/mod.rs'}
+for name,expected in baseline.items():
+ if name in rewritten:continue
+ path=source/name;assert path.is_file() and not path.is_symlink(),'recorded source input missing: '+name
+ assert hashlib.sha256(path.read_bytes()).hexdigest()==expected,'source differs from recorded base '+provenance['source_base']+' plus patch: '+name
 switch='const USE_SCORED_GRAPH_RECALL: bool = false;'
 engine=(source/'crates/pamin-engine/src/engine.rs').read_text();assert engine.count(switch)==1
 assert 'seed_relevance(&named, lists, options.k)' in engine and 'k: fusion.k()' in engine
