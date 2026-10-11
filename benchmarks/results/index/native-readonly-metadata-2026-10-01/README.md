@@ -152,7 +152,7 @@ python3 -B benchmarks/harnesses/native-readonly-metadata-2026-10-01/probe_verifi
 
 The first command only prints the plan. The second runs the rotated rounds above.
 
-The separate [suite scan producer](probe_suite_scans.py) reproduces all five
+The separate [suite scan producer](../../../harnesses/native-readonly-metadata-2026-10-01/probe_suite_scans.py.in) reproduces all five
 full-suite counters using the same scalar-function instrumentation: clear the
 cache, run `test_verify` and `test_source_binding`, count calls and byte lengths
 for inputs above 256 bytes, and count distinct full-input SHA256 values and
@@ -161,9 +161,9 @@ before execution. The suite uses tiny disposable mock/Git directories; published
 files remain unchanged. It does not rerun the three cost observations.
 
 ```sh
-python3 -B probe_suite_scans.py
-python3 -B probe_suite_scans.py --execute
-python3 -B -m unittest -v test_cost_procedures.py
+python3 -B benchmarks/harnesses/native-readonly-metadata-2026-10-01/probe_suite_scans.py.in
+python3 -B benchmarks/harnesses/native-readonly-metadata-2026-10-01/probe_suite_scans.py.in --execute
+(cd benchmarks/results/index/native-readonly-metadata-2026-10-01 && python3 -B -m unittest -v test_cost_procedures.py)
 ```
 
 The first command only prints a plan. The explicit suite command can regenerate
