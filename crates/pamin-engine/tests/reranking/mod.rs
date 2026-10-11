@@ -377,6 +377,8 @@ pub struct Priced {
 /// Another model's scores for one dumped shortlist.
 #[derive(serde::Deserialize)]
 pub struct Rescored {
+    /// Which model scored it, with revision and precision; one per file.
+    model: String,
     query: String,
     names: Vec<String>,
     /// The texts the other model scored, as dumped, so a stale file whose
@@ -385,14 +387,14 @@ pub struct Rescored {
     scores: Vec<f64>,
 }
 
-/// The rows priced over another model's scores when `RESCORE_IN` is set.
-fn rescored_rules() -> Vec<(String, Rule)> {
+/// The rows priced over `model`'s scores when `RESCORE_IN` is set.
+fn rescored_rules(model: &str) -> Vec<(String, Rule)> {
     vec![
         (
-            "rescored: shipped blend".to_string(),
+            format!("rescored by {model}: shipped blend"),
             shipped_rule(Rerank::default()),
         ),
-        ("rescored: substitute".to_string(), Rule::Substitute),
+        (format!("rescored by {model}: substitute"), Rule::Substitute),
     ]
 }
 
@@ -412,8 +414,13 @@ impl Priced {
                 .collect::<Vec<Rescored>>()
         });
         let firsts = rules.len();
-        if rescore.is_some() {
-            rules.extend(rescored_rules());
+        if let Some(rescore) = &rescore {
+            let model = &rescore.first().expect("rescored shortlists").model;
+            assert!(
+                rescore.iter().all(|line| &line.model == model),
+                "one RESCORE_IN file holds one model's scores"
+            );
+            rules.extend(rescored_rules(model));
         }
         let sufficiency = std::env::var("SUFFICIENCY_OUT").ok().map(|path| {
             let mut file = std::io::BufWriter::new(
@@ -520,7 +527,16 @@ impl Priced {
         }
     }
 
-    pub fn report(&self, title: &str) {
+    pub fn report(&mut self, title: &str) {
+        // Flushed with errors checked, so a truncated artifact fails the run
+        // instead of being dropped silently with its writer.
+        for file in [&mut self.sufficiency, &mut self.shortlist]
+            .into_iter()
+            .flatten()
+        {
+            use std::io::Write;
+            file.flush().expect("flush a raw artifact");
+        }
         report(
             title,
             &self.rules,

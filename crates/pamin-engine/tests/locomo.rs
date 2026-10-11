@@ -351,7 +351,7 @@ async fn locomo_evidence_with_and_without_links() {
         linked_edges > 0,
         "the linked projects have no edges to walk"
     );
-    if let Some(rules) = &rules {
+    if let Some(rules) = &mut rules {
         rules.report(&format!(
             "rules for the reranker's scores, LOCOMO linked, {named}"
         ));
