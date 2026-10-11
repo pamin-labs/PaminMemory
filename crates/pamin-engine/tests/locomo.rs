@@ -346,16 +346,17 @@ async fn locomo_evidence_with_and_without_links() {
         );
     }
     assert!(questions > 0, "no question could be graded");
+    // Before either report: without edges the graph rules price a no-graph run.
+    assert!(
+        linked_edges > 0,
+        "the linked projects have no edges to walk"
+    );
     if let Some(rules) = &rules {
         rules.report(&format!(
             "rules for the reranker's scores, LOCOMO linked, {named}"
         ));
         return;
     }
-    assert!(
-        linked_edges > 0,
-        "the linked projects have no edges to walk"
-    );
 
     println!(
         "\n  LOCOMO evidence retrieval, {named}, shipped search, {} conversations, \
