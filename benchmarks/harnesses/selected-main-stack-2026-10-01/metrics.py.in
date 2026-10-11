@@ -99,6 +99,9 @@ def cost_environment(items,host_conditions=None,provider_binding=None):
             'cost_provider_binding':dict(provider_binding)}
 
 
+PRECEDING_WORK_PHASES=['new-query','off-new-query','changed-hot']
+
+
 def same_preceding_work(items):
     """Compare recorded cumulative successful work and allocation-shape counters.
 
@@ -113,7 +116,9 @@ def same_preceding_work(items):
         if not (type(before) is dict and all(type(before.get(k)) is int and before[k]>=0 for k in keys)):
             return False
         values[item['job']['source']].append((item['job']['round'],tuple(before[k] for k in keys)))
-    return (all(len(v)==4 and len({block for block,_ in v})==4 for v in values.values())
+    # One call per block for new-query phases, several (one per step) for
+    # changed-hot: every block must be present and match across arms.
+    return (all({block for block,_ in v}==set(range(4)) for v in values.values())
             and sorted(values['main'])==sorted(values['stack']))
 
 
@@ -129,7 +134,9 @@ def metric_tables(observations,eligibility,host_conditions=None,provider_binding
         eligible=all(eligibility.get(o['job']['name'],True) for o in items) if group[4] in ['changed-context','changed-hot'] else True
         works={s:[{k:o['validated']['actual_delta'][k] for k in ['offered','scored','characters','tokens','padded_tokens','batches']} for o in items if o['job']['source']==s] for s in ['main','stack']}
         same_work=works['main']==works['stack']
-        prior_work_matches=same_preceding_work(items) if group[4] in ['new-query','off-new-query'] else True
+        # Changed-hot calls repeat identical zero-work replays, so equal per-call
+        # work cannot show the processes arrive with the same history.
+        prior_work_matches=same_preceding_work(items) if group[4] in PRECEDING_WORK_PHASES else True
         definitions=[(f'quality_{k}',lambda o,k=k:o['validated']['quality_at_actual_limit'][k]) for k in ['recall','mrr','ndcg']]
         definitions += [('wall_us',lambda o:o['row']['wall_us']),('cpu_user_seconds',lambda o:o['validated']['cpu_user_seconds']),('cpu_system_seconds',lambda o:o['validated']['cpu_system_seconds']),('rss_kib',lambda o:o['row']['process_after']['rss_kib']),('hwm_kib',lambda o:o['row']['process_after']['hwm_kib'])]
         definitions += [(k,lambda o,k=k:o['validated']['actual_delta'][k]) for k in ['scored','characters','tokens','padded_tokens','batches','encode_us','forward_us']]
@@ -151,8 +158,8 @@ def metric_tables(observations,eligibility,host_conditions=None,provider_binding
                     evidence['stable_claim_eligible']=evidence['stable_claim_eligible'] and environment['cost_environment_eligible']
                 result.append({'configuration':list(group),'metric':metric,'statistic':statistic,'samples_per_arm':len(items)//2,
                                'accuracy_eligible':eligible,'same_successful_work':comparison_work,
-                               'preceding_work_scope':'new-query costs also require equal cumulative before-work/allocation-shape counters; endpoint equality only'
-                                   if group[4] in ['new-query','off-new-query'] else 'per-call successful work',**difference(arm_values['main'],arm_values['stack']),**evidence,**environment})
+                               'preceding_work_scope':'new-query and changed-hot costs also require equal cumulative before-work/allocation-shape counters; endpoint equality only'
+                                   if group[4] in PRECEDING_WORK_PHASES else 'per-call successful work',**difference(arm_values['main'],arm_values['stack']),**evidence,**environment})
     return result
 
 

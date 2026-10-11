@@ -130,7 +130,7 @@ def report(packets, provider_binding=None):
               **metrics.difference(binaries['main']['bytes'], binaries['stack']['bytes'])},
              {'metric': 'shipped product executable logical bytes; unmeasured',
               **metrics.difference(None, None)}]
-    baseline = json.loads((c.ROOT / 'seed-receipt.json').read_text())
+    baseline = c.seed_receipt(c.ROOT / 'seed')
     disk.append({'metric': 'index baseline allocated bytes; endpoint unavailable',
                  **metrics.difference(baseline['index_allocated_bytes'], None)})
     for key in ['historical full asset inventory parity', 'endpoint allocated bytes',

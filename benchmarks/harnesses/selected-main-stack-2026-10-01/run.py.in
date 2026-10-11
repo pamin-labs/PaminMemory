@@ -184,6 +184,7 @@ def atomic_save(path, value):
 
 def run_identity(jobs, binaries, bound, seed):
     c.validate_binaries(binaries)
+    c.seed_receipt(seed)
     files = ['config.json', 'sources.json', 'source-receipts.json', 'seed-receipt.json',
              'build/binaries.json', 'main/crates/pamin-engine/tests/corpus/queries.json',
              'run.py', 'rows.py', 'common.py', 'owned_postgres.py', 'analyze.py', 'metrics.py']

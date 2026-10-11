@@ -9,6 +9,9 @@ from collections import Counter
 root=Path(__file__).resolve().parent
 repo=root.parents[3]
 manifest=json.loads((root/'manifest.json').read_text())
+# Cross-archive inputs consumed below must be authenticated, not skipped.
+for required in ['benchmarks/results/index/restart-floor-disk-2026-09-30/provenance.json','benchmarks/results/index/restart-floor-disk-2026-09-30/provider-bindings.json']:
+    assert required in manifest['files'], 'HNSW manifest must bind cross-archive input '+required
 for relative,digest in manifest['files'].items():
     assert hashlib.sha256((repo/relative).read_bytes()).hexdigest()==digest, relative
 runner_path=repo/'benchmarks/harnesses/restart-floor-2026-09-30/run.py.in'
@@ -131,6 +134,8 @@ for entry in seed_entries:
 for suffix,content in [('/profile',b'gpahal/bge-m3-onnx-int8\ntopic\nmemory\nnamed\nreversed-keys'),('/.pamin-optimized-files',b'v1 271\n')]:
     selected=[e for e in seed_entries if e['path'].endswith(suffix)]
     assert len(selected)==1 and selected[0]['bytes']==len(content) and selected[0]['sha256']==hashlib.sha256(content).hexdigest(), 'HNSW seed profile/floor identity differs'
+# The complete path -> [bytes, sha256] inventory, independently of its own entries.
+assert hashlib.sha256(json.dumps({e['path']:[e['bytes'],e['sha256']] for e in seed_entries},sort_keys=True,separators=(',',':')).encode()).hexdigest()=='4b7b3e11ddd23be19f9c2e3de6221b38a029d4c71131f8c4682e307648092b75', 'HNSW stopped seed inventory digest differs'
 memory_entries=memory_provenance['model_assets']
 assert len(memory_entries)==len({e['path'] for e in memory_entries})==7, 'HNSW duplicate/incomplete prehashed model inventory'
 memory_assets={e['path'].replace('${MODEL_CACHE}','<MODEL_CACHE>'):e for e in memory_entries}
@@ -181,8 +186,8 @@ labels=[
 ('Known-topic recall@10 (synthetic)','known_topic_recall_at_10',1,'',6),
 ('Known-topic MRR@10 (synthetic)','known_topic_mrr_at_10',1,'',6),
 ('Optimize jobs per first upkeep tick','optimize_jobs',1,'',3),
-('Maintenance wall median','maintenance_ms',1,' ms',3),
-('First-search wall median (model load included)','first_search_ms',1,' ms',3),
+('Maintenance wall median, includes pre-snapshot /proc read','maintenance_ms',1,' ms',3),
+('First-search wall median (model load and pre-snapshot /proc read included)','first_search_ms',1,' ms',3),
 ('Warm search p50: median across processes','warm_p50_ms',1,' ms',3),
 ('Warm search p95: median across processes','warm_p95_ms',1,' ms',3),
 ('Peak process RSS','peak_process_rss_bytes',2**20,' MiB',3),

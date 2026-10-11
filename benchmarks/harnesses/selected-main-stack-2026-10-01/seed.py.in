@@ -45,8 +45,7 @@ def main():
         c.save(c.ROOT / 'seed-receipt.json', {'revision': c.MANIFEST['revisions']['main'],
                'regenerated_identifiers': True, 'historical_index_bytes_reproduced': False,
                'index_logical_bytes': c.logical(home / 'index'),
-               'index_allocated_bytes': sum(path.stat().st_blocks * 512
-                    for path in (home / 'index').rglob('*') if path.is_file() and not path.is_symlink())})
+               'index_allocated_bytes': c.allocated(home / 'index')})
         c.assets()
         c.source_inputs()
 

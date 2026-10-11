@@ -79,9 +79,14 @@ values, source/input identities and the complete table payload SHA256
 `fcfab93bd3a47ad3e3ae6a76ae3e408bfbc88ca7cfb779ead5b36ccc614d82ea`.
 These are **one shared-host observation per case**, covering the same 16 metadata
 excerpts, with no product search, native/SDK, model or database execution.
-Timers cover metadata validation, logs and the canonical evidence digest;
-interpreter startup/imports, input loading and Git source-byte checks are excluded.
-They do not establish statistical latency or a product speedup.
+Timers cover metadata validation, the log and `public-source-binding.json` reads
+that `verify` performs, and the canonical evidence digest; interpreter
+startup/imports, the initial `evidence.json` load and Git source-byte checks are
+excluded.
+They do not establish statistical latency or a product speedup. The historical
+pass ran once in the fixed order before, cold-after, warm-after, so temporal load
+and interpreter warm-up are not separable from the change in that table; the
+rotated rerun below repeats every arm under a rotated order.
 
 | Metric | Before | After | Absolute difference | Percentage change |
 | --- | ---: | ---: | ---: | ---: |
@@ -103,28 +108,57 @@ input payload only; lookup/cache/Python object overhead and process RSS were not
 measured. The full 69-test scan audit in the receipt includes changed tables and
 deliberate cache tests; it is separate from these three timed observations.
 
-To produce new observations later, use the read-only
-[probe](probe_verifier_cost.py) from this directory. Its exact before-comparator
-source is now retained as [before-verify.py.in](before-verify.py.in), checked
+### Rotated rerun, 2026-10-11
+
+[Raw rotated observations](verifier-cost-rotated-2026-10-11.json) come from seven
+in-process rounds, each running every arm once with the arm order rotated
+(before/cold/warm, cold/warm/before, warm/before/cold, ...). Each arm sets and
+asserts its own cache premise: the cold arm clears the table cache and must scan
+exactly one table, the warm arm must scan none. Host: x86_64 Linux cloud
+container, 4 logical CPUs, CPython 3.13.16, no other workload in the container,
+physical-host sharing unknown. Same retained inputs and before source as above;
+process RSS not measured. Values are medians over seven samples, with the range.
+
+| Metric | Before | After | Absolute difference | Percentage change |
+| --- | ---: | ---: | ---: | ---: |
+| Wall seconds (cold), median [min-max] | 2.233038 [2.188-2.251] | 0.777450 [0.766-0.800] | -1.455588 | -65.184% |
+| Process CPU seconds (cold), median [min-max] | 2.151427 [2.135-2.167] | 0.770321 [0.765-0.787] | -1.381106 | -64.195% |
+| Wall seconds (warm), median [min-max] | 2.233038 [2.188-2.251] | 0.702574 [0.677-0.741] | -1.530464 | -68.537% |
+| Process CPU seconds (warm), median [min-max] | 2.151427 [2.135-2.167] | 0.684470 [0.675-0.699] | -1.466958 | -68.185% |
+| Wall seconds (cold), p95 nearest-rank | 2.251057 | 0.800066 | -1.450991 | -64.458% |
+| Process CPU seconds (cold), p95 nearest-rank | 2.166878 | 0.786831 | -1.380047 | -63.688% |
+| Wall seconds (warm), p95 nearest-rank | 2.251057 | 0.741214 | -1.509843 | -67.073% |
+| Process CPU seconds (warm), p95 nearest-rank | 2.166878 | 0.699104 | -1.467775 | -67.737% |
+| Process RSS bytes | N/A: not measured | N/A: not measured | N/A | N/A |
+
+p95 uses the nearest-rank definition over the seven samples per arm, which with seven samples is the maximum; it is retained as its own row rather than read off the range. The before and after ranges do not overlap in any round. This is a verifier
+component cost, not product search latency.
+
+The timing probe asserts no product invariant, so it is kept with the inert
+harness sources as
+[`probe_verifier_cost.py.in`](../../../harnesses/native-readonly-metadata-2026-10-01/probe_verifier_cost.py.in)
+rather than in this results directory. It reads the hash-bound inputs here, and
+its exact before-comparator
+source is retained here as [before-verify.py.in](before-verify.py.in), checked
 against the original SHA256 in the receipt before evaluation. The recorded
 `775de8a2d0e81a80239df4a0279600da7df68ec0` revision remains provenance; no Git
 object, ref, remote fetch or download is required for this component procedure.
 Current prospective source/input pins are listed separately from the unchanged
 historical measured-source identities. The missing-tree Git availability fix
 is outside the timed metadata path. This procedure produces new timings, not
-identical historical values, and does not run the invariant suite or product work:
+identical historical values, and does not run the invariant suite or product work.
+Each run reports its own platform, CPU count, load average and declared
+interference instead of the historical receipt's host:
 
 ```sh
-python3 -B probe_verifier_cost.py
-python3 -B probe_verifier_cost.py --execute
+python3 -B benchmarks/harnesses/native-readonly-metadata-2026-10-01/probe_verifier_cost.py.in
+python3 -B benchmarks/harnesses/native-readonly-metadata-2026-10-01/probe_verifier_cost.py.in \
+  --execute --rounds 7 --interference "<declared shared-machine load>"
 ```
 
-The first command only prints the plan. The second opts in to before, cold-after
-and warm-after metadata verification in one process. No new observation was run
-while adding this receipt/procedure; the numbers above retain the prior
-verifier-only observations.
+The first command only prints the plan. The second runs the rotated rounds above.
 
-The separate [suite scan producer](probe_suite_scans.py) reproduces all five
+The separate [suite scan producer](../../../harnesses/native-readonly-metadata-2026-10-01/probe_suite_scans.py.in) reproduces all five
 full-suite counters using the same scalar-function instrumentation: clear the
 cache, run `test_verify` and `test_source_binding`, count calls and byte lengths
 for inputs above 256 bytes, and count distinct full-input SHA256 values and
@@ -133,9 +167,9 @@ before execution. The suite uses tiny disposable mock/Git directories; published
 files remain unchanged. It does not rerun the three cost observations.
 
 ```sh
-python3 -B probe_suite_scans.py
-python3 -B probe_suite_scans.py --execute
-python3 -B -m unittest -v test_cost_procedures.py
+python3 -B benchmarks/harnesses/native-readonly-metadata-2026-10-01/probe_suite_scans.py.in
+python3 -B benchmarks/harnesses/native-readonly-metadata-2026-10-01/probe_suite_scans.py.in --execute
+(cd benchmarks/results/index/native-readonly-metadata-2026-10-01 && python3 -B -m unittest -v test_cost_procedures.py)
 ```
 
 The first command only prints a plan. The explicit suite command can regenerate
