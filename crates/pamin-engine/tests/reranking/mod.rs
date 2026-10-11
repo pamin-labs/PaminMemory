@@ -52,6 +52,12 @@ pub enum Rule {
     /// `fusion * fused + (1 - fusion) * model`, both on `scale`. `fusion` of
     /// one is fusion alone, which is the `off` tier.
     Blend { fusion: f64, scale: Scale },
+    /// The shipped blend, plus `graph` times the candidate's graph-channel
+    /// score for candidates the graph reached. The graph score is calibrated,
+    /// so it is added as it stands: a cross-encoder reads one candidate at a
+    /// time and cannot see that it is relevant because another memory names
+    /// it, which is what this keeps after the pass.
+    GraphBlend { graph: f64 },
 }
 
 /// Every rule measured, labelled. The shipped rule is found by value, not by
@@ -73,6 +79,12 @@ pub fn rules() -> Vec<(String, Rule)> {
                 Rule::Blend { fusion, scale },
             ));
         }
+    }
+    for graph in [0.05, 0.1, 0.2, 0.3, 0.5] {
+        rules.push((
+            format!("shipped blend + graph {graph:.2}"),
+            Rule::GraphBlend { graph },
+        ));
     }
     rules
 }
@@ -459,6 +471,9 @@ pub struct Replayed {
     fusion: Vec<f64>,
     /// Per movable position, the model's score.
     model: Vec<f64>,
+    /// Per movable position, its graph-channel score, zero when the graph did
+    /// not reach it.
+    graph: Vec<f64>,
     /// How deep the tier reads, which is where a graph find is inserted.
     head: usize,
 }
@@ -503,6 +518,7 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
             movable: Vec::new(),
             fusion: Vec::new(),
             model: Vec::new(),
+            graph: Vec::new(),
             head: tier.depth(),
         }
     } else {
@@ -521,6 +537,23 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
             model: movable
                 .iter()
                 .map(|at| model[fused[*at].as_str()])
+                .collect(),
+            graph: movable
+                .iter()
+                .map(|at| {
+                    results[*at]
+                        .why
+                        .iter()
+                        .find_map(|why| match why {
+                            Why::Channel {
+                                channel: Channel::Graph,
+                                score,
+                                ..
+                            } => Some(f64::from(score.unwrap_or(0.0))),
+                            _ => None,
+                        })
+                        .unwrap_or(0.0)
+                })
                 .collect(),
             head: tier.depth(),
             fused,
@@ -567,6 +600,7 @@ impl Replayed {
             movable: self.movable.clone(),
             fusion: self.fusion.clone(),
             model,
+            graph: self.graph.clone(),
             head: self.head,
         }
     }
@@ -584,6 +618,29 @@ impl Replayed {
         }
         let keys: Vec<f64> = match rule {
             Rule::Substitute => self.model.clone(),
+            Rule::GraphBlend { graph } => {
+                let scaled = |values: &[f64]| {
+                    let low = values.iter().copied().fold(f64::INFINITY, f64::min);
+                    let high = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                    values
+                        .iter()
+                        .map(|value| {
+                            if high > low {
+                                (value - low) / (high - low)
+                            } else {
+                                0.0
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let (fused, model) = (scaled(&self.fusion), scaled(&self.model));
+                let fusion = pamin_engine::RERANK_FUSION;
+                (0..fused.len())
+                    .map(|at| {
+                        fusion * fused[at] + (1.0 - fusion) * model[at] + graph * self.graph[at]
+                    })
+                    .collect()
+            }
             Rule::Blend {
                 fusion,
                 scale: Scale::Rank,
@@ -640,6 +697,7 @@ mod tests {
             movable: vec![1, 2, 3],
             fusion: fusion.to_vec(),
             model: model.to_vec(),
+            graph: vec![0.0; fusion.len()],
             head: 4,
         }
     }

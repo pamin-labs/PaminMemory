@@ -38,7 +38,9 @@
 //! | `LOCOMO_CONVERSATIONS` | read only the first this many conversations |
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
 
+mod channels;
 mod harness;
+mod reranking;
 mod scoring;
 mod statistics;
 
@@ -272,6 +274,11 @@ async fn locomo_evidence_with_and_without_links() {
 
     // [flat, linked], by category; each question in the same order on both.
     let mut scores: [BTreeMap<String, Scores>; 2] = Default::default();
+    // `RERANK_RULES`: the linked project's shipped searches replayed under
+    // every rule for using the reranker's scores. See `reranking`.
+    let rules = std::env::var("RERANK_RULES").is_ok().then(reranking::rules);
+    let mut measured: Vec<BTreeMap<String, Scores>> =
+        vec![BTreeMap::new(); rules.as_ref().map_or(0, Vec::len)];
     let mut questions = 0usize;
     let mut linked_edges = 0usize;
     for conversation in &conversations {
@@ -293,6 +300,24 @@ async fn locomo_evidence_with_and_without_links() {
 
         for question in &conversation.questions {
             questions += 1;
+            if let Some(rules) = &rules {
+                const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+                let tier = Rerank::default();
+                let hits = engines[1]
+                    .search_reranked(&question.text, WIDE, DEPTHS, tier)
+                    .await
+                    .expect("search");
+                channels::enough_room(&hits, WIDE);
+                let replayed = reranking::replay(&hits, tier);
+                for ((_, rule), into) in rules.iter().zip(&mut measured) {
+                    into.entry(question.category.clone()).or_default().add(
+                        &replayed.order(*rule),
+                        question.evidence.len(),
+                        |topic| question.evidence.contains(topic),
+                    );
+                }
+                continue;
+            }
             for (side, engine) in engines.iter().enumerate() {
                 let hits = engine
                     .search_reranked(&question.text, RECALL_AT as u32, DEPTHS, Rerank::default())
@@ -315,6 +340,16 @@ async fn locomo_evidence_with_and_without_links() {
         );
     }
     assert!(questions > 0, "no question could be graded");
+    if let Some(rules) = &rules {
+        reranking::report(
+            &format!("rules for the reranker's scores, LOCOMO linked, {named}"),
+            rules,
+            reranking::shipped(rules),
+            &measured,
+            false,
+        );
+        return;
+    }
     assert!(
         linked_edges > 0,
         "the linked projects have no edges to walk"

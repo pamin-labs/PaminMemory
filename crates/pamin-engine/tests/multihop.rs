@@ -394,6 +394,40 @@ async fn search_answers_questions_that_take_several_steps() {
         return;
     }
 
+    // `RERANK_RULES`: every rule for using the reranker's scores, priced
+    // against the shipped one from a single shipped run. See `reranking`.
+    if std::env::var("RERANK_RULES").is_ok() {
+        let tier = Rerank::default();
+        let rules = reranking::rules();
+        let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); rules.len()];
+        for query in &corpus.queries {
+            let hits = engine
+                .search_reranked(&query.text, WIDE, DEPTHS, tier)
+                .await
+                .expect("search");
+            channels::enough_room(&hits, WIDE);
+            let replayed = reranking::replay(&hits, tier);
+            for ((_, rule), into) in rules.iter().zip(&mut measured) {
+                score(
+                    into.entry(query.group.clone()).or_default(),
+                    query,
+                    &replayed.order(*rule),
+                );
+            }
+        }
+        reranking::report(
+            &format!(
+                "rules for the {} reranker's scores, MuSiQue, {named}",
+                tier.name()
+            ),
+            &rules,
+            reranking::shipped(&rules),
+            &measured,
+            false,
+        );
+        return;
+    }
+
     if std::env::var("REACH").is_ok() {
         reach(&engine, &corpus, "names only").await;
         let entities = Engine::open(
