@@ -63,7 +63,7 @@ class FutureRunnerTests(unittest.TestCase):
         process=Mock(pid=42)
         accounting=Mock(ru_utime=2.5,ru_stime=.5,ru_maxrss=4096)
         mapped={role:{'path':str(path),'sha256':self.pins[role]} for role,path in self.paths.items()}
-        with patch.object(runner,'PINS',self.pins),patch.object(runner.subprocess,'Popen',return_value=process) as launch,patch.object(runner,'maps',return_value=mapped),patch.object(runner.os,'waitid',return_value=Mock()),patch.object(runner.os,'killpg') as kill,patch.object(runner.os,'wait4',return_value=(42,0,accounting)) as wait:
+        with patch.object(runner,'PINS',self.pins),patch.object(runner.subprocess,'Popen',side_effect=self.fixture(process)) as launch,patch.object(runner,'maps',return_value=mapped),patch.object(runner.os,'waitid',return_value=Mock()),patch.object(runner.os,'killpg') as kill,patch.object(runner.os,'wait4',return_value=(42,0,accounting)) as wait:
             report=runner.capture(['mock native'],self.paths,self.root/'log',self.root/'usage',self.root/'mapped')
         self.assertEqual(report['user_seconds'],2.5);self.assertEqual(report['system_seconds'],.5)
         self.assertEqual(report['maximum_process_rss_kib'],4096);self.assertEqual(report['exit_status'],0)
@@ -71,6 +71,25 @@ class FutureRunnerTests(unittest.TestCase):
         self.assertTrue(launch.call_args.kwargs['start_new_session']);wait.assert_called_once_with(42,0);kill.assert_called_once()
         self.assertEqual(json.loads((self.root/'mapped').read_text())['libraries'],mapped)
         self.assertTrue((self.root/'log').exists())
+
+    def fixture(self,process,summary='test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 1.00s',outputs=True):
+        def launch(command,stdout,**options):
+            stdout.write(summary+'\n');stdout.flush()
+            if outputs:
+                for name in ['result.jsonl','trace.jsonl']:(self.root/name).write_text('{}\n')
+            return process
+        return launch
+
+    def test_zero_exit_without_fixture_evidence_is_rejected(self):
+        accounting=Mock(ru_utime=0,ru_stime=0,ru_maxrss=1)
+        mapped={role:{'path':str(path),'sha256':self.pins[role]} for role,path in self.paths.items()}
+        cases=[('native fixture produced no GRAPH_OUT',{'outputs':False}),
+               ('lacks exactly one passed test',{'summary':'test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s'})]
+        for message,options in cases:
+            for name in ['log','usage','mapped','result.jsonl','trace.jsonl']:(self.root/name).unlink(missing_ok=True)
+            with patch.object(runner,'PINS',self.pins),patch.object(runner.subprocess,'Popen',side_effect=self.fixture(Mock(pid=42),**options)),patch.object(runner,'maps',return_value=mapped),patch.object(runner.os,'waitid',return_value=Mock()),patch.object(runner.os,'killpg'),patch.object(runner.os,'wait4',return_value=(42,0,accounting)):
+                with self.assertRaisesRegex(RuntimeError,message):runner.capture(['mock'],self.paths,self.root/'log',self.root/'usage',self.root/'mapped')
+            self.assertFalse(json.loads((self.root/'mapped').read_text())['accepted'])
 
     def test_missing_zvec_refuses_success_but_retains_accounting(self):
         process=Mock(pid=42);accounting=Mock(ru_utime=0,ru_stime=0,ru_maxrss=1)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Read-only verification of the finished DiskANN archive, including recomputation."""
-import gzip,hashlib,importlib.machinery,importlib.util,json,math,statistics,struct,sys
+import gzip,hashlib,re,importlib.machinery,importlib.util,json,math,statistics,struct,sys
 if sys.flags.optimize:
     raise SystemExit("Verification requires Python assertions; run without -O/-OO or PYTHONOPTIMIZE.")
 sys.dont_write_bytecode=True
@@ -20,6 +20,7 @@ runner=load('archived_disk_runner',code/'run.py.in')
 calculator=load('archived_disk_calculator',code/'analyze.py.in')
 review=load('restart_evidence_review',root/'evidence_review.py')
 provenance=json.loads((root/'provenance.json').read_text())
+assert provenance['hardware']=={'kernel': 'Linux 6.18.44 x86_64 GNU/Linux', 'cpu_model': 'AMD EPYC 9V74 80-Core Processor', 'cgroup_cpu_max': '400000 100000', 'cgroup_memory_max': '17179869184', 'runtime_version': '1.28.0', 'runtime_commit': 'da9b5e364c465de65c49d91e696cd6485270757f', 'rustc': 'rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8', 'cargo': 'cargo 1.98.1 (797e8a9bc 2026-08-05)'}, 'retained Disk hardware provenance differs'
 review.seed_endpoint(provenance,json.loads((root/'post-review-seed.json').read_text()))
 provider_bindings=json.loads((root/'provider-bindings.json').read_text())
 review.runner_binding(code/'run.py.in',provenance)
@@ -145,7 +146,7 @@ assert conversion[0]['logical_digest']==conversion[1]['logical_digest']==[18000,
 assert conversion[1]['same_all_stored_document_bits'] and not conversion[1]['floor_written']
 review.conversion_schema(conversion[0]['schema'],conversion[1]['schema'])
 libraries=json.loads((root/'post-trial-libraries.json').read_text())
-assert libraries['recorded_utc'] and libraries['scope']
+assert libraries['recorded_utc'] and libraries['scope']=='Dated post-trial rehash during review; not per-process or immediate end-of-trial attestation. Equal endpoint hashes cannot exclude intervening replacement.', 'post-trial library rehash scope differs'
 assert set(libraries['libraries'])=={'runtime_library','native_zvec_library'}
 for key, entry in libraries['libraries'].items():
     assert entry==provenance[key], 'post-trial runtime/native identity mismatch'
@@ -154,6 +155,7 @@ assert post['all_recorded_source_graphs_and_prepared_external_weights_unchanged'
 pre_assets=provenance['source_assets']+provenance['prepared_graphs_and_external_weights']+provenance['prepared_source_metadata']
 def inventory(entries):
     assert len(entries)==len({entry['path'] for entry in entries}), 'duplicate asset path'
+    assert all(type(entry['bytes']) is int and entry['bytes']>=0 and type(entry['sha256']) is str and re.fullmatch('[0-9a-f]{64}',entry['sha256']) for entry in entries), 'model asset identity must have nonnegative integer bytes and canonical SHA256'
     return {entry['path']:(entry['bytes'],entry['sha256']) for entry in entries}
 assert inventory(post['assets'])==inventory(pre_assets), 'post-trial inventory differs from pretrial provenance'
 assert all(x['sha256']==x['posttrial_sha256'] and x['unchanged'] for x in post['assets'])
@@ -178,12 +180,12 @@ labels=[
 ('Known-topic MRR@10 (synthetic)','known_topic_mrr_at_10',1,''),
 ('Optimize jobs per first upkeep tick','optimize_jobs',1,''),
 ('Full-process elapsed median, includes diagnostics','episode',1,' s'),
-('Engine open wall median','open_ms',1,' ms'),
-('Write + urgent drain wall median','write_ms',1,' ms'),
-('Durability flush wall median','durability_flush_ms',1,' ms'),
-('Maintenance wall median','maintenance_ms',1,' ms'),
+('Engine open wall median, includes pre-snapshot /proc read','open_ms',1,' ms'),
+('Write + urgent drain wall median, includes pre-snapshot /proc read','write_ms',1,' ms'),
+('Durability flush wall median, includes pre-snapshot /proc read','durability_flush_ms',1,' ms'),
+('Maintenance wall median, includes pre-snapshot /proc read','maintenance_ms',1,' ms'),
 ('Maintenance process CPU median, 10ms tick counters','maintenance_cpu_s',1,' s'),
-('First-search wall median, model load included','first_search_ms',1,' ms'),
+('First-search wall median, model load and pre-snapshot /proc read included','first_search_ms',1,' ms'),
 ('Warm search p50, median across processes','warm_p50_ms',1,' ms'),
 ('Warm search p95, median across processes','warm_p95_ms',1,' ms'),
 ('Peak process RSS','peak_process_rss_bytes',2**20,' MiB'),
