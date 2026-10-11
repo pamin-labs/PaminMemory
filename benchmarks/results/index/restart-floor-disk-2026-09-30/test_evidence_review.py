@@ -48,7 +48,7 @@ def hnsw_main_delta(repo):hnsw_readme_cell(repo,'main',4,'-999.000 ms')
 def hnsw_main_percent(repo):hnsw_readme_cell(repo,'main',5,'-99.000%')
 def hnsw_stable_withheld(repo):hnsw_readme_cell(repo,'main',4,'Withheld: unstable three-process sample')
 def hnsw_missing_row(repo):
-    p=repo/HNSW/'README.md';lines=p.read_text().splitlines();index=next(i for i,l in enumerate(lines) if l.startswith('| Maintenance wall median |'));lines.pop(index);p.write_text('\n'.join(lines)+'\n')
+    p=repo/HNSW/'README.md';lines=p.read_text().splitlines();index=next(i for i,l in enumerate(lines) if l.startswith('| Maintenance wall median, includes pre-snapshot /proc read |'));lines.pop(index);p.write_text('\n'.join(lines)+'\n')
 def uncensored_maintenance_cpu(repo):
     p=repo/DISK/'README.md';s=p.read_text().replace('<0.020 s at combined counter resolution (0 observed ticks) | Withheld: censored counter observation | Withheld: censored counter observation','0.000000 s | -27.320000 s | -100.000%',1);p.write_text(s)
 def wrong_cpu_resolution_bound(repo):
