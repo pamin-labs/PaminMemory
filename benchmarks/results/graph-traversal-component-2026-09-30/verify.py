@@ -76,7 +76,7 @@ future=provenance['future_reproduction']
 assert future.get('fixture_policy')=={'scope': 'prospective disabled-arm defect assertions; historical fixture and preparation bytes unchanged', 'historical_fixture': 'source/fixture.rs.in', 'historical_fixture_sha256': '0daa185fcf9eff2d174ce13569407ff972827cacecffce15996740352cdbaab1', 'fixture': 'source/fixture-future.rs.in', 'prepare': 'source/prepare-future.py', 'native_execution': 'N/A: prospective baseline assertions not compiled or run; benchmarks deferred'}, 'prospective fixture provenance/limitation differs'
 assert future['scope']=='prospective accounting and mapped-library collector; original runner source N/A; no historical data replacement', 'prospective runner scope differs'
 assert provenance['scope']=='native search_fused component reproduction; independently seeded UUID projects; no product quality/speed conclusion', 'component provenance scope differs'
-FUTURE_SOURCE_PINS={'source/future-accounting.py.in': 'd42601c5f6670fad63931f2b44010b729fa8dfce72423e3394d1d0befd886027', 'test_future_accounting.py': '73242bbe736474dd182aada58c2cc999cb0532a24e962f004c131c2da1970787', 'source/fixture-future.rs.in': 'ecf3d00607854c0f8773941ad9b813b35ec73a46add2cc37f64b9bbbe1a03373', 'source/prepare-future.py': 'ce84a958284d2aa2f234cfd45d61123973258d67eb22f9b98359eba8f2306a37'}
+FUTURE_SOURCE_PINS={'source/future-accounting.py.in': '1e8e0e5a786628cd27632762b539c1c9136a97e4daaf9008a0ef45e94ccab38e', 'test_future_accounting.py': '3728da9133fb4a5b2e8b777d799027e81a1b533cf6800b4b34be3cf85b7dd345', 'source/fixture-future.rs.in': 'ecf3d00607854c0f8773941ad9b813b35ec73a46add2cc37f64b9bbbe1a03373', 'source/prepare-future.py': '4a823878bfbdfb385e6d36902e45101c2b448a9eeac671b0b61e1b50e2e60bdb'}
 assert future['files']==FUTURE_SOURCE_PINS, 'future accounting source pins differ'
 for name,digest in FUTURE_SOURCE_PINS.items():assert sha(ROOT/name)==digest, 'future accounting source bytes differ'
 # Independent SHA-256 of Git blob 760cd200eebba61025615ea5a72384110f0ac9b5
@@ -107,6 +107,7 @@ for name,record in provenance['redactions'].items():
  assert record['original_sha256'] == ORIGINAL_REDACTION_PINS[name], 'original redaction binding differs'
  assert sha(ROOT/name)==record['published_sha256'] and re.fullmatch('[0-9a-f]{64}',record['original_sha256'])
 EXPECTED_FILES = {'source/fixture-future.rs.in', 'source/prepare-future.py', 'source/multihop.rs.in', 'provenance.json', 'source/migrations/V10__settled_jobs_leave.sql', 'source/migrations/V12__job_subject_once.sql', 'source/migrations/V1__initial.sql', 'source/migrations/V8__topics_by_recency.sql', 'retrospective-sql-audit.json', 'source/migrations/V5__cascade_outbox.sql', 'source/graph_trace.rs.in', 'source/migrations/V9__state_content_from_span.sql', 'comparison.json', 'source/migrations/V4__current_state_pointer.sql', 'scored.trace.jsonl', 'scored.jsonl', 'README.md', 'scored.usage.json', 'scored.log', 'source/migrations/V11__retrieval_signals_leave.sql', 'test_verify.py', 'test_future_accounting.py', 'source/future-accounting.py.in', 'source/migrations/V3__shard_key_and_indexes.sql', 'source/prepare.py', 'source/migrations/V6__topic_name_index.sql', 'baseline.log', 'baseline.trace.jsonl', 'baseline.usage.json', 'source/migrations/V14__source_versions_index_once.sql', 'platform-observation.json', 'source/migrations/V13__edge_endpoints_on_versions.sql', 'source/migrations/V7__one_document_per_topic.sql', 'source/fixture.rs.in', 'baseline.jsonl', 'source/experimental-traversal.patch', 'verify.py', 'source/migrations/V2__relationships.sql'}
+assert not any(p.is_symlink() for p in ROOT.rglob('*')), 'retained archive must not contain symlinks'
 assert {str(p.relative_to(ROOT)) for p in ROOT.rglob('*') if p.is_file()} == EXPECTED_FILES, 'required file inventory differs'
 assert set(provenance['archive_files']) == EXPECTED_FILES - {'provenance.json'}, 'hash inventory differs'
 for name, digest in provenance['archive_files'].items():
@@ -268,7 +269,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  assert row['record']=='fixture' and row['arm']==arm and row['documents']==241
  assert row.get('setup') == 'native write/drain, explicit OptimizeIndex queue/drain; runtime defaults preserved', 'recorded native fixture setup differs'
  assert row['expected_scores'] == [.8,.5,.5]
- assert row['weak_rank']==weak_rank and close(row['weak_relevance'],11/(10+weak_rank))
+ assert type(row['weak_rank']) is int and row['weak_rank']==weak_rank and close(row['weak_relevance'],11/(10+weak_rank)), 'weak rank must be the exact native integer'
  assert type(row['weak_relevance']) is float and row['weak_relevance']=={'baseline': 0.3333333432674408, 'scored': 0.34375}[arm], 'retained weak relevance differs exactly'
  channels = {'lexical_segmented','lexical_ngram','vector'}
  fixture_topics = {'quartzanchor'} | {f'islandnode{n:04d}' for n in range(240)}
@@ -357,6 +358,7 @@ for arm,weak_rank in [('baseline',23),('scored',22)]:
  assert {'elapsed_ms':row['elapsed_ms'],'early_stop_elapsed_ms':row['early_stop']['elapsed_ms'],'graph_process_cpu_user_system_seconds':row['graph_process_cpu_user_system_seconds']}==INTERVAL_PINS[arm], 'retained graph intervals differ exactly'
 
  assert len(row['targets'])==3 and len({h['topic'] for h in row['targets']})==3, 'exactly three unique target records required'
+ assert all(type(h) is dict and set(h)=={'topic','why','seed'} for h in row['targets']), 'target records must carry exactly the native topic, why and seed fields'
  hits={h['topic']:h for h in row['targets']};assert set(hits)==set(row['target_labels'])
  for i,name in enumerate(row['target_labels']):
   origin=row['weak'] if arm=='baseline' and i==0 else row['strong']

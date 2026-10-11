@@ -455,7 +455,8 @@ if __name__ == '__main__':
             opposite=strong_content if arm=='baseline' and index==0 else weak_content
             for value in ['unrelated origin content',opposite,'',None,123,{'content':row['targets'][index]['seed']}]:
                 run_case('target seed '+arm+' '+str(index)+' '+repr(value),lambda r,arm=arm,index=index,value=value:mutate_json(r/(arm+'.jsonl'),lambda row:row['targets'][index].update(seed=value)),expected_error='target seed content differs from expected origin: '+arm)
-            run_case('missing target seed '+arm+' '+str(index),lambda r,arm=arm,index=index:mutate_json(r/(arm+'.jsonl'),lambda row:row['targets'][index].pop('seed')),expected_error='target seed content differs from expected origin: '+arm)
+            run_case('missing target seed '+arm+' '+str(index),lambda r,arm=arm,index=index:mutate_json(r/(arm+'.jsonl'),lambda row:row['targets'][index].pop('seed')),expected_error='target records must carry exactly the native topic, why and seed fields')
+            run_case('extra target field '+arm+' '+str(index),lambda r,arm=arm,index=index:mutate_json(r/(arm+'.jsonl'),lambda row:row['targets'][index].update(product_latency_p50_ms=50)),expected_error='target records must carry exactly the native topic, why and seed fields')
     for scope in ['Contemporaneous build-time SQL source attestation.', 'Historical rebuild verified the SQL sources.', '', None]:
         run_case('retrospective SQL scope '+str(scope),lambda r,scope=scope:mutate_json(r/'retrospective-sql-audit.json',lambda a:a.update(scope=scope)),expected_error='retrospective SQL audit scope differs')
     run_case('missing retrospective SQL scope',lambda r:mutate_json(r/'retrospective-sql-audit.json',lambda a:a.pop('scope')),expected_error='retrospective SQL audit scope differs')
@@ -704,8 +705,25 @@ if __name__ == '__main__':
                 expected=hashlib.sha256((ROOT/'source'/artifact).read_bytes()).hexdigest()
                 assert prepared[relative]==hashlib.sha256((out/relative).read_bytes()).hexdigest()==expected
         print('PASS: preparation retains and hashes both exact scratch target sources')
+        # The prospective preparation binds every file it does not rewrite to the
+        # recorded baseline source map; bind this synthetic input in an archive copy.
+        archive=Path(temp)/'archive';shutil.copytree(ROOT,archive)
+        provenance=json.loads((archive/'provenance.json').read_text())
+        baseline=next(arm for arm in provenance['arms'] if arm['arm']=='baseline')['source_hashes']
+        rewritten={'Cargo.lock','crates/pamin-engine/Cargo.toml','crates/pamin-engine/tests/scratch_scored_fixture.rs','crates/pamin-engine/tests/graph_trace/mod.rs'}
+        for name in set(baseline)-rewritten:
+            path=source/name
+            if not path.exists():path.parent.mkdir(parents=True,exist_ok=True);path.write_text('synthetic '+name+'\n')
+            baseline[name]=hashlib.sha256(path.read_bytes()).hexdigest()
+        (archive/'provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')
+        channel=source/'crates/pamin-core/src/channel.rs';original=channel.read_bytes();channel.write_text('another revision\n')
+        rejected=Path(temp)/'future rejected'
+        result=subprocess.run([sys.executable,str(archive/'source/prepare-future.py'),'--source',str(source),'--out',str(rejected)],capture_output=True,text=True)
+        assert result.returncode!=0 and not rejected.exists() and 'source differs from recorded base' in result.stderr,result.stderr
+        channel.write_bytes(original)
+        print('PASS: prospective preparation rejects a source that differs from the recorded base before copying')
         future_out=Path(temp)/'future prepared'
-        result=subprocess.run([sys.executable,str(ROOT/'source/prepare-future.py'),'--source',str(source),'--out',str(future_out)],capture_output=True,text=True)
+        result=subprocess.run([sys.executable,str(archive/'source/prepare-future.py'),'--source',str(source),'--out',str(future_out)],capture_output=True,text=True)
         assert result.returncode==0,result.stderr
         future_hashes=json.loads((future_out/'prepared-source-hashes.json').read_text())
         for arm in ['baseline','scored']:
@@ -721,6 +739,12 @@ if __name__ == '__main__':
         result=subprocess.run([sys.executable,str(root/'source/prepare.py'),'--source',str(Path(temp)/'absent-input'),'--out',str(out)],capture_output=True,text=True)
         assert result.returncode!=0 and not out.exists() and 'preserved multihop source differs' in result.stderr
         print('PASS: preparation rejects changed multihop source before copying')
+    def symlinked_log(root):
+        outside=root.parent/'outside-baseline.log';shutil.copyfile(root/'baseline.log',outside)
+        (root/'baseline.log').unlink();(root/'baseline.log').symlink_to(outside)
+    run_case('symlinked identical baseline log',symlinked_log,expected_error='retained archive must not contain symlinks')
+    for arm in ['baseline','scored']:
+        run_case('float weak rank '+arm,lambda root,arm=arm:mutate_json(root/(arm+'.jsonl'),lambda row:row.update(weak_rank=float(row['weak_rank']))),expected_error='weak rank must be the exact native integer')
     run_case('Python -O', flags=('-O',))
     run_case('Python -OO', flags=('-OO',))
     reject_optimized_prepare('-O', flags=('-O',))
