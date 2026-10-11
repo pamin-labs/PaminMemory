@@ -222,6 +222,8 @@ def seed_endpoint(provenance, record):
     assert len(inventory)==len(entries)
     encoded=json.dumps(inventory,sort_keys=True,separators=(',',':')).encode()
     assert record['canonical_inventory_sha256']==hashlib.sha256(encoded).hexdigest()
+    # Bind the complete published endpoint independently of the mutable inventory.
+    assert (len(entries),sum(entry['bytes'] for entry in entries),record['canonical_inventory_sha256'])==(2952,312706264,'2e67b618d0ded0f5a6571d3c0ae5e3f86a5fe87b0c6f65422e4863cb152b46f0'), 'retained complete seed inventory size differs'
     assert record['file_count']==len(entries)
     assert record['total_bytes']==sum(entry['bytes'] for entry in entries)
     assert all(record[key] is True for key in ['matches_pretrial_inventory','seed_postgresql_stopped','metadata_stable_during_capture']), 'seed endpoint flags must be exactly true'
@@ -243,6 +245,15 @@ def successful_test_log(log):
     pattern=r'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(?:\.[0-9]+)?s'
     assert len(summaries)==1 and re.fullmatch(pattern,summaries[0]) and lines[-1]==summaries[0], 'retained test log must end with exactly one complete successful one-test summary (zero filtered)'
 
+def typed_equal(a,b):
+    # JSON true/false compare equal to 1/0 in Python; the native getters emit
+    # exact integers and booleans, so the type must match at every level.
+    if type(a) is not type(b):return False
+    if isinstance(a,dict):return a.keys()==b.keys() and all(typed_equal(a[k],b[k]) for k in a)
+    if isinstance(a,list):return len(a)==len(b) and all(typed_equal(x,y) for x,y in zip(a,b))
+    return a==b
+
+
 def conversion_schema(before,after):
     # Complete canonical schema emitted by the historical helper. It did not
     # record HNSW degree/ef parameters; this check cannot certify absent values.
@@ -251,12 +262,12 @@ def conversion_schema(before,after):
         'id':{'dimension':0,'dtype':2,'nullable':False},
         'content_ngram':dict(text),'content_segmented':dict(text),
         'embedding':{'dimension':1024,'dtype':22,'index_type':1,'metric':3,'nullable':False,'quantize':0,'quantizer_rotate':False}}}
-    assert before==expected, 'complete retained preconversion HNSW schema differs'
+    assert typed_equal(before,expected), 'complete retained preconversion HNSW schema differs'
     assert set(after)==set(before) and after['segment_documents']==before['segment_documents'] and set(after['fields'])==set(before['fields']), 'conversion schema structure/segment parameters differ'
     for name in ['id','content_ngram','content_segmented']:
-        assert after['fields'][name]==before['fields'][name], 'conversion changed nonembedding schema field'
+        assert typed_equal(after['fields'][name],before['fields'][name]), 'conversion changed nonembedding schema field'
     embedding=dict(before['fields']['embedding'],index_type=5,degree=64,build_list=100,pq_chunks=0)
-    assert after['fields']['embedding']==embedding, 'complete retained postconversion DiskANN schema differs'
+    assert typed_equal(after['fields']['embedding'],embedding), 'complete retained postconversion DiskANN schema differs'
 
 
 def fixed_work_count(value):
