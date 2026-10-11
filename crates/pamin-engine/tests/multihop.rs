@@ -398,8 +398,7 @@ async fn search_answers_questions_that_take_several_steps() {
     // against the shipped one from a single shipped run. See `reranking`.
     if std::env::var("RERANK_RULES").is_ok() {
         let tier = Rerank::default();
-        let rules = reranking::rules();
-        let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); rules.len()];
+        let mut priced = reranking::Priced::new(false);
         for query in &corpus.queries {
             let hits = engine
                 .search_reranked(&query.text, WIDE, DEPTHS, tier)
@@ -407,24 +406,14 @@ async fn search_answers_questions_that_take_several_steps() {
                 .expect("search");
             channels::enough_room(&hits, WIDE);
             let replayed = reranking::replay(&hits, tier);
-            for ((_, rule), into) in rules.iter().zip(&mut measured) {
-                score(
-                    into.entry(query.group.clone()).or_default(),
-                    query,
-                    &replayed.order(*rule),
-                );
-            }
+            priced.observe(&query.group, &replayed, |into, ranking| {
+                score(into.entry(query.group.clone()).or_default(), query, ranking)
+            });
         }
-        reranking::report(
-            &format!(
-                "rules for the {} reranker's scores, MuSiQue, {named}",
-                tier.name()
-            ),
-            &rules,
-            reranking::shipped(&rules),
-            &measured,
-            false,
-        );
+        priced.report(&format!(
+            "rules for the {} reranker's scores, MuSiQue, {named}",
+            tier.name()
+        ));
         return;
     }
 

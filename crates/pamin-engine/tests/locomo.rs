@@ -276,9 +276,9 @@ async fn locomo_evidence_with_and_without_links() {
     let mut scores: [BTreeMap<String, Scores>; 2] = Default::default();
     // `RERANK_RULES`: the linked project's shipped searches replayed under
     // every rule for using the reranker's scores. See `reranking`.
-    let rules = std::env::var("RERANK_RULES").is_ok().then(reranking::rules);
-    let mut measured: Vec<BTreeMap<String, Scores>> =
-        vec![BTreeMap::new(); rules.as_ref().map_or(0, Vec::len)];
+    let mut rules = std::env::var("RERANK_RULES")
+        .is_ok()
+        .then(|| reranking::Priced::new(false));
     let mut questions = 0usize;
     let mut linked_edges = 0usize;
     for conversation in &conversations {
@@ -300,7 +300,7 @@ async fn locomo_evidence_with_and_without_links() {
 
         for question in &conversation.questions {
             questions += 1;
-            if let Some(rules) = &rules {
+            if let Some(rules) = &mut rules {
                 const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
                 let tier = Rerank::default();
                 let hits = engines[1]
@@ -309,13 +309,13 @@ async fn locomo_evidence_with_and_without_links() {
                     .expect("search");
                 channels::enough_room(&hits, WIDE);
                 let replayed = reranking::replay(&hits, tier);
-                for ((_, rule), into) in rules.iter().zip(&mut measured) {
+                rules.observe(&question.category, &replayed, |into, ranking| {
                     into.entry(question.category.clone()).or_default().add(
-                        &replayed.order(*rule),
+                        ranking,
                         question.evidence.len(),
                         |topic| question.evidence.contains(topic),
                     );
-                }
+                });
                 continue;
             }
             for (side, engine) in engines.iter().enumerate() {
@@ -341,13 +341,9 @@ async fn locomo_evidence_with_and_without_links() {
     }
     assert!(questions > 0, "no question could be graded");
     if let Some(rules) = &rules {
-        reranking::report(
-            &format!("rules for the reranker's scores, LOCOMO linked, {named}"),
-            rules,
-            reranking::shipped(rules),
-            &measured,
-            false,
-        );
+        rules.report(&format!(
+            "rules for the reranker's scores, LOCOMO linked, {named}"
+        ));
         return;
     }
     assert!(

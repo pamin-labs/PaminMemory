@@ -1060,12 +1060,9 @@ async fn run(engine: &Engine, corpus: &Corpus, route: Route) -> Scores {
 
 /// Every rule in `reranking::rules` over the shipped tier's own scores.
 async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
-    use std::collections::BTreeMap;
-
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
-    let rules = reranking::rules();
-    let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); rules.len()];
+    let mut priced = reranking::Priced::new(false);
     for query in &corpus.queries {
         let hits = engine
             .search_reranked(&query.text, WIDE, DEPTHS, tier)
@@ -1073,24 +1070,18 @@ async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
             .expect("search");
         channels::enough_room(&hits, WIDE);
         let replayed = reranking::replay(&hits, tier);
-        for ((_, rule), into) in rules.iter().zip(&mut measured) {
+        priced.observe(GROUP, &replayed, |into, ranking| {
             into.entry(GROUP.to_string()).or_default().add(
-                &replayed.order(*rule),
+                ranking,
                 query.relevant.len(),
                 |topic| query.relevant.contains(topic),
             );
-        }
+        });
     }
-    reranking::report(
-        &format!(
-            "rules for the {} reranker's scores, MIRACL, {named}",
-            tier.name()
-        ),
-        &rules,
-        reranking::shipped(&rules),
-        &measured,
-        false,
-    );
+    priced.report(&format!(
+        "rules for the {} reranker's scores, MIRACL, {named}",
+        tier.name()
+    ));
 }
 
 /// What the shipped tier is worth when it is shown each candidate's topic
