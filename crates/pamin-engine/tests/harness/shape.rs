@@ -685,7 +685,10 @@ mod tests {
         shape
     }
 
-    fn failures(scored: &[(&str, &str, usize)]) -> Vec<String> {
+    /// How often each query was scored: group, id, count.
+    type Scored<'a> = &'a [(&'a str, &'a str, usize)];
+
+    fn failures(scored: Scored<'_>) -> Vec<String> {
         let counts = scored
             .iter()
             .map(|(group, id, count)| ((group.to_string(), id.to_string()), *count))
@@ -707,7 +710,7 @@ mod tests {
     /// count cannot see, one query lost and another counted twice.
     #[test]
     fn coverage_fails_on_any_query_out_of_place() {
-        let cases: [(&[(&str, &str, usize)], &str); 6] = [
+        let cases: [(Scored<'_>, &str); 6] = [
             (&[("g", "q1", 1)], "never scored: 1 (q2)"),
             (
                 &[("g", "q1", 3), ("g", "q2", 3), ("g", "q4", 1)],
