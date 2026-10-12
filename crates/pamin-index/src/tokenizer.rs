@@ -81,6 +81,10 @@ pub(crate) struct Shared(Arc<Vocabulary>);
 
 /// A loaded model: a Unigram vocabulary in this module's layout, or any other
 /// model as `tokenizers` builds it.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one per loaded vocabulary, behind an `Arc`"
+)]
 enum Vocabulary {
     Unigram(Unigram),
     Other(ModelWrapper),
