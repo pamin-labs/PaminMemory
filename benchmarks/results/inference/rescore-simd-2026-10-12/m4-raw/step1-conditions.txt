@@ -1,0 +1,36 @@
+== before run1 20:28:19
+20:28  up 7 days,  2:08, 3 users, load averages: 2.59 2.78 2.92
+Note: No thermal warning level has been recorded
+Note: No performance warning level has been recorded
+Note: No CPU power status has been recorded
+Now drawing from 'AC Power'
+run1 exit=0
+== after run1 20:28:21
+20:28  up 7 days,  2:08, 3 users, load averages: 2.59 2.78 2.92
+Note: No thermal warning level has been recorded
+Note: No performance warning level has been recorded
+Note: No CPU power status has been recorded
+== before run2 20:28:21
+20:28  up 7 days,  2:08, 3 users, load averages: 2.59 2.78 2.92
+Note: No thermal warning level has been recorded
+Note: No performance warning level has been recorded
+Note: No CPU power status has been recorded
+Now drawing from 'AC Power'
+run2 exit=0
+== after run2 20:28:22
+20:28  up 7 days,  2:08, 3 users, load averages: 2.55 2.77 2.91
+Note: No thermal warning level has been recorded
+Note: No performance warning level has been recorded
+Note: No CPU power status has been recorded
+== before run3 20:28:22
+20:28  up 7 days,  2:08, 3 users, load averages: 2.55 2.77 2.91
+Note: No thermal warning level has been recorded
+Note: No performance warning level has been recorded
+Note: No CPU power status has been recorded
+Now drawing from 'AC Power'
+run3 exit=0
+== after run3 20:28:24
+20:28  up 7 days,  2:08, 3 users, load averages: 2.55 2.77 2.91
+Note: No thermal warning level has been recorded
+Note: No performance warning level has been recorded
+Note: No CPU power status has been recorded
