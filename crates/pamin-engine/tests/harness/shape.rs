@@ -588,15 +588,26 @@ impl Shape {
             "scored": self.coverage,
         });
         // Beside it and renamed over it, so a run killed mid-write leaves the
-        // last whole record rather than half of a new one.
-        let partial = path.with_extension("json.part");
-        std::fs::write(
+        // last whole record rather than half of a new one. Named by process
+        // and time, so two runs writing one record never share a partial
+        // file; the last rename wins with a whole record either way.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos());
+        let partial = path.with_extension(format!("json.{}.{nanos}.part", std::process::id()));
+        let written = std::fs::write(
             &partial,
             serde_json::to_vec_pretty(&body).expect("serialise"),
         )
-        .unwrap_or_else(|error| panic!("writing {}: {error}", partial.display()));
-        std::fs::rename(&partial, path)
-            .unwrap_or_else(|error| panic!("renaming onto {}: {error}", path.display()));
+        .map_err(|error| format!("writing {}: {error}", partial.display()))
+        .and_then(|()| {
+            std::fs::rename(&partial, path)
+                .map_err(|error| format!("renaming onto {}: {error}", path.display()))
+        });
+        if let Err(error) = written {
+            let _ = std::fs::remove_file(&partial);
+            panic!("{error}");
+        }
     }
 }
 
