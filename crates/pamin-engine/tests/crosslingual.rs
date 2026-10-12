@@ -311,6 +311,11 @@ impl Query<'_> {
         &self.question.asked[self.language]
     }
 
+    /// The question asked in this language, as the run's shape knows it.
+    fn id(&self) -> String {
+        format!("{}/{}", self.question.id, self.language)
+    }
+
     /// The relevant sentence keys for one group, and what to drop first.
     ///
     /// Each group removes from the ranking the answers it does not count,
@@ -336,7 +341,11 @@ impl Query<'_> {
     /// non-relevant candidate can only raise the relevant one, so every
     /// same-language figure taken before this change is a lower bound on the
     /// same ranking scored now.
+    ///
+    /// Every arm that grades a query reads its answer key here, once per
+    /// group, so this is where the run's coverage is counted.
     fn relevant(&self, group: &str) -> (HashSet<&str>, HashSet<&str>) {
+        harness::shape::tally(group, &self.id());
         let own = self.question.answers[self.language].as_str();
         let translations: HashSet<&str> = self
             .question
@@ -607,14 +616,9 @@ impl Corpus {
                 .map(String::as_str)
                 .collect();
             answers.sort_unstable();
-            let mut fields = vec![
-                query.question.id.as_str(),
-                query.language,
-                query.text(),
-                query.target,
-            ];
+            let mut fields = vec![query.text(), query.target];
             fields.extend(answers);
-            shape.query(&GROUPS, &fields);
+            shape.query(&GROUPS, &query.id(), &fields);
         }
         for (id, reason) in &self.excluded {
             shape.exclude(&GROUPS, id, reason);
@@ -1384,10 +1388,8 @@ async fn report_channels(
     );
 }
 
-/// Prints the table this harness exists to produce, after checking it scored
-/// every question the run's shape says it asked.
-fn report(title: &str, groups: &BTreeMap<String, Scores>, per_query_ms: f64, shape: &mut Shape) {
-    shape.check(title, scored(groups));
+/// Prints the table this harness exists to produce.
+fn report(title: &str, groups: &BTreeMap<String, Scores>, per_query_ms: f64) {
     println!("\n  {title}");
     println!(
         "  group            queries   nDCG@{NDCG_AT}   recall@{RECALL_AT}   below rank {NDCG_AT}   queries with any"
@@ -1405,13 +1407,6 @@ fn report(title: &str, groups: &BTreeMap<String, Scores>, per_query_ms: f64, sha
         );
     }
     println!("  {per_query_ms:.0} ms per query\n");
-}
-
-/// Each group and how many queries it scored, for [`Shape::check`].
-fn scored(groups: &BTreeMap<String, Scores>) -> impl Iterator<Item = (&str, usize)> {
-    groups
-        .iter()
-        .map(|(group, scores)| (group.as_str(), scores.queries))
 }
 
 /// What the reranker did during a run, printed beside the scores.
@@ -1586,7 +1581,6 @@ fn the_model_reaches_across_languages() {
         &format!("the embedding space alone, {named}"),
         &groups,
         started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64,
-        &mut shape,
     );
     assert_floors(&named, &groups, MODEL_FLOORS);
 }
@@ -2068,7 +2062,7 @@ async fn search_reaches_across_languages() {
             let started = std::time::Instant::now();
             let groups = run(&engine, &queries, Route::Shipped(tier)).await;
             let cost = started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64;
-            report(&format!("{tier:?}, {named}"), &groups, cost, &mut shape);
+            report(&format!("{tier:?}, {named}"), &groups, cost);
             report_reranking(&engine, tier, queries.len());
             priced.push((tier, cost, groups));
         }
@@ -2131,7 +2125,6 @@ async fn search_reaches_across_languages() {
         &format!("the shipped search path, {named}"),
         &groups,
         started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64,
-        &mut shape,
     );
     report_reranking(&engine, Rerank::default(), queries.len());
     assert_floors(&named, &groups, SEARCH_FLOORS);
@@ -2141,7 +2134,6 @@ async fn search_reaches_across_languages() {
     // missing -- see `RERANK_IS_WORTH`.
     if named == DEFAULT_PROFILE {
         let alone = run(&engine, &queries, Route::Shipped(Rerank::Off)).await;
-        shape.check("fusion alone", scored(&alone));
         let (with, without) = (
             groups["cross_lingual"].mean_ndcg(),
             alone["cross_lingual"].mean_ndcg(),

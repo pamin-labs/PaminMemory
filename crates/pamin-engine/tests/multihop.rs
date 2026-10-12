@@ -267,9 +267,9 @@ impl Corpus {
         for query in &self.queries {
             let mut relevant: Vec<&str> = query.relevant.iter().map(String::as_str).collect();
             relevant.sort_unstable();
-            let mut fields = vec![query.id.as_str(), query.text.as_str()];
+            let mut fields = vec![query.text.as_str()];
             fields.extend(relevant);
-            shape.query(&[&query.group], &fields);
+            shape.query(&[&query.group], &query.id, &fields);
         }
         for (id, group, reason) in &self.excluded {
             shape.exclude(&[group], id, reason);
@@ -396,7 +396,11 @@ fn download(path: &Path, url: &str) {
     std::fs::rename(&partial, path).expect("name the downloaded page");
 }
 
+/// Scores one ranking, and counts it toward the run's coverage. Every arm
+/// that scores comes through here; the two that do not -- `FEATURES_OUT` and
+/// `REACH` -- count each question themselves.
 fn score(into: &mut Scores, query: &Query, ranked: &[String]) {
+    harness::shape::tally(&query.group, &query.id);
     into.add(ranked, query.relevant.len(), |title| {
         query.relevant.contains(title)
     });
@@ -567,6 +571,7 @@ async fn search_answers_questions_that_take_several_steps() {
             dump.observe(&asked, &hits, WIDE, |title| {
                 Some(f64::from(query.relevant.contains(title)))
             });
+            harness::shape::tally(&query.group, &query.id);
         }
         dump.finish(corpus.queries.len());
         return;
@@ -664,18 +669,6 @@ async fn search_answers_questions_that_take_several_steps() {
             score(into.entry(query.group.clone()).or_default(), query, &ranked);
         }
     }
-    for (table, groups) in [
-        ("the shipped search path", &shipped),
-        ("without the graph", &graphless),
-    ] {
-        shape.check(
-            table,
-            groups
-                .iter()
-                .map(|(group, scores)| (group.as_str(), scores.queries)),
-        );
-    }
-
     println!("\n  the shipped search path, {named}, against the same path without the graph");
     println!("  group   questions   nDCG@{NDCG_AT}   recall@{RECALL_AT}   without the graph");
     println!("  ------------------------------------------------------------------------------");
@@ -1046,6 +1039,7 @@ async fn reach(engine: &Engine, corpus: &Corpus, label: &str) {
             .await
             .expect("search");
         channels::enough_room(&hits, WIDE);
+        harness::shape::tally(&query.group, &query.id);
         for (position, hit) in hits.iter().enumerate() {
             if !query.relevant.contains(&hit.topic) {
                 continue;

@@ -22,8 +22,9 @@
 //! deterministic seeded sample that keeps linked groups whole, and explicit
 //! coverage with no silent replacement of failures.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::{Mutex, PoisonError};
 
 use sha2::{Digest, Sha256};
 
@@ -139,19 +140,50 @@ pub struct Excluded {
     pub reason: String,
 }
 
+/// Every `(group, query id)` scored since the open shape was published, and
+/// how many times.
+///
+/// Process-wide rather than a field a harness threads through, because the
+/// places a query is scored are a harness's scoring function and the
+/// callbacks a dozen diagnostic arms hand it, several layers down; each
+/// harness calls [`tally`] once, where its answer key is read, and every arm
+/// is covered by construction. `None` while no shape is open, so unit tests
+/// that score nothing published are not counted.
+static TALLY: Mutex<Option<BTreeMap<(String, String), usize>>> = Mutex::new(None);
+
+fn tallied() -> std::sync::MutexGuard<'static, Option<BTreeMap<(String, String), usize>>> {
+    TALLY.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Records that query `id` was scored once in `group`. Called where a harness
+/// reads its answer key, so a query graded is a query counted.
+pub fn tally(group: &str, id: &str) {
+    if let Some(counts) = tallied().as_mut() {
+        *counts
+            .entry((group.to_string(), id.to_string()))
+            .or_default() += 1;
+    }
+}
+
 /// One run's question and document set, how it was chosen, and its coverage.
+///
+/// Coverage is checked when the shape is dropped -- at the end of the test,
+/// whichever arm ran and wherever it returned. The first version checked in
+/// the shipped arm's reporting and nowhere else, so every diagnostic arm
+/// returned before the check and was believed unchecked.
 pub struct Shape {
     name: String,
     selection: String,
     seed: Option<u64>,
     queries: Vec<[u8; 32]>,
     documents: Vec<[u8; 32]>,
-    asked: BTreeMap<String, usize>,
+    /// Per group, the id of every query the selection drew, excluded or not.
+    asked: BTreeMap<String, BTreeSet<String>>,
     excluded: Vec<Excluded>,
-    /// Per scored table: group to scored count. Recorded beside the rest.
-    coverage: BTreeMap<String, BTreeMap<String, usize>>,
-    /// Where [`publish`](Self::publish) wrote the record, so later checks
-    /// rewrite it with their coverage.
+    /// What the check found, recorded beside the rest once it has run.
+    coverage: Option<serde_json::Value>,
+    /// Where [`publish`](Self::publish) wrote the record; set only on a
+    /// published shape, which is also the one whose coverage is checked.
     record: Option<PathBuf>,
 }
 
@@ -168,6 +200,20 @@ fn record(kind: &str, fields: &[&str]) -> [u8; 32] {
     hash.finalize().into()
 }
 
+/// At most this many ids are named in a coverage failure; the count says how
+/// many there were.
+const NAMED: usize = 5;
+
+fn named(ids: &[&str]) -> String {
+    let shown: Vec<&str> = ids.iter().take(NAMED).copied().collect();
+    format!(
+        "{} ({}{})",
+        ids.len(),
+        shown.join(", "),
+        if ids.len() > NAMED { ", ..." } else { "" }
+    )
+}
+
 impl Shape {
     /// `selection` says how the questions were chosen, in words a log reader
     /// can check; `seed` is the seed it used, if it used one.
@@ -180,7 +226,7 @@ impl Shape {
             documents: Vec::new(),
             asked: BTreeMap::new(),
             excluded: Vec::new(),
-            coverage: BTreeMap::new(),
+            coverage: None,
             record: None,
         }
     }
@@ -190,12 +236,20 @@ impl Shape {
         self.documents.push(record("document", fields));
     }
 
-    /// One question, asked in each of `groups`, by every field that decides
-    /// how it is scored: its id, its text, and its answer key.
-    pub fn query(&mut self, groups: &[&str], fields: &[&str]) {
-        self.queries.push(record("query", fields));
+    /// One question, asked in each of `groups` under `id` -- the id the
+    /// harness passes to [`tally`] -- by every other field that decides how it
+    /// is scored: its text and its answer key.
+    pub fn query(&mut self, groups: &[&str], id: &str, fields: &[&str]) {
+        let mut all = vec![id];
+        all.extend(fields);
+        self.queries.push(record("query", &all));
         for group in groups {
-            *self.asked.entry((*group).to_string()).or_default() += 1;
+            let fresh = self
+                .asked
+                .entry((*group).to_string())
+                .or_default()
+                .insert(id.to_string());
+            assert!(fresh, "{}: query {id} selected twice in {group}", self.name);
         }
     }
 
@@ -204,7 +258,12 @@ impl Shape {
     pub fn exclude(&mut self, groups: &[&str], id: &str, reason: &str) {
         self.queries.push(record("excluded", &[id, reason]));
         for group in groups {
-            *self.asked.entry((*group).to_string()).or_default() += 1;
+            let fresh = self
+                .asked
+                .entry((*group).to_string())
+                .or_default()
+                .insert(id.to_string());
+            assert!(fresh, "{}: query {id} selected twice in {group}", self.name);
             self.excluded.push(Excluded {
                 id: id.to_string(),
                 group: (*group).to_string(),
@@ -232,9 +291,10 @@ impl Shape {
         format!("{:x}", hash.finalize())
     }
 
-    /// Prints the digest, the selection, the seed and every exclusion, and
-    /// records them under `<eval home>/shape/`. Called once, before anything
-    /// is searched, so a run that dies still said what it was running.
+    /// Prints the digest, the selection, the seed and every exclusion,
+    /// records them under `<eval home>/shape/`, and starts counting what is
+    /// scored. Called once, before anything is searched, so a run that dies
+    /// still said what it was running.
     pub fn publish(&mut self) {
         let digest = self.digest();
         let name = &self.name;
@@ -250,7 +310,7 @@ impl Shape {
         let asked: Vec<String> = self
             .asked
             .iter()
-            .map(|(group, count)| format!("{group} {count}"))
+            .map(|(group, ids)| format!("{group} {}", ids.len()))
             .collect();
         println!(
             "  shape {name}: asked {}; excluded {}",
@@ -273,50 +333,151 @@ impl Shape {
             "  shape {name}: recorded in {}",
             self.record.as_ref().expect("just set").display()
         );
+
+        // Two harness tests in one process would count into one tally and
+        // fail each other's check with each other's queries; say so instead.
+        let mut open = tallied();
+        assert!(
+            open.is_none(),
+            "another harness test is already counting coverage in this process; \
+             run one at a time with --exact"
+        );
+        *open = Some(BTreeMap::new());
     }
 
-    /// Asserts that `scored` -- group and how many queries a table scored in
-    /// it -- covers exactly what was asked less what was excluded, then prints
-    /// and records the coverage.
+    /// Checks `counts` -- `(group, id)` to times scored -- against what was
+    /// asked: per group, the queries selected and not excluded, each scored
+    /// the same number of times, and nothing else.
     ///
-    /// A table that scored fewer has lost questions somewhere, and one that
-    /// scored more has counted something twice; either way its means are not
-    /// over the set the digest names, and it fails here instead of printing.
-    pub fn check<'a>(&mut self, table: &str, scored: impl IntoIterator<Item = (&'a str, usize)>) {
-        let scored: BTreeMap<String, usize> = scored
-            .into_iter()
-            .map(|(group, count)| (group.to_string(), count))
-            .collect();
-        let mut line = Vec::new();
+    /// The same number of times because an arm scores each query into every
+    /// table it prints -- three tiers, or every channel taken away in turn --
+    /// so a query with fewer is missing from some table and one with more was
+    /// counted twice in one. Either way that table's mean is not over the set
+    /// the digest names. Ids rather than counts, because a table that lost one
+    /// query and counted another twice has the right count.
+    ///
+    /// Returns a line per group, and every failure found.
+    fn coverage(
+        &self,
+        counts: &BTreeMap<(String, String), usize>,
+    ) -> (Vec<String>, Vec<String>, serde_json::Value) {
+        let mut lines = Vec::new();
+        let mut failures = Vec::new();
+        let mut recorded = serde_json::Map::new();
         for (group, asked) in &self.asked {
-            let excluded = self.excluded.iter().filter(|it| &it.group == group).count();
-            let got = scored.get(group).copied().unwrap_or(0);
-            assert_eq!(
-                got,
-                asked - excluded,
-                "{} {table}: {group} scored {got} of {asked} asked with {excluded} excluded",
-                self.name
-            );
-            line.push(format!(
-                "{group} asked {asked} scored {got} excluded {excluded}"
+            let excluded: BTreeSet<&str> = self
+                .excluded
+                .iter()
+                .filter(|it| &it.group == group)
+                .map(|it| it.id.as_str())
+                .collect();
+            let scored: BTreeMap<&str, usize> = counts
+                .iter()
+                .filter(|((scored_in, _), _)| scored_in == group)
+                .map(|((_, id), count)| (id.as_str(), *count))
+                .collect();
+            let expected: Vec<&str> = asked
+                .iter()
+                .map(String::as_str)
+                .filter(|id| !excluded.contains(id))
+                .collect();
+
+            // How many tables an arm scores each query into: the commonest
+            // count, the larger on a tie.
+            let mut frequency: BTreeMap<usize, usize> = BTreeMap::new();
+            for id in &expected {
+                if let Some(count) = scored.get(id) {
+                    *frequency.entry(*count).or_default() += 1;
+                }
+            }
+            let tables = frequency
+                .iter()
+                .max_by(|a, b| a.1.cmp(b.1).then(a.0.cmp(b.0)))
+                .map_or(0, |(count, _)| *count);
+
+            let missing: Vec<&str> = expected
+                .iter()
+                .copied()
+                .filter(|id| !scored.contains_key(id))
+                .collect();
+            let short: Vec<&str> = expected
+                .iter()
+                .copied()
+                .filter(|id| scored.get(id).is_some_and(|count| *count < tables))
+                .collect();
+            let doubled: Vec<&str> = expected
+                .iter()
+                .copied()
+                .filter(|id| scored.get(id).is_some_and(|count| *count > tables))
+                .collect();
+            let unexpected: Vec<&str> = scored
+                .keys()
+                .copied()
+                .filter(|id| !expected.contains(id))
+                .collect();
+            for (what, ids) in [
+                ("never scored", &missing),
+                ("scored in fewer tables than the rest", &short),
+                ("scored more often than the rest", &doubled),
+                ("scored though excluded or never selected", &unexpected),
+            ] {
+                if !ids.is_empty() {
+                    failures.push(format!("{group}: {what}: {}", named(ids)));
+                }
+            }
+
+            let got = expected.len() - missing.len();
+            lines.push(format!(
+                "{group} asked {} scored {got} x{tables} excluded {}",
+                asked.len(),
+                excluded.len()
             ));
-        }
-        for group in scored.keys() {
-            assert!(
-                self.asked.contains_key(group),
-                "{} {table}: scored a group nothing was asked in: {group}",
-                self.name
+            recorded.insert(
+                group.clone(),
+                serde_json::json!({
+                    "asked": asked.len(),
+                    "scored": got,
+                    "tables": tables,
+                    "excluded": excluded.len(),
+                }),
             );
         }
-        println!("  coverage {}, {table}: {}", self.name, line.join("; "));
-        self.coverage.insert(table.to_string(), scored);
+        let strays: BTreeSet<&str> = counts
+            .keys()
+            .map(|(group, _)| group.as_str())
+            .filter(|group| !self.asked.contains_key(*group))
+            .collect();
+        for group in strays {
+            failures.push(format!("scored in {group}, which nothing was asked in"));
+        }
+        (lines, failures, serde_json::Value::Object(recorded))
+    }
+
+    /// Stops counting, prints and records the coverage, and fails the run if
+    /// it is not exactly what was asked less what was excluded.
+    fn close(&mut self) {
+        let counts = tallied().take().unwrap_or_default();
+        let (lines, failures, recorded) = self.coverage(&counts);
+        println!("  coverage {}: {}", self.name, lines.join("; "));
+        self.coverage = Some(recorded);
         self.write();
+        assert!(
+            failures.is_empty(),
+            "{} coverage is not what was asked:\n  {}",
+            self.name,
+            failures.join("\n  ")
+        );
     }
 
     fn write(&self) {
         let Some(path) = &self.record else {
             return;
         };
+        let asked: BTreeMap<&String, usize> = self
+            .asked
+            .iter()
+            .map(|(group, ids)| (group, ids.len()))
+            .collect();
         let body = serde_json::json!({
             "harness": self.name,
             "corpus_sha256": self.digest(),
@@ -324,12 +485,28 @@ impl Shape {
             "seed": self.seed,
             "questions": self.queries.len(),
             "documents": self.documents.len(),
-            "asked": self.asked,
+            "asked": asked,
             "excluded": self.excluded,
             "scored": self.coverage,
         });
         std::fs::write(path, serde_json::to_vec_pretty(&body).expect("serialise"))
             .unwrap_or_else(|error| panic!("writing {}: {error}", path.display()));
+    }
+}
+
+impl Drop for Shape {
+    fn drop(&mut self) {
+        if self.record.is_none() {
+            return;
+        }
+        if std::thread::panicking() {
+            // The run already failed; stop counting so nothing after it in
+            // this process is counted against it, and leave the failure as
+            // the one reported.
+            tallied().take();
+            return;
+        }
+        self.close();
     }
 }
 
@@ -426,7 +603,7 @@ mod tests {
             for document in documents {
                 shape.document(&["key", document]);
             }
-            shape.query(&["group"], &["q1", "a question", answer]);
+            shape.query(&["group"], "q1", &["a question", answer]);
             shape.digest()
         };
         assert_eq!(build(&["x", "y"], "k"), build(&["y", "x"], "k"));
@@ -434,22 +611,68 @@ mod tests {
         assert_ne!(build(&["x", "y"], "k"), build(&["x", "z"], "k"));
     }
 
-    #[test]
-    fn coverage_counts_exclusions_as_asked_and_not_scored() {
+    /// Two queries asked, one excluded, in one group.
+    fn asked() -> Shape {
         let mut shape = Shape::new("test", String::new(), None);
-        shape.query(&["g"], &["q1"]);
-        shape.query(&["g"], &["q2"]);
+        shape.query(&["g"], "q1", &[]);
+        shape.query(&["g"], "q2", &[]);
         shape.exclude(&["g"], "q3", "no judged answer");
-        shape.check("table", [("g", 2)]);
+        shape
+    }
+
+    fn failures(scored: &[(&str, &str, usize)]) -> Vec<String> {
+        let counts = scored
+            .iter()
+            .map(|(group, id, count)| ((group.to_string(), id.to_string()), *count))
+            .collect();
+        asked().coverage(&counts).1
     }
 
     #[test]
-    #[should_panic(expected = "g scored 1 of 3 asked with 1 excluded")]
-    fn a_table_that_lost_a_question_fails() {
-        let mut shape = Shape::new("test", String::new(), None);
-        shape.query(&["g"], &["q1"]);
-        shape.query(&["g"], &["q2"]);
-        shape.exclude(&["g"], "q3", "no judged answer");
-        shape.check("table", [("g", 1)]);
+    fn coverage_counts_exclusions_as_asked_and_not_scored() {
+        // Two tables, each holding both queries: what an arm with an `off`
+        // and a shipped row produces.
+        assert_eq!(
+            failures(&[("g", "q1", 2), ("g", "q2", 2)]),
+            Vec::<String>::new()
+        );
+    }
+
+    /// Each way a table can be over the wrong set -- including the one a
+    /// count cannot see, one query lost and another counted twice.
+    #[test]
+    fn coverage_fails_on_any_query_out_of_place() {
+        let cases: [(&[(&str, &str, usize)], &str); 6] = [
+            (&[("g", "q1", 1)], "never scored: 1 (q2)"),
+            (
+                &[("g", "q1", 3), ("g", "q2", 3), ("g", "q4", 1)],
+                "excluded or never selected: 1 (q4)",
+            ),
+            (
+                &[("g", "q1", 2), ("g", "q2", 2), ("g", "q3", 2)],
+                "excluded or never selected: 1 (q3)",
+            ),
+            (
+                &[("g", "q1", 2), ("g", "q2", 1), ("g", "q5", 2)],
+                "fewer tables than the rest: 1 (q2)",
+            ),
+            // Four scores over two tables, as two clean tables would be --
+            // but q2 is missing from one and q1 is in another twice.
+            (
+                &[("g", "q1", 3), ("g", "q2", 1)],
+                "fewer tables than the rest: 1 (q2)",
+            ),
+            (
+                &[("g", "q1", 1), ("g", "q2", 1), ("h", "q1", 1)],
+                "scored in h, which nothing was asked in",
+            ),
+        ];
+        for (scored, expected) in cases {
+            let found = failures(scored);
+            assert!(
+                found.iter().any(|failure| failure.contains(expected)),
+                "{scored:?}: {found:?}"
+            );
+        }
     }
 }
