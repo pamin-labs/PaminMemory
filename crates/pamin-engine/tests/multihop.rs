@@ -608,6 +608,7 @@ async fn search_answers_questions_that_take_several_steps() {
     }
 
     if std::env::var("REACH").is_ok() {
+        harness::shape::tables(["names only", "with shared names"]);
         reach(&engine, &corpus, "names only").await;
         let entities = Engine::open(
             &workspace,
@@ -630,6 +631,8 @@ async fn search_answers_questions_that_take_several_steps() {
     // `FEATURES_OUT`: every candidate fusion saw, one row each, for fitting a
     // fusion offline. See `features`.
     if let Some(mut dump) = features::Features::from_env("musique") {
+        harness::shape::tables(["features"]);
+        harness::shape::table("features");
         for query in &corpus.queries {
             let hits = engine
                 .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
@@ -696,6 +699,7 @@ async fn search_answers_questions_that_take_several_steps() {
             .expect("load the reranker");
         let labels = reranking::context_labels();
         let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
+        harness::shape::tables(labels.iter().map(|(label, _)| label));
         let mut seeded = 0usize;
         for query in &corpus.queries {
             let hits = engine
@@ -706,7 +710,8 @@ async fn search_answers_questions_that_take_several_steps() {
             let replayed = reranking::replay(&hits, tier);
             let (orders, shown) = reranking::in_context(&hits, &replayed, &mut model, &query.text);
             seeded += shown;
-            for (order, into) in orders.iter().zip(&mut measured) {
+            for ((order, into), (label, _)) in orders.iter().zip(&mut measured).zip(&labels) {
+                harness::shape::table(label);
                 score(into.entry(query.group.clone()).or_default(), query, order);
             }
         }
@@ -728,14 +733,17 @@ async fn search_answers_questions_that_take_several_steps() {
     // made on the path a user gets rather than offline.
     let mut shipped: BTreeMap<String, Scores> = BTreeMap::new();
     let mut graphless: BTreeMap<String, Scores> = BTreeMap::new();
+    harness::shape::tables(["shipped", "without the graph"]);
     for query in &corpus.queries {
-        for (fusion, into) in [
-            (Fusion::default(), &mut shipped),
+        for (table, fusion, into) in [
+            ("shipped", Fusion::default(), &mut shipped),
             (
+                "without the graph",
                 Fusion::default().without(pamin_core::Channel::Graph),
                 &mut graphless,
             ),
         ] {
+            harness::shape::table(table);
             let hits = engine
                 .search_reranked_with(&query.text, DEPTH as u32, DEPTHS, Rerank::default(), fusion)
                 .await
@@ -980,9 +988,15 @@ async fn entities(
     let mut before: BTreeMap<String, Scores> = BTreeMap::new();
     let mut after: BTreeMap<String, Scores> = BTreeMap::new();
     let mut diagnosis = channels::Diagnosis::default();
+    harness::shape::tables(["names only", "with shared names"]);
     for query in &corpus.queries {
         for (searcher, into, observed) in [(base, &mut before, false), (&engine, &mut after, true)]
         {
+            harness::shape::table(if observed {
+                "with shared names"
+            } else {
+                "names only"
+            });
             let hits = searcher
                 .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
                 .await
@@ -1108,6 +1122,7 @@ async fn reach(engine: &Engine, corpus: &Corpus, label: &str) {
     let mut graph_found_missed = 0usize;
     let mut vector_found_missed = 0usize;
     let mut fused_ranks: Vec<usize> = Vec::new();
+    harness::shape::table(label);
     for query in &corpus.queries {
         let hits = engine
             .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())

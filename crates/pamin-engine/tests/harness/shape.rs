@@ -140,8 +140,9 @@ pub struct Excluded {
     pub reason: String,
 }
 
-/// Every `(group, query id)` scored since the open shape was published, and
-/// how many times.
+/// What the open shape has counted since it was published: the tables the
+/// running arm said it would print, the one it is scoring into now, and how
+/// many times each `(table, group, query id)` was scored.
 ///
 /// Process-wide rather than a field a harness threads through, because the
 /// places a query is scored are a harness's scoring function and the
@@ -149,9 +150,21 @@ pub struct Excluded {
 /// harness calls [`tally`] once, where its answer key is read, and every arm
 /// is covered by construction. `None` while no shape is open, so unit tests
 /// that score nothing published are not counted.
-static TALLY: Mutex<Option<BTreeMap<(String, String), usize>>> = Mutex::new(None);
+///
+/// By table because a count per query cannot see a table that never ran: an
+/// arm that prints three tables and fills two scores every query twice, which
+/// is as uniform as three. Each arm names its tables with [`tables`] before
+/// it scores, and [`table`] says which one a score goes to.
+#[derive(Default)]
+struct Tally {
+    declared: BTreeSet<String>,
+    current: String,
+    counts: BTreeMap<(String, String, String), usize>,
+}
 
-fn tallied() -> std::sync::MutexGuard<'static, Option<BTreeMap<(String, String), usize>>> {
+static TALLY: Mutex<Option<Tally>> = Mutex::new(None);
+
+fn tallied() -> std::sync::MutexGuard<'static, Option<Tally>> {
     TALLY.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -206,6 +219,11 @@ fn arm(settings: &[String]) -> String {
     format!("arm-{short}")
 }
 
+/// Whether anything at all was scored into `table`.
+fn filled_any(tally: &Tally, table: &str) -> bool {
+    tally.counts.keys().any(|(into, ..)| into == table)
+}
+
 /// One part of a record's file name, with anything a file system might
 /// object to replaced.
 fn file_part(part: &str) -> String {
@@ -220,13 +238,31 @@ fn file_part(part: &str) -> String {
         .collect()
 }
 
-/// Records that query `id` was scored once in `group`. Called where a harness
-/// reads its answer key, so a query graded is a query counted.
+/// Declares tables the running arm will score every query into, before it
+/// scores any. A declared table nothing is scored into fails the run, and so
+/// does a score into a table never declared.
+pub fn tables<S: ToString>(names: impl IntoIterator<Item = S>) {
+    if let Some(tally) = tallied().as_mut() {
+        tally
+            .declared
+            .extend(names.into_iter().map(|name| name.to_string()));
+    }
+}
+
+/// Names the table the scores that follow are counted toward.
+pub fn table(name: impl ToString) {
+    if let Some(tally) = tallied().as_mut() {
+        tally.current = name.to_string();
+    }
+}
+
+/// Records that query `id` was scored once in `group`, in the current
+/// [`table`]. Called where a harness reads its answer key, so a query graded
+/// is a query counted.
 pub fn tally(group: &str, id: &str) {
-    if let Some(counts) = tallied().as_mut() {
-        *counts
-            .entry((group.to_string(), id.to_string()))
-            .or_default() += 1;
+    if let Some(tally) = tallied().as_mut() {
+        let key = (tally.current.clone(), group.to_string(), id.to_string());
+        *tally.counts.entry(key).or_default() += 1;
     }
 }
 
@@ -435,28 +471,43 @@ impl Shape {
             "another harness test is already counting coverage in this process; \
              run one at a time with --exact"
         );
-        *open = Some(BTreeMap::new());
+        *open = Some(Tally::default());
     }
 
-    /// Checks `counts` -- `(group, id)` to times scored -- against what was
-    /// asked: per group, the queries selected and not excluded, each scored
-    /// the same number of times, and nothing else.
+    /// Checks what `tally` counted against what was asked: every declared
+    /// table holds, per group, each query selected and not excluded exactly
+    /// once, and nothing else; and nothing was scored outside them.
     ///
-    /// The same number of times because an arm scores each query into every
-    /// table it prints -- three tiers, or every channel taken away in turn --
-    /// so a query with fewer is missing from some table and one with more was
-    /// counted twice in one. Either way that table's mean is not over the set
-    /// the digest names. Ids rather than counts, because a table that lost one
-    /// query and counted another twice has the right count.
+    /// Ids rather than counts, because a table that lost one query and
+    /// counted another twice has the right count. Per table, because a count
+    /// per query cannot see a table that never ran.
     ///
     /// Returns a line per group, and every failure found.
-    fn coverage(
-        &self,
-        counts: &BTreeMap<(String, String), usize>,
-    ) -> (Vec<String>, Vec<String>, serde_json::Value) {
+    fn coverage(&self, tally: &Tally) -> (Vec<String>, Vec<String>, serde_json::Value) {
         let mut lines = Vec::new();
         let mut failures = Vec::new();
         let mut recorded = serde_json::Map::new();
+        if tally.declared.is_empty() {
+            failures.push("the arm declared no table, so nothing it scored can be checked".into());
+        }
+        let filled: BTreeSet<&str> = tally
+            .counts
+            .keys()
+            .map(|(table, ..)| table.as_str())
+            .collect();
+        for table in &tally.declared {
+            if !filled.contains(table.as_str()) {
+                failures.push(format!("{table}: declared and never scored into"));
+            }
+        }
+        for table in filled {
+            if !tally.declared.contains(table) {
+                failures.push(format!(
+                    "scored into {table:?}, which the arm never declared"
+                ));
+            }
+        }
+
         for (group, asked) in &self.asked {
             let excluded: BTreeSet<&str> = self
                 .excluded
@@ -464,93 +515,88 @@ impl Shape {
                 .filter(|it| &it.group == group)
                 .map(|it| it.id.as_str())
                 .collect();
-            let scored: BTreeMap<&str, usize> = counts
-                .iter()
-                .filter(|((scored_in, _), _)| scored_in == group)
-                .map(|((_, id), count)| (id.as_str(), *count))
-                .collect();
-            let expected: Vec<&str> = asked
+            let expected: BTreeSet<&str> = asked
                 .iter()
                 .map(String::as_str)
                 .filter(|id| !excluded.contains(id))
                 .collect();
-
-            // How many tables an arm scores each query into: the commonest
-            // count, the larger on a tie.
-            let mut frequency: BTreeMap<usize, usize> = BTreeMap::new();
-            for id in &expected {
-                if let Some(count) = scored.get(id) {
-                    *frequency.entry(*count).or_default() += 1;
+            // Scored exactly once in every declared table.
+            let mut whole = expected.clone();
+            for table in &tally.declared {
+                let scored: BTreeMap<&str, usize> = tally
+                    .counts
+                    .iter()
+                    .filter(|((into, of, _), _)| into == table && of == group)
+                    .map(|((_, _, id), count)| (id.as_str(), *count))
+                    .collect();
+                whole.retain(|id| scored.get(id) == Some(&1));
+                if !filled_any(tally, table) {
+                    // Reported once above, not once per group.
+                    continue;
                 }
-            }
-            let tables = frequency
-                .iter()
-                .max_by(|a, b| a.1.cmp(b.1).then(a.0.cmp(b.0)))
-                .map_or(0, |(count, _)| *count);
-
-            let missing: Vec<&str> = expected
-                .iter()
-                .copied()
-                .filter(|id| !scored.contains_key(id))
-                .collect();
-            let short: Vec<&str> = expected
-                .iter()
-                .copied()
-                .filter(|id| scored.get(id).is_some_and(|count| *count < tables))
-                .collect();
-            let doubled: Vec<&str> = expected
-                .iter()
-                .copied()
-                .filter(|id| scored.get(id).is_some_and(|count| *count > tables))
-                .collect();
-            let unexpected: Vec<&str> = scored
-                .keys()
-                .copied()
-                .filter(|id| !expected.contains(id))
-                .collect();
-            for (what, ids) in [
-                ("never scored", &missing),
-                ("scored in fewer tables than the rest", &short),
-                ("scored more often than the rest", &doubled),
-                ("scored though excluded or never selected", &unexpected),
-            ] {
-                if !ids.is_empty() {
-                    failures.push(format!("{group}: {what}: {}", named(ids)));
+                let missing: Vec<&str> = expected
+                    .iter()
+                    .copied()
+                    .filter(|id| !scored.contains_key(id))
+                    .collect();
+                let doubled: Vec<&str> = scored
+                    .iter()
+                    .filter(|(id, count)| expected.contains(*id) && **count > 1)
+                    .map(|(id, _)| *id)
+                    .collect();
+                let unexpected: Vec<&str> = scored
+                    .keys()
+                    .copied()
+                    .filter(|id| !expected.contains(id))
+                    .collect();
+                for (what, ids) in [
+                    ("never scored", &missing),
+                    ("scored more than once", &doubled),
+                    ("scored though excluded or never selected", &unexpected),
+                ] {
+                    if !ids.is_empty() {
+                        failures.push(format!("{table}, {group}: {what}: {}", named(ids)));
+                    }
                 }
             }
 
-            let got = expected.len() - missing.len();
             lines.push(format!(
-                "{group} asked {} scored {got} x{tables} excluded {}",
+                "{group} asked {} scored {} x{} tables excluded {}",
                 asked.len(),
+                whole.len(),
+                tally.declared.len(),
                 excluded.len()
             ));
             recorded.insert(
                 group.clone(),
                 serde_json::json!({
                     "asked": asked.len(),
-                    "scored": got,
-                    "tables": tables,
+                    "scored": whole.len(),
                     "excluded": excluded.len(),
                 }),
             );
         }
-        let strays: BTreeSet<&str> = counts
+        let strays: BTreeSet<&str> = tally
+            .counts
             .keys()
-            .map(|(group, _)| group.as_str())
+            .map(|(_, group, _)| group.as_str())
             .filter(|group| !self.asked.contains_key(*group))
             .collect();
         for group in strays {
             failures.push(format!("scored in {group}, which nothing was asked in"));
         }
-        (lines, failures, serde_json::Value::Object(recorded))
+        let recorded = serde_json::json!({
+            "tables": tally.declared,
+            "groups": recorded,
+        });
+        (lines, failures, recorded)
     }
 
     /// Stops counting, prints and records the coverage, and fails the run if
     /// it is not exactly what was asked less what was excluded.
     fn close(&mut self) {
-        let counts = tallied().take().unwrap_or_default();
-        let (lines, failures, recorded) = self.coverage(&counts);
+        let tally = tallied().take().unwrap_or_default();
+        let (lines, failures, recorded) = self.coverage(&tally);
         println!("  coverage {}: {}", self.name, lines.join("; "));
         self.coverage = Some(recorded);
         self.write();
@@ -737,15 +783,24 @@ mod tests {
         shape
     }
 
-    /// How often each query was scored: group, id, count.
-    type Scored<'a> = &'a [(&'a str, &'a str, usize)];
+    /// How often each query was scored: table, group, id, count.
+    type Scored<'a> = &'a [(&'a str, &'a str, &'a str, usize)];
 
-    fn failures(scored: Scored<'_>) -> Vec<String> {
-        let counts = scored
-            .iter()
-            .map(|(group, id, count)| ((group.to_string(), id.to_string()), *count))
-            .collect();
-        asked().coverage(&counts).1
+    fn failures(declared: &[&str], scored: Scored<'_>) -> Vec<String> {
+        let tally = Tally {
+            declared: declared.iter().map(|table| table.to_string()).collect(),
+            current: String::new(),
+            counts: scored
+                .iter()
+                .map(|(table, group, id, count)| {
+                    (
+                        (table.to_string(), group.to_string(), id.to_string()),
+                        *count,
+                    )
+                })
+                .collect(),
+        };
+        asked().coverage(&tally).1
     }
 
     #[test]
@@ -753,7 +808,15 @@ mod tests {
         // Two tables, each holding both queries: what an arm with an `off`
         // and a shipped row produces.
         assert_eq!(
-            failures(&[("g", "q1", 2), ("g", "q2", 2)]),
+            failures(
+                &["off", "on"],
+                &[
+                    ("off", "g", "q1", 1),
+                    ("off", "g", "q2", 1),
+                    ("on", "g", "q1", 1),
+                    ("on", "g", "q2", 1),
+                ]
+            ),
             Vec::<String>::new()
         );
     }
@@ -795,33 +858,72 @@ mod tests {
     /// count cannot see, one query lost and another counted twice.
     #[test]
     fn coverage_fails_on_any_query_out_of_place() {
-        let cases: [(Scored<'_>, &str); 6] = [
-            (&[("g", "q1", 1)], "never scored: 1 (q2)"),
+        let cases: [(&[&str], Scored<'_>, &str); 9] = [
+            (&["t"], &[("t", "g", "q1", 1)], "t, g: never scored: 1 (q2)"),
             (
-                &[("g", "q1", 3), ("g", "q2", 3), ("g", "q4", 1)],
+                &["t"],
+                &[
+                    ("t", "g", "q1", 1),
+                    ("t", "g", "q2", 1),
+                    ("t", "g", "q4", 1),
+                ],
                 "excluded or never selected: 1 (q4)",
             ),
             (
-                &[("g", "q1", 2), ("g", "q2", 2), ("g", "q3", 2)],
+                &["t"],
+                &[
+                    ("t", "g", "q1", 1),
+                    ("t", "g", "q2", 1),
+                    ("t", "g", "q3", 1),
+                ],
                 "excluded or never selected: 1 (q3)",
             ),
             (
-                &[("g", "q1", 2), ("g", "q2", 1), ("g", "q5", 2)],
-                "fewer tables than the rest: 1 (q2)",
+                &["t"],
+                &[("t", "g", "q1", 2), ("t", "g", "q2", 1)],
+                "t, g: scored more than once: 1 (q1)",
             ),
             // Four scores over two tables, as two clean tables would be --
-            // but q2 is missing from one and q1 is in another twice.
+            // but q2 is missing from one and q1 is in it twice.
             (
-                &[("g", "q1", 3), ("g", "q2", 1)],
-                "fewer tables than the rest: 1 (q2)",
+                &["a", "b"],
+                &[
+                    ("a", "g", "q1", 1),
+                    ("a", "g", "q2", 1),
+                    ("b", "g", "q1", 2),
+                ],
+                "b, g: never scored: 1 (q2)",
+            ),
+            // A whole table that never ran: every query scored once, the same
+            // number of times as every other, which a count cannot tell from
+            // an arm that has one table.
+            (
+                &["off", "on"],
+                &[("off", "g", "q1", 1), ("off", "g", "q2", 1)],
+                "on: declared and never scored into",
             ),
             (
-                &[("g", "q1", 1), ("g", "q2", 1), ("h", "q1", 1)],
+                &["a"],
+                &[
+                    ("a", "g", "q1", 1),
+                    ("a", "g", "q2", 1),
+                    ("b", "g", "q1", 1),
+                ],
+                "scored into \"b\", which the arm never declared",
+            ),
+            (
+                &["a"],
+                &[
+                    ("a", "g", "q1", 1),
+                    ("a", "g", "q2", 1),
+                    ("a", "h", "q1", 1),
+                ],
                 "scored in h, which nothing was asked in",
             ),
+            (&[], &[], "declared no table"),
         ];
-        for (scored, expected) in cases {
-            let found = failures(scored);
+        for (declared, scored, expected) in cases {
+            let found = failures(declared, scored);
             assert!(
                 found.iter().any(|failure| failure.contains(expected)),
                 "{scored:?}: {found:?}"

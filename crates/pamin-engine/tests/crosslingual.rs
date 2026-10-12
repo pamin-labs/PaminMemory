@@ -360,7 +360,8 @@ impl Query<'_> {
     /// same ranking scored now.
     ///
     /// Every arm that grades a query reads its answer key here, once per
-    /// group, so this is where the run's coverage is counted.
+    /// group, so this is where the run's coverage is counted -- into the
+    /// table the arm last named with `harness::shape::table`.
     fn relevant(&self, group: &str) -> (HashSet<&str>, HashSet<&str>) {
         harness::shape::tally(group, &self.id());
         let own = self.question.answers[self.language].as_str();
@@ -1259,6 +1260,18 @@ async fn report_channels(
     let variants = channels::variants();
     let mut offline: Vec<BTreeMap<String, Scores>> =
         variants.iter().map(|_| BTreeMap::new()).collect();
+    harness::shape::tables(
+        ["fused", "by language", "dense by language"]
+            .map(String::from)
+            .into_iter()
+            .chain(channels::CHANNELS.iter().map(channels::alone_table))
+            .chain(channels::CHANNELS.iter().map(channels::without_table))
+            .chain(
+                variants
+                    .iter()
+                    .map(|(label, _)| channels::variant_table(label)),
+            ),
+    );
 
     for query in queries {
         let hits = engine
@@ -1272,6 +1285,7 @@ async fn report_channels(
         let each = channels::each_alone(&hits);
         for channel in channels::CHANNELS {
             let ranking = each.get(&channel).map(Vec::as_slice).unwrap_or(&[]);
+            harness::shape::table(channels::alone_table(&channel));
             score(alone.entry(channel).or_default(), query, ranking);
         }
         for missing in channels::CHANNELS {
@@ -1279,19 +1293,23 @@ async fn report_channels(
                 &hits,
                 &channels::effective_fusion(&hits, &Fusion::default()).without(missing),
             );
+            harness::shape::table(channels::without_table(&missing));
             score(without.entry(missing).or_default(), query, &ranking);
         }
 
         let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
+        harness::shape::table("fused");
         score(&mut whole, query, &ranked);
 
-        for ((_, fusion), into) in variants.iter().zip(&mut offline) {
+        for ((label, fusion), into) in variants.iter().zip(&mut offline) {
+            harness::shape::table(channels::variant_table(label));
             score(into, query, &channels::as_if(&hits, fusion));
         }
 
         // The per-language table, on a key the two-group map does not use, so
         // nothing that indexes that map by bare group name is disturbed.
         let mut one = BTreeMap::new();
+        harness::shape::table("by language");
         score(&mut one, query, &ranked);
         for (group, scores) in one {
             by_language
@@ -1306,6 +1324,7 @@ async fn report_channels(
         // not fusing*, and those are different questions.
         if let Some(vector) = each.get(&Channel::Vector) {
             let mut one = BTreeMap::new();
+            harness::shape::table("dense by language");
             score(&mut one, query, vector);
             for (group, scores) in one {
                 dense_by_language
@@ -1643,6 +1662,8 @@ fn the_model_reaches_across_languages() {
     let vectors = embed_corpus(&mut embedder, &corpus, &home, width);
 
     let mut groups = BTreeMap::new();
+    harness::shape::tables(["embedding space"]);
+    harness::shape::table("embedding space");
     let started = std::time::Instant::now();
     for query in &queries {
         let vector = unit(embedder.embed_query(query.text()).expect("embed the query"));
@@ -1907,7 +1928,9 @@ async fn search_reaches_across_languages() {
         println!("{header}");
         println!("  {}", "-".repeat(header.len() - 3));
         let mut measured: Vec<(String, BTreeMap<String, Scores>)> = Vec::new();
+        harness::shape::tables(settings.iter().map(|(label, _)| label));
         for (label, fusion) in settings {
+            harness::shape::table(&label);
             let groups = run(&engine, &queries, Route::Fused(fusion)).await;
             let mut row = format!("  {label:<20}");
             for group in GROUPS {
@@ -1957,6 +1980,8 @@ async fn search_reaches_across_languages() {
     // can be kept in one fold.
     if let Some(mut dump) = features::Features::from_env("xquad-r") {
         const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        harness::shape::tables(["features"]);
+        harness::shape::table("features");
         for query in &queries {
             let hits = engine
                 .search_fused(query.text(), WIDE, DEPTHS, Fusion::default())
@@ -2080,7 +2105,10 @@ async fn search_reaches_across_languages() {
     // model.
     if let Ok(value) = std::env::var("AT_LIMIT") {
         let limit: u32 = value.parse().expect("AT_LIMIT is a number of results");
-        for tier in [Rerank::Off, Rerank::default()] {
+        let tiers = [Rerank::Off, Rerank::default()];
+        harness::shape::tables(tiers.map(|tier| tier.name()));
+        for tier in tiers {
+            harness::shape::table(tier.name());
             let started = std::time::Instant::now();
             let _ = run(&engine, &queries, Route::AtLimit(tier, limit)).await;
             println!(
@@ -2151,7 +2179,9 @@ async fn search_reaches_across_languages() {
         // knowing what each tier cost in this same run.
         let mut priced: Vec<(Rerank, f64, BTreeMap<String, Scores>)> = Vec::new();
 
+        harness::shape::tables(tiers.iter().map(|tier| tier.name()));
         for tier in tiers {
+            harness::shape::table(tier.name());
             let started = std::time::Instant::now();
             let groups = run(&engine, &queries, Route::Shipped(tier)).await;
             let cost = started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64;
@@ -2212,6 +2242,11 @@ async fn search_reaches_across_languages() {
         return;
     }
 
+    harness::shape::tables(["shipped"]);
+    if named == DEFAULT_PROFILE {
+        harness::shape::tables(["fusion alone"]);
+    }
+    harness::shape::table("shipped");
     let started = std::time::Instant::now();
     let groups = run(&engine, &queries, Route::Shipped(Rerank::default())).await;
     report(
@@ -2226,6 +2261,7 @@ async fn search_reaches_across_languages() {
     // minutes above, and without it nothing here notices the reranker going
     // missing -- see `RERANK_IS_WORTH`.
     if named == DEFAULT_PROFILE {
+        harness::shape::table("fusion alone");
         let alone = run(&engine, &queries, Route::Shipped(Rerank::Off)).await;
         let (with, without) = (
             groups["cross_lingual"].mean_ndcg(),
@@ -2356,7 +2392,9 @@ async fn labels(engine: &Engine, queries: &[Query<'_>], named: &str) {
 
     // Measured in this run, so the saving below is priced against what these
     // tiers cost here rather than against a figure from another run.
+    harness::shape::tables(LADDER.map(|tier| tier.name()));
     for (at, tier) in LADDER.iter().enumerate() {
+        harness::shape::table(tier.name());
         let started = std::time::Instant::now();
         let groups = run(engine, queries, Route::Shipped(*tier)).await;
         cost[at] = started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64;
@@ -2543,6 +2581,8 @@ async fn calibration(engine: &Engine, queries: &[Query<'_>], named: &str) {
     let mut fit: BTreeMap<String, Vec<(f64, bool)>> = BTreeMap::new();
     let mut test: BTreeMap<String, Vec<(f64, bool)>> = BTreeMap::new();
 
+    harness::shape::tables(["calibration"]);
+    harness::shape::table("calibration");
     for (at, query) in queries.iter().enumerate() {
         let hits = engine
             .search_reranked(query.text(), DEPTH as u32, DEPTHS, tier)
@@ -2918,6 +2958,17 @@ async fn gate_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
     let mut dropped_relative = vec![0usize; RELATIVE.len()];
     let mut reranked_total = 0usize;
 
+    let by_coverage_table = |at: usize| format!("decline at coverage >= {}", COVERAGE[at]);
+    let by_absolute_table = |at: usize| format!("keep scores >= {}", ABSOLUTE[at]);
+    let by_relative_table = |at: usize| format!("keep within {} of the best", RELATIVE[at]);
+    harness::shape::tables(
+        ["reranker off", "ungated"]
+            .map(String::from)
+            .into_iter()
+            .chain((0..COVERAGE.len()).map(by_coverage_table))
+            .chain((0..ABSOLUTE.len()).map(by_absolute_table))
+            .chain((0..RELATIVE.len()).map(by_relative_table)),
+    );
     for query in queries {
         let off = engine
             .search_reranked(query.text(), DEPTH as u32, DEPTHS, Rerank::Off)
@@ -2933,7 +2984,9 @@ async fn gate_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
         };
         let off_order = names(&off);
         let on_order = names(&on);
+        harness::shape::table("reranker off");
         score(&mut plain, query, &off_order);
+        harness::shape::table("ungated");
         score(&mut ungated, query, &on_order);
 
         // The signal, read off the ordering the gate would see: the gate runs
@@ -2963,6 +3016,7 @@ async fn gate_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
             if decline {
                 declined[at] += 1;
             }
+            harness::shape::table(by_coverage_table(at));
             score(
                 &mut by_coverage[at],
                 query,
@@ -2992,11 +3046,13 @@ async fn gate_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
         for (at, cut) in ABSOLUTE.iter().enumerate() {
             let kept = keeping(*cut);
             dropped_absolute[at] += on_order.len() - kept.len();
+            harness::shape::table(by_absolute_table(at));
             score(&mut by_absolute[at], query, &kept);
         }
         for (at, margin) in RELATIVE.iter().enumerate() {
             let kept = keeping(best - *margin);
             dropped_relative[at] += on_order.len() - kept.len();
+            harness::shape::table(by_relative_table(at));
             score(&mut by_relative[at], query, &kept);
         }
     }
@@ -3123,6 +3179,13 @@ async fn pairs_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
     let mut pairs = vec![0usize; CAPS.len()];
     let mut ran = 0usize;
 
+    let capped_table = |at: usize| format!("at most {} candidates", CAPS[at]);
+    harness::shape::tables(
+        ["fused only", "shipped"]
+            .map(String::from)
+            .into_iter()
+            .chain((0..CAPS.len()).map(capped_table)),
+    );
     for query in queries {
         let off = engine
             .search_reranked(query.text(), DEPTH as u32, DEPTHS, Rerank::Off)
@@ -3135,7 +3198,9 @@ async fn pairs_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
 
         let fused: Vec<String> = off.iter().map(|hit| hit.topic.clone()).collect();
         let shipped_order: Vec<String> = on.iter().map(|hit| hit.topic.clone()).collect();
+        harness::shape::table("fused only");
         score(&mut fused_only, query, &fused);
+        harness::shape::table("shipped");
         score(&mut shipped, query, &shipped_order);
 
         // What the model scored each candidate it saw, keyed by topic because
@@ -3178,6 +3243,7 @@ async fn pairs_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
         }
 
         for (at, cap) in CAPS.iter().enumerate() {
+            harness::shape::table(capped_table(at));
             if !pass_ran {
                 score(&mut capped[at], query, &fused);
                 continue;
@@ -3292,6 +3358,7 @@ async fn rerank_rules(engine: &Engine, queries: &[Query<'_>], named: &str) {
     let tier = Rerank::default();
     let rules = reranking::rules();
     let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); rules.len()];
+    harness::shape::tables(rules.iter().map(|(label, _)| label));
     for query in queries {
         let hits = engine
             .search_reranked(query.text(), WIDE, DEPTHS, tier)
@@ -3299,7 +3366,8 @@ async fn rerank_rules(engine: &Engine, queries: &[Query<'_>], named: &str) {
             .expect("search");
         channels::enough_room(&hits, WIDE);
         let replayed = reranking::replay(&hits, tier);
-        for ((_, rule), into) in rules.iter().zip(&mut measured) {
+        for ((label, rule), into) in rules.iter().zip(&mut measured) {
+            harness::shape::table(label);
             score(into, query, &replayed.order(*rule));
         }
     }
@@ -3328,6 +3396,7 @@ async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query<'_>], 
         .expect("load the reranker");
     let labels = reranking::context_labels();
     let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
+    harness::shape::tables(labels.iter().map(|(label, _)| label));
     for query in queries {
         let hits = engine
             .search_reranked(query.text(), WIDE, DEPTHS, tier)
@@ -3336,7 +3405,8 @@ async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query<'_>], 
         channels::enough_room(&hits, WIDE);
         let replayed = reranking::replay(&hits, tier);
         let (orders, _) = reranking::in_context(&hits, &replayed, &mut model, query.text());
-        for (order, into) in orders.iter().zip(&mut measured) {
+        for ((order, into), (label, _)) in orders.iter().zip(&mut measured).zip(&labels) {
+            harness::shape::table(label);
             score(into, query, order);
         }
     }
