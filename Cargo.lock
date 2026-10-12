@@ -1903,6 +1903,7 @@ dependencies = [
  "uuid",
  "whatlang",
  "windows-sys 0.61.2",
+ "yada",
  "zvec-rust",
 ]
 
@@ -3847,6 +3848,12 @@ dependencies = [
  "libc",
  "rustix",
 ]
+
+[[package]]
+name = "yada"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "53c3bb06259642a57b4ea1bf2a8260f7d94b7b78a096c46f193318918d925f61"
 
 [[package]]
 name = "yoke"

@@ -58,6 +58,10 @@ fastembed = { version = "6", default-features = false, features = [
 # embedder that share a vocabulary can share one loaded copy of it; see
 # `pamin-index`'s `tokenizer.rs`.
 tokenizers = { version = "0.23.2", default-features = false, features = ["onig"] }
+# The double-array trie a Unigram vocabulary is held in, in place of the hash
+# map per trie node `tokenizers` builds: 280 MiB for BGE-M3's vocabulary. Pure
+# Rust with no dependencies of its own; see `pamin-index`'s `tokenizer.rs`.
+yada = "0.7"
 # The inference runtime `fastembed` already runs on, named directly because the
 # rerankers and BGE-M3 run their own sessions on it (see `pamin-index`'s
 # `encoder.rs`) and to ask it for a GPU execution provider. Pinned to the exact
