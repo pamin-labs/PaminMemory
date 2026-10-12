@@ -106,3 +106,14 @@ lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+
+# ONNX Runtime 1.31.0 under the `ort` 2.0.0-rc.13 API. The newest `ort`
+# release still downloads 1.28.0, and `ort`'s main branch, which moved to
+# 1.31.0, changed the Rust API that `fastembed` builds on. The ONNX Runtime C
+# API is backward compatible, so the vendored copy is rc.13 unchanged except
+# for `build/download/dist.tsv`, taken from `ort` main at 75021e8 (pyke's
+# 1.31.0 binaries, each pinned by SHA-256). Patching `ort-sys` moves
+# `fastembed` onto it too, so one runtime is linked. Drop this once an `ort`
+# release ships 1.31 and `fastembed` follows it.
+[patch.crates-io]
+ort-sys = { path = "vendor/ort-sys" }
