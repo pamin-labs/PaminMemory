@@ -1591,7 +1591,7 @@ fn the_model_reaches_across_languages() {
     let queries = corpus.queries();
     let (named, profile) = profile();
     let mut shape = corpus.shape(&queries);
-    shape.publish("the_model_reaches_across_languages", &named, "shipped");
+    shape.publish("the_model_reaches_across_languages", &named, &[]);
     println!(
         "  {} sentences in {} languages, {} queries, profile {named}",
         corpus.sentences.len(),
@@ -1795,11 +1795,7 @@ async fn search_reaches_across_languages() {
     let queries = corpus.queries();
     let (named, profile) = profile();
     let mut shape = corpus.shape(&queries);
-    shape.publish(
-        "search_reaches_across_languages",
-        &named,
-        &harness::shape::arm(&ARMS),
-    );
+    shape.publish("search_reaches_across_languages", &named, &ARMS);
 
     // A named workspace is reused; an unnamed one is thrown away. Indexing
     // thirteen thousand sentences is minutes, and a harness that pays that on
