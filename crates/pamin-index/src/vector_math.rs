@@ -2,8 +2,9 @@
 //!
 //! One kernel per instruction set, chosen at run time on x86-64 so a single
 //! binary uses AVX-512 or AVX2 where the CPU has them. NEON is part of every
-//! aarch64 target, Linux and Apple alike, so it needs no detection; macOS uses
-//! Accelerate instead, which a measurement on an M4 found the fastest there.
+//! aarch64 target, Linux and Apple alike, so it needs no detection. On an M4
+//! the NEON kernel beat Accelerate's `cblas_sdot` at 1024 dimensions (5.25 µs
+//! against 6.00 µs per 100 rows, p50), so Apple silicon uses it too.
 //! Every other target gets a portable reduction over eight independent
 //! lanes, which the compiler vectorizes for whatever SIMD the target has.
 //!
@@ -11,30 +12,15 @@
 //! result can differ from one in the last bits. Splitting the sum across
 //! lanes makes it closer to the exact value, not further.
 
-// Apple's Accelerate uses SIMD for this small host-side operation; moving
-// each shortlist to a GPU costs more than the arithmetic on this workload.
-#[cfg(target_os = "macos")]
-#[link(name = "Accelerate", kind = "framework")]
-unsafe extern "C" {
-    fn cblas_sdot(n: i32, x: *const f32, incx: i32, y: *const f32, incy: i32) -> f32;
-}
-
 /// The dot product of the dimensions `left` and `right` share.
 pub(crate) fn dot(left: &[f32], right: &[f32]) -> f32 {
     let count = left.len().min(right.len());
     let (left, right) = (&left[..count], &right[..count]);
-    #[cfg(target_os = "macos")]
-    {
-        let count = i32::try_from(count).expect("vector dimensions fit i32");
-        // SAFETY: both slices contain `count` contiguous f32 values, and the
-        // framework reads them only for this synchronous call.
-        unsafe { cblas_sdot(count, left.as_ptr(), 1, right.as_ptr(), 1) }
-    }
-    #[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
+    #[cfg(target_arch = "aarch64")]
     {
         neon::dot(left, right)
     }
-    #[cfg(all(target_arch = "x86_64", not(target_os = "macos")))]
+    #[cfg(target_arch = "x86_64")]
     {
         if std::arch::is_x86_feature_detected!("avx512f") {
             // SAFETY: the CPU reports AVX-512F.
@@ -47,7 +33,7 @@ pub(crate) fn dot(left: &[f32], right: &[f32]) -> f32 {
         }
         lanes(left, right)
     }
-    #[cfg(not(any(target_os = "macos", target_arch = "aarch64", target_arch = "x86_64")))]
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     {
         lanes(left, right)
     }
@@ -55,7 +41,7 @@ pub(crate) fn dot(left: &[f32], right: &[f32]) -> f32 {
 
 /// Eight running sums rather than one, so no addition waits on the one before
 /// it and the compiler is free to keep them in a vector register.
-#[cfg_attr(any(target_os = "macos", target_arch = "aarch64"), allow(dead_code))]
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 fn lanes(left: &[f32], right: &[f32]) -> f32 {
     let mut sums = [0.0f32; 8];
     let (left_chunks, left_tail) = left.as_chunks::<8>();
@@ -71,7 +57,7 @@ fn lanes(left: &[f32], right: &[f32]) -> f32 {
 
 /// Both kernels take slices of equal length and keep four accumulators, so
 /// each fused multiply-add is independent of the previous three.
-#[cfg(all(target_arch = "x86_64", not(target_os = "macos")))]
+#[cfg(target_arch = "x86_64")]
 mod x86 {
     use std::arch::x86_64::*;
 
@@ -162,7 +148,7 @@ mod x86 {
     }
 }
 
-#[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
+#[cfg(target_arch = "aarch64")]
 mod neon {
     use std::arch::aarch64::*;
 
@@ -240,9 +226,8 @@ mod tests {
                 .map(|(a, b)| f64::from(*a) * f64::from(*b))
                 .sum();
             let tolerance = 1e-5 * (count.max(1) as f64).sqrt();
-            #[cfg_attr(target_os = "macos", allow(unused_mut))]
             let mut kernels = vec![("dot", dot(&left, &right)), ("lanes", lanes(&left, &right))];
-            #[cfg(all(target_arch = "x86_64", not(target_os = "macos")))]
+            #[cfg(target_arch = "x86_64")]
             {
                 if std::arch::is_x86_feature_detected!("avx512f") {
                     // SAFETY: the CPU reports AVX-512F.
@@ -255,7 +240,7 @@ mod tests {
                     kernels.push(("avx2", unsafe { x86::dot_avx2(&left, &right) }));
                 }
             }
-            #[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
+            #[cfg(target_arch = "aarch64")]
             kernels.push(("neon", neon::dot(&left, &right)));
             for (name, value) in kernels {
                 let error = (f64::from(value) - exact).abs();
