@@ -117,6 +117,19 @@ fn sample() -> Option<usize> {
     sample
 }
 
+/// The variables that pick an arm of the test, for the name of the run's
+/// shape record.
+const ARMS: [&str; 8] = [
+    "PASSAGES",
+    "ROUTES",
+    "REACH",
+    "ENTITIES",
+    "FEATURES_OUT",
+    "CHANNELS",
+    "DEPTH_VARIANTS",
+    "CONTEXT",
+];
+
 /// How deep to retrieve, so recall@50 can be scored.
 const DEPTH: usize = RECALL_AT + 1;
 
@@ -411,11 +424,14 @@ fn score(into: &mut Scores, query: &Query, ranked: &[String]) {
 async fn search_answers_questions_that_take_several_steps() {
     let corpus = Corpus::load();
     corpus.describe();
-    let mut shape = corpus.shape();
-    shape.publish();
-
     let named = std::env::var("PAMIN_PROFILE").unwrap_or_else(|_| DEFAULT_PROFILE.into());
     let profile = Profile::parse(&named).unwrap_or_else(|| panic!("unknown profile {named}"));
+    let mut shape = corpus.shape();
+    shape.publish(
+        "search_answers_questions_that_take_several_steps",
+        &named,
+        &harness::shape::arm(&ARMS),
+    );
     let home = std::env::var("PAMIN_EVAL_HOME").ok();
     let scratch = home
         .is_none()
