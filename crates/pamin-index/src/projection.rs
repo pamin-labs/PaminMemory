@@ -26,6 +26,7 @@ use zvec_rust::{
 
 use crate::error::{IndexError, Result};
 use crate::segmentation::Segmenter;
+use crate::vector_math::dot;
 
 const COLLECTION: &str = "memories";
 
@@ -1985,40 +1986,6 @@ fn jittered(wait: Duration) -> Duration {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.subsec_nanos());
     wait / 2 + (wait / 2).mul_f64(f64::from(nanos % 1_000) / 1_000.0)
-}
-
-// Apple's Accelerate uses SIMD for this small host-side operation; moving
-// each shortlist to a GPU costs more than the arithmetic on this workload.
-#[cfg(target_os = "macos")]
-#[link(name = "Accelerate", kind = "framework")]
-unsafe extern "C" {
-    fn cblas_sdot(n: i32, x: *const f32, incx: i32, y: *const f32, incy: i32) -> f32;
-}
-
-/// The dot product used for exact rescoring after vector-index recall.
-pub(crate) fn dot(left: &[f32], right: &[f32]) -> f32 {
-    #[cfg(target_os = "macos")]
-    {
-        let count = i32::try_from(left.len().min(right.len())).expect("vector dimensions fit i32");
-        // SAFETY: both slices contain `count` contiguous f32 values, and the
-        // framework reads them only for this synchronous call.
-        unsafe { cblas_sdot(count, left.as_ptr(), 1, right.as_ptr(), 1) }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        left.iter().zip(right).map(|(a, b)| a * b).sum()
-    }
-}
-
-#[cfg(test)]
-mod vector_math {
-    use super::dot;
-
-    #[test]
-    fn dot_reads_only_the_shared_prefix_and_handles_zero() {
-        assert_eq!(dot(&[2.0, 3.0], &[4.0]), 8.0);
-        assert_eq!(dot(&[0.0; 1024], &[1.0; 1024]), 0.0);
-    }
 }
 
 /// The topics a query returned, best first, each with the score it was ranked by.
