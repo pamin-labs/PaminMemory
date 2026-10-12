@@ -49,7 +49,7 @@ futures = "0.3"
 libc = "0.2"
 # image-models is on by default and pulls a full image codec stack, including
 # an AVIF encoder, for models we do not use.
-fastembed = { version = "6", default-features = false, features = [
+fastembed = { version = "7.1.1", default-features = false, features = [
     "ort-download-binaries-native-tls",
     "hf-hub-native-tls",
 ] }
