@@ -10,6 +10,8 @@
 // modules here.
 #![allow(dead_code)]
 
+pub mod shape;
+
 use std::path::PathBuf;
 
 use pamin_engine::{Drained, Engine, Owed, Write};
