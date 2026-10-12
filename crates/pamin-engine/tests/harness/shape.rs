@@ -66,9 +66,18 @@ pub fn choose<'a, T>(seed: u64, key: &str, options: &'a [T]) -> &'a T {
 ///
 /// Proportional, so the sample's mix is the dataset's and a figure over all
 /// of it means what it would over the whole; each stratum is still reported on
-/// its own. Remainders go to the largest fractions, ties to the stratum that
-/// sorts first. Kept in the order the items came in, so a harness that walks
-/// them walks them as the dataset lists them.
+/// its own. Kept in the order the items came in, so a harness that walks them
+/// walks them as the dataset lists them.
+///
+/// **Allocated one unit at a time, so a larger sample contains every smaller
+/// one.** Each unit goes to the stratum with the largest `size / (quota + 1)`
+/// (D'Hondt), ties to the stratum whose name hashes first under the seed. The
+/// first version split by largest remainder, which is not monotone in the
+/// sample size: strata of 1, 3 and 3 got (1, 1, 1) at three and (0, 2, 2) at
+/// four, so growing a sample could drop a question it had asked -- and empty
+/// a stratum the caller asserts is reached. Units handed out in sequence are
+/// never taken back, and each stratum's members are taken in the same seeded
+/// order, so that cannot happen.
 ///
 /// An item is whatever the caller keeps together -- one MuSiQue question with
 /// its twenty paragraphs, one LOCOMO conversation -- so a linked group is
@@ -90,26 +99,28 @@ pub fn stratified<T>(
         strata.entry(stratum(item)).or_default().push(at);
     }
 
-    let total = items.len();
-    let mut quotas: Vec<(String, usize, usize)> = strata
-        .iter()
-        .map(|(name, members)| {
-            let exact = wanted * members.len();
-            (name.clone(), exact / total, exact % total)
-        })
-        .collect();
-    let short = wanted - quotas.iter().map(|(_, quota, _)| quota).sum::<usize>();
-    let mut by_remainder: Vec<usize> = (0..quotas.len()).collect();
-    by_remainder.sort_by(|a, b| quotas[*b].2.cmp(&quotas[*a].2).then(a.cmp(b)));
-    for at in by_remainder.into_iter().take(short) {
-        quotas[at].1 += 1;
+    let sizes: Vec<usize> = strata.values().map(Vec::len).collect();
+    let ties: Vec<[u8; 32]> = strata.keys().map(|name| order(seed, name)).collect();
+    let mut quotas = vec![0usize; sizes.len()];
+    for _ in 0..wanted {
+        // `a / (qa + 1)` against `b / (qb + 1)`, cross-multiplied so the
+        // comparison is exact.
+        let next = (0..sizes.len())
+            .filter(|at| quotas[*at] < sizes[*at])
+            .max_by(|a, b| {
+                (sizes[*a] * (quotas[*b] + 1))
+                    .cmp(&(sizes[*b] * (quotas[*a] + 1)))
+                    .then(ties[*b].cmp(&ties[*a]))
+            })
+            .expect("fewer wanted than there are items");
+        quotas[next] += 1;
     }
 
-    let mut kept = vec![false; total];
-    for (name, quota, _) in &quotas {
-        let mut members = strata[name].clone();
+    let mut kept = vec![false; items.len()];
+    for (members, quota) in strata.values().zip(quotas) {
+        let mut members = members.clone();
         members.sort_by_cached_key(|at| order(seed, &key(&items[*at])));
-        for at in members.into_iter().take(*quota) {
+        for at in members.into_iter().take(quota) {
             kept[at] = true;
         }
     }
@@ -374,11 +385,38 @@ mod tests {
         );
     }
 
+    /// Every size against the next, over the strata that broke largest
+    /// remainder -- 1, 3 and 3 -- and over the uneven ones above.
     #[test]
-    fn a_larger_sample_contains_a_smaller_one() {
-        let small = sample(10, SEED);
-        let large = sample(50, SEED);
-        assert!(small.iter().all(|item| large.contains(item)));
+    fn a_larger_sample_contains_every_smaller_one() {
+        let small_strata: Vec<(String, String)> = [("a", 1), ("b", 3), ("c", 3)]
+            .into_iter()
+            .flat_map(|(name, count)| {
+                (0..count).map(move |at| (format!("{name}{at}"), name.to_string()))
+            })
+            .collect();
+        for all in [small_strata, items()] {
+            let draw = |wanted| {
+                stratified(
+                    all.clone(),
+                    wanted,
+                    SEED,
+                    |item| item.1.clone(),
+                    |item| item.0.clone(),
+                )
+            };
+            let mut previous = Vec::new();
+            for wanted in 1..=all.len() {
+                let drawn = draw(wanted);
+                assert_eq!(drawn.len(), wanted);
+                assert!(
+                    previous.iter().all(|item| drawn.contains(item)),
+                    "a sample of {wanted} dropped part of the sample of {}",
+                    wanted - 1
+                );
+                previous = drawn;
+            }
+        }
     }
 
     #[test]
