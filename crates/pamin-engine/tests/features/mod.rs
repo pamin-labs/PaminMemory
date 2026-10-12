@@ -18,7 +18,8 @@
 //! points. The harness's own language labels are written beside it when the
 //! harness has them, for analysis, and are not something the product knows.
 //!
-//! Set `FEATURES_OUT` to a path to run the arm.
+//! Set `FEATURES_OUT` to a path to run the arm, and `FEATURES_DEPTH` to
+//! retrieve each channel deeper than the shipped depth.
 //!
 //! ## What each row asserts before it is written
 //!
@@ -86,6 +87,26 @@ pub struct Features {
     out: BufWriter<File>,
     asked: BTreeSet<(String, String)>,
     rows: usize,
+}
+
+/// The depths the dump retrieves at: `shipped`, with the channel depth taken
+/// from `FEATURES_DEPTH` when it is set.
+///
+/// A dump deeper than the product lets an offline fit cap each channel at its
+/// own depth, which a dump at the shipped depth cannot show. The rows still
+/// rebuild the engine's own fusion at the depth asked for.
+pub fn depths(shipped: pamin_engine::Depths) -> pamin_engine::Depths {
+    let channel = std::env::var("FEATURES_DEPTH").map_or(shipped.channel, |value| {
+        value
+            .parse()
+            .unwrap_or_else(|_| panic!("FEATURES_DEPTH is not a depth: {value}"))
+    });
+    pamin_engine::Depths { channel, ..shipped }
+}
+
+/// Past four times the channel depth, so a trace is never truncated.
+pub fn wide(depths: pamin_engine::Depths) -> u32 {
+    4 * depths.channel + 4 * depths.channel / 2
 }
 
 impl Features {

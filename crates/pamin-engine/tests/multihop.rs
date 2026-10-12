@@ -47,6 +47,7 @@
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
 //! | `CHANNELS` | the channel diagnostic and the offline fusion sweep |
 //! | `FEATURES_OUT` | a path: every candidate fusion saw, one row each, for fitting a fusion offline |
+//! | `FEATURES_DEPTH` | the channel depth that dump retrieves at, default the shipped 50 |
 //! | `CONTEXT` | price what the reranker is shown, from one run |
 //! | `PASSAGES` | a second project whose vectors embed the topic name, paired against this one |
 //! | `ROUTES` | a cascade and gates that spend less on the reranker, against the shipped pass |
@@ -429,9 +430,11 @@ async fn search_answers_questions_that_take_several_steps() {
     // `FEATURES_OUT`: every candidate fusion saw, one row each, for fitting a
     // fusion offline. See `features`.
     if let Some(mut dump) = features::Features::from_env("musique") {
+        let depths = features::depths(DEPTHS);
+        let wide = features::wide(depths);
         for query in &corpus.queries {
             let hits = engine
-                .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+                .search_fused(&query.text, wide, depths, Fusion::default())
                 .await
                 .expect("search");
             let asked = features::Asked {
@@ -442,7 +445,7 @@ async fn search_answers_questions_that_take_several_steps() {
                 language: Some("eng"),
                 judged: query.relevant.len(),
             };
-            dump.observe(&asked, &hits, WIDE, |title| {
+            dump.observe(&asked, &hits, wide, |title| {
                 Some(f64::from(query.relevant.contains(title)))
             });
         }

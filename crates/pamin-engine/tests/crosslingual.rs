@@ -1703,10 +1703,11 @@ async fn search_reaches_across_languages() {
     // and its question id is the dataset's, so every asking of one question
     // can be kept in one fold.
     if let Some(mut dump) = features::Features::from_env("xquad-r") {
-        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        let depths = features::depths(DEPTHS);
+        let wide = features::wide(depths);
         for query in &queries {
             let hits = engine
-                .search_fused(query.text(), WIDE, DEPTHS, Fusion::default())
+                .search_fused(query.text(), wide, depths, Fusion::default())
                 .await
                 .expect("search");
             for group in GROUPS {
@@ -1718,7 +1719,7 @@ async fn search_reaches_across_languages() {
                     language: Some(query.language),
                     judged: relevant.len(),
                 };
-                dump.observe(&asked, &hits, WIDE, |topic| {
+                dump.observe(&asked, &hits, wide, |topic| {
                     (!drop.contains(topic)).then(|| f64::from(relevant.contains(topic)))
                 });
             }
