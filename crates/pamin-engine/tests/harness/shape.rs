@@ -155,6 +155,46 @@ fn tallied() -> std::sync::MutexGuard<'static, Option<BTreeMap<(String, String),
     TALLY.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Which arm of a harness this run is: each of `vars` that is set, with its
+/// value when the value is short and plain (`TIERS=fast`), else its name
+/// alone (`FEATURES_OUT`, a path). `shipped` when none is set.
+pub fn arm(vars: &[&str]) -> String {
+    let set: Vec<String> = vars
+        .iter()
+        .filter_map(|var| {
+            let value = std::env::var(var).ok()?;
+            let plain = value.len() <= 16
+                && value
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || ",._".contains(c));
+            Some(if plain {
+                format!("{var}={value}")
+            } else {
+                (*var).to_string()
+            })
+        })
+        .collect();
+    if set.is_empty() {
+        "shipped".to_string()
+    } else {
+        set.join("+")
+    }
+}
+
+/// One part of a record's file name, with anything a file system might
+/// object to replaced.
+fn file_part(part: &str) -> String {
+    part.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "=+,._".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// Records that query `id` was scored once in `group`. Called where a harness
 /// reads its answer key, so a query graded is a query counted.
 pub fn tally(group: &str, id: &str) {
@@ -185,6 +225,8 @@ pub struct Shape {
     /// Where [`publish`](Self::publish) wrote the record; set only on a
     /// published shape, which is also the one whose coverage is checked.
     record: Option<PathBuf>,
+    /// Which test, profile and arm the run was, as `publish` was told.
+    run: [String; 3],
 }
 
 /// One record's digest: its fields, separated so that no two field lists
@@ -228,6 +270,7 @@ impl Shape {
             excluded: Vec::new(),
             coverage: None,
             record: None,
+            run: Default::default(),
         }
     }
 
@@ -295,9 +338,16 @@ impl Shape {
     /// records them under `<eval home>/shape/`, and starts counting what is
     /// scored. Called once, before anything is searched, so a run that dies
     /// still said what it was running.
-    pub fn publish(&mut self) {
+    ///
+    /// The record is named by `test`, `profile` and `arm` (see [`arm`]) as
+    /// well as the digest. It was named by the digest alone, and every arm
+    /// over one corpus wrote the same file, so the last run's coverage
+    /// replaced the others'.
+    pub fn publish(&mut self, test: &str, profile: &str, arm: &str) {
         let digest = self.digest();
+        self.run = [test.to_string(), profile.to_string(), arm.to_string()];
         let name = &self.name;
+        println!("  shape {name}: {test}, profile {profile}, arm {arm}");
         println!(
             "  shape {name}: corpus sha256 {digest} over {} questions and {} documents",
             self.queries.len(),
@@ -327,7 +377,10 @@ impl Shape {
         let dir = super::eval_home().join("shape");
         std::fs::create_dir_all(&dir)
             .unwrap_or_else(|error| panic!("creating {}: {error}", dir.display()));
-        self.record = Some(dir.join(format!("{name}-{}.json", &digest[..16])));
+        let file = [name.as_str(), test, profile, arm, &digest[..16]]
+            .map(file_part)
+            .join("-");
+        self.record = Some(dir.join(format!("{file}.json")));
         self.write();
         println!(
             "  shape {name}: recorded in {}",
@@ -478,8 +531,12 @@ impl Shape {
             .iter()
             .map(|(group, ids)| (group, ids.len()))
             .collect();
+        let [test, profile, arm] = &self.run;
         let body = serde_json::json!({
             "harness": self.name,
+            "test": test,
+            "profile": profile,
+            "arm": arm,
             "corpus_sha256": self.digest(),
             "selection": self.selection,
             "seed": self.seed,
@@ -489,8 +546,16 @@ impl Shape {
             "excluded": self.excluded,
             "scored": self.coverage,
         });
-        std::fs::write(path, serde_json::to_vec_pretty(&body).expect("serialise"))
-            .unwrap_or_else(|error| panic!("writing {}: {error}", path.display()));
+        // Beside it and renamed over it, so a run killed mid-write leaves the
+        // last whole record rather than half of a new one.
+        let partial = path.with_extension("json.part");
+        std::fs::write(
+            &partial,
+            serde_json::to_vec_pretty(&body).expect("serialise"),
+        )
+        .unwrap_or_else(|error| panic!("writing {}: {error}", partial.display()));
+        std::fs::rename(&partial, path)
+            .unwrap_or_else(|error| panic!("renaming onto {}: {error}", path.display()));
     }
 }
 

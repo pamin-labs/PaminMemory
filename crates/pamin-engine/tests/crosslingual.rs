@@ -195,8 +195,9 @@
 //! Every arm scores all three groups. `EVAL_SEED` redraws each query's
 //! `single_target` language (see `harness::shape::SEED` for the default); the
 //! other two groups do not depend on it. Each run prints its `shape` lines --
-//! corpus digest, seed, asked and excluded -- and records them under
-//! `$PAMIN_EVAL_HOME/shape/`.
+//! corpus digest, seed, asked and excluded -- and a `coverage` line at the
+//! end, and records them under `$PAMIN_EVAL_HOME/shape/`, one file per test,
+//! profile, arm and digest.
 
 mod channels;
 mod features;
@@ -375,6 +376,24 @@ impl Query<'_> {
         }
     }
 }
+
+/// The variables that pick an arm of `search_reaches_across_languages`, for
+/// the name of the run's shape record.
+const ARMS: [&str; 13] = [
+    "SWEEP",
+    "FEATURES_OUT",
+    "CHANNELS",
+    "DEPTH_VARIANTS",
+    "RERANK_RULES",
+    "ROUTES",
+    "CONTEXT",
+    "AT_LIMIT",
+    "LABELS",
+    "CALIBRATE",
+    "GATE",
+    "PAIRS",
+    "TIERS",
+];
 
 /// The groups, in the order they are reported.
 const GROUPS: [&str; 3] = ["cross_lingual", "same_language", "single_target"];
@@ -1533,9 +1552,9 @@ fn fusion(setting: Option<(f32, f32)>) -> Fusion {
 fn the_model_reaches_across_languages() {
     let corpus = Corpus::load();
     let queries = corpus.queries();
-    let mut shape = corpus.shape(&queries);
-    shape.publish();
     let (named, profile) = profile();
+    let mut shape = corpus.shape(&queries);
+    shape.publish("the_model_reaches_across_languages", &named, "shipped");
     println!(
         "  {} sentences in {} languages, {} queries, profile {named}",
         corpus.sentences.len(),
@@ -1737,9 +1756,13 @@ async fn search_reaches_across_languages() {
     println!("  reranker device: cpu; export: onnx/model_int8.onnx");
     let corpus = Corpus::load();
     let queries = corpus.queries();
-    let mut shape = corpus.shape(&queries);
-    shape.publish();
     let (named, profile) = profile();
+    let mut shape = corpus.shape(&queries);
+    shape.publish(
+        "search_reaches_across_languages",
+        &named,
+        &harness::shape::arm(&ARMS),
+    );
 
     // A named workspace is reused; an unnamed one is thrown away. Indexing
     // thirteen thousand sentences is minutes, and a harness that pays that on
