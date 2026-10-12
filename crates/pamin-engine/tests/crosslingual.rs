@@ -1866,17 +1866,26 @@ async fn search_reaches_across_languages() {
     println!("  vector index completeness: {completeness:.4}");
 
     if let Some(settings) = sweep() {
-        println!("\n  setting              cross nDCG@10   same nDCG@10   cross recall@50");
-        println!("  --------------------------------------------------------------------");
+        // nDCG@10 for every group, then cross-lingual recall@50.
+        let mut header = format!("\n  {:<20}", format!("setting, nDCG@{NDCG_AT}"));
+        for group in GROUPS {
+            header.push_str(&format!("   {:>13}", group));
+        }
+        header.push_str(&format!("   {:>15}", format!("cross recall@{RECALL_AT}")));
+        println!("{header}");
+        println!("  {}", "-".repeat(header.len() - 3));
         let mut measured: Vec<(String, BTreeMap<String, Scores>)> = Vec::new();
         for (label, fusion) in settings {
             let groups = run(&engine, &queries, Route::Fused(fusion)).await;
-            println!(
-                "  {label:<20}   {:>13.4}   {:>12.4}   {:>15.4}",
-                groups["cross_lingual"].mean_ndcg(),
-                groups["same_language"].mean_ndcg(),
-                groups["cross_lingual"].mean_recall(),
-            );
+            let mut row = format!("  {label:<20}");
+            for group in GROUPS {
+                row.push_str(&format!("   {:>13.4}", groups[group].mean_ndcg()));
+            }
+            row.push_str(&format!(
+                "   {:>15.4}",
+                groups["cross_lingual"].mean_recall()
+            ));
+            println!("{row}");
             measured.push((label, groups));
         }
 
@@ -1885,8 +1894,8 @@ async fn search_reaches_across_languages() {
         // separated by thousandths on one group and by tenths on the other, so
         // the means are worth very different amounts in the two columns, and
         // the table cannot show that. Priced against the best cross-lingual row,
-        // query by query, in both groups -- because the weight this sweep
-        // settles is the one that trades one group against the other.
+        // query by query, in every group -- because the weight this sweep
+        // settles is the one that trades one group against the others.
         if let Some((best, top)) =
             statistics::baseline(&measured, |groups: &BTreeMap<String, Scores>| {
                 groups["cross_lingual"].mean_ndcg()
@@ -1897,21 +1906,13 @@ async fn search_reaches_across_languages() {
                 if label == best {
                     continue;
                 }
-                println!(
-                    "  {label:<20}   cross {}",
-                    statistics::compare(
-                        &top["cross_lingual"].per_query,
-                        &groups["cross_lingual"].per_query
-                    )
-                );
-                println!(
-                    "  {:<20}   same  {}",
-                    "",
-                    statistics::compare(
-                        &top["same_language"].per_query,
-                        &groups["same_language"].per_query
-                    )
-                );
+                for (at, group) in GROUPS.into_iter().enumerate() {
+                    let label = if at == 0 { label.as_str() } else { "" };
+                    println!(
+                        "  {label:<20}   {group:<13} {}",
+                        statistics::compare(&top[group].per_query, &groups[group].per_query)
+                    );
+                }
             }
         }
         println!();
