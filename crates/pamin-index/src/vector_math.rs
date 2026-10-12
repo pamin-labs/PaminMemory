@@ -4,21 +4,15 @@
 //! binary uses AVX-512 or AVX2 where the CPU has them. NEON is part of every
 //! aarch64 target, Linux and Apple alike, so it needs no detection. On an M4
 //! the NEON kernel beat Accelerate's `cblas_sdot` at 1024 dimensions (5.25 µs
-//! against 6.00 µs per 100 rows, p50), so Apple silicon uses it too. Intel
-//! Macs keep Accelerate: nothing has measured the x86 kernels against it there.
+//! against 6.00 µs per 100 rows, p50), so Apple silicon uses it too.
+//! Intel Macs take the same x86 kernels as Linux, so every x86-64 host runs
+//! one implementation; nothing has timed them against Accelerate there.
 //! Every other target gets a portable reduction over eight independent
 //! lanes, which the compiler vectorizes for whatever SIMD the target has.
 //!
 //! The SIMD kernels sum in a different order from a sequential loop, so a
 //! result can differ from one in the last bits. Splitting the sum across
 //! lanes makes it closer to the exact value, not further.
-
-// Intel Macs only; see the module comment.
-#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-#[link(name = "Accelerate", kind = "framework")]
-unsafe extern "C" {
-    fn cblas_sdot(n: i32, x: *const f32, incx: i32, y: *const f32, incy: i32) -> f32;
-}
 
 /// The dot product of the dimensions `left` and `right` share.
 pub(crate) fn dot(left: &[f32], right: &[f32]) -> f32 {
@@ -28,14 +22,7 @@ pub(crate) fn dot(left: &[f32], right: &[f32]) -> f32 {
     {
         neon::dot(left, right)
     }
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    {
-        let count = i32::try_from(count).expect("vector dimensions fit i32");
-        // SAFETY: both slices contain `count` contiguous f32 values, and the
-        // framework reads them only for this synchronous call.
-        unsafe { cblas_sdot(count, left.as_ptr(), 1, right.as_ptr(), 1) }
-    }
-    #[cfg(all(target_arch = "x86_64", not(target_os = "macos")))]
+    #[cfg(target_arch = "x86_64")]
     {
         if std::arch::is_x86_feature_detected!("avx512f") {
             // SAFETY: the CPU reports AVX-512F.
@@ -56,7 +43,7 @@ pub(crate) fn dot(left: &[f32], right: &[f32]) -> f32 {
 
 /// Eight running sums rather than one, so no addition waits on the one before
 /// it and the compiler is free to keep them in a vector register.
-#[cfg_attr(any(target_arch = "aarch64", target_os = "macos"), allow(dead_code))]
+#[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 fn lanes(left: &[f32], right: &[f32]) -> f32 {
     let mut sums = [0.0f32; 8];
     let (left_chunks, left_tail) = left.as_chunks::<8>();
@@ -72,9 +59,7 @@ fn lanes(left: &[f32], right: &[f32]) -> f32 {
 
 /// Both kernels take slices of equal length and keep four accumulators, so
 /// each fused multiply-add is independent of the previous three.
-/// Intel Macs compile these only for the tests; see the module comment.
 #[cfg(target_arch = "x86_64")]
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 mod x86 {
     use std::arch::x86_64::*;
 
