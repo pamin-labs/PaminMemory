@@ -282,6 +282,9 @@ struct Sentence {
 struct Question {
     /// The dataset's own id, the same in all eleven files.
     id: String,
+    /// Where the id falls among every id the dataset has, sorted: what the
+    /// rotation turns on, so excluding one question moves no other's language.
+    position: usize,
     /// The question text, per language.
     asked: HashMap<&'static str, String>,
     /// The key of the answering sentence, per language.
@@ -292,9 +295,22 @@ struct Question {
 struct Corpus {
     sentences: Vec<Sentence>,
     questions: Vec<Question>,
-    /// Questions the dataset has and this harness cannot score, by id, with
-    /// the reason. Listed in every run's shape rather than dropped unseen.
-    excluded: Vec<(String, String)>,
+    /// Questions the dataset has and this harness cannot score: not answered
+    /// in every language. Listed in every run's shape, one exclusion per query
+    /// the run would have asked, rather than dropped unseen.
+    excluded: Vec<Question>,
+}
+
+impl Question {
+    /// The languages a run asks this question in: all eleven under
+    /// `XQUAD_ALL_QUERIES`, else the one its position rotates to.
+    fn languages(&self, all: bool) -> Vec<&'static str> {
+        if all {
+            LANGUAGES.to_vec()
+        } else {
+            vec![LANGUAGES[self.position % LANGUAGES.len()]]
+        }
+    }
 }
 
 /// One query: a question, and the language it is asked in.
@@ -413,6 +429,7 @@ fn single_target_counts_one_translation_and_strikes_the_rest() {
             };
             Question {
                 id: format!("q{at}"),
+                position: at,
                 asked: per_language("asked "),
                 answers: per_language(""),
             }
@@ -443,6 +460,33 @@ fn single_target_counts_one_translation_and_strikes_the_rest() {
             .all(|(a, b)| a.target == b.target),
         "the same seed drew a different target"
     );
+
+    // A question excluded at load is excluded as the query the rotation would
+    // have asked, and moves no other question's language.
+    let before: Vec<(String, &str)> = queries
+        .iter()
+        .map(|query| (query.question.id.clone(), query.language))
+        .collect();
+    let mut questions = corpus.questions;
+    let partial = questions.remove(3);
+    assert_eq!(partial.languages(false), [LANGUAGES[3]]);
+    assert_eq!(partial.languages(true), LANGUAGES);
+    let corpus = Corpus {
+        sentences: Vec::new(),
+        questions,
+        excluded: vec![partial],
+    };
+    let kept: HashMap<String, &str> = corpus
+        .queries()
+        .iter()
+        .map(|query| (query.question.id.clone(), query.language))
+        .collect();
+    for (id, language) in &before {
+        if let Some(kept) = kept.get(id) {
+            assert_eq!(kept, language, "{id}");
+        }
+    }
+    assert_eq!(kept.len(), before.len() - 1);
 }
 
 impl Corpus {
@@ -540,25 +584,16 @@ impl Corpus {
         // cross-lingually. There are none today; this is what would happen if
         // the dataset gained a language it does not cover everywhere, and it
         // is recorded as an exclusion so that it would show.
-        let (questions, partial): (Vec<Question>, Vec<Question>) = ids
+        let (questions, excluded): (Vec<Question>, Vec<Question>) = ids
             .into_iter()
-            .map(|id| Question {
+            .enumerate()
+            .map(|(position, id)| Question {
                 asked: asked.remove(&id).expect("the question text"),
                 answers: answers.remove(&id).expect("the answering sentences"),
                 id,
+                position,
             })
             .partition(|question| question.answers.len() == LANGUAGES.len());
-        let excluded = partial
-            .into_iter()
-            .map(|question| {
-                let reason = format!(
-                    "answered in {} of {} languages",
-                    question.answers.len(),
-                    LANGUAGES.len()
-                );
-                (question.id, reason)
-            })
-            .collect();
 
         assert!(
             !questions.is_empty(),
@@ -587,14 +622,8 @@ impl Corpus {
         let seed = harness::shape::seed();
         self.questions
             .iter()
-            .enumerate()
-            .flat_map(|(position, question)| {
-                let languages: Vec<&'static str> = if all {
-                    LANGUAGES.to_vec()
-                } else {
-                    vec![LANGUAGES[position % LANGUAGES.len()]]
-                };
-                languages.into_iter().map(move |language| {
+            .flat_map(|question| {
+                question.languages(all).into_iter().map(move |language| {
                     let others: Vec<&'static str> = LANGUAGES
                         .into_iter()
                         .filter(|other| *other != language)
@@ -639,8 +668,16 @@ impl Corpus {
             fields.extend(answers);
             shape.query(&GROUPS, &query.id(), &fields);
         }
-        for (id, reason) in &self.excluded {
-            shape.exclude(&GROUPS, id, reason);
+        for question in &self.excluded {
+            let reason = format!(
+                "answered in {} of {} languages",
+                question.answers.len(),
+                LANGUAGES.len()
+            );
+            for language in question.languages(every_language()) {
+                let id = format!("{}/{language}", question.id);
+                shape.exclude(&GROUPS, &id, &reason);
+            }
         }
         shape
     }
