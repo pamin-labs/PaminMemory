@@ -1057,6 +1057,12 @@ separately. Twenty rerank passes of sixteen pairs of about 200 tokens showed no 
 change: the per-round median moved between -22% and +9% against `fastembed`,
 median -2.5%, while one arm's own rounds moved by up to 40%.
 
+The 280 MiB is `tokenizers`' own Unigram model, a trie with a hash map in every
+node. The shared vocabulary has since been held in a double-array trie instead
+(see `crates/pamin-index/src/tokenizer.rs`), with ids tested equal to that
+model's; what that layout holds, and what it does to encoding time, has not
+been measured, so the figures above are for the layout before it.
+
 **What the database is made of**, which is a figure this page has never carried
 and which turned out to be worth carrying. Broken down by table on the
 evaluation workspace, 1.7 GB across its projects, before either change below:
