@@ -1590,13 +1590,25 @@ async fn search_reaches_across_languages() {
     }
 
     // The profile is part of the workspace identity: an index records the
-    // profile it was built with and refuses to open under another.
-    assert_eq!(
-        profile,
-        pamin_index::Profile::Accuracy,
-        "the pinned XQuAD-R search benchmark uses the accuracy profile"
-    );
-    let embedding_id = pinned_embedding_id(&workspace.root().join("models"));
+    // profile it was built with and refuses to open under another. The shipped
+    // profile's model is pinned by the manifest; the experimental `gemma` one
+    // is read from a local directory, and its identity is already a digest of
+    // the files it reads and the width it stores.
+    let embedding_id = match profile {
+        pamin_index::Profile::Accuracy => pinned_embedding_id(&workspace.root().join("models")),
+        pamin_index::Profile::Gemma => {
+            let identity = profile.model_id();
+            assert!(
+                !identity.ends_with(":unconfigured"),
+                "set PAMIN_EG2_DIR to the local EmbeddingGemma 2 export"
+            );
+            println!("  gemma embedding model: {identity}");
+            format!("{:x}", Sha256::digest(identity.as_bytes()))
+        }
+        _ => panic!(
+            "the pinned XQuAD-R search benchmark uses the accuracy profile, or the experimental gemma one"
+        ),
+    };
     println!("  index embedding identity: {embedding_id}");
     let project = xquad_project_name(&named, &corpus.fingerprint(), &embedding_id);
     println!("  index project: {project}");
@@ -1949,12 +1961,31 @@ async fn search_reaches_across_languages() {
 
     let started = std::time::Instant::now();
     let groups = run(&engine, &queries, Route::Shipped(Rerank::default())).await;
+    let per_query_ms = started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64;
     report(
         &format!("the shipped search path, {named}"),
         &groups,
-        started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64,
+        per_query_ms,
     );
     report_reranking(&engine, Rerank::default(), queries.len());
+    // `SCORES_OUT`: every query's score on the shipped path, for pairing two
+    // runs -- two profiles, which cannot share a process -- query by query.
+    if let Some(path) = std::env::var_os("SCORES_OUT") {
+        let evidence = serde_json::json!({
+            "source_commit": commit.trim(),
+            "embedding_identity": embedding_id,
+            "project": project,
+            "profile": named,
+            "ms_per_query": per_query_ms,
+            "queries": queries
+                .iter()
+                .map(|query| format!("{}/{}", query.question.id, query.language))
+                .collect::<Vec<_>>(),
+            "groups": &groups,
+        });
+        std::fs::write(path, serde_json::to_vec(&evidence).unwrap())
+            .expect("write the requested XQuAD-R scores");
+    }
     assert_floors(&named, &groups, SEARCH_FLOORS);
 
     // Fusion alone, to price the reranker. Forty seconds against the four

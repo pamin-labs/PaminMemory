@@ -288,7 +288,19 @@ async fn search_answers_questions_that_take_several_steps() {
         (None, None) => unreachable!("one of the two is always set"),
     };
 
-    let project = format!("musique-{named}-{}", corpus.fingerprint());
+    // The experimental profile's model is a local file, not a hub revision, so
+    // its identity -- a digest of the files and the width -- names the project.
+    let project = match profile {
+        Profile::Gemma => format!(
+            "musique-{named}-{}-{}",
+            corpus.fingerprint(),
+            &format!(
+                "{:x}",
+                <sha2::Sha256 as sha2::Digest>::digest(profile.model_id().as_bytes())
+            )[..16]
+        ),
+        _ => format!("musique-{named}-{}", corpus.fingerprint()),
+    };
     let engine = Engine::open(
         &workspace,
         &project,
@@ -531,6 +543,20 @@ async fn search_answers_questions_that_take_several_steps() {
         }
     }
 
+    // `SCORES_OUT`: every question's score on the shipped path, for pairing
+    // two profiles query by query.
+    if let Some(path) = std::env::var_os("SCORES_OUT") {
+        let evidence = serde_json::json!({
+            "profile": named,
+            "embedding_identity": profile.model_id(),
+            "project": project,
+            "queries": corpus.queries.iter().map(|query| (&query.id, &query.group)).collect::<Vec<_>>(),
+            "shipped": &shipped,
+        });
+        std::fs::write(path, serde_json::to_vec(&evidence).unwrap())
+            .expect("write the requested MuSiQue scores");
+    }
+
     println!("\n  the shipped search path, {named}, against the same path without the graph");
     println!("  group   questions   nDCG@{NDCG_AT}   recall@{RECALL_AT}   without the graph");
     println!("  ------------------------------------------------------------------------------");
@@ -593,9 +619,15 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) {
             println!("  wrote {written} memories");
         }
     }
-    harness::drain(engine).await;
+    let started = std::time::Instant::now();
+    let drained = harness::drain(engine).await;
     if written > 0 {
         println!("  wrote {written} of {} memories", corpus.memories.len());
+        println!(
+            "  ran {} cascade jobs in {:.0}s",
+            drained.completed,
+            started.elapsed().as_secs_f64()
+        );
     }
 }
 
