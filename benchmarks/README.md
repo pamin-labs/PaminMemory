@@ -95,6 +95,15 @@ instead of a table that looks the same as a clean one. The arm that caught this
 was one with no model on its write path reporting fourteen LLM calls, all of
 them the other run's.
 
+`--workers N` ingests N units of the same arm at once, instead of one at a
+time. Every unit already gets its own project/collection/palace, so units
+don't share state -- except `mem0`, whose ingest empties its *entire* qdrant
+directory unless `BENCH_MEM0_KEEP=1` (see `arms.py`), so `run.py` holds it at
+one worker regardless of `--workers`. The cost columns this already marks
+`cost_measurable: false` under a shared endpoint are the same ones that get
+less attributable as `--workers` rises; quality/accuracy columns are not
+affected, since each unit's answer depends on nothing any other unit touched.
+
 Third-party systems each install into their own virtualenv. Installing one of
 them into the shared environment moved `protobuf` past the ceiling another
 declares, while that other one was being measured.
