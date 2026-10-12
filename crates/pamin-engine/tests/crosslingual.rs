@@ -33,12 +33,31 @@
 //! recall loss that could have come from either is a measurement of neither;
 //! `pamin-index`'s own `recall.rs` is where the approximation is measured.
 //!
-//! ## Two groups, reported separately, never summed
+//! ## Three groups, reported separately, never summed
 //!
 //! | group | the relevant sentences | why it is its own number |
 //! |---|---|---|
 //! | `same_language` | the answer sentence in the query's own language, with its ten translations removed from the ranking | the baseline the other is read against |
-//! | `cross_lingual` | the answer sentence in the other ten languages, with the query's own removed from the ranking | the claim this project makes |
+//! | `cross_lingual` | the answer sentence in the other ten languages, with the query's own removed from the ranking | the claim this project makes, as it has always been measured |
+//! | `single_target` | the answer sentence in one other language, chosen per query by a seeded hash, with the other ten removed from the ranking | the product's case: one relevant memory, in another language |
+//!
+//! The third group exists because the second rewards the wrong thing for a
+//! memory store. Ten relevant translations per query means nDCG@10 is only
+//! full when ten near-duplicates fill the head, and that is what reranking
+//! deep buys; a real store usually holds one or two memories that answer a
+//! question, not ten parallel ones. `single_target` asks for one. The first two
+//! are kept unchanged so every figure below stays comparable.
+//!
+//! **What "removed" means here, for all three.** The sentences a group does not
+//! count are struck from the ranking the product returned, not from the index
+//! before it ranked: `search_reranked` has no way to exclude topics, and
+//! adding one would measure an entry point that does not ship. So in
+//! `single_target` the other nine translations still take places in the
+//! fused list and in the reranker's head before they are struck. That is not a
+//! bound in either direction -- without them the target could enter the head
+//! it was pushed out of, or meet a stronger distractor there -- and a depth
+//! decision that turns on the difference needs a corpus that holds one
+//! translation, not this group.
 //!
 //! Removing the same-language answer from the ranking is what makes the second
 //! group honest. Left in, it takes a top rank on nearly every query and the
@@ -172,6 +191,12 @@
 //! queries. The default asks each question in one language, rotating through
 //! the eleven, which is 1,190 queries covering every language and every
 //! question and takes a eleventh of the time.
+//!
+//! Every arm scores all three groups. `EVAL_SEED` redraws each query's
+//! `single_target` language (see `harness::shape::SEED` for the default); the
+//! other two groups do not depend on it. Each run prints its `shape` lines --
+//! corpus digest, seed, asked and excluded -- and records them under
+//! `$PAMIN_EVAL_HOME/shape/`.
 
 mod channels;
 mod features;
@@ -209,7 +234,8 @@ use scoring::{NDCG_AT, RECALL_AT, Scores};
 ///
 /// [`RECALL_AT`] plus what a group drops from the ranking before scoring it:
 /// the cross-lingual group drops the query's own language, the same-language
-/// group its ten translations, and each still needs fifty left. Asking for
+/// group its ten translations, the single-target group the ten answers it does
+/// not count, and each still needs fifty left. Asking for
 /// more changes nothing but how many come back, because the reranker's head
 /// is well inside either depth.
 const DEPTH: usize = RECALL_AT + LANGUAGES.len() - 1;
@@ -274,6 +300,10 @@ struct Corpus {
 struct Query<'a> {
     question: &'a Question,
     language: &'static str,
+    /// The one other language whose answer `single_target` counts, chosen by
+    /// [`harness::shape::choose`] from the question id and the query language
+    /// alone, so it is the same on every run with the same seed.
+    target: &'static str,
 }
 
 impl Query<'_> {
@@ -318,13 +348,74 @@ impl Query<'_> {
         match group {
             "same_language" => (HashSet::from([own]), translations),
             "cross_lingual" => (translations, HashSet::from([own])),
+            // One relevant sentence, and every other answer -- the query's own
+            // and nine translations -- struck, for the reason the other two
+            // groups strike theirs: each is still a correct answer.
+            "single_target" => {
+                let target = self.question.answers[self.target].as_str();
+                let others = self
+                    .question
+                    .answers
+                    .values()
+                    .map(String::as_str)
+                    .filter(|key| *key != target)
+                    .collect();
+                (HashSet::from([target]), others)
+            }
             other => panic!("unknown group {other}"),
         }
     }
 }
 
 /// The groups, in the order they are reported.
-const GROUPS: [&str; 2] = ["cross_lingual", "same_language"];
+const GROUPS: [&str; 3] = ["cross_lingual", "same_language", "single_target"];
+
+/// The single-target group's premise: one relevant answer, in a language
+/// other than the query's, every other answer struck -- and a target that
+/// moves across languages rather than collapsing onto one.
+#[test]
+fn single_target_counts_one_translation_and_strikes_the_rest() {
+    let questions: Vec<Question> = (0..110)
+        .map(|at| {
+            let per_language = |prefix: &str| {
+                LANGUAGES
+                    .into_iter()
+                    .map(|language| (language, format!("{prefix}{language}:{at}")))
+                    .collect()
+            };
+            Question {
+                id: format!("q{at}"),
+                asked: per_language("asked "),
+                answers: per_language(""),
+            }
+        })
+        .collect();
+    let corpus = Corpus {
+        sentences: Vec::new(),
+        questions,
+        excluded: Vec::new(),
+    };
+    let queries = corpus.queries();
+    let mut targets = HashSet::new();
+    for query in &queries {
+        let (relevant, drop) = query.relevant("single_target");
+        assert_eq!(relevant.len(), 1, "{}", query.question.id);
+        assert_eq!(drop.len(), LANGUAGES.len() - 1, "{}", query.question.id);
+        assert_ne!(query.target, query.language, "{}", query.question.id);
+        assert!(relevant.contains(query.question.answers[query.target].as_str()));
+        assert!(drop.contains(query.question.answers[query.language].as_str()));
+        targets.insert(query.target);
+    }
+    assert_eq!(targets.len(), LANGUAGES.len(), "{targets:?}");
+    let again = corpus.queries();
+    assert!(
+        queries
+            .iter()
+            .zip(&again)
+            .all(|(a, b)| a.target == b.target),
+        "the same seed drew a different target"
+    );
+}
 
 impl Corpus {
     /// Reads the eleven language files, fetching them if they are not there.
@@ -461,8 +552,11 @@ impl Corpus {
     /// question and every language and costs an eleventh of that. The rotation
     /// is positional rather than random so that a rerun compares against the
     /// same queries.
+    ///
+    /// Each query's `single_target` language is drawn here, from the seed.
     fn queries(&self) -> Vec<Query<'_>> {
         let all = every_language();
+        let seed = harness::shape::seed();
         self.questions
             .iter()
             .enumerate()
@@ -472,9 +566,19 @@ impl Corpus {
                 } else {
                     vec![LANGUAGES[position % LANGUAGES.len()]]
                 };
-                languages
-                    .into_iter()
-                    .map(move |language| Query { question, language })
+                languages.into_iter().map(move |language| {
+                    let others: Vec<&'static str> = LANGUAGES
+                        .into_iter()
+                        .filter(|other| *other != language)
+                        .collect();
+                    let key = format!("{}/{language}", question.id);
+                    let target = *harness::shape::choose(seed, &key, &others);
+                    Query {
+                        question,
+                        language,
+                        target,
+                    }
+                })
             })
             .collect()
     }
@@ -488,7 +592,10 @@ impl Corpus {
         } else {
             "every question, asked in one language by rotation"
         };
-        let mut shape = Shape::new("xquad-r", selection.into(), None);
+        // The seed draws no question, only each query's single target, which
+        // is part of the answer key and so of the digest.
+        let selection = format!("{selection}; single target drawn per query");
+        let mut shape = Shape::new("xquad-r", selection, Some(harness::shape::seed()));
         for sentence in &self.sentences {
             shape.document(&[&sentence.key, &sentence.text]);
         }
@@ -500,7 +607,12 @@ impl Corpus {
                 .map(String::as_str)
                 .collect();
             answers.sort_unstable();
-            let mut fields = vec![query.question.id.as_str(), query.language, query.text()];
+            let mut fields = vec![
+                query.question.id.as_str(),
+                query.language,
+                query.text(),
+                query.target,
+            ];
             fields.extend(answers);
             shape.query(&GROUPS, &fields);
         }
