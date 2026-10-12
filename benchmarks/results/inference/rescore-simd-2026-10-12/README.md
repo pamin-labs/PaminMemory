@@ -66,8 +66,47 @@ The `main` and `dot` columns compare `dot` with its predecessor `main`. The
 | x86-64 with AVX-512F (Intel Skylake-SP and later, AMD Zen 4/5) | AVX-512F | F16C | Timed above |
 | x86-64 with AVX2+FMA only (most other Intel and AMD) | AVX2 | F16C | Tested for correctness here. Not timed: dispatch picks AVX-512 on this host. A provisional unrotated screen of the same kernel ran 10.99 µs (AVX2) vs 10.45 µs (AVX-512) per 100 dot-only rows |
 | Linux aarch64 (Graviton, Ampere, Raspberry Pi 5) | NEON | `fcvtl` when `fp16` is detected | Unit tests pass under `qemu-aarch64-static`. Timing N/A: emulation is not timing |
-| macOS (Apple M-series, and Intel Macs) | Accelerate `cblas_sdot`, unchanged ([2026-09-30 screen](../vector-rescore-accelerate-2026-09-30.md)) | as Linux aarch64 (Apple silicon) or x86-64 (Intel) | Compile-checked for both macOS targets. Timing N/A: no Mac here |
+| macOS on Apple silicon | NEON, replacing Accelerate `cblas_sdot` ([2026-09-30 screen](../vector-rescore-accelerate-2026-09-30.md)) | `fcvtl` | Timed on an M4: see [Apple M4](#apple-m4) |
+| macOS on Intel | as x86-64, replacing Accelerate | F16C | Compile-checked. Timing N/A: no Intel Mac available; the x86 kernels are timed above on Linux |
 | Windows x86-64 | as x86-64 | as x86-64 | Compile-checked |
+
+## Apple M4
+
+A separate machine ran the same work (1 query norm, then 100 candidates ×
+1024 dimensions) with macOS arms. The PR's first two commits kept
+Accelerate's `cblas_sdot` on macOS; this screen is why the last code commit
+moved macOS to the NEON kernel Linux aarch64 already used.
+
+| Arm | fp16 → f32 | Dot product | Implements |
+| --- | --- | --- | --- |
+| `mac-main` | scalar `decode` | Accelerate `cblas_sdot` | `main` on macOS |
+| `mac-pr` | `half` slice conversion (`fcvtl`) | Accelerate `cblas_sdot` | this PR before the NEON switch |
+| `half-neon` | `half` slice conversion (`fcvtl`) | NEON, four accumulators | this PR |
+| `dot-accelerate`, `dot-neon` | (pre-widened) | as named | the dot product alone, 100 rows |
+
+- Host: Apple M4, 32 GB, on AC power, no thermal warnings before or after.
+- Build: `--release`, one thread.
+- Load: 1-minute load average 2.55–2.59. Chrome (13–22% CPU), OrbStack,
+  Adobe Desktop Service and an editor language server were running.
+- Method: three runs back to back. Each run rotates the arm order between
+  rounds and pools 6000 calls per arm. The figures are the median over the
+  three runs of each run's pooled p50 and p95
+  ([per-run figures](m4-result.md)).
+
+| Metric | `mac-main` | `mac-pr` | `half-neon` | Δ vs `mac-pr` | Stack Δ vs `mac-main` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Max abs cosine error vs f64 oracle | ≤ 7.749e-8 | ≤ 7.749e-8 | ≤ 7.749e-8 | N/A (only the bound across all arms was reported) | N/A |
+| Top-10 overlap with oracle (of 10) | 10 | 10 | 10 | 0 | 0 |
+| p50 µs per 100×1024 rescore | 40.38 | 22.42 | 21.46 | −0.96 (−4.3%) | −18.92 (−46.9%) |
+| p95 µs | 47.08 | 24.17 | 22.62 | −1.55 (−6.4%) | −24.46 (−52.0%) |
+| Memory | N/A | N/A | N/A | N/A | N/A |
+| Disk | N/A | N/A | N/A | N/A | N/A |
+
+The dot product alone: `dot-neon` 5.25 µs p50 and 5.92 µs p95, against
+`dot-accelerate` 6.00 and 6.75 per 100 rows. That is −0.75 µs (−12.5%) at p50
+and −0.83 µs (−12.3%) at p95. NEON was faster at p50 in all three runs. The
+screen is still provisional: the three runs were consecutive and ran beside
+the background load listed above.
 
 ## Libraries considered
 

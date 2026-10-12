@@ -22,7 +22,9 @@ set is a numerical stress check, not a retrieval-accuracy estimate. The
 kernel result supports trying Accelerate on macOS, while the complete product
 quality/latency impact of changing only this primitive remains unmeasured.
 The product code uses the system Accelerate framework on macOS and preserves
-the old Rust reduction elsewhere. No model, index encoding, or public
+the old Rust reduction elsewhere. (Superseded on 2026-10-12: a rotated M4 screen found a
+four-accumulator NEON kernel faster than `cblas_sdot`, and macOS now uses it;
+see [the rescore SIMD evidence](rescore-simd-2026-10-12/README.md#apple-m4).) No model, index encoding, or public
 configuration changes here.
 
 ## Why the small rescore stays on optimized CPU
