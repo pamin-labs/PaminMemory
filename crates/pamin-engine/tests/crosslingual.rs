@@ -202,6 +202,7 @@ const LANGUAGES: [&str; 11] = [
 /// is a different and much easier task.
 const SOURCE: &str = "https://raw.githubusercontent.com/google-research-datasets/lareqa/9bc8c7fb6dd8d01d72a05a93c2cb96882b0d299c/xquad-r";
 
+use harness::shape::Shape;
 use harness::{DEFAULT_PROFILE, eval_home, profile};
 use scoring::{NDCG_AT, RECALL_AT, Scores};
 /// How deep to retrieve.
@@ -264,6 +265,9 @@ struct Question {
 struct Corpus {
     sentences: Vec<Sentence>,
     questions: Vec<Question>,
+    /// Questions the dataset has and this harness cannot score, by id, with
+    /// the reason. Listed in every run's shape rather than dropped unseen.
+    excluded: Vec<(String, String)>,
 }
 
 /// One query: a question, and the language it is asked in.
@@ -413,17 +417,28 @@ impl Corpus {
         let mut ids: Vec<String> = answers.keys().cloned().collect();
         ids.sort();
 
-        let questions: Vec<Question> = ids
+        // A question the eleven files do not agree on cannot be scored
+        // cross-lingually. There are none today; this is what would happen if
+        // the dataset gained a language it does not cover everywhere, and it
+        // is recorded as an exclusion so that it would show.
+        let (questions, partial): (Vec<Question>, Vec<Question>) = ids
             .into_iter()
             .map(|id| Question {
                 asked: asked.remove(&id).expect("the question text"),
                 answers: answers.remove(&id).expect("the answering sentences"),
                 id,
             })
-            // A question the eleven files do not agree on cannot be scored
-            // cross-lingually. There are none today; this is what would happen
-            // if the dataset gained a language it does not cover everywhere.
-            .filter(|question| question.answers.len() == LANGUAGES.len())
+            .partition(|question| question.answers.len() == LANGUAGES.len());
+        let excluded = partial
+            .into_iter()
+            .map(|question| {
+                let reason = format!(
+                    "answered in {} of {} languages",
+                    question.answers.len(),
+                    LANGUAGES.len()
+                );
+                (question.id, reason)
+            })
             .collect();
 
         assert!(
@@ -434,6 +449,7 @@ impl Corpus {
         Self {
             sentences,
             questions,
+            excluded,
         }
     }
 
@@ -446,7 +462,7 @@ impl Corpus {
     /// is positional rather than random so that a rerun compares against the
     /// same queries.
     fn queries(&self) -> Vec<Query<'_>> {
-        let all = std::env::var("XQUAD_ALL_QUERIES").is_ok();
+        let all = every_language();
         self.questions
             .iter()
             .enumerate()
@@ -463,6 +479,37 @@ impl Corpus {
             .collect()
     }
 
+    /// What a run over `queries` asks: every sentence, every query with its
+    /// whole answer key, and the questions excluded at load. See
+    /// [`harness::shape`].
+    fn shape(&self, queries: &[Query<'_>]) -> Shape {
+        let selection = if every_language() {
+            "every question in all eleven languages"
+        } else {
+            "every question, asked in one language by rotation"
+        };
+        let mut shape = Shape::new("xquad-r", selection.into(), None);
+        for sentence in &self.sentences {
+            shape.document(&[&sentence.key, &sentence.text]);
+        }
+        for query in queries {
+            let mut answers: Vec<&str> = query
+                .question
+                .answers
+                .values()
+                .map(String::as_str)
+                .collect();
+            answers.sort_unstable();
+            let mut fields = vec![query.question.id.as_str(), query.language, query.text()];
+            fields.extend(answers);
+            shape.query(&GROUPS, &fields);
+        }
+        for (id, reason) in &self.excluded {
+            shape.exclude(&GROUPS, id, reason);
+        }
+        shape
+    }
+
     /// A short digest, so a dataset that has changed does not reuse a cache.
     fn fingerprint(&self) -> String {
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -474,6 +521,11 @@ impl Corpus {
         }
         format!("{hash:016x}")
     }
+}
+
+/// `XQUAD_ALL_QUERIES`: every question in every language, not one by rotation.
+fn every_language() -> bool {
+    std::env::var("XQUAD_ALL_QUERIES").is_ok()
 }
 
 /// Downloads the language files that are not there yet.
@@ -1220,8 +1272,10 @@ async fn report_channels(
     );
 }
 
-/// Prints the table this harness exists to produce.
-fn report(title: &str, groups: &BTreeMap<String, Scores>, per_query_ms: f64) {
+/// Prints the table this harness exists to produce, after checking it scored
+/// every question the run's shape says it asked.
+fn report(title: &str, groups: &BTreeMap<String, Scores>, per_query_ms: f64, shape: &mut Shape) {
+    shape.check(title, scored(groups));
     println!("\n  {title}");
     println!(
         "  group            queries   nDCG@{NDCG_AT}   recall@{RECALL_AT}   below rank {NDCG_AT}   queries with any"
@@ -1239,6 +1293,13 @@ fn report(title: &str, groups: &BTreeMap<String, Scores>, per_query_ms: f64) {
         );
     }
     println!("  {per_query_ms:.0} ms per query\n");
+}
+
+/// Each group and how many queries it scored, for [`Shape::check`].
+fn scored(groups: &BTreeMap<String, Scores>) -> impl Iterator<Item = (&str, usize)> {
+    groups
+        .iter()
+        .map(|(group, scores)| (group.as_str(), scores.queries))
 }
 
 /// What the reranker did during a run, printed beside the scores.
@@ -1365,6 +1426,8 @@ fn fusion(setting: Option<(f32, f32)>) -> Fusion {
 fn the_model_reaches_across_languages() {
     let corpus = Corpus::load();
     let queries = corpus.queries();
+    let mut shape = corpus.shape(&queries);
+    shape.publish();
     let (named, profile) = profile();
     println!(
         "  {} sentences in {} languages, {} queries, profile {named}",
@@ -1411,6 +1474,7 @@ fn the_model_reaches_across_languages() {
         &format!("the embedding space alone, {named}"),
         &groups,
         started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64,
+        &mut shape,
     );
     assert_floors(&named, &groups, MODEL_FLOORS);
 }
@@ -1567,6 +1631,8 @@ async fn search_reaches_across_languages() {
     println!("  reranker device: cpu; export: onnx/model_int8.onnx");
     let corpus = Corpus::load();
     let queries = corpus.queries();
+    let mut shape = corpus.shape(&queries);
+    shape.publish();
     let (named, profile) = profile();
 
     // A named workspace is reused; an unnamed one is thrown away. Indexing
@@ -1890,7 +1956,7 @@ async fn search_reaches_across_languages() {
             let started = std::time::Instant::now();
             let groups = run(&engine, &queries, Route::Shipped(tier)).await;
             let cost = started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64;
-            report(&format!("{tier:?}, {named}"), &groups, cost);
+            report(&format!("{tier:?}, {named}"), &groups, cost, &mut shape);
             report_reranking(&engine, tier, queries.len());
             priced.push((tier, cost, groups));
         }
@@ -1953,6 +2019,7 @@ async fn search_reaches_across_languages() {
         &format!("the shipped search path, {named}"),
         &groups,
         started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64,
+        &mut shape,
     );
     report_reranking(&engine, Rerank::default(), queries.len());
     assert_floors(&named, &groups, SEARCH_FLOORS);
@@ -1962,6 +2029,7 @@ async fn search_reaches_across_languages() {
     // missing -- see `RERANK_IS_WORTH`.
     if named == DEFAULT_PROFILE {
         let alone = run(&engine, &queries, Route::Shipped(Rerank::Off)).await;
+        shape.check("fusion alone", scored(&alone));
         let (with, without) = (
             groups["cross_lingual"].mean_ndcg(),
             alone["cross_lingual"].mean_ndcg(),
