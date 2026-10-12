@@ -972,9 +972,15 @@ pub(crate) mod tests {
 
         let mut texts: Vec<String> = edge_cases();
         let constructed = texts.len();
+        let short: Vec<String> = texts
+            .iter()
+            .filter(|text| text.len() <= 4096)
+            .cloned()
+            .collect();
         let mut seen = std::collections::HashSet::new();
         for path in
             std::env::split_paths(&std::env::var_os("PAMIN_PARITY_CORPORA").unwrap_or_default())
+                .filter(|path| !path.as_os_str().is_empty())
         {
             let document: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&path).expect("a corpus"))
@@ -1028,11 +1034,13 @@ pub(crate) mod tests {
                 vocabularies.push(Arc::clone(&ours.get_model().0));
 
                 // Real text at the product's length; constructed text, which
-                // is where the truncation boundaries are, at both.
+                // is where the truncation boundaries are, at both -- but not
+                // the very long texts at 8, where a pair's overflow is every
+                // combination of its two sides' pieces, in the millions.
                 let texts = if max_length == product_length {
                     &texts[..]
                 } else {
-                    &texts[..constructed]
+                    &short[..]
                 };
                 let mut tokens = 0;
                 for (index, text) in texts.iter().enumerate() {
