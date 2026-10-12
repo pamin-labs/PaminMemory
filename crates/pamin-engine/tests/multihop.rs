@@ -43,7 +43,9 @@
 //! | variable | what it does |
 //! |---|---|
 //! | `MUSIQUE_DIR` | where cached pages are, instead of fetching them |
-//! | `MUSIQUE_QUESTIONS` | read only the first this many questions |
+//! | `MUSIQUE_QUESTIONS` | read only the first this many questions -- the split is ordered by hop count, so a short prefix is all two-hop; kept so a run can be paired with a project built on a prefix |
+//! | `MUSIQUE_SAMPLE` | ask this many, drawn from the whole split by a seeded hash, stratified by hop count |
+//! | `EVAL_SEED` | the seed `MUSIQUE_SAMPLE` draws with, default `harness::shape::SEED` |
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
 //! | `CHANNELS` | the channel diagnostic and the offline fusion sweep |
 //! | `FEATURES_OUT` | a path: every candidate fusion saw, one row each, for fitting a fusion offline |
@@ -96,6 +98,25 @@ fn questions() -> usize {
         .unwrap_or(QUESTIONS)
 }
 
+/// `MUSIQUE_SAMPLE`: how many questions to draw from the whole split.
+///
+/// The way to ask fewer than all of them and still ask every hop count. A
+/// prefix of 600 -- what runs have used to stay short -- is 600 two-hop
+/// questions, because the split is ordered by hop count; the three- and
+/// four-hop questions, where a walk should matter most, were never in it.
+fn sample() -> Option<usize> {
+    let sample = std::env::var("MUSIQUE_SAMPLE").ok().map(|value| {
+        value
+            .parse()
+            .expect("MUSIQUE_SAMPLE is a number of questions")
+    });
+    assert!(
+        sample.is_none() || std::env::var("MUSIQUE_QUESTIONS").is_err(),
+        "MUSIQUE_SAMPLE draws from the whole split and MUSIQUE_QUESTIONS takes a prefix; set one"
+    );
+    sample
+}
+
 /// How deep to retrieve, so recall@50 can be scored.
 const DEPTH: usize = RECALL_AT + 1;
 
@@ -146,8 +167,9 @@ struct Query {
 struct Corpus {
     memories: Vec<Memory>,
     queries: Vec<Query>,
-    /// How the questions were chosen, for the run's shape.
+    /// How the questions were chosen, and with what seed, for the run's shape.
     selection: String,
+    seed: Option<u64>,
     /// Questions read and not asked: id, group, reason.
     excluded: Vec<(String, String, String)>,
 }
@@ -159,7 +181,12 @@ impl Corpus {
             .unwrap_or_else(|error| panic!("creating {}: {error}", dir.display()));
 
         let mut rows: Vec<Row> = Vec::new();
-        let wanted = questions();
+        let sample = sample();
+        let wanted = if sample.is_some() {
+            QUESTIONS
+        } else {
+            questions()
+        };
         for offset in (0..wanted).step_by(PER_PAGE) {
             let path = dir.join(format!("page-{offset:05}.json"));
             download(&path, &format!("{ROWS}&offset={offset}&length={PER_PAGE}"));
@@ -178,6 +205,7 @@ impl Corpus {
             }
         }
         rows.truncate(wanted);
+        let (rows, selection, seed) = select(rows, sample, harness::shape::seed());
 
         // Distinct paragraphs per title, in first-seen order so the joined
         // text is the same on every run.
@@ -220,18 +248,11 @@ impl Corpus {
             })
             .collect();
 
-        let selection = if std::env::var("MUSIQUE_QUESTIONS").is_ok() {
-            format!(
-                "the first {} questions in the dataset's order, which is by hop count",
-                rows.len()
-            )
-        } else {
-            "every answerable dev question".to_string()
-        };
         Self {
             memories,
             queries,
             selection,
+            seed,
             excluded,
         }
     }
@@ -239,7 +260,7 @@ impl Corpus {
     /// What a run asks: every memory, every question with its supporting
     /// titles, and the questions excluded at load. See [`harness::shape`].
     fn shape(&self) -> Shape {
-        let mut shape = Shape::new("musique", self.selection.clone(), None);
+        let mut shape = Shape::new("musique", self.selection.clone(), self.seed);
         for memory in &self.memories {
             shape.document(&[&memory.title, &memory.text]);
         }
@@ -292,6 +313,65 @@ impl Corpus {
 fn group(row: &Row) -> String {
     let hops = row.id.split("hop").next().unwrap_or("?");
     format!("{hops}hop")
+}
+
+/// The rows a run asks, how they were chosen in words, and the seed if one
+/// chose them.
+///
+/// A sample is drawn per hop count in proportion to the split, by a hash of
+/// the seed and the question id, and never by anything a run measured. Each
+/// row carries its twenty paragraphs, and the corpus is built from the rows
+/// drawn, so a question is asked among exactly the paragraphs it came with:
+/// the linked group stays whole. The corpus is smaller than the whole split's,
+/// so a sample's figures are not comparable with a prefix's or the whole
+/// split's -- compare samples with samples, at the same seed.
+fn select(rows: Vec<Row>, sample: Option<usize>, seed: u64) -> (Vec<Row>, String, Option<u64>) {
+    let Some(wanted) = sample else {
+        let selection = if std::env::var("MUSIQUE_QUESTIONS").is_ok() {
+            format!(
+                "the first {} questions in the dataset's order, which is by hop count",
+                rows.len()
+            )
+        } else {
+            "every answerable dev question".to_string()
+        };
+        return (rows, selection, None);
+    };
+    let read = rows.len();
+    let hops: HashSet<String> = rows.iter().map(group).collect();
+    let drawn = harness::shape::stratified(rows, wanted, seed, group, |row| row.id.clone());
+    // The premise of the mode: every hop count is asked. A sample too small
+    // to reach one is a prefix by another name.
+    let reached: HashSet<String> = drawn.iter().map(group).collect();
+    assert_eq!(
+        reached, hops,
+        "a sample of {wanted} does not reach every hop count in the split"
+    );
+    let selection =
+        format!("a seeded sample of {wanted} of {read} questions, stratified by hop count");
+    (drawn, selection, Some(seed))
+}
+
+#[test]
+fn a_sample_asks_every_hop_count_where_a_prefix_does_not() {
+    // Ordered by hop count, as the split is.
+    let rows: Vec<Row> = [("2hop", 50), ("3hop", 30), ("4hop", 20)]
+        .into_iter()
+        .flat_map(|(hops, count)| {
+            (0..count).map(move |at| Row {
+                id: format!("{hops}__{at}"),
+                question: String::new(),
+                paragraphs: Vec::new(),
+            })
+        })
+        .collect();
+    let prefix: HashSet<String> = rows[..10].iter().map(group).collect();
+    assert_eq!(prefix.len(), 1, "{prefix:?}");
+
+    let (drawn, _, seed) = select(rows, Some(10), harness::shape::SEED);
+    assert_eq!(seed, Some(harness::shape::SEED));
+    let count = |hops: &str| drawn.iter().filter(|row| group(row) == hops).count();
+    assert_eq!((count("2hop"), count("3hop"), count("4hop")), (5, 3, 2));
 }
 
 /// Fetches one page if it is not already cached, through `curl` for the reason
