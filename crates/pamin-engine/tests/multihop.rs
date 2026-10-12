@@ -69,6 +69,7 @@ use pamin_engine::{Depths, Engine};
 use pamin_index::{Access, Profile, Rerank, VectorIndex};
 use pamin_store::Workspace;
 
+use harness::shape::Shape;
 use scoring::{NDCG_AT, RECALL_AT, Scores};
 
 /// Where the rows come from: the answerable half of the dev split.
@@ -145,6 +146,10 @@ struct Query {
 struct Corpus {
     memories: Vec<Memory>,
     queries: Vec<Query>,
+    /// How the questions were chosen, for the run's shape.
+    selection: String,
+    /// Questions read and not asked: id, group, reason.
+    excluded: Vec<(String, String, String)>,
 }
 
 impl Corpus {
@@ -178,6 +183,7 @@ impl Corpus {
         // text is the same on every run.
         let mut texts: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut queries = Vec::new();
+        let mut excluded = Vec::new();
         for row in &rows {
             for paragraph in &row.paragraphs {
                 let seen = texts.entry(paragraph.title.clone()).or_default();
@@ -185,17 +191,24 @@ impl Corpus {
                     seen.push(paragraph.paragraph_text.clone());
                 }
             }
-            let hops = row.id.split("hop").next().unwrap_or("?");
+            let relevant: HashSet<String> = row
+                .paragraphs
+                .iter()
+                .filter(|paragraph| paragraph.is_supporting)
+                .map(|paragraph| paragraph.title.clone())
+                .collect();
+            // Scored, it would count zero whatever came back -- a question the
+            // corpus cannot grade. Its paragraphs stay: they are documents
+            // every other question is searched among.
+            if relevant.is_empty() {
+                excluded.push((row.id.clone(), group(row), "no supporting paragraph".into()));
+                continue;
+            }
             queries.push(Query {
                 id: row.id.clone(),
                 text: row.question.clone(),
-                group: format!("{hops}hop"),
-                relevant: row
-                    .paragraphs
-                    .iter()
-                    .filter(|paragraph| paragraph.is_supporting)
-                    .map(|paragraph| paragraph.title.clone())
-                    .collect(),
+                group: group(row),
+                relevant,
             });
         }
 
@@ -207,7 +220,40 @@ impl Corpus {
             })
             .collect();
 
-        Self { memories, queries }
+        let selection = if std::env::var("MUSIQUE_QUESTIONS").is_ok() {
+            format!(
+                "the first {} questions in the dataset's order, which is by hop count",
+                rows.len()
+            )
+        } else {
+            "every answerable dev question".to_string()
+        };
+        Self {
+            memories,
+            queries,
+            selection,
+            excluded,
+        }
+    }
+
+    /// What a run asks: every memory, every question with its supporting
+    /// titles, and the questions excluded at load. See [`harness::shape`].
+    fn shape(&self) -> Shape {
+        let mut shape = Shape::new("musique", self.selection.clone(), None);
+        for memory in &self.memories {
+            shape.document(&[&memory.title, &memory.text]);
+        }
+        for query in &self.queries {
+            let mut relevant: Vec<&str> = query.relevant.iter().map(String::as_str).collect();
+            relevant.sort_unstable();
+            let mut fields = vec![query.id.as_str(), query.text.as_str()];
+            fields.extend(relevant);
+            shape.query(&[&query.group], &fields);
+        }
+        for (id, group, reason) in &self.excluded {
+            shape.exclude(&[group], id, reason);
+        }
+        shape
     }
 
     fn fingerprint(&self) -> String {
@@ -240,6 +286,12 @@ impl Corpus {
             );
         }
     }
+}
+
+/// `2hop`, `3hop` or `4hop`, read from the question's id.
+fn group(row: &Row) -> String {
+    let hops = row.id.split("hop").next().unwrap_or("?");
+    format!("{hops}hop")
 }
 
 /// Fetches one page if it is not already cached, through `curl` for the reason
@@ -275,6 +327,8 @@ fn score(into: &mut Scores, query: &Query, ranked: &[String]) {
 async fn search_answers_questions_that_take_several_steps() {
     let corpus = Corpus::load();
     corpus.describe();
+    let mut shape = corpus.shape();
+    shape.publish();
 
     let named = std::env::var("PAMIN_PROFILE").unwrap_or_else(|_| DEFAULT_PROFILE.into());
     let profile = Profile::parse(&named).unwrap_or_else(|| panic!("unknown profile {named}"));
@@ -529,6 +583,17 @@ async fn search_answers_questions_that_take_several_steps() {
             let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
             score(into.entry(query.group.clone()).or_default(), query, &ranked);
         }
+    }
+    for (table, groups) in [
+        ("the shipped search path", &shipped),
+        ("without the graph", &graphless),
+    ] {
+        shape.check(
+            table,
+            groups
+                .iter()
+                .map(|(group, scores)| (group.as_str(), scores.queries)),
+        );
     }
 
     println!("\n  the shipped search path, {named}, against the same path without the graph");
