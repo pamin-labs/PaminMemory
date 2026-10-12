@@ -489,7 +489,7 @@ async fn search_answers_questions_that_take_several_steps() {
     shape.publish(
         "search_answers_questions_that_take_several_steps",
         &named,
-        &harness::shape::arm(&ARMS),
+        &ARMS,
     );
     let home = std::env::var("PAMIN_EVAL_HOME").ok();
     let scratch = home

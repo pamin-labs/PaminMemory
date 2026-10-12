@@ -155,30 +155,55 @@ fn tallied() -> std::sync::MutexGuard<'static, Option<BTreeMap<(String, String),
     TALLY.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Which arm of a harness this run is: each of `vars` that is set, with its
-/// value when the value is short and plain (`TIERS=fast`), else its name
-/// alone (`FEATURES_OUT`, a path). `shipped` when none is set.
-pub fn arm(vars: &[&str]) -> String {
-    let set: Vec<String> = vars
-        .iter()
-        .filter_map(|var| {
-            let value = std::env::var(var).ok()?;
-            let plain = value.len() <= 16
-                && value
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || ",._".contains(c));
-            Some(if plain {
-                format!("{var}={value}")
-            } else {
-                (*var).to_string()
-            })
+/// `PAMIN_` variables that say only where something is, or what to log, and
+/// change no result -- plus `PAMIN_PROFILE`, which the record names already.
+/// Every other `PAMIN_` variable is taken to change what is measured.
+const NOT_SETTINGS: [&str; 12] = [
+    "PAMIN_EMBEDDING_TEST_OUTPUT",
+    "PAMIN_EVAL_HOME",
+    "PAMIN_HOME",
+    "PAMIN_LOG",
+    "PAMIN_MATRIX_OUTPUT",
+    "PAMIN_NATIVE_TEST_CACHE",
+    "PAMIN_POSTGRES_DIR",
+    "PAMIN_PREPARED_CACHE",
+    "PAMIN_PROFILE",
+    "PAMIN_RERANK_TEST_OUTPUT",
+    "PAMIN_SHARED_CACHE",
+    "PAMIN_TEST_MODEL_CACHE",
+];
+
+/// What makes this run an arm other than the shipped one, as sorted
+/// `NAME=value` lines: each of the harness's own `vars` that is set, and
+/// every set `PAMIN_` variable but [`NOT_SETTINGS`].
+///
+/// The `PAMIN_` variables are found rather than listed. A list was kept per
+/// harness, and the product's runtime knobs -- `PAMIN_RERANK_DEPTH`,
+/// `PAMIN_SEARCH_EFFORT` -- were never on it, so a run with one set was
+/// recorded as the shipped run, over the shipped run's record.
+fn settings(vars: &[&str], set: impl IntoIterator<Item = (String, String)>) -> Vec<String> {
+    let mut settings: Vec<String> = set
+        .into_iter()
+        .filter(|(name, _)| {
+            vars.contains(&name.as_str())
+                || (name.starts_with("PAMIN_") && !NOT_SETTINGS.contains(&name.as_str()))
         })
+        .map(|(name, value)| format!("{name}={value}"))
         .collect();
-    if set.is_empty() {
-        "shipped".to_string()
-    } else {
-        set.join("+")
+    settings.sort();
+    settings
+}
+
+/// The arm's name in a record's file name: `shipped` when nothing is set,
+/// else a short hash of [`settings`], which can hold paths and run long. The
+/// settings themselves are printed and recorded in full.
+fn arm(settings: &[String]) -> String {
+    if settings.is_empty() {
+        return "shipped".to_string();
     }
+    let hash = Sha256::digest(settings.join("\n").as_bytes());
+    let short: String = hash[..6].iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("arm-{short}")
 }
 
 /// One part of a record's file name, with anything a file system might
@@ -227,6 +252,8 @@ pub struct Shape {
     record: Option<PathBuf>,
     /// Which test, profile and arm the run was, as `publish` was told.
     run: [String; 3],
+    /// What set the arm apart, from [`settings`].
+    settings: Vec<String>,
 }
 
 /// One record's digest: its fields, separated so that no two field lists
@@ -271,6 +298,7 @@ impl Shape {
             coverage: None,
             record: None,
             run: Default::default(),
+            settings: Vec::new(),
         }
     }
 
@@ -339,15 +367,27 @@ impl Shape {
     /// scored. Called once, before anything is searched, so a run that dies
     /// still said what it was running.
     ///
-    /// The record is named by `test`, `profile` and `arm` (see [`arm`]) as
-    /// well as the digest. It was named by the digest alone, and every arm
-    /// over one corpus wrote the same file, so the last run's coverage
-    /// replaced the others'.
-    pub fn publish(&mut self, test: &str, profile: &str, arm: &str) {
+    /// The record is named by `test`, `profile` and arm as well as the
+    /// digest, the arm being the harness's `vars` and the `PAMIN_` settings
+    /// that are set (see [`settings`]). It was named by the digest alone, and
+    /// every arm over one corpus wrote the same file, so the last run's
+    /// coverage replaced the others'.
+    pub fn publish(&mut self, test: &str, profile: &str, vars: &[&str]) {
         let digest = self.digest();
-        self.run = [test.to_string(), profile.to_string(), arm.to_string()];
+        let set = std::env::vars_os().map(|(name, value)| {
+            (
+                name.to_string_lossy().into_owned(),
+                value.to_string_lossy().into_owned(),
+            )
+        });
+        self.settings = settings(vars, set);
+        let arm = arm(&self.settings);
+        self.run = [test.to_string(), profile.to_string(), arm.clone()];
         let name = &self.name;
         println!("  shape {name}: {test}, profile {profile}, arm {arm}");
+        for setting in &self.settings {
+            println!("  shape {name}: arm {arm} sets {setting}");
+        }
         println!(
             "  shape {name}: corpus sha256 {digest} over {} questions and {} documents",
             self.queries.len(),
@@ -377,7 +417,7 @@ impl Shape {
         let dir = super::eval_home().join("shape");
         std::fs::create_dir_all(&dir)
             .unwrap_or_else(|error| panic!("creating {}: {error}", dir.display()));
-        let file = [name.as_str(), test, profile, arm, &digest[..16]]
+        let file = [name.as_str(), test, profile, &arm, &digest[..16]]
             .map(file_part)
             .join("-");
         self.record = Some(dir.join(format!("{file}.json")));
@@ -537,6 +577,7 @@ impl Shape {
             "test": test,
             "profile": profile,
             "arm": arm,
+            "settings": self.settings,
             "corpus_sha256": self.digest(),
             "selection": self.selection,
             "seed": self.seed,
@@ -703,6 +744,39 @@ mod tests {
         assert_eq!(
             failures(&[("g", "q1", 2), ("g", "q2", 2)]),
             Vec::<String>::new()
+        );
+    }
+
+    /// An arm is named by everything set that changes a result, and by
+    /// nothing else.
+    #[test]
+    fn an_arm_is_named_by_every_setting_that_changes_a_result() {
+        let named = |set: &[(&str, &str)]| {
+            let set = set
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()));
+            arm(&settings(&["SWEEP"], set))
+        };
+        let shipped = named(&[
+            ("PAMIN_EVAL_HOME", "/data"),
+            ("PAMIN_PROFILE", "fast"),
+            ("HOME", "/root"),
+        ]);
+        assert_eq!(shipped, "shipped");
+        let depth = named(&[("PAMIN_RERANK_DEPTH", "20")]);
+        let effort = named(&[("PAMIN_SEARCH_EFFORT", "low")]);
+        let both = named(&[("PAMIN_SEARCH_EFFORT", "low"), ("PAMIN_RERANK_DEPTH", "20")]);
+        let swept = named(&[("SWEEP", "1"), ("PAMIN_EVAL_HOME", "/data")]);
+        let distinct: BTreeSet<&String> = [&shipped, &depth, &effort, &both, &swept].into();
+        assert_eq!(distinct.len(), 5, "{distinct:?}");
+        // Found in any order, named the same.
+        assert_eq!(
+            both,
+            named(&[("PAMIN_RERANK_DEPTH", "20"), ("PAMIN_SEARCH_EFFORT", "low")])
+        );
+        assert_eq!(
+            settings(&[], [("PAMIN_DEVICE".to_string(), "cpu".to_string())]),
+            ["PAMIN_DEVICE=cpu"]
         );
     }
 
