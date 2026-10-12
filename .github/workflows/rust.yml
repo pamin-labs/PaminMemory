@@ -76,7 +76,7 @@ jobs:
       - name: Cache dependency builds
         uses: Swatinem/rust-cache@v2
       - name: Test the vector kernels
-        run: cargo test -p pamin-index --lib -- vector_math half::
+        run: cargo test -p pamin-index --lib -- vector_math "half::tests"
 
   licences:
     name: dependency licences
