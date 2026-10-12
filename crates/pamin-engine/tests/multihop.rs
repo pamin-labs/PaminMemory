@@ -194,6 +194,7 @@ impl Corpus {
             .unwrap_or_else(|error| panic!("creating {}: {error}", dir.display()));
 
         let mut rows: Vec<Row> = Vec::new();
+        let mut reported: Option<usize> = None;
         let sample = sample();
         let wanted = if sample.is_some() {
             QUESTIONS
@@ -207,6 +208,19 @@ impl Corpus {
                 .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
             let body: serde_json::Value = serde_json::from_str(&text)
                 .unwrap_or_else(|error| panic!("parsing {}: {error}", path.display()));
+            if let Some(total) = body["num_rows_total"].as_u64() {
+                let total = total as usize;
+                if let Some(earlier) = reported {
+                    assert_eq!(
+                        earlier,
+                        total,
+                        "{} reports {total} rows in the split where an earlier page reported \
+                         {earlier}: the cached pages are from different versions of it",
+                        path.display()
+                    );
+                }
+                reported = Some(total);
+            }
             for row in body["rows"]
                 .as_array()
                 .unwrap_or_else(|| panic!("{} has no rows: {text:.200}", path.display()))
@@ -217,6 +231,7 @@ impl Corpus {
                 );
             }
         }
+        complete(rows.len(), wanted, reported, &dir);
         rows.truncate(wanted);
         let (rows, selection, seed) = select(rows, sample, harness::shape::seed());
 
@@ -319,6 +334,50 @@ impl Corpus {
                 relevant as f64 / queries.max(1) as f64
             );
         }
+    }
+}
+
+/// Fails unless the pages held every question asked for and, when the whole
+/// split was asked for -- which is what `MUSIQUE_SAMPLE` draws from -- unless
+/// the dataset API reports that as the whole split.
+///
+/// A page that came back short, cached or fetched, drops the tail. The split
+/// is ordered by hop count, so the tail is the four-hop questions, and a
+/// sample drawn from what is left still asks every hop count it has.
+fn complete(loaded: usize, wanted: usize, reported: Option<usize>, dir: &Path) {
+    if let (QUESTIONS, Some(total)) = (wanted, reported) {
+        assert_eq!(
+            total, QUESTIONS,
+            "the dataset API reports {total} rows in the split, where the whole split is \
+             taken to be {QUESTIONS}: the dataset has changed, and `QUESTIONS` with it"
+        );
+    }
+    assert!(
+        loaded >= wanted,
+        "read {loaded} of the {wanted} MuSiQue questions asked for, {} short: a page under \
+         {} came back short. Delete the cached pages and rerun",
+        wanted - loaded,
+        dir.display()
+    );
+}
+
+/// The loader's premise: a run reads every question it asks for, and the
+/// whole split is what the API says it is.
+#[test]
+fn a_short_read_of_the_split_fails() {
+    let dir = Path::new("cache");
+    complete(QUESTIONS, QUESTIONS, Some(QUESTIONS), dir);
+    complete(QUESTIONS, QUESTIONS, None, dir);
+    complete(600, 600, Some(QUESTIONS), dir);
+    for (loaded, wanted, reported, expected) in [
+        (2_400, QUESTIONS, Some(QUESTIONS), "17 short"),
+        (QUESTIONS, QUESTIONS, Some(2_500), "reports 2500 rows"),
+        (500, 600, Some(QUESTIONS), "100 short"),
+    ] {
+        let failed = std::panic::catch_unwind(|| complete(loaded, wanted, reported, dir))
+            .expect_err("a short read passed");
+        let message = failed.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(message.contains(expected), "{message}");
     }
 }
 
