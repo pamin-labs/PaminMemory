@@ -1,5 +1,11 @@
 # Host rescore kernels: SIMD dot product and fp16 conversion
 
+**Status: provisional.** All three passes below ran beside unrelated Cargo
+builds on the same host. A clean rerun is pending: no competing jobs, p50 and
+p95 pooled over every pass, and forced AVX2 and AVX-512 arms rotated against
+each other. Until it lands, treat these figures as a screen, not a validated
+result.
+
 A component screen of the host-side part of `recall_dense`
 (`crates/pamin-index/src/projection.rs`). For each candidate, that code widens
 the stored fp16 vector and takes two dot products (its norm, and its dot with
@@ -15,7 +21,7 @@ Each arm is one commit's implementation of the same work: 1 query norm, then
 | Arm | Commit | fp16 → f32 | Dot product |
 | --- | --- | --- | --- |
 | `main` | `ad33d2d` | scalar `decode`, one code at a time | sequential f32 sum |
-| `dot` | `255fbe1` | scalar `decode` | runtime-dispatched kernel ([`vector_math.rs`](vector_math.rs)); AVX-512F on this host |
+| `dot` | `255fbe1` | scalar `decode` | runtime-dispatched kernel (`crates/pamin-index/src/vector_math.rs`); AVX-512F on this host |
 | `convert` | `01614fb` | `half` 2.7.1 slice conversion (F16C on this host) | as `dot` |
 
 ## Results
@@ -38,7 +44,7 @@ The `main` and `dot` columns compare `dot` with its predecessor `main`. The
 | Max abs cosine error vs f64 oracle | 7.75e-8 | 1.54e-8 | −6.21e-8 (−80%) | 1.54e-8 | 0 (0%) | −6.21e-8 (−80%) |
 | Top-10 overlap with oracle (of 10) | 10 | 10 | 0 | 10 | 0 | 0 |
 | p50 µs per 100×1024 rescore | 241.72 | 131.32 | −110.40 (−45.7%) | 36.67 | −94.65 (−72.1%) | −205.05 (−84.8%) |
-| p95 µs (pass 2, the quietest) | 247.47 | 146.42 | −101.05 (−40.8%) | 42.63 | −103.79 (−70.9%) | −204.84 (−82.8%) |
+| p95 µs | N/A | N/A | N/A | N/A | N/A | N/A |
 | Memory | N/A | N/A | N/A | N/A | N/A | N/A |
 | Disk | N/A | N/A | N/A | N/A | N/A | N/A |
 
@@ -46,6 +52,9 @@ The `main` and `dot` columns compare `dot` with its predecessor `main`. The
   both arms allocate one 1024-wide `Vec<f32>` per candidate, as `main` does.
 - **Disk:** not measured as a size. The release binary gains the `half` and
   `crunchy` crates' code.
+- **p95:** not reported. The per-pass p95 ranged from 247 to 631 µs for `main`
+  under the competing builds. It waits for the clean rerun, pooled over all
+  passes.
 - **Exactness:** a unit test checks the fp16 conversion bit-for-bit against
   `decode` for all 65536 codes. A second unit test checks every dot kernel the
   CPU can run against an f64 sum.
@@ -79,9 +88,12 @@ claimed. The change exists so that no part of the CPU path stays scalar.
 
 ## Reproduce
 
-1. Make an empty Cargo package.
-2. Copy [`bench-Cargo.toml`](bench-Cargo.toml) to its `Cargo.toml` and
-   [`bench-Cargo.lock`](bench-Cargo.lock) to its `Cargo.lock`.
-3. Copy [`main.rs`](main.rs), [`vector_math.rs`](vector_math.rs) and
-   [`decode.rs`](decode.rs) into its `src/`.
-4. Run `cargo run --release --locked` three times.
+The harness only produces numbers, so it is kept out of this tree.
+
+- Location: `pamin-memory/research/2026-10-12/raw/rescore-simd/` in the
+  `internal-docs` submodule. Its README explains how to run it.
+- Arms: the rerun forces each x86 kernel, so AVX2 and AVX-512 are timed
+  against each other.
+- Premise: it aborts before timing if any arm misses the f64 oracle by more
+  than 1e-6 in cosine or changes the top 10.
+- Raw output: [`result.txt`](result.txt) is this provisional run's output.

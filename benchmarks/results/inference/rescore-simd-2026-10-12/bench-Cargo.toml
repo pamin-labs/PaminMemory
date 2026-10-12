@@ -1,8 +1,0 @@
-[package]
-name = "rescorebench"
-version = "0.1.0"
-edition = "2024"
-[dependencies]
-half = "2.7.1"
-[profile.release]
-debug = false
