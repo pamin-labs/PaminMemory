@@ -33,7 +33,8 @@ struct Cli {
     #[arg(long, env = "PAMIN_PROJECT", global = true, default_value = "default")]
     project: String,
 
-    /// Which embedding profile to use: speed, balanced, accuracy, or dual_accuracy (experimental).
+    /// Which embedding profile to use: speed, balanced, accuracy, dual_accuracy (experimental), or
+    /// gemma (experimental; reads a local model from PAMIN_EG2_DIR).
     ///
     /// The index records the profile it was built with, so changing this
     /// requires `pamin reindex` rather than silently mixing vector spaces.

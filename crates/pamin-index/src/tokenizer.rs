@@ -186,6 +186,29 @@ pub(crate) fn load(repository: &Repository, max_length: usize) -> Result<Tokeniz
     )
 }
 
+/// A tokenizer from a local directory's files, as [`load`] reads a
+/// repository's.
+///
+/// For a model no hub serves (see `crate::gemma`). A directory without
+/// `special_tokens_map.json` registers no special tokens beyond those
+/// `tokenizer.json` already declares, which is what the Hugging Face loader
+/// does with such a directory.
+pub(crate) fn load_dir(directory: &Path, max_length: usize) -> Result<Tokenizer> {
+    let read = |file: &str| -> Result<Vec<u8>> { Ok(std::fs::read(directory.join(file))?) };
+    let special_tokens_map = match std::fs::read(directory.join("special_tokens_map.json")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => b"{}".to_vec(),
+        Err(error) => return Err(error.into()),
+    };
+    build(
+        &read("tokenizer.json")?,
+        &read("config.json")?,
+        &special_tokens_map,
+        &read("tokenizer_config.json")?,
+        max_length,
+    )
+}
+
 /// A tokenizer from its four files, configured the way `fastembed` 6.1's
 /// `load_tokenizer` configures one.
 ///

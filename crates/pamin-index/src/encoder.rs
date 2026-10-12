@@ -59,24 +59,39 @@ impl Encoder {
         Self::from_session(session, repository, max_length)
     }
 
+    /// The model `model` finds, on `providers`, with a tokenizer the caller
+    /// has already loaded -- for a model that comes from no repository.
+    pub(crate) fn load_with(
+        model: impl FnOnce() -> Result<PathBuf>,
+        tokenizer: Tokenizer,
+        providers: impl Into<crate::inference::Target>,
+    ) -> Result<Self> {
+        let session = crate::inference::session(providers, model)?;
+        Ok(Self::from_parts(session, tokenizer))
+    }
+
     pub(crate) fn from_session(
         session: Session,
         repository: &Repository,
         max_length: usize,
     ) -> Result<Self> {
         let tokenizer = crate::tokenizer::load(repository, max_length)?;
+        Ok(Self::from_parts(session, tokenizer))
+    }
+
+    fn from_parts(session: Session, tokenizer: Tokenizer) -> Self {
         let token_type_ids = session
             .inputs()
             .iter()
             .any(|input| input.name() == "token_type_ids");
-        Ok(Self {
+        Self {
             runtime_plan: crate::inference::RuntimePlan::default(),
             tokenizer,
             session,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             fixed: None,
             token_type_ids,
-        })
+        }
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

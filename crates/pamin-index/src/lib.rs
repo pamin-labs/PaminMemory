@@ -10,6 +10,7 @@ mod descriptors;
 pub mod embedding;
 mod encoder;
 pub mod error;
+mod gemma;
 mod half;
 mod hub;
 mod inference;

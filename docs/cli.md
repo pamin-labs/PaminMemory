@@ -15,7 +15,7 @@ The examples below are real output from a workspace built by the writes in
 | --- | --- | --- | --- |
 | `--home <path>` | `PAMIN_HOME` | `~/.pamin` | Where the database, index, and downloaded models live |
 | `--project <name>` | `PAMIN_PROJECT` | `default` | The memory namespace to operate on |
-| `--profile <name>` | `PAMIN_PROFILE` | `accuracy` | Embedding profile: `speed`, `balanced`, `accuracy`, or experimental `dual_accuracy` |
+| `--profile <name>` | `PAMIN_PROFILE` | `accuracy` | Embedding profile: `speed`, `balanced`, `accuracy`, or experimental `dual_accuracy` or `gemma` |
 | `--vector-index <name>` | `PAMIN_VECTOR_INDEX` | `memory` | Vector index a project is built with: `disk` or `memory` |
 | `--json` | | off | Emit JSON instead of text, on one line |
 | `--pretty` | | off | Indent that JSON. Requires `--json` |
@@ -1306,6 +1306,10 @@ row and paying startup once.
 ### Experimental dual-space profile
 
 `dual_accuracy` uses pinned BGE-M3 INT8 plus a pinned complementary PPLX 0.6B singleton/int8-pooled encoding. It is opt-in; the default remains `accuracy`. Its marker identity is distinct, so changing to it requires `reindex`. Both vectors are written atomically, retained during same-profile rebuild/reshape, and included in recall. The two streams split the existing semantic candidate/vote budget equally; adding a model does not silently double either budget. Full product precision and resource comparisons are required before considering it a default.
+
+### Experimental EmbeddingGemma 2 profile
+
+`gemma` runs an int8 export of EmbeddingGemma 2 as the dense channel, in place of BGE-M3, one text per forward pass with the model's query and document prompts, truncated at 512 tokens. The export is not published, so there is no download: `PAMIN_EG2_DIR` names a directory holding `model.onnx`, its `model.onnx.data`, and the model's `tokenizer.json`, `config.json` and `tokenizer_config.json`. Vectors are 768-dimensional; `PAMIN_EG2_DIMS=512` (or 256, 128) keeps a renormalized prefix. Its marker identity is a digest of those files plus the width, so a different export or width requires `reindex`. EmbeddingGemma is distributed under Google's Gemma terms, which carry use restrictions that pass to downstream users. It is opt-in; the default remains `accuracy`.
 
 Registered plugin libraries participate in automatic routing only for discovered NPU devices; arbitrary non-NPU plugins are not automatically selected. Runtime execution failure quarantines the affected qualified model/revision, runtime/build, target and configured shape scope for five minutes, requalifies the remaining accelerator/optimized CPU plans and retries the complete operation. A replacement becomes visible only after that operation succeeds. Resident models check the recovery deadline before query/score-cache lookups and requalify on the next request after expiry; failed revalidation retains the qualified fallback and reserves another five-minute interval. Successful replacements clear query/score entries while preserving lifetime counters, so cached results from different targets or export scales are not mixed. Completed all-plan measurements use the normal plan lifetime; only incomplete/transient qualification keeps the five-minute retry interval.
 

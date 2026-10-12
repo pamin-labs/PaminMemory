@@ -70,6 +70,16 @@ pub enum Profile {
     /// described as an order of magnitude more expensive.
     #[default]
     Accuracy,
+    /// Experimental: EmbeddingGemma 2 with int8 weights, 768 dimensions, read
+    /// from the local directory `PAMIN_EG2_DIR` names -- see `crate::gemma`.
+    ///
+    /// The candidate to replace BGE-M3 as the dense channel. Measured outside
+    /// the product on one thread, it embeds a short text in three quarters of
+    /// BGE-M3's time with 366 MB less resident; whether the product's search
+    /// keeps BGE-M3's accuracy is what the evaluation harnesses are run under
+    /// this profile to find out. Not a default, and not downloadable: the
+    /// export is hosted nowhere yet. The licence note above applies to it.
+    Gemma,
 }
 
 impl Profile {
@@ -81,6 +91,7 @@ impl Profile {
             Self::Accuracy | Self::DualAccuracy => {
                 unreachable!("the accuracy profile runs the joint BGE-M3 export")
             }
+            Self::Gemma => unreachable!("the gemma profile reads a local export"),
         }
     }
 
@@ -94,6 +105,7 @@ impl Profile {
     fn prefixes(self) -> Option<(&'static str, &'static str)> {
         match self {
             Self::Speed | Self::Balanced => Some(("query: ", "passage: ")),
+            Self::Gemma => Some(crate::gemma::PREFIXES),
             Self::Accuracy | Self::DualAccuracy => None,
         }
     }
@@ -107,6 +119,7 @@ impl Profile {
             Self::Speed => 384,
             Self::Balanced => 768,
             Self::Accuracy | Self::DualAccuracy => 1024,
+            Self::Gemma => crate::gemma::dimensions(),
         }
     }
 
@@ -128,6 +141,8 @@ impl Profile {
             Self::DualAccuracy => {
                 "bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4"
             }
+            // No hub revision to name, so a digest of the files and the width.
+            Self::Gemma => crate::gemma::identity(),
         }
     }
 
@@ -135,11 +150,12 @@ impl Profile {
         (self == Self::DualAccuracy).then_some(1024)
     }
 
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Speed,
         Self::Balanced,
         Self::Accuracy,
         Self::DualAccuracy,
+        Self::Gemma,
     ];
 
     /// Parses a profile name.
@@ -149,8 +165,15 @@ impl Profile {
             "balanced" => Some(Self::Balanced),
             "accuracy" => Some(Self::Accuracy),
             "dual_accuracy" => Some(Self::DualAccuracy),
+            "gemma" => Some(Self::Gemma),
             _ => None,
         }
+    }
+
+    /// Whether each text runs in a forward pass of its own, because its
+    /// vector would otherwise depend on its batch -- see [`Embedder::run`].
+    fn singleton(self) -> bool {
+        matches!(self, Self::Accuracy | Self::DualAccuracy | Self::Gemma)
     }
 }
 
@@ -378,8 +401,9 @@ fn primary_model(
     cache_dir: &std::path::Path,
 ) -> Result<(Encoder, crate::inference::Device)> {
     std::fs::create_dir_all(cache_dir)?;
-    let repository = if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
-        Repository::open_at(
+    let repository = match profile {
+        Profile::Gemma => None,
+        Profile::Accuracy | Profile::DualAccuracy => Some(Repository::open_at(
             cache_dir,
             JOINT_REPOSITORY,
             if profile == Profile::DualAccuracy {
@@ -387,21 +411,25 @@ fn primary_model(
             } else {
                 "main"
             },
-        )?
-    } else {
-        let model = profile.model();
-        let info = TextEmbedding::get_model_info(&model)
-            .map_err(|error| IndexError::Engine(format!("finding embedding model: {error}")))?;
-        Repository::open(cache_dir, &info.model_code)?
+        )?),
+        Profile::Speed | Profile::Balanced => {
+            let model = profile.model();
+            let info = TextEmbedding::get_model_info(&model)
+                .map_err(|error| IndexError::Engine(format!("finding embedding model: {error}")))?;
+            Some(Repository::open(cache_dir, &info.model_code)?)
+        }
     };
     let identity = format!(
         "embedding-query-v4:max512:joint-singleton:e5-cpu256-accelerator8:{}:{}",
         profile.model_id(),
-        repository.identity(cache_dir)
+        match &repository {
+            Some(repository) => repository.identity(cache_dir),
+            None => crate::gemma::source()?,
+        }
     );
     let references = std::cell::RefCell::new(crate::inference::References::default());
     let long = "migration ".repeat(600);
-    let fixtures: Vec<String> = if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
+    let fixtures: Vec<String> = if profile.singleton() {
         vec![
             "deployment rollback".into(),
             "数据库迁移失败后如何回滚？".into(),
@@ -459,7 +487,8 @@ fn primary_model(
         },
     )?;
 
-    if device == crate::inference::Device::Cpu
+    if let Some(repository) = &repository
+        && device == crate::inference::Device::Cpu
         && matches!(profile, Profile::Accuracy | Profile::DualAccuracy)
     {
         crate::prepared::release(&repository.file(cache_dir, JOINT_FILE), cache_dir);
@@ -477,6 +506,10 @@ fn profile_vectors(
         Profile::Accuracy | Profile::DualAccuracy => {
             texts.iter().map(|text| dense(model, text)).collect()
         }
+        Profile::Gemma => texts
+            .iter()
+            .map(|text| crate::gemma::truncated(dense(model, text)?))
+            .collect(),
         _ => e5_vectors(
             model,
             texts,
@@ -544,6 +577,11 @@ fn load_on(
     device: crate::inference::Device,
     target: crate::inference::Target,
 ) -> Result<Encoder> {
+    if profile == Profile::Gemma {
+        let encoder = crate::gemma::load(JOINT_MAX_TOKENS, target)?;
+        encoder.require_accelerator(device)?;
+        return Ok(encoder);
+    }
     if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
         let repository = if profile == Profile::DualAccuracy {
             Repository::open_at(
@@ -1358,6 +1396,7 @@ mod tests {
             ("balanced", Profile::Balanced),
             ("accuracy", Profile::Accuracy),
             ("dual_accuracy", Profile::DualAccuracy),
+            ("gemma", Profile::Gemma),
         ] {
             assert_eq!(Profile::parse(name), Some(profile));
         }
