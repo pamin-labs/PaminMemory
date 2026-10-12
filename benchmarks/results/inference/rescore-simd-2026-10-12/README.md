@@ -91,16 +91,18 @@ moved macOS to the NEON kernel Linux aarch64 already used.
 - Method: three runs back to back. Each run rotates the arm order between
   rounds and pools 6000 calls per arm. The figures are the median over the
   three runs of each run's pooled p50 and p95
-  ([per-run figures](m4-result.md)).
+  ([per-run figures](m4-result.md), [raw output](m4-raw/)).
 
 | Metric | `mac-main` | `mac-pr` | `half-neon` | Δ vs `mac-pr` | Stack Δ vs `mac-main` |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Max abs cosine error vs f64 oracle | ≤ 7.749e-8 | ≤ 7.749e-8 | ≤ 7.749e-8 | N/A (only the bound across all arms was reported) | N/A |
+| Max abs cosine error vs f64 oracle | 1.176e-8 | 1.176e-8 | 1.428e-8 | +2.52e-9 (+21.4%) | +2.52e-9 (+21.4%) |
 | Top-10 overlap with oracle (of 10) | 10 | 10 | 10 | 0 | 0 |
 | p50 µs per 100×1024 rescore | 40.38 | 22.42 | 21.46 | −0.96 (−4.3%) | −18.92 (−46.9%) |
 | p95 µs | 47.08 | 24.17 | 22.62 | −1.55 (−6.4%) | −24.46 (−52.0%) |
 | Memory | N/A | N/A | N/A | N/A | N/A |
 | Disk | N/A | N/A | N/A | N/A | N/A |
+
+NEON's cosine error is 2.5e-9 larger than Accelerate's. Both errors are about 70× below the 1e-6 premise, and neither changes the top 10.
 
 The dot product alone: `dot-neon` 5.25 µs p50 and 5.92 µs p95, against
 `dot-accelerate` 6.00 and 6.75 per 100 rows. That is −0.75 µs (−12.5%) at p50
