@@ -67,7 +67,7 @@ The `main` and `dot` columns compare `dot` with its predecessor `main`. The
 | x86-64 with AVX2+FMA only (most other Intel and AMD) | AVX2 | F16C | Tested for correctness here. Not timed: dispatch picks AVX-512 on this host. A provisional unrotated screen of the same kernel ran 10.99 µs (AVX2) vs 10.45 µs (AVX-512) per 100 dot-only rows |
 | Linux aarch64 (Graviton, Ampere, Raspberry Pi 5) | NEON | `fcvtl` when `fp16` is detected | Unit tests pass under `qemu-aarch64-static`. Timing N/A: emulation is not timing |
 | macOS on Apple silicon | NEON, replacing Accelerate `cblas_sdot` ([2026-09-30 screen](../vector-rescore-accelerate-2026-09-30.md)) | `fcvtl` | Timed on an M4: see [Apple M4](#apple-m4) |
-| macOS on Intel | as x86-64, replacing Accelerate | F16C | Compile-checked. Timing N/A: no Intel Mac available; the x86 kernels are timed above on Linux |
+| macOS on Intel | Accelerate `cblas_sdot`, unchanged: the x86 kernels have not been timed against it on an Intel Mac | F16C | Compile-checked. Timing N/A: no Intel Mac available |
 | Windows x86-64 | as x86-64 | as x86-64 | Compile-checked |
 
 ## Apple M4
