@@ -16,17 +16,26 @@ resume is a run nobody repeats.
 """
 import argparse
 import collections
+import concurrent.futures
 import importlib
 import json
 import os
 import platform
 import socket
 import statistics
+import threading
 import time
 import urllib.request
 
 import arms as arms_module
 import resources
+
+# mem0's own ingest empties its shared qdrant directory on every unit unless
+# BENCH_MEM0_KEEP=1 (see arms.py) -- two units ingesting at once would delete
+# each other's in-flight store. Forced to one worker regardless of --workers,
+# rather than trusted to the caller, because a run that corrupts silently is
+# worse than one that stays slow.
+SERIAL_ARMS = {"mem0", "mem0-wide"}
 
 SHIM = os.environ.get("SHIM_URL", "http://127.0.0.1:8088/v1")
 
@@ -129,6 +138,11 @@ def main():
                         help="questions per unit; LongMemEval has one")
     parser.add_argument("--path", default=None)
     parser.add_argument("--out", default=None)
+    parser.add_argument("--workers", type=int, default=1,
+                        help="units ingested at once per arm; 1 keeps the "
+                             "original sequential behaviour. mem0's own "
+                             "shared-directory ingest forces it to 1 "
+                             "regardless of this flag -- see SERIAL_ARMS.")
     args = parser.parse_args()
 
     dataset = importlib.import_module(f"datasets.{args.dataset}")
@@ -144,69 +158,119 @@ def main():
     sink = open(out, "a")
     where = machine()
 
+    sink_lock = threading.Lock()
+
     for name in args.arms.split(","):
+        todo = []
+        for entry in entries:
+            unit = dataset.unit_id(entry)
+            wanted = {qid for qid, _qa, _ref
+                      in dataset.questions(entry, args.questions)} or {None}
+            if not all((name, unit, qid) in done for qid in wanted):
+                todo.append(entry)
+
+        workers = 1 if name in SERIAL_ARMS else args.workers
+
         # Five in a row is not bad luck, it is a broken setup, and the run
         # that taught this lesson is the one where a concurrent `cargo build`
         # replaced the binary under an arm: every ingest failed, each was
         # caught and skipped, and the run reported success with no rows in it.
         # A harness that cannot fail cannot be trusted when it passes.
+        # Under concurrency "in a row" is approximate rather than strict
+        # ordering, but the intent -- stop on a broken setup rather than
+        # grinding through every unit the same way -- still holds.
         consecutive = 0
-        for entry in entries:
+        consecutive_lock = threading.Lock()
+
+        def record(entry, unit_rows, error):
+            nonlocal consecutive
             unit = dataset.unit_id(entry)
-            wanted = {qid for qid, _qa, _ref
-                      in dataset.questions(entry, args.questions)} or {None}
-            if all((name, unit, qid) in done for qid in wanted):
-                continue
-            arm = arms_module.ARMS[name]()
-            turns = dataset.turns_of(entry)
-
-            before = arms_module.shim_stats()
-            disk_before = resources.dir_mb(getattr(arm, "store_path", None))
-            sampler = resources.Sampler(lambda: resources.tree_for(arm, arms_module.PAMIN_HOME))
-            sampler.start()
-            started = time.time()
-            try:
-                seconds, count = arm.ingest(unit, turns)
-            except Exception as error:
-                sampler.stop.set()
+            if error is not None:
                 print(f"  {name} {unit}: INGEST FAILED: {error}", flush=True)
-                consecutive += 1
-                if consecutive >= 5:
+                with consecutive_lock:
+                    consecutive += 1
+                    hit = consecutive >= 5
+                if hit:
                     raise SystemExit(
-                        f"{name} failed to ingest {consecutive} units in a row; "
-                        f"the last said: {error}")
-                continue
-            consecutive = 0
-            sampler.stop.set()
-            sampler.join(timeout=5)
-            after = arms_module.shim_stats()
+                        f"{name} failed to ingest {consecutive} units in a "
+                        f"row; the last said: {error}")
+                return
+            with consecutive_lock:
+                consecutive = 0
+            with sink_lock:
+                for row in unit_rows:
+                    sink.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    sink.flush()
+                    os.fsync(sink.fileno())
+                    rows.append(row)
+                    done.add((name, unit, row.get("question_id")))
 
-            cost = {
-                "ingest_seconds": round(seconds, 1),
-                "ingest_llm_calls": after.get("calls", 0) - before.get("calls", 0),
-                "ingest_llm_seconds": round(
-                    after.get("seconds", 0.0) - before.get("seconds", 0.0), 1),
-                "ingest_embedded": after.get("embed_texts", 0) - before.get("embed_texts", 0),
-                "ingest_cost_usd": round(
-                    after.get("cost_usd", 0.0) - before.get("cost_usd", 0.0), 4),
-                "store_mb": resources.dir_mb(getattr(arm, "store_path", None)) - disk_before,
-                "peak_pss_mb": max(sampler.samples) if sampler.samples else None,
-                "turns": count,
-                "cost_measurable": not SHARED,
-            }
-            print(f"  {name} {unit}: {count} turns in {seconds:.0f}s | "
-                  f"{cost['ingest_llm_calls']} LLM calls, "
-                  f"{cost['ingest_embedded']} embedded", flush=True)
-
-            for row in measure(dataset, arm, entry, args, cost, where, name,
-                               unit, done):
-                sink.write(json.dumps(row, ensure_ascii=False) + "\n")
-                sink.flush()
-                os.fsync(sink.fileno())
-                rows.append(row)
-                done.add((name, unit, row.get("question_id")))
+        if workers <= 1:
+            for entry in todo:
+                unit_rows, error = process_unit(dataset, args, name, entry,
+                                                where, done)
+                record(entry, unit_rows, error)
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {
+                    pool.submit(process_unit, dataset, args, name, entry,
+                               where, done): entry
+                    for entry in todo
+                }
+                for future in concurrent.futures.as_completed(futures):
+                    entry = futures[future]
+                    unit_rows, error = future.result()
+                    record(entry, unit_rows, error)
     sink.close()
     summarise(rows, args.mode)
+
+
+def process_unit(dataset, args, name, entry, where, done):
+    """Ingest and measure one unit. Returns (rows, error); writes nothing.
+
+    Safe to call concurrently for different units of the same arm: each unit
+    gets its own arm instance and (per every arm but mem0, which is kept off
+    this path -- see SERIAL_ARMS) its own project/collection/palace, so no
+    two calls touch the same store. `done` is only read here, never written;
+    the caller is the only writer and it only ever writes this unit's own
+    keys, so a concurrent reader never observes another unit's result.
+    """
+    unit = dataset.unit_id(entry)
+    arm = arms_module.ARMS[name]()
+    turns = dataset.turns_of(entry)
+
+    before = arms_module.shim_stats()
+    disk_before = resources.dir_mb(getattr(arm, "store_path", None))
+    sampler = resources.Sampler(lambda: resources.tree_for(arm, arms_module.PAMIN_HOME))
+    sampler.start()
+    try:
+        seconds, count = arm.ingest(unit, turns)
+    except Exception as error:
+        sampler.stop.set()
+        return [], error
+    sampler.stop.set()
+    sampler.join(timeout=5)
+    after = arms_module.shim_stats()
+
+    cost = {
+        "ingest_seconds": round(seconds, 1),
+        "ingest_llm_calls": after.get("calls", 0) - before.get("calls", 0),
+        "ingest_llm_seconds": round(
+            after.get("seconds", 0.0) - before.get("seconds", 0.0), 1),
+        "ingest_embedded": after.get("embed_texts", 0) - before.get("embed_texts", 0),
+        "ingest_cost_usd": round(
+            after.get("cost_usd", 0.0) - before.get("cost_usd", 0.0), 4),
+        "store_mb": resources.dir_mb(getattr(arm, "store_path", None)) - disk_before,
+        "peak_pss_mb": max(sampler.samples) if sampler.samples else None,
+        "turns": count,
+        "cost_measurable": not SHARED,
+    }
+    print(f"  {name} {unit}: {count} turns in {seconds:.0f}s | "
+          f"{cost['ingest_llm_calls']} LLM calls, "
+          f"{cost['ingest_embedded']} embedded", flush=True)
+
+    return list(measure(dataset, arm, entry, args, cost, where, name,
+                        unit, done)), None
 
 
 def measure(dataset, arm, entry, args, cost, where, name, unit, done):
