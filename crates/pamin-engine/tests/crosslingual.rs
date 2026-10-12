@@ -489,6 +489,42 @@ fn single_target_counts_one_translation_and_strikes_the_rest() {
     assert_eq!(kept.len(), before.len() - 1);
 }
 
+/// The digest's premise for this corpus: it names which language each answer
+/// is in, so swapping two languages' answers is a different run.
+#[test]
+fn the_digest_sees_which_language_an_answer_is_in() {
+    let question = |swap: bool| {
+        let mut answers: HashMap<&'static str, String> = LANGUAGES
+            .into_iter()
+            .map(|language| (language, format!("{language}:0:0")))
+            .collect();
+        if swap {
+            let (de, el) = (answers["de"].clone(), answers["el"].clone());
+            answers.insert("de", el);
+            answers.insert("el", de);
+        }
+        Question {
+            id: "q0".into(),
+            position: 0,
+            asked: LANGUAGES
+                .into_iter()
+                .map(|language| (language, format!("asked {language}")))
+                .collect(),
+            answers,
+        }
+    };
+    let digest = |swap: bool| {
+        let corpus = Corpus {
+            sentences: Vec::new(),
+            questions: vec![question(swap)],
+            excluded: Vec::new(),
+        };
+        corpus.shape(&corpus.queries()).digest()
+    };
+    assert_eq!(digest(false), digest(false));
+    assert_ne!(digest(false), digest(true));
+}
+
 impl Corpus {
     /// Reads the eleven language files, fetching them if they are not there.
     fn load() -> Self {
@@ -656,16 +692,16 @@ impl Corpus {
         for sentence in &self.sentences {
             shape.document(&[&sentence.key, &sentence.text]);
         }
+        // The answer key as (language, sentence) pairs in language order: a
+        // sorted bag of sentences did not say which language each answered
+        // in, and swapping two would have kept the digest.
         for query in queries {
-            let mut answers: Vec<&str> = query
-                .question
-                .answers
-                .values()
-                .map(String::as_str)
-                .collect();
-            answers.sort_unstable();
             let mut fields = vec![query.text(), query.target];
-            fields.extend(answers);
+            for language in LANGUAGES {
+                if let Some(answer) = query.question.answers.get(language) {
+                    fields.extend([language, answer.as_str()]);
+                }
+            }
             shape.query(&GROUPS, &query.id(), &fields);
         }
         for question in &self.excluded {
