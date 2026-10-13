@@ -433,6 +433,24 @@ impl Shape {
         format!("{:x}", hash.finalize())
     }
 
+    /// SHA-256 over the questions in the order they were given, which is the
+    /// order every arm asks them in.
+    ///
+    /// The [`digest`](Self::digest) names a set, so two runs over the same
+    /// questions in a different order share it -- and the questions are asked
+    /// one after another, so order is a condition of every latency and cache
+    /// figure a run reports. This names the sequence, and is part of the
+    /// record's name beside the digest, so the two runs are kept apart.
+    pub fn sequence(&self) -> String {
+        let mut hash = Sha256::new();
+        hash.update(b"sequence");
+        hash.update((self.queries.len() as u64).to_be_bytes());
+        for one in &self.queries {
+            hash.update(one);
+        }
+        format!("{:x}", hash.finalize())
+    }
+
     /// Prints the digest, the selection, the seed and every exclusion,
     /// records them under `<eval home>/shape/`, and starts counting what is
     /// scored. Called once, before anything is searched, so a run that dies
@@ -464,6 +482,8 @@ impl Shape {
             self.queries.len(),
             self.documents.len()
         );
+        let sequence = self.sequence();
+        println!("  shape {name}: asked in the order sha256 {sequence}");
         match self.seed {
             Some(seed) => println!("  shape {name}: {}, seed {seed}", self.selection),
             None => println!("  shape {name}: {}, no seed", self.selection),
@@ -488,9 +508,16 @@ impl Shape {
         let dir = super::eval_home().join("shape");
         std::fs::create_dir_all(&dir)
             .unwrap_or_else(|error| panic!("creating {}: {error}", dir.display()));
-        let file = [name.as_str(), test, profile, &arm, &digest[..16]]
-            .map(file_part)
-            .join("-");
+        let file = [
+            name.as_str(),
+            test,
+            profile,
+            &arm,
+            &digest[..16],
+            &sequence[..8],
+        ]
+        .map(file_part)
+        .join("-");
         let record = dir.join(format!("{file}.json"));
         self.write(&in_progress(&record));
         println!(
@@ -674,6 +701,7 @@ impl Shape {
             "arm": arm,
             "settings": self.settings,
             "corpus_sha256": self.digest(),
+            "sequence_sha256": self.sequence(),
             "selection": self.selection,
             "seed": self.seed,
             "questions": self.queries.len(),
@@ -836,6 +864,23 @@ mod tests {
         assert_eq!(build(&["x", "y"], "k"), build(&["y", "x"], "k"));
         assert_ne!(build(&["x", "y"], "k"), build(&["x", "y"], "K"));
         assert_ne!(build(&["x", "y"], "k"), build(&["x", "z"], "k"));
+    }
+
+    /// The same questions in another order are the same set and a different
+    /// sequence.
+    #[test]
+    fn the_sequence_sees_the_order_the_digest_does_not() {
+        let build = |ids: &[&str]| {
+            let mut shape = Shape::new("test", String::new(), None);
+            for id in ids {
+                shape.query(&["group"], id, &["a question"]);
+            }
+            (shape.digest(), shape.sequence())
+        };
+        let (forward, backward) = (build(&["q1", "q2"]), build(&["q2", "q1"]));
+        assert_eq!(forward.0, backward.0);
+        assert_ne!(forward.1, backward.1);
+        assert_eq!(forward, build(&["q1", "q2"]));
     }
 
     /// Two queries asked, one excluded, in one group.
