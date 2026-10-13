@@ -1186,7 +1186,12 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
 
     let session = |device: Device, providers, _validated: bool| -> Result<Encoder> {
         if let (Some(local), Device::Cpu) = (local, device) {
-            let model = || crate::prepared::load_path(&local.graph(), cache_dir);
+            let model = || {
+                // The source rather than the copy: it is on disk, and holds
+                // the table under the name it was exported with.
+                require_positions(&local.directory.join("model.onnx"))?;
+                crate::prepared::load_path(&local.graph(), cache_dir)
+            };
             let tokenizer = crate::tokenizer::load_dir(&local.directory, max_tokens())?;
             let encoder = Encoder::load_with(model, tokenizer, providers)
                 .map_err(|error| error.context("loading the reranker"))?;
@@ -1200,7 +1205,13 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
             // the CPU, the prepared copy is mapped instead -- see
             // `crate::prepared` for what that saves -- and the download
             // removed once the copy has loaded.
-            Device::Cpu => crate::prepared::load_path(&weights, cache_dir),
+            Device::Cpu => {
+                let path = crate::prepared::load_path(&weights, cache_dir)?;
+                if tier == Rerank::Accurate {
+                    require_positions(&path)?;
+                }
+                Ok(path)
+            }
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             Device::CoreMl if tier == Rerank::Accurate => {
                 let source = repository.get(tier.onnx(device))?;
@@ -1300,6 +1311,65 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
     );
 
     Ok((model, device))
+}
+
+/// The position table of the hub's `accurate` exports: a padding row, the
+/// row before the first position, and 8,192 positions.
+const POSITIONS: usize = 8194;
+
+/// Refuses a `PAMIN_RERANK_MAX_TOKENS` the `accurate` CPU graph at `model`
+/// cannot position.
+///
+/// An export may cut the position table short of [`POSITIONS`] -- a
+/// candidate with 514 rows holds 512 positions. A longer limit would pass the
+/// tokenizer, whose own limit is the model's 8,192, and fail inside the
+/// runtime on the first pair that long, as an out-of-range `Gather`. So it
+/// fails here, at load, saying which setting to change.
+fn require_positions(model: &Path) -> Result<()> {
+    let rows = position_rows(&std::fs::read(model)?).map_err(|error| {
+        IndexError::Engine(format!(
+            "reading the reranker graph {}: {error}",
+            model.display()
+        ))
+    })?;
+    check_positions(rows, max_tokens())
+}
+
+fn check_positions(rows: Option<usize>, limit: usize) -> Result<()> {
+    match rows {
+        Some(rows) if rows < POSITIONS && limit > rows.saturating_sub(2) => {
+            Err(IndexError::Engine(format!(
+                "PAMIN_RERANK_MAX_TOKENS={limit} exceeds the {} tokens the accurate reranker's \
+                 CPU export can position; set {} or less",
+                rows.saturating_sub(2),
+                rows.saturating_sub(2)
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The rows of the graph's position-embedding table -- an initializer named
+/// for `position_embeddings`, of two dimensions -- or `None` if it has none.
+fn position_rows(model: &[u8]) -> std::result::Result<Option<usize>, String> {
+    use crate::onnx::*;
+    let top = fields(model)?;
+    let graph = fields_of(only(&top, MODEL_GRAPH, "graph")?)?;
+    let mut rows: Option<usize> = None;
+    for field in graph
+        .iter()
+        .filter(|field| field.number == GRAPH_INITIALIZER)
+    {
+        let tensor = fields_of(field)?;
+        if !string(&tensor, TENSOR_NAME)?.is_some_and(|name| name.contains("position_embeddings")) {
+            continue;
+        }
+        if let [count, _] = int64s(&tensor, TENSOR_DIMS)?[..] {
+            let count = usize::try_from(count).map_err(|_| "a negative dimension")?;
+            rows = Some(rows.map_or(count, |rows| rows.min(count)));
+        }
+    }
+    Ok(rows)
 }
 
 fn calibration_pairs(tier: Rerank, long: &str) -> Vec<(&str, &str)> {
@@ -2531,6 +2601,47 @@ mod tests {
             }
         }
         assert_eq!(restored, vec![3, 1, 4, 2, 5]);
+    }
+
+    /// A graph whose position table is cut short refuses a longer limit at
+    /// load; the hub's full table, or a graph with none, is not capped here.
+    #[test]
+    fn a_short_position_table_caps_the_token_limit() {
+        use crate::onnx::*;
+        let graph = |name: &str, dims: &[i64]| {
+            let mut tensor = Vec::new();
+            for dim in dims {
+                put_varint_field(&mut tensor, TENSOR_DIMS, *dim as u64);
+            }
+            put_bytes(&mut tensor, TENSOR_NAME, name.as_bytes());
+            let mut graph = Vec::new();
+            put_bytes(&mut graph, GRAPH_INITIALIZER, &tensor);
+            let mut model = Vec::new();
+            put_bytes(&mut model, MODEL_GRAPH, &graph);
+            model
+        };
+        let cut = graph(
+            "roberta.embeddings.position_embeddings.weight",
+            &[514, 1024],
+        );
+        assert_eq!(position_rows(&cut), Ok(Some(514)));
+        let hub = graph(
+            "roberta.embeddings.position_embeddings.weight_quantized",
+            &[8194, 1024],
+        );
+        assert_eq!(position_rows(&hub), Ok(Some(8194)));
+        let other = graph("roberta.embeddings.word_embeddings.weight", &[250002, 1024]);
+        assert_eq!(position_rows(&other), Ok(None));
+        assert!(position_rows(b"not a model").is_err());
+
+        assert!(check_positions(Some(514), 512).is_ok());
+        let error = check_positions(Some(514), 513).unwrap_err().to_string();
+        assert!(
+            error.contains("PAMIN_RERANK_MAX_TOKENS=513") && error.contains("set 512 or less"),
+            "{error}"
+        );
+        assert!(check_positions(Some(8194), 9000).is_ok());
+        assert!(check_positions(None, 9000).is_ok());
     }
 
     /// A measured export's graph is never removed once its copy has loaded,
