@@ -576,7 +576,12 @@ impl Shape {
                 .filter(|id| !excluded.contains(id))
                 .collect();
             // Scored exactly once in every declared table.
-            let mut whole = expected.clone();
+            // Nothing declared is nothing checked, so nothing counts as whole.
+            let mut whole = if tally.declared.is_empty() {
+                BTreeSet::new()
+            } else {
+                expected.clone()
+            };
             for table in &tally.declared {
                 let scored: BTreeMap<&str, usize> = tally
                     .counts
@@ -955,6 +960,16 @@ mod tests {
         assert_eq!(second.counts.len(), 1);
         // Nothing leaked onto a thread that published nothing.
         assert!(tallied(|open| open.is_none()));
+    }
+
+    /// A run that declared no table -- one that failed before its arm began --
+    /// records nothing scored, not everything.
+    #[test]
+    fn a_run_that_declared_no_table_scored_nothing() {
+        let (lines, failures, recorded) = asked().coverage(&Tally::default());
+        assert_eq!(recorded["groups"]["g"]["scored"], 0, "{recorded}");
+        assert!(lines[0].contains("scored 0"), "{lines:?}");
+        assert!(failures.iter().any(|failure| failure.contains("declared no table")));
     }
 
     /// A run that scored everything and then failed a floor records what it
