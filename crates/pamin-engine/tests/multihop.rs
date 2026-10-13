@@ -62,7 +62,7 @@ mod reranking;
 mod scoring;
 mod statistics;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 use std::process::Command;
 
@@ -233,6 +233,7 @@ impl Corpus {
         }
         complete(rows.len(), wanted, reported, &dir);
         rows.truncate(wanted);
+        distinct(rows.iter().map(|row| row.id.as_str()), &dir);
         let (rows, selection, seed) = select(rows, sample, harness::shape::seed());
 
         // Distinct paragraphs per title, in first-seen order so the joined
@@ -361,11 +362,39 @@ fn complete(loaded: usize, wanted: usize, reported: Option<usize>, dir: &Path) {
     );
 }
 
-/// The loader's premise: a run reads every question it asks for, and the
-/// whole split is what the API says it is.
+/// Fails if any question id was read twice. Pages that overlap -- a cached
+/// page from one offset beside a fetched page from another -- can hold the
+/// right number of rows with some repeated and others missing, which the row
+/// count alone does not see.
+fn distinct<'a>(ids: impl Iterator<Item = &'a str>, dir: &Path) {
+    let mut seen = HashSet::new();
+    let repeated: BTreeSet<&str> = ids.filter(|id| !seen.insert(*id)).collect();
+    assert!(
+        repeated.is_empty(),
+        "{} MuSiQue question ids were read more than once, e.g. {:?}: the pages under {} \
+         overlap. Delete the cached pages and rerun",
+        repeated.len(),
+        repeated.iter().take(3).collect::<Vec<_>>(),
+        dir.display()
+    );
+}
+
+/// The loader's premise: a run reads every question it asks for, once each,
+/// and the whole split is what the API says it is.
 #[test]
 fn a_short_read_of_the_split_fails() {
     let dir = Path::new("cache");
+    distinct(["2hop__1", "3hop__1"].into_iter(), dir);
+    let repeated = std::panic::catch_unwind(|| {
+        distinct(["2hop__1", "3hop__1", "2hop__1"].into_iter(), dir);
+    })
+    .expect_err("a repeated id passed");
+    let message = repeated
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_default();
+    assert!(message.contains("1 MuSiQue question ids"), "{message}");
+
     complete(QUESTIONS, QUESTIONS, Some(QUESTIONS), dir);
     complete(QUESTIONS, QUESTIONS, None, dir);
     complete(600, 600, Some(QUESTIONS), dir);
