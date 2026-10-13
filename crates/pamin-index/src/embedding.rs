@@ -269,6 +269,13 @@ impl Embedder {
             Some((query, _)) => self.embed_one(&format!("{query}{text}")),
             None => self.embed_one(text),
         }?;
+        // Queries only: what is stored is the graph's vector, so this choice
+        // shares an index with every other.
+        let primary = if self.profile == Profile::Gemma {
+            crate::gemma::query(primary)?
+        } else {
+            primary
+        };
         let secondary = self.secondary_vector(text)?;
         let encoded = Encoded { primary, secondary };
         self.remembered.put(text, &encoded);
@@ -315,7 +322,7 @@ impl Embedder {
     /// anything.
     const REMEMBERED_QUERIES: usize = 256;
 
-    fn embed_one(&mut self, text: &str) -> Result<Vec<f32>> {
+    pub(crate) fn embed_one(&mut self, text: &str) -> Result<Vec<f32>> {
         let mut vectors = self.run(vec![text.to_string()])?;
 
         vectors

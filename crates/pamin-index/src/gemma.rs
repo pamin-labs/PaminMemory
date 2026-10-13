@@ -30,6 +30,8 @@ use sha2::{Digest, Sha256};
 use crate::encoder::Encoder;
 use crate::error::{IndexError, Result};
 
+mod language;
+
 /// The directory the model is read from.
 const DIRECTORY: &str = "PAMIN_EG2_DIR";
 
@@ -142,6 +144,12 @@ pub(crate) fn truncated(mut vector: Vec<f32>) -> Result<Vec<f32>> {
     Ok(vector)
 }
 
+/// A query vector, already cut by [`truncated`], under the language
+/// transform `PAMIN_EG2_QUERY_TRANSFORM` chooses -- see [`language`].
+pub(crate) fn query(vector: Vec<f32>) -> Result<Vec<f32>> {
+    language::apply(language::chosen(), vector)
+}
+
 /// Where this profile's model lives, for the plan cache's identity.
 pub(crate) fn source() -> Result<String> {
     let directory = directory()?;
@@ -218,8 +226,19 @@ mod tests {
         for case in cases {
             let text = case["text"].as_str().unwrap();
             let (wheel, unquantized) = (vector(&case["vector"]), vector(&case["fp32"]));
+            // The graph's vector: the query transform comes after it, and
+            // is checked against its own reference in `language`.
             let actual = match case["kind"].as_str().unwrap() {
-                "query" => embedder.embed_query(text).unwrap(),
+                "query" => {
+                    let raw = embedder
+                        .embed_one(&format!("{}{text}", PREFIXES.0))
+                        .unwrap();
+                    assert_eq!(
+                        embedder.embed_query(text).unwrap(),
+                        query(raw.clone()).unwrap()
+                    );
+                    raw
+                }
                 _ => embedder.embed_passage(text).unwrap(),
             };
             let (agreement, ours, theirs) = (
