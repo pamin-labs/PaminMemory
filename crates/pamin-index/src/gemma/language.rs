@@ -13,12 +13,13 @@
 //!
 //! `PAMIN_EG2_QUERY_TRANSFORM` picks one of [`Transform`]'s variants; it is a
 //! measurement switch, undocumented on purpose, like `PAMIN_EG2_DIMS`. The
-//! `center*` variants transform queries only: stored vectors are the graph's,
-//! so they share one index with `off`, and [`super::identity`] does not change
-//! with them. The `both-*` variants transform stored text the same way, with
-//! the same constants, after the width cut and before storage; their vectors
-//! are another space, so the variant is part of [`super::identity`] and an
-//! index built under one refuses to open under any other.
+//! `center*` variants and `interp-lsar2` transform queries only: stored
+//! vectors are the graph's, so they share one index with `off`, and
+//! [`super::identity`] does not change with them. The `both-*` variants
+//! transform stored text the same way, with the same constants, after the
+//! width cut and before storage; their vectors are another space, so the
+//! variant is part of [`super::identity`] and an index built under one
+//! refuses to open under any other.
 //!
 //! Provenance and attribution. The constants, per width (`language-d{768,512,256}.f32`, little-endian
 //! `f32`, `mu` then `U`'s two columns, `3 d` values), were fitted on Tatoeba
@@ -43,7 +44,8 @@
 //! stored text. It goes through [`crate::projection::dot`], the vector kernel
 //! this crate has (a plain loop the compiler vectorises, BLAS on macOS);
 //! nothing at this size would show a runtime-dispatched SIMD kernel's
-//! difference.
+//! difference. `interp-lsar2` adds about three thousand operations more (a
+//! copy of the query, a blend and a second norm over the same 768 values).
 
 use std::sync::OnceLock;
 
@@ -67,7 +69,23 @@ pub(crate) enum Transform {
     BothCenterLsar1,
     /// `CenterLsar2` on queries and on stored text.
     BothCenterLsar2,
+    /// `unit((1 - a) q + a T(q))` on queries, `T` being `CenterLsar2` and
+    /// `a` [`INTERP`]; stored text is the graph's.
+    InterpLsar2,
 }
+
+/// How far `interp-lsar2` moves a query towards its `center-lsar2` image.
+///
+/// Chosen on a held-out half of the XQuAD-R queries in the embedder-only
+/// screen, by a rule written before the table was read: the highest
+/// cross-lingual nDCG@10 whose same-language nDCG@10 is at least 0.005
+/// above `off`'s. Embedder-only at 768 dimensions it moved cross-lingual
+/// nDCG@10 by +0.0496, same-language by +0.0056 and MuSiQue by +0.0098; the
+/// search entry point has not measured it. With unit `q` and `T(q)` and stored
+/// vectors left as the graph's, the blend scores a stored vector by the sum
+/// of its cosines to the two views, so it fuses them in one search over the
+/// unchanged index; the final renormalisation scales every score alike.
+const INTERP: f32 = 0.5;
 
 impl Transform {
     /// What runs when the setting is absent: nothing, today's vectors.
@@ -86,6 +104,7 @@ impl Transform {
             "center-lsar2" => Some(Self::CenterLsar2),
             "both-center-lsar1" => Some(Self::BothCenterLsar1),
             "both-center-lsar2" => Some(Self::BothCenterLsar2),
+            "interp-lsar2" => Some(Self::InterpLsar2),
             _ => None,
         }
     }
@@ -94,7 +113,7 @@ impl Transform {
         match self {
             Self::Off | Self::Center => 0,
             Self::CenterLsar1 | Self::BothCenterLsar1 => 1,
-            Self::CenterLsar2 | Self::BothCenterLsar2 => 2,
+            Self::CenterLsar2 | Self::BothCenterLsar2 | Self::InterpLsar2 => 2,
         }
     }
 
@@ -103,7 +122,11 @@ impl Transform {
     /// graph's.
     pub(crate) fn stored_tag(self) -> Option<&'static str> {
         match self {
-            Self::Off | Self::Center | Self::CenterLsar1 | Self::CenterLsar2 => None,
+            Self::Off
+            | Self::Center
+            | Self::CenterLsar1
+            | Self::CenterLsar2
+            | Self::InterpLsar2 => None,
             Self::BothCenterLsar1 => Some("both-center-lsar1"),
             Self::BothCenterLsar2 => Some("both-center-lsar2"),
         }
@@ -122,7 +145,7 @@ pub(crate) fn chosen() -> Transform {
                 tracing::warn!(
                     %value,
                     "{SETTING} is not off, center, center-lsar1, center-lsar2, \
-                     both-center-lsar1 or both-center-lsar2; using {:?}",
+                     both-center-lsar1, both-center-lsar2 or interp-lsar2; using {:?}",
                     Transform::DEFAULT
                 );
                 Transform::DEFAULT
@@ -177,7 +200,8 @@ pub(crate) fn stored(transform: Transform, vector: Vec<f32>) -> Result<Vec<f32>>
 /// `vector` under `transform`, at the vector's own width.
 ///
 /// `Off`, and any variant at a width with no constants, returns the vector
-/// as it came.
+/// as it came. `InterpLsar2` blends the `CenterLsar2` result with the vector
+/// it came from, then renormalises again.
 fn apply(transform: Transform, mut vector: Vec<f32>) -> Result<Vec<f32>> {
     if transform == Transform::Off {
         return Ok(vector);
@@ -187,6 +211,7 @@ fn apply(transform: Transform, mut vector: Vec<f32>) -> Result<Vec<f32>> {
         return Ok(vector);
     };
     let (mu, basis) = constants.split_at(width);
+    let original = (transform == Transform::InterpLsar2).then(|| vector.clone());
     for (value, mean) in vector.iter_mut().zip(mu) {
         *value -= mean;
     }
@@ -196,29 +221,42 @@ fn apply(transform: Transform, mut vector: Vec<f32>) -> Result<Vec<f32>> {
             *value -= along * component;
         }
     }
-    let norm = crate::projection::dot(&vector, &vector).sqrt();
+    renormalise(&mut vector)?;
+    if let Some(original) = original {
+        for (value, kept) in vector.iter_mut().zip(&original) {
+            *value = (1.0 - INTERP) * kept + INTERP * *value;
+        }
+        renormalise(&mut vector)?;
+    }
+    Ok(vector)
+}
+
+/// `vector` scaled to unit length, or an error when nothing is left of it.
+fn renormalise(vector: &mut [f32]) -> Result<()> {
+    let norm = crate::projection::dot(vector, vector).sqrt();
     if norm.is_nan() || norm <= 0.0 {
         return Err(IndexError::Numerical(
             "a gemma vector with nothing left after the language transform".into(),
         ));
     }
-    for value in &mut vector {
+    for value in vector {
         *value /= norm;
     }
-    Ok(vector)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const ALL: [Transform; 6] = [
+    const ALL: [Transform; 7] = [
         Transform::Off,
         Transform::Center,
         Transform::CenterLsar1,
         Transform::CenterLsar2,
         Transform::BothCenterLsar1,
         Transform::BothCenterLsar2,
+        Transform::InterpLsar2,
     ];
 
     fn cosine(left: &[f32], right: &[f32]) -> f64 {
@@ -301,7 +339,12 @@ mod tests {
             Transform::parse("both-center-lsar2"),
             Some(Transform::BothCenterLsar2)
         );
+        assert_eq!(
+            Transform::parse("interp-lsar2"),
+            Some(Transform::InterpLsar2)
+        );
         assert_eq!(Transform::parse("lsar2"), None);
+        assert_eq!(Transform::parse("interp"), None);
         assert_eq!(Transform::parse("both-center"), None);
     }
 
@@ -362,5 +405,36 @@ mod tests {
         assert!(expected.is_empty());
         assert_eq!(checked, 18);
         assert_eq!(checked_both, 12);
+    }
+
+    /// `interp-lsar2` is the even blend of a query and its `center-lsar2`
+    /// image, made unit length, and leaves stored text alone.
+    #[test]
+    fn interp_is_the_even_blend_of_a_query_and_its_center_lsar2_image() {
+        let bytes = include_bytes!("../../tests/fixtures/eg2-language-reference.f32");
+        let values = floats(bytes);
+        let mut checked = 0;
+        for width in [768, 512, 256] {
+            for input in values[..2 * 768].as_chunks::<768>().0 {
+                let cut = unit(&input[..width]);
+                let moved = query(Transform::CenterLsar2, cut.clone()).unwrap();
+                let mut blend: Vec<f32> = cut
+                    .iter()
+                    .zip(&moved)
+                    .map(|(q, t)| 0.5 * q + 0.5 * t)
+                    .collect();
+                renormalise(&mut blend).unwrap();
+                let actual = query(Transform::InterpLsar2, cut.clone()).unwrap();
+                assert_eq!(bits(&actual), bits(&blend), "at {width}");
+                assert!((cosine(&actual, &actual) - 1.0).abs() < 1e-6);
+                // Distinct from each view: neither weight is zero.
+                assert!(1.0 - cosine(&actual, &cut) > 1e-4);
+                assert!(1.0 - cosine(&actual, &moved) > 1e-4);
+                let kept = stored(Transform::InterpLsar2, cut.clone()).unwrap();
+                assert_eq!(bits(&kept), bits(&cut));
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 6);
     }
 }

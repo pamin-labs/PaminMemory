@@ -308,7 +308,7 @@ mod tests {
     fn the_identity_names_a_stored_transform_and_only_that() {
         use language::Transform::*;
         let before = "embeddinggemma-2-int8@0123456789abcdef:d768";
-        for transform in [Off, Center, CenterLsar1, CenterLsar2] {
+        for transform in [Off, Center, CenterLsar1, CenterLsar2, InterpLsar2] {
             assert_eq!(named("0123456789abcdef", 768, transform), before);
         }
         let one = named("0123456789abcdef", 768, BothCenterLsar1);
