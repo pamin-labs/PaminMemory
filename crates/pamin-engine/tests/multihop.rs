@@ -345,8 +345,19 @@ impl Corpus {
 /// A page that came back short, cached or fetched, drops the tail. The split
 /// is ordered by hop count, so the tail is the four-hop questions, and a
 /// sample drawn from what is left still asks every hop count it has.
+///
+/// The whole split needs the reported total: without it, a split that grew
+/// past `QUESTIONS` fills the last page past it, and the rows beyond are
+/// dropped as surplus, so a sample would be drawn from a prefix.
 fn complete(loaded: usize, wanted: usize, reported: Option<usize>, dir: &Path) {
-    if let (QUESTIONS, Some(total)) = (wanted, reported) {
+    if wanted == QUESTIONS {
+        let total = reported.unwrap_or_else(|| {
+            panic!(
+                "no page under {} reports how many rows the split has, so reading {QUESTIONS} \
+                 cannot be shown to be the whole of it. Delete the cached pages and rerun",
+                dir.display()
+            )
+        });
         assert_eq!(
             total, QUESTIONS,
             "the dataset API reports {total} rows in the split, where the whole split is \
@@ -396,9 +407,10 @@ fn a_short_read_of_the_split_fails() {
     assert!(message.contains("1 MuSiQue question ids"), "{message}");
 
     complete(QUESTIONS, QUESTIONS, Some(QUESTIONS), dir);
-    complete(QUESTIONS, QUESTIONS, None, dir);
     complete(600, 600, Some(QUESTIONS), dir);
+    complete(600, 600, None, dir);
     for (loaded, wanted, reported, expected) in [
+        (QUESTIONS, QUESTIONS, None, "no page under"),
         (2_400, QUESTIONS, Some(QUESTIONS), "17 short"),
         (QUESTIONS, QUESTIONS, Some(2_500), "reports 2500 rows"),
         (500, 600, Some(QUESTIONS), "100 short"),
