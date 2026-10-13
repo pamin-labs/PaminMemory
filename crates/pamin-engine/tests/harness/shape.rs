@@ -23,7 +23,7 @@
 //! coverage with no silent replacement of failures.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 use sha2::{Digest, Sha256};
@@ -217,6 +217,12 @@ fn arm(settings: &[String]) -> String {
     let hash = Sha256::digest(settings.join("\n").as_bytes());
     let short: String = hash[..6].iter().map(|byte| format!("{byte:02x}")).collect();
     format!("arm-{short}")
+}
+
+/// Where a run's record is kept until its coverage holds: beside the record,
+/// so a rerun that fails never replaces the last one that completed.
+fn in_progress(record: &Path) -> PathBuf {
+    record.with_extension("inprogress.json")
 }
 
 /// Whether anything at all was scored into `table`.
@@ -456,12 +462,14 @@ impl Shape {
         let file = [name.as_str(), test, profile, &arm, &digest[..16]]
             .map(file_part)
             .join("-");
-        self.record = Some(dir.join(format!("{file}.json")));
-        self.write();
+        let record = dir.join(format!("{file}.json"));
+        self.write(&in_progress(&record));
         println!(
-            "  shape {name}: recorded in {}",
-            self.record.as_ref().expect("just set").display()
+            "  shape {name}: recording in {}, and in {} once its coverage holds",
+            in_progress(&record).display(),
+            record.display()
         );
+        self.record = Some(record);
 
         // Two harness tests in one process would count into one tally and
         // fail each other's check with each other's queries; say so instead.
@@ -596,10 +604,7 @@ impl Shape {
     /// it is not exactly what was asked less what was excluded.
     fn close(&mut self) {
         let tally = tallied().take().unwrap_or_default();
-        let (lines, failures, recorded) = self.coverage(&tally);
-        println!("  coverage {}: {}", self.name, lines.join("; "));
-        self.coverage = Some(recorded);
-        self.write();
+        let failures = self.finish(&tally);
         assert!(
             failures.is_empty(),
             "{} coverage is not what was asked:\n  {}",
@@ -608,10 +613,26 @@ impl Shape {
         );
     }
 
-    fn write(&self) {
-        let Some(path) = &self.record else {
-            return;
+    /// Checks and records the coverage, returning every failure. The record
+    /// itself is written only when there are none: a run that fails leaves
+    /// its in-progress file and the last completed record as it was.
+    fn finish(&mut self, tally: &Tally) -> Vec<String> {
+        let (lines, failures, recorded) = self.coverage(tally);
+        println!("  coverage {}: {}", self.name, lines.join("; "));
+        self.coverage = Some(recorded);
+        let Some(record) = self.record.clone() else {
+            return failures;
         };
+        if failures.is_empty() {
+            self.write(&record);
+            let _ = std::fs::remove_file(in_progress(&record));
+        } else {
+            self.write(&in_progress(&record));
+        }
+        failures
+    }
+
+    fn write(&self, path: &Path) {
         let asked: BTreeMap<&String, usize> = self
             .asked
             .iter()
@@ -819,6 +840,43 @@ mod tests {
             ),
             Vec::<String>::new()
         );
+    }
+
+    /// A completed record survives a rerun of the same run that fails.
+    #[test]
+    fn a_failed_rerun_leaves_the_completed_record() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let record = dir.path().join("test-run.json");
+        let run = |scored: Scored<'_>| {
+            let mut shape = asked();
+            shape.record = Some(record.clone());
+            shape.write(&in_progress(&record));
+            let tally = Tally {
+                declared: ["t".to_string()].into(),
+                current: String::new(),
+                counts: scored
+                    .iter()
+                    .map(|(table, group, id, count)| {
+                        (
+                            (table.to_string(), group.to_string(), id.to_string()),
+                            *count,
+                        )
+                    })
+                    .collect(),
+            };
+            let failures = shape.finish(&tally);
+            // Finished here, so dropping it checks nothing more.
+            shape.record = None;
+            failures
+        };
+
+        assert!(run(&[("t", "g", "q1", 1), ("t", "g", "q2", 1)]).is_empty());
+        assert!(!in_progress(&record).exists());
+        let completed = std::fs::read(&record).expect("the completed record");
+
+        assert!(!run(&[("t", "g", "q1", 1)]).is_empty());
+        assert_eq!(std::fs::read(&record).expect("the record"), completed);
+        assert!(in_progress(&record).exists(), "the failed run left nothing");
     }
 
     /// An arm is named by everything set that changes a result, and by
