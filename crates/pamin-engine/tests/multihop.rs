@@ -273,6 +273,33 @@ fn score(into: &mut Scores, query: &Query, ranked: &[String]) {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "provisions postgres, downloads the dataset and model weights, and embeds the corpus"]
 async fn search_answers_questions_that_take_several_steps() {
+    // Name the code and the graphs a run measured, as XQuAD-R does, so two
+    // runs' numbers can be told apart by more than their environments.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("pamin_index=info")
+        .with_ansi(false)
+        .without_time()
+        .with_writer(std::io::stdout)
+        .try_init();
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(["-C", env!("CARGO_MANIFEST_DIR")])
+            .args(args)
+            .output()
+            .expect("run git")
+    };
+    let commit = String::from_utf8(git(&["rev-parse", "HEAD"]).stdout).expect("UTF-8 commit");
+    let changed = !git(&["diff", "--quiet", "HEAD"]).status.success();
+    println!(
+        "  benchmark code commit: {}{}",
+        commit.trim(),
+        if changed {
+            " (with tracked changes)"
+        } else {
+            ""
+        }
+    );
+
     let corpus = Corpus::load();
     corpus.describe();
 
