@@ -1,4 +1,4 @@
-//! A query-side correction for what EmbeddingGemma 2 encodes about language.
+//! A correction for what EmbeddingGemma 2 encodes about language.
 //!
 //! EmbeddingGemma 2's vectors carry the language they were written in as a
 //! few strong directions, so a query ranks text in its own language above a
@@ -11,12 +11,16 @@
 //! x -> y = unit(x - mu) -> unit(y - (y U) U^T)
 //! ```
 //!
-//! Applied to queries only. Stored vectors are untouched, so the variants
-//! share one index, and [`super::identity`] does not change with the choice.
 //! `PAMIN_EG2_QUERY_TRANSFORM` picks one of [`Transform`]'s variants; it is a
-//! measurement switch, undocumented on purpose, like `PAMIN_EG2_DIMS`.
+//! measurement switch, undocumented on purpose, like `PAMIN_EG2_DIMS`. The
+//! `center*` variants transform queries only: stored vectors are the graph's,
+//! so they share one index with `off`, and [`super::identity`] does not change
+//! with them. The `both-*` variants transform stored text the same way, with
+//! the same constants, after the width cut and before storage; their vectors
+//! are another space, so the variant is part of [`super::identity`] and an
+//! index built under one refuses to open under any other.
 //!
-//! The constants, per width (`language-d{768,512,256}.f32`, little-endian
+//! Provenance and attribution. The constants, per width (`language-d{768,512,256}.f32`, little-endian
 //! `f32`, `mu` then `U`'s two columns, `3 d` values), were fitted on Tatoeba
 //! (tatoeba.org, sentences under CC BY 2.0 FR; credit to the Tatoeba
 //! contributors), not on any evaluation corpus: per language (ar de el en es
@@ -35,10 +39,11 @@
 //! Cost: at 768 dimensions `center-lsar2` is about 3.8 thousand
 //! multiply-adds per query (a subtraction, two dot products, two updates and
 //! a norm over 768 values), against the hundreds of millions of the forward
-//! pass in front of it, once per query and remembered with the vector. It goes through [`crate::projection::dot`], which is
-//! the vector kernel this crate has (a plain loop the compiler vectorises,
-//! BLAS on macOS); nothing at this size would show a runtime-dispatched SIMD
-//! kernel's difference.
+//! pass in front of it, once per query (remembered with the vector) or per
+//! stored text. It goes through [`crate::projection::dot`], the vector kernel
+//! this crate has (a plain loop the compiler vectorises, BLAS on macOS);
+//! nothing at this size would show a runtime-dispatched SIMD kernel's
+//! difference.
 
 use std::sync::OnceLock;
 
@@ -47,7 +52,7 @@ use crate::error::{IndexError, Result};
 /// The variable naming the variant.
 const SETTING: &str = "PAMIN_EG2_QUERY_TRANSFORM";
 
-/// What is done to a query vector after the graph and the width cut.
+/// What is done to a vector after the graph and the width cut.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Transform {
     /// Nothing: the vector the graph returned, bit for bit.
@@ -58,6 +63,10 @@ pub(crate) enum Transform {
     CenterLsar1,
     /// Centred, then the first two language directions removed.
     CenterLsar2,
+    /// `CenterLsar1` on queries and on stored text.
+    BothCenterLsar1,
+    /// `CenterLsar2` on queries and on stored text.
+    BothCenterLsar2,
 }
 
 impl Transform {
@@ -75,6 +84,8 @@ impl Transform {
             "center" => Some(Self::Center),
             "center-lsar1" => Some(Self::CenterLsar1),
             "center-lsar2" => Some(Self::CenterLsar2),
+            "both-center-lsar1" => Some(Self::BothCenterLsar1),
+            "both-center-lsar2" => Some(Self::BothCenterLsar2),
             _ => None,
         }
     }
@@ -82,8 +93,19 @@ impl Transform {
     fn directions(self) -> usize {
         match self {
             Self::Off | Self::Center => 0,
-            Self::CenterLsar1 => 1,
-            Self::CenterLsar2 => 2,
+            Self::CenterLsar1 | Self::BothCenterLsar1 => 1,
+            Self::CenterLsar2 | Self::BothCenterLsar2 => 2,
+        }
+    }
+
+    /// What this variant adds to the profile identity: the name of a
+    /// transform stored vectors are made with, or nothing when they are the
+    /// graph's.
+    pub(crate) fn stored_tag(self) -> Option<&'static str> {
+        match self {
+            Self::Off | Self::Center | Self::CenterLsar1 | Self::CenterLsar2 => None,
+            Self::BothCenterLsar1 => Some("both-center-lsar1"),
+            Self::BothCenterLsar2 => Some("both-center-lsar2"),
         }
     }
 }
@@ -99,13 +121,14 @@ pub(crate) fn chosen() -> Transform {
             Ok(value) => Transform::parse(&value).unwrap_or_else(|| {
                 tracing::warn!(
                     %value,
-                    "{SETTING} is not off, center, center-lsar1 or center-lsar2; using {:?}",
+                    "{SETTING} is not off, center, center-lsar1, center-lsar2, \
+                     both-center-lsar1 or both-center-lsar2; using {:?}",
                     Transform::DEFAULT
                 );
                 Transform::DEFAULT
             }),
         };
-        tracing::info!(?transform, "gemma query transform");
+        tracing::info!(?transform, "gemma language transform");
         transform
     })
 }
@@ -137,11 +160,25 @@ fn constants(width: usize) -> Option<&'static [f32]> {
     Some(&decoded[index])
 }
 
+/// A query vector under `transform`.
+pub(crate) fn query(transform: Transform, vector: Vec<f32>) -> Result<Vec<f32>> {
+    apply(transform, vector)
+}
+
+/// A vector for storage under `transform`: transformed as a query is under
+/// the `both-*` variants, and the graph's own otherwise.
+pub(crate) fn stored(transform: Transform, vector: Vec<f32>) -> Result<Vec<f32>> {
+    if transform.stored_tag().is_none() {
+        return Ok(vector);
+    }
+    apply(transform, vector)
+}
+
 /// `vector` under `transform`, at the vector's own width.
 ///
 /// `Off`, and any variant at a width with no constants, returns the vector
 /// as it came.
-pub(crate) fn apply(transform: Transform, mut vector: Vec<f32>) -> Result<Vec<f32>> {
+fn apply(transform: Transform, mut vector: Vec<f32>) -> Result<Vec<f32>> {
     if transform == Transform::Off {
         return Ok(vector);
     }
@@ -162,7 +199,7 @@ pub(crate) fn apply(transform: Transform, mut vector: Vec<f32>) -> Result<Vec<f3
     let norm = crate::projection::dot(&vector, &vector).sqrt();
     if norm.is_nan() || norm <= 0.0 {
         return Err(IndexError::Numerical(
-            "a gemma query vector with nothing left after the language transform".into(),
+            "a gemma vector with nothing left after the language transform".into(),
         ));
     }
     for value in &mut vector {
@@ -175,11 +212,13 @@ pub(crate) fn apply(transform: Transform, mut vector: Vec<f32>) -> Result<Vec<f3
 mod tests {
     use super::*;
 
-    const ALL: [Transform; 4] = [
+    const ALL: [Transform; 6] = [
         Transform::Off,
         Transform::Center,
         Transform::CenterLsar1,
         Transform::CenterLsar2,
+        Transform::BothCenterLsar1,
+        Transform::BothCenterLsar2,
     ];
 
     fn cosine(left: &[f32], right: &[f32]) -> f64 {
@@ -190,6 +229,10 @@ mod tests {
                 .sum()
         };
         dot(left, right) / (dot(left, left) * dot(right, right)).sqrt()
+    }
+
+    fn bits(vector: &[f32]) -> Vec<u32> {
+        vector.iter().map(|v| v.to_bits()).collect()
     }
 
     fn unit(vector: &[f32]) -> Vec<f32> {
@@ -218,8 +261,9 @@ mod tests {
         assert!(constants(128).is_none());
     }
 
-    /// `off` hands back the graph's vector bit for bit, at every width, and
-    /// so does every variant at the width with no constants.
+    /// `off` hands back the graph's vector bit for bit, as a query and for
+    /// storage, at every width; so does every variant at the width with no
+    /// constants.
     #[test]
     fn off_is_the_vector_unchanged() {
         for width in [768, 512, 256, 128] {
@@ -228,14 +272,11 @@ mod tests {
                     .map(|i| ((i * 37 % 101) as f32 - 50.0) / 7.0)
                     .collect::<Vec<_>>(),
             );
-            let bits: Vec<u32> = vector.iter().map(|v| v.to_bits()).collect();
-            let off = apply(Transform::Off, vector.clone()).unwrap();
-            assert_eq!(off.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), bits);
-            if width == 128 {
-                for transform in ALL {
-                    let out = apply(transform, vector.clone()).unwrap();
-                    assert_eq!(out.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), bits);
-                }
+            let original = bits(&vector);
+            let transforms: &[Transform] = if width == 128 { &ALL } else { &ALL[..1] };
+            for transform in transforms {
+                assert_eq!(bits(&query(*transform, vector.clone()).unwrap()), original);
+                assert_eq!(bits(&stored(*transform, vector.clone()).unwrap()), original);
             }
         }
     }
@@ -252,7 +293,16 @@ mod tests {
             Transform::parse("center-lsar2\n"),
             Some(Transform::CenterLsar2)
         );
+        assert_eq!(
+            Transform::parse("both-center-lsar1"),
+            Some(Transform::BothCenterLsar1)
+        );
+        assert_eq!(
+            Transform::parse("both-center-lsar2"),
+            Some(Transform::BothCenterLsar2)
+        );
         assert_eq!(Transform::parse("lsar2"), None);
+        assert_eq!(Transform::parse("both-center"), None);
     }
 
     /// The transform agrees with the screen's numpy arithmetic,
@@ -271,13 +321,31 @@ mod tests {
         let values = floats(bytes);
         let (inputs, mut expected) = values.split_at(2 * 768);
         let mut checked = 0;
+        let mut checked_both = 0;
         for width in [768, 512, 256] {
             for input in inputs.as_chunks::<768>().0 {
                 let cut = unit(&input[..width]);
-                for transform in &ALL[1..] {
+                for transform in &ALL[1..4] {
                     let (reference, rest) = expected.split_at(width);
                     expected = rest;
-                    let actual = apply(*transform, cut.clone()).unwrap();
+                    let actual = query(*transform, cut.clone()).unwrap();
+                    // The query-only variants store the graph's vector.
+                    let kept = stored(*transform, cut.clone()).unwrap();
+                    assert_eq!(bits(&kept), bits(&cut));
+                    // The both-sides variant of the same depth transforms a
+                    // query and a stored text alike, to the same reference.
+                    let both = match transform {
+                        Transform::CenterLsar1 => Some(Transform::BothCenterLsar1),
+                        Transform::CenterLsar2 => Some(Transform::BothCenterLsar2),
+                        _ => None,
+                    };
+                    if let Some(both) = both {
+                        let as_query = query(both, cut.clone()).unwrap();
+                        let as_stored = stored(both, cut.clone()).unwrap();
+                        assert_eq!(bits(&as_query), bits(&actual));
+                        assert_eq!(bits(&as_stored), bits(&actual));
+                        checked_both += 1;
+                    }
                     let agreement = cosine(&actual, reference);
                     assert!(
                         1.0 - agreement < 1e-6,
@@ -293,5 +361,6 @@ mod tests {
         }
         assert!(expected.is_empty());
         assert_eq!(checked, 18);
+        assert_eq!(checked_both, 12);
     }
 }

@@ -238,9 +238,20 @@ impl Embedder {
 
     /// Embeds one passage for storage.
     pub fn embed_passage(&mut self, text: &str) -> Result<Vec<f32>> {
-        match self.profile.prefixes() {
+        let vector = match self.profile.prefixes() {
             Some((_, passage)) => self.embed_one(&format!("{passage}{text}")),
             None => self.embed_one(text),
+        }?;
+        self.for_storage(vector)
+    }
+
+    /// A stored text's vector as this profile keeps it: the graph's, or under
+    /// the gemma profile's stored-side language transform (`crate::gemma`).
+    fn for_storage(&self, vector: Vec<f32>) -> Result<Vec<f32>> {
+        if self.profile == Profile::Gemma {
+            crate::gemma::stored(vector)
+        } else {
+            Ok(vector)
         }
     }
 
@@ -269,8 +280,8 @@ impl Embedder {
             Some((query, _)) => self.embed_one(&format!("{query}{text}")),
             None => self.embed_one(text),
         }?;
-        // Queries only: what is stored is the graph's vector, so this choice
-        // shares an index with every other.
+        // The gemma profile's language transform; whether stored text gets
+        // it too is `for_storage`'s business.
         let primary = if self.profile == Profile::Gemma {
             crate::gemma::query(primary)?
         } else {
@@ -310,7 +321,10 @@ impl Embedder {
             Some((_, passage)) => texts.iter().map(|t| format!("{passage}{t}")).collect(),
             None => texts.iter().map(|t| (*t).to_string()).collect(),
         };
-        self.run(prefixed)
+        self.run(prefixed)?
+            .into_iter()
+            .map(|vector| self.for_storage(vector))
+            .collect()
     }
 
     /// How many queries this remembers, per profile.

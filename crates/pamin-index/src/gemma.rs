@@ -103,10 +103,22 @@ pub(crate) fn identity() -> &'static str {
             Ok(format!("{:x}", Sha256::digest(combined.as_bytes())))
         });
         match digest {
-            Ok(digest) => format!("embeddinggemma-2-int8@{}:d{}", &digest[..16], dimensions()),
+            Ok(digest) => named(&digest[..16], dimensions(), language::chosen()),
             Err(_) => "embeddinggemma-2-int8:unconfigured".to_string(),
         }
     })
+}
+
+/// The identity of vectors stored at `width` under `transform`.
+///
+/// A transform applied to stored text makes another space, so it is named;
+/// one applied to queries alone leaves stored vectors the graph's, and the
+/// identity is what it was before there were transforms.
+fn named(digest: &str, width: u32, transform: language::Transform) -> String {
+    match transform.stored_tag() {
+        None => format!("embeddinggemma-2-int8@{digest}:d{width}"),
+        Some(tag) => format!("embeddinggemma-2-int8@{digest}:d{width}:{tag}"),
+    }
 }
 
 /// The model on `target`, with its tokenizer, truncating at `max_length`.
@@ -147,7 +159,14 @@ pub(crate) fn truncated(mut vector: Vec<f32>) -> Result<Vec<f32>> {
 /// A query vector, already cut by [`truncated`], under the language
 /// transform `PAMIN_EG2_QUERY_TRANSFORM` chooses -- see [`language`].
 pub(crate) fn query(vector: Vec<f32>) -> Result<Vec<f32>> {
-    language::apply(language::chosen(), vector)
+    language::query(language::chosen(), vector)
+}
+
+/// A stored text's vector, already cut by [`truncated`]: the graph's own,
+/// unless `PAMIN_EG2_QUERY_TRANSFORM` names a `both-*` variant -- see
+/// [`language`].
+pub(crate) fn stored(vector: Vec<f32>) -> Result<Vec<f32>> {
+    language::stored(language::chosen(), vector)
 }
 
 /// Where this profile's model lives, for the plan cache's identity.
@@ -226,7 +245,7 @@ mod tests {
         for case in cases {
             let text = case["text"].as_str().unwrap();
             let (wheel, unquantized) = (vector(&case["vector"]), vector(&case["fp32"]));
-            // The graph's vector: the query transform comes after it, and
+            // The graph's vector: the language transform comes after it, and
             // is checked against its own reference in `language`.
             let actual = match case["kind"].as_str().unwrap() {
                 "query" => {
@@ -239,7 +258,16 @@ mod tests {
                     );
                     raw
                 }
-                _ => embedder.embed_passage(text).unwrap(),
+                _ => {
+                    let raw = embedder
+                        .embed_one(&format!("{}{text}", PREFIXES.1))
+                        .unwrap();
+                    assert_eq!(
+                        embedder.embed_passage(text).unwrap(),
+                        stored(raw.clone()).unwrap()
+                    );
+                    raw
+                }
             };
             let (agreement, ours, theirs) = (
                 cosine(&actual, &wheel),
@@ -271,5 +299,27 @@ mod tests {
             assert!((crate::projection::dot(&cut, &cut) - 1.0).abs() < 1e-5);
         }
         assert!(truncated(vec![1.0; 512]).is_err());
+    }
+
+    /// A variant that changes stored vectors changes the identity, so an
+    /// index built under it never opens under another; one that changes only
+    /// queries, and `off`, leave it as it was before there were variants.
+    #[test]
+    fn the_identity_names_a_stored_transform_and_only_that() {
+        use language::Transform::*;
+        let before = "embeddinggemma-2-int8@0123456789abcdef:d768";
+        for transform in [Off, Center, CenterLsar1, CenterLsar2] {
+            assert_eq!(named("0123456789abcdef", 768, transform), before);
+        }
+        let one = named("0123456789abcdef", 768, BothCenterLsar1);
+        let two = named("0123456789abcdef", 768, BothCenterLsar2);
+        assert_ne!(one, before);
+        assert_ne!(two, before);
+        assert_ne!(one, two);
+        assert_ne!(
+            named("0123456789abcdef", 512, BothCenterLsar2),
+            two,
+            "the width stays part of it"
+        );
     }
 }
