@@ -256,7 +256,7 @@ impl Corpus {
             // Scored, it would count zero whatever came back -- a question the
             // corpus cannot grade. Its paragraphs stay: they are documents
             // every other question is searched among.
-            if relevant.is_empty() {
+            if !answerable(row) {
                 excluded.push((row.id.clone(), group(row), "no supporting paragraph".into()));
                 continue;
             }
@@ -410,11 +410,21 @@ fn select(rows: Vec<Row>, sample: Option<usize>, seed: u64) -> (Vec<Row>, String
         return (rows, selection, None);
     };
     let read = rows.len();
-    let hops: HashSet<String> = rows.iter().map(group).collect();
+    let hops: HashSet<String> = rows
+        .iter()
+        .filter(|row| answerable(row))
+        .map(group)
+        .collect();
     let drawn = harness::shape::stratified(rows, wanted, seed, group, |row| row.id.clone());
     // The premise of the mode: every hop count is asked. A sample too small
-    // to reach one is a prefix by another name.
-    let reached: HashSet<String> = drawn.iter().map(group).collect();
+    // to reach one is a prefix by another name. Asked means scored: a drawn
+    // question with no supporting paragraph is excluded at load, so it does
+    // not reach its hop count.
+    let reached: HashSet<String> = drawn
+        .iter()
+        .filter(|row| answerable(row))
+        .map(group)
+        .collect();
     assert_eq!(
         reached, hops,
         "a sample of {wanted} does not reach every hop count in the split"
@@ -424,19 +434,55 @@ fn select(rows: Vec<Row>, sample: Option<usize>, seed: u64) -> (Vec<Row>, String
     (drawn, selection, Some(seed))
 }
 
-#[test]
-fn a_sample_asks_every_hop_count_where_a_prefix_does_not() {
-    // Ordered by hop count, as the split is.
-    let rows: Vec<Row> = [("2hop", 50), ("3hop", 30), ("4hop", 20)]
+/// Whether a question can be graded: it has a supporting paragraph to find.
+fn answerable(row: &Row) -> bool {
+    row.paragraphs
+        .iter()
+        .any(|paragraph| paragraph.is_supporting)
+}
+
+/// Rows ordered by hop count, as the split is, each with one supporting
+/// paragraph unless its id is in `unanswerable`.
+fn rows(unanswerable: &[String]) -> Vec<Row> {
+    [("2hop", 50), ("3hop", 30), ("4hop", 20)]
         .into_iter()
         .flat_map(|(hops, count)| {
-            (0..count).map(move |at| Row {
-                id: format!("{hops}__{at}"),
-                question: String::new(),
-                paragraphs: Vec::new(),
+            (0..count).map(move |at| {
+                let id = format!("{hops}__{at}");
+                Row {
+                    paragraphs: vec![Paragraph {
+                        title: id.clone(),
+                        paragraph_text: String::new(),
+                        is_supporting: !unanswerable.contains(&id),
+                    }],
+                    id,
+                    question: String::new(),
+                }
             })
         })
+        .collect()
+}
+
+/// A hop count whose only drawn questions are excluded at load is not asked,
+/// and the sample says so before anything is indexed.
+#[test]
+#[should_panic(expected = "does not reach every hop count")]
+fn a_sample_whose_drawn_questions_cannot_be_graded_does_not_reach_their_hop_count() {
+    let (drawn, _, _) = select(rows(&[]), Some(10), harness::shape::SEED);
+    let four: Vec<String> = drawn
+        .iter()
+        .filter(|row| group(row) == "4hop")
+        .map(|row| row.id.clone())
         .collect();
+    assert!(!four.is_empty() && four.len() < 20);
+    // Drawn by id alone, so the same rows are drawn again; the split still
+    // has gradable four-hop questions, just not these.
+    select(rows(&four), Some(10), harness::shape::SEED);
+}
+
+#[test]
+fn a_sample_asks_every_hop_count_where_a_prefix_does_not() {
+    let rows = rows(&[]);
     let prefix: HashSet<String> = rows[..10].iter().map(group).collect();
     assert_eq!(prefix.len(), 1, "{prefix:?}");
 
