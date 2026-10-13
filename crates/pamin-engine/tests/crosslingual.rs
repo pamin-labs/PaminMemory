@@ -197,7 +197,7 @@
 //! other two groups do not depend on it. Each run prints its `shape` lines --
 //! corpus digest, seed, asked and excluded -- and a `coverage` line at the
 //! end, and records them under `$PAMIN_EVAL_HOME/shape/`, one file per test,
-//! profile, arm and digest.
+//! profile, arm, digest and query order.
 
 mod channels;
 mod features;
