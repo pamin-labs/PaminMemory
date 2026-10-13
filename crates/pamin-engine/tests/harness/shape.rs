@@ -242,6 +242,39 @@ fn arm(settings: &[String]) -> String {
     format!("arm-{short}")
 }
 
+/// The commit checked out where the harness was built, as `git rev-parse
+/// HEAD` names it there -- the way the XQuAD-R baseline names its code --
+/// with `+dirty` when tracked files differ from it.
+fn source() -> String {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(["-C", env!("CARGO_MANIFEST_DIR")])
+            .args(args)
+            .output()
+            .unwrap_or_else(|error| panic!("running git to name the evaluated commit: {error}"))
+    };
+    let head = git(&["rev-parse", "HEAD"]);
+    assert!(
+        head.status.success(),
+        "git could not name the evaluated commit"
+    );
+    let commit = String::from_utf8(head.stdout).expect("git prints a UTF-8 commit hash");
+    let clean = git(&["diff", "--quiet", "HEAD"]).status.success();
+    format!("{}{}", commit.trim(), if clean { "" } else { "+dirty" })
+}
+
+/// `commit` in a record's name: its first 12 characters, and `+dirty` if it
+/// was.
+fn short(commit: &str) -> String {
+    let hash = commit.trim_end_matches("+dirty");
+    let dirty = if hash.len() < commit.len() {
+        "+dirty"
+    } else {
+        ""
+    };
+    format!("{}{dirty}", &hash[..hash.len().min(12)])
+}
+
 /// A path beside `path` that no other writer uses: named by this process and
 /// the time, then `suffix`.
 fn unique(path: &Path, suffix: &str) -> PathBuf {
@@ -335,6 +368,8 @@ pub struct Shape {
     progress: PathBuf,
     /// Which test, profile and arm the run was, as `publish` was told.
     run: [String; 3],
+    /// The evaluated commit, from [`source`], once published.
+    commit: String,
     /// What set the arm apart, from [`settings`].
     settings: Vec<String>,
 }
@@ -382,6 +417,7 @@ impl Shape {
             record: None,
             progress: PathBuf::new(),
             run: Default::default(),
+            commit: String::new(),
             settings: Vec::new(),
         }
     }
@@ -473,7 +509,9 @@ impl Shape {
     /// digest, the arm being the harness's `vars` and the `PAMIN_` settings
     /// that are set (see [`settings`]). It was named by the digest alone, and
     /// every arm over one corpus wrote the same file, so the last run's
-    /// coverage replaced the others'.
+    /// coverage replaced the others'. It is named by the evaluated commit
+    /// too, so a run of another revision keeps its own record rather than
+    /// replacing this one's.
     pub fn publish(&mut self, test: &str, profile: &str, vars: &[&str]) {
         let digest = self.digest();
         let set = std::env::vars_os().map(|(name, value)| {
@@ -486,7 +524,9 @@ impl Shape {
         let arm = arm(&self.settings);
         self.run = [test.to_string(), profile.to_string(), arm.clone()];
         let name = &self.name;
+        self.commit = source();
         println!("  shape {name}: {test}, profile {profile}, arm {arm}");
+        println!("  shape {name}: commit {}", self.commit);
         for setting in &self.settings {
             println!("  shape {name}: arm {arm} sets {setting}");
         }
@@ -526,6 +566,7 @@ impl Shape {
             test,
             profile,
             &arm,
+            &short(&self.commit),
             &digest[..16],
             &sequence[..8],
         ]
@@ -718,6 +759,7 @@ impl Shape {
             "test": test,
             "profile": profile,
             "arm": arm,
+            "source_commit": self.commit,
             "settings": self.settings,
             "corpus_sha256": self.digest(),
             "sequence_sha256": self.sequence(),
@@ -899,6 +941,17 @@ mod tests {
     }
 
     /// Two queries asked, one excluded, in one group.
+    #[test]
+    fn the_record_names_the_evaluated_commit() {
+        let commit = source();
+        let hash = commit.trim_end_matches("+dirty");
+        assert_eq!(hash.len(), 40, "{commit}");
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "{commit}");
+        let named = short(&commit);
+        assert_eq!(named.trim_end_matches("+dirty"), &hash[..12]);
+        assert_eq!(named.ends_with("+dirty"), commit.ends_with("+dirty"));
+    }
+
     fn asked() -> Shape {
         let mut shape = Shape::new("test", String::new(), None);
         shape.query(&["g"], "q1", &[]);
