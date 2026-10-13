@@ -244,7 +244,8 @@ fn arm(settings: &[String]) -> String {
 
 /// The commit checked out where the harness was built, as `git rev-parse
 /// HEAD` names it there -- the way the XQuAD-R baseline names its code --
-/// with `+dirty` when tracked files differ from it.
+/// with `+dirty-` and [`patched`]'s hash of the tracked changes when there are
+/// any, so two different patches on one commit are two different sources.
 fn source() -> String {
     let git = |args: &[&str]| {
         std::process::Command::new("git")
@@ -259,20 +260,32 @@ fn source() -> String {
         "git could not name the evaluated commit"
     );
     let commit = String::from_utf8(head.stdout).expect("git prints a UTF-8 commit hash");
-    let clean = git(&["diff", "--quiet", "HEAD"]).status.success();
-    format!("{}{}", commit.trim(), if clean { "" } else { "+dirty" })
+    let diff = git(&["diff", "--binary", "HEAD"]);
+    assert!(
+        diff.status.success(),
+        "git could not list the tracked changes"
+    );
+    format!("{}{}", commit.trim(), patched(&diff.stdout))
 }
 
-/// `commit` in a record's name: its first 12 characters, and `+dirty` if it
-/// was.
-fn short(commit: &str) -> String {
-    let hash = commit.trim_end_matches("+dirty");
-    let dirty = if hash.len() < commit.len() {
-        "+dirty"
-    } else {
-        ""
-    };
-    format!("{}{dirty}", &hash[..hash.len().min(12)])
+/// What a source adds to its commit for `diff`, the tracked changes as `git
+/// diff --binary HEAD` prints them: nothing for none, and otherwise `+dirty-`
+/// and the first 8 hex digits of their SHA-256.
+fn patched(diff: &[u8]) -> String {
+    if diff.is_empty() {
+        return String::new();
+    }
+    let hash = Sha256::digest(diff);
+    let short: String = hash[..4].iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("+dirty-{short}")
+}
+
+/// A [`source`] in a record's name: the commit's first 12 characters, and
+/// what [`patched`] added to it.
+fn short(source: &str) -> String {
+    let (commit, patch) = source.split_once('+').unwrap_or((source, ""));
+    let plus = if patch.is_empty() { "" } else { "+" };
+    format!("{}{plus}{patch}", &commit[..commit.len().min(12)])
 }
 
 /// A path beside `path` that no other writer uses: named by this process and
@@ -944,12 +957,25 @@ mod tests {
     #[test]
     fn the_record_names_the_evaluated_commit() {
         let commit = source();
-        let hash = commit.trim_end_matches("+dirty");
+        let (hash, patch) = commit.split_once('+').unwrap_or((&commit, ""));
         assert_eq!(hash.len(), 40, "{commit}");
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "{commit}");
         let named = short(&commit);
-        assert_eq!(named.trim_end_matches("+dirty"), &hash[..12]);
-        assert_eq!(named.ends_with("+dirty"), commit.ends_with("+dirty"));
+        assert!(named.starts_with(&hash[..12]), "{named}");
+        assert!(named.ends_with(patch), "{named}");
+
+        // Two different patches on one commit are two different sources.
+        assert_eq!(patched(b""), "");
+        let one = patched(b"diff --git a/x b/x\n+1\n");
+        let two = patched(b"diff --git a/x b/x\n+2\n");
+        assert_ne!(one, two);
+        assert!(
+            one.starts_with("+dirty-") && one.len() == "+dirty-".len() + 8,
+            "{one}"
+        );
+        let source = format!("{}{one}", "a".repeat(40));
+        assert_eq!(short(&source), format!("{}{one}", "a".repeat(12)));
+        assert_eq!(short(&"b".repeat(40)), "b".repeat(12));
     }
 
     fn asked() -> Shape {
