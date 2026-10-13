@@ -441,8 +441,16 @@ fn single_target_counts_one_translation_and_strikes_the_rest() {
         questions,
         excluded: Vec::new(),
     };
+    // Each query's invariants hold under whatever seed the run was given;
+    // whether 110 draws reach every language depends on the seed, so that is
+    // checked under the fixed default alone.
+    let reached: HashSet<&str> = corpus
+        .drawn(harness::shape::SEED)
+        .iter()
+        .map(|query| query.target)
+        .collect();
+    assert_eq!(reached.len(), LANGUAGES.len(), "{reached:?}");
     let queries = corpus.queries();
-    let mut targets = HashSet::new();
     for query in &queries {
         let (relevant, drop) = query.relevant("single_target");
         assert_eq!(relevant.len(), 1, "{}", query.question.id);
@@ -450,9 +458,7 @@ fn single_target_counts_one_translation_and_strikes_the_rest() {
         assert_ne!(query.target, query.language, "{}", query.question.id);
         assert!(relevant.contains(query.question.answers[query.target].as_str()));
         assert!(drop.contains(query.question.answers[query.language].as_str()));
-        targets.insert(query.target);
     }
-    assert_eq!(targets.len(), LANGUAGES.len(), "{targets:?}");
     let again = corpus.queries();
     assert!(
         queries
@@ -655,8 +661,12 @@ impl Corpus {
     ///
     /// Each query's `single_target` language is drawn here, from the seed.
     fn queries(&self) -> Vec<Query<'_>> {
+        self.drawn(harness::shape::seed())
+    }
+
+    /// [`queries`](Self::queries), with each target drawn from `seed`.
+    fn drawn(&self, seed: u64) -> Vec<Query<'_>> {
         let all = every_language();
-        let seed = harness::shape::seed();
         self.questions
             .iter()
             .flat_map(|question| {
