@@ -2284,12 +2284,14 @@ async fn search_reaches_across_languages() {
             &alone["cross_lingual"].per_query,
             &groups["cross_lingual"].per_query,
         );
-        let same = statistics::compare(
-            &alone["same_language"].per_query,
-            &groups["same_language"].per_query,
-        );
-        println!("  reranking is worth {paired} cross-lingual nDCG@{NDCG_AT}");
-        println!("  and {same} same-language\n");
+        println!("  reranking is worth, in nDCG@{NDCG_AT}:");
+        for group in GROUPS {
+            println!(
+                "    {group:<13} {}",
+                statistics::compare(&alone[group].per_query, &groups[group].per_query)
+            );
+        }
+        println!();
 
         assert!(
             paired.is_significant(),
