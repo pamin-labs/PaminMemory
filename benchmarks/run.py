@@ -17,6 +17,7 @@ resume is a run nobody repeats.
 import argparse
 import collections
 import concurrent.futures
+import hashlib
 import importlib
 import json
 import os
@@ -38,6 +39,17 @@ import resources
 SERIAL_ARMS = {"mem0", "mem0-wide"}
 
 SHIM = os.environ.get("SHIM_URL", "http://127.0.0.1:8088/v1")
+
+
+def shard_of(unit, count):
+    """Which shard a unit belongs to, stable across processes and runs.
+
+    A property of the unit id alone, not of iteration order or checkpoint
+    state, so two processes started at slightly different moments -- with
+    slightly different `done` sets already loaded -- still partition the
+    same units the same way instead of racing to ingest the same one twice.
+    """
+    return int(hashlib.md5(unit.encode()).hexdigest(), 16) % count
 
 # Set when more than one run shares this machine and this endpoint.
 #
@@ -143,6 +155,15 @@ def main():
                              "original sequential behaviour. mem0's own "
                              "shared-directory ingest forces it to 1 "
                              "regardless of this flag -- see SERIAL_ARMS.")
+    parser.add_argument("--shard-count", type=int, default=1,
+                        help="run only this process's slice of the units, "
+                             "so several independent processes -- pointed "
+                             "at their own stores via BENCH_PAMIN_HOME -- "
+                             "can split the work without touching the "
+                             "same one. 1 keeps every unit in this process.")
+    parser.add_argument("--shard-index", type=int, default=0,
+                        help="which slice this process takes, 0-based; "
+                             "ignored when --shard-count is 1.")
     args = parser.parse_args()
 
     dataset = importlib.import_module(f"datasets.{args.dataset}")
@@ -164,6 +185,8 @@ def main():
         todo = []
         for entry in entries:
             unit = dataset.unit_id(entry)
+            if args.shard_count > 1 and shard_of(unit, args.shard_count) != args.shard_index:
+                continue
             wanted = {qid for qid, _qa, _ref
                       in dataset.questions(entry, args.questions)} or {None}
             if not all((name, unit, qid) in done for qid in wanted):
