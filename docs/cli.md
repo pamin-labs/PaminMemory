@@ -89,9 +89,12 @@ runtime's own optimized form of the graph with its weights in a separate data
 file, which the runtime maps from disk instead of copying onto the heap: the
 `accurate` reranker holds 271 MB of live memory rather than 822, the `accuracy`
 embedder 272 rather than 824, with scores and vectors bit-identical (see
-[measured.md](measured.md)). Most of what is left is the tokenizer's
-vocabulary, which the embedder and every reranker share: with both loaded, the
-two hold 330 MB rather than 582. What it costs is disk. Each copy is larger than the
+[measured.md](measured.md)). Most of what was left was the tokenizer's
+vocabulary, which the embedder and every reranker share. It is now held in a
+compact layout: with both loaded, the two hold 47 MiB of anonymous memory after
+use, where the previous layout held 314 MiB in the same measurement (and
+582 MiB when each model built its own copy). The per-model figures above were taken
+with the previous layout. What it costs is disk. Each copy is larger than the
 model it came from, because the weights are also stored in the layout the CPU's
 kernels use -- a data file of 874 MB for the 570 MB `accurate` reranker, about
 as much for the embedder, 140 MB for the 119 MB `fast` reranker -- and writing
