@@ -653,6 +653,14 @@ impl Shape {
     }
 
     fn write(&self, path: &Path) {
+        if let Err(error) = self.try_write(path) {
+            panic!("{error}");
+        }
+    }
+
+    /// [`write`](Self::write), returning the failure rather than panicking,
+    /// for a run that is already panicking.
+    fn try_write(&self, path: &Path) -> Result<(), String> {
         let asked: BTreeMap<&String, usize> = self
             .asked
             .iter()
@@ -691,10 +699,10 @@ impl Shape {
             std::fs::rename(&partial, path)
                 .map_err(|error| format!("renaming onto {}: {error}", path.display()))
         });
-        if let Err(error) = written {
+        if written.is_err() {
             let _ = std::fs::remove_file(&partial);
-            panic!("{error}");
         }
+        written
     }
 }
 
@@ -704,10 +712,25 @@ impl Drop for Shape {
             return;
         }
         if std::thread::panicking() {
-            // The run already failed; stop counting so nothing after it in
-            // this process is counted against it, and leave the failure as
-            // the one reported.
-            tallied(Option::take);
+            // The run already failed -- in scoring, or at a floor after every
+            // query was scored. Stop counting, record what was scored in the
+            // in-progress file only, so a failed floor still says what its
+            // numbers were over, and leave the failure as the one reported:
+            // a second panic here would abort the process.
+            let Some(tally) = tallied(Option::take) else {
+                return;
+            };
+            let (lines, _, recorded) = self.coverage(&tally);
+            println!(
+                "  coverage {} (failed run): {}",
+                self.name,
+                lines.join("; ")
+            );
+            self.coverage = Some(recorded);
+            let record = self.record.as_ref().expect("checked above");
+            if let Err(error) = self.try_write(&in_progress(record)) {
+                eprintln!("  shape {}: {error}", self.name);
+            }
             return;
         }
         self.close();
@@ -887,6 +910,33 @@ mod tests {
         assert_eq!(second.counts.len(), 1);
         // Nothing leaked onto a thread that published nothing.
         assert!(tallied(|open| open.is_none()));
+    }
+
+    /// A run that scored everything and then failed a floor records what it
+    /// scored, in the in-progress file and not the record.
+    #[test]
+    fn a_run_that_fails_after_scoring_keeps_its_coverage() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let record = dir.path().join("test-run.json");
+        let into = record.clone();
+        let failed = std::thread::spawn(move || {
+            let mut shape = asked();
+            shape.record = Some(into);
+            open_tally();
+            tables(["t"]);
+            table("t");
+            tally("g", "q1");
+            tally("g", "q2");
+            panic!("below the floor");
+        })
+        .join();
+        assert!(failed.is_err());
+        assert!(!record.exists(), "a failed run wrote the record");
+        let kept: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(in_progress(&record)).expect("the in-progress file"),
+        )
+        .expect("JSON");
+        assert_eq!(kept["scored"]["groups"]["g"]["scored"], 2, "{kept}");
     }
 
     /// A completed record survives a rerun of the same run that fails.
