@@ -2162,12 +2162,20 @@ async fn search_reaches_across_languages() {
         let tiers: Vec<Rerank> = if wanted == "1" {
             vec![Rerank::Off, Rerank::Fast, Rerank::Accurate]
         } else {
-            std::iter::once(Rerank::Off)
-                .chain(wanted.split(',').map(|name| {
-                    Rerank::parse(name.trim())
-                        .unwrap_or_else(|| panic!("TIERS names an unknown tier: {name}"))
-                }))
-                .collect()
+            // Each tier is one table of every query: naming `off`, or a tier
+            // twice, would score every query twice into one table and fail
+            // the coverage check only after the whole run.
+            let mut tiers = vec![Rerank::Off];
+            for name in wanted.split(',') {
+                let tier = Rerank::parse(name.trim())
+                    .unwrap_or_else(|| panic!("TIERS names an unknown tier: {name}"));
+                assert!(
+                    !tiers.contains(&tier),
+                    "TIERS names {name} twice, or names off, which always runs first"
+                );
+                tiers.push(tier);
+            }
+            tiers
         };
 
         // Kept so the tiers can be compared against each other with paired
