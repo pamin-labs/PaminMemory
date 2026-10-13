@@ -22,9 +22,9 @@
 //! deterministic seeded sample that keeps linked groups whole, and explicit
 //! coverage with no silent replacement of failures.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
 
 use sha2::{Digest, Sha256};
 
@@ -144,12 +144,19 @@ pub struct Excluded {
 /// running arm said it would print, the one it is scoring into now, and how
 /// many times each `(table, group, query id)` was scored.
 ///
-/// Process-wide rather than a field a harness threads through, because the
+/// Kept here rather than in a field a harness threads through, because the
 /// places a query is scored are a harness's scoring function and the
 /// callbacks a dozen diagnostic arms hand it, several layers down; each
 /// harness calls [`tally`] once, where its answer key is read, and every arm
 /// is covered by construction. `None` while no shape is open, so unit tests
 /// that score nothing published are not counted.
+///
+/// Per thread rather than per process, because libtest runs tests on threads
+/// of one process: two harness tests run together -- `--ignored` without
+/// `--exact` -- each count into their own. A test's body is polled on its own
+/// thread, `#[tokio::test]` included, and nothing here scores from a spawned
+/// task; a score that ever did would go uncounted, and fail the run as never
+/// scored rather than pass it.
 ///
 /// By table because a count per query cannot see a table that never ran: an
 /// arm that prints three tables and fills two scores every query twice, which
@@ -162,10 +169,26 @@ struct Tally {
     counts: BTreeMap<(String, String, String), usize>,
 }
 
-static TALLY: Mutex<Option<Tally>> = Mutex::new(None);
+thread_local! {
+    static TALLY: RefCell<Option<Tally>> = const { RefCell::new(None) };
+}
 
-fn tallied() -> std::sync::MutexGuard<'static, Option<Tally>> {
-    TALLY.lock().unwrap_or_else(PoisonError::into_inner)
+/// Runs `f` on this thread's tally.
+fn tallied<R>(f: impl FnOnce(&mut Option<Tally>) -> R) -> R {
+    TALLY.with(|tally| f(&mut tally.borrow_mut()))
+}
+
+/// Starts counting on this thread, for a shape just published.
+fn open_tally() {
+    tallied(|open| {
+        // Two shapes on one thread would count into one tally and fail each
+        // other's check with each other's queries; say so instead.
+        assert!(
+            open.is_none(),
+            "this test already published a shape and is counting its coverage"
+        );
+        *open = Some(Tally::default());
+    });
 }
 
 /// `PAMIN_` variables that say only where something is, or what to log, and
@@ -248,28 +271,34 @@ fn file_part(part: &str) -> String {
 /// scores any. A declared table nothing is scored into fails the run, and so
 /// does a score into a table never declared.
 pub fn tables<S: ToString>(names: impl IntoIterator<Item = S>) {
-    if let Some(tally) = tallied().as_mut() {
-        tally
-            .declared
-            .extend(names.into_iter().map(|name| name.to_string()));
-    }
+    tallied(|open| {
+        if let Some(tally) = open.as_mut() {
+            tally
+                .declared
+                .extend(names.into_iter().map(|name| name.to_string()));
+        }
+    });
 }
 
 /// Names the table the scores that follow are counted toward.
 pub fn table(name: impl ToString) {
-    if let Some(tally) = tallied().as_mut() {
-        tally.current = name.to_string();
-    }
+    tallied(|open| {
+        if let Some(tally) = open.as_mut() {
+            tally.current = name.to_string();
+        }
+    });
 }
 
 /// Records that query `id` was scored once in `group`, in the current
 /// [`table`]. Called where a harness reads its answer key, so a query graded
 /// is a query counted.
 pub fn tally(group: &str, id: &str) {
-    if let Some(tally) = tallied().as_mut() {
-        let key = (tally.current.clone(), group.to_string(), id.to_string());
-        *tally.counts.entry(key).or_default() += 1;
-    }
+    tallied(|open| {
+        if let Some(tally) = open.as_mut() {
+            let key = (tally.current.clone(), group.to_string(), id.to_string());
+            *tally.counts.entry(key).or_default() += 1;
+        }
+    });
 }
 
 /// One run's question and document set, how it was chosen, and its coverage.
@@ -470,16 +499,7 @@ impl Shape {
             record.display()
         );
         self.record = Some(record);
-
-        // Two harness tests in one process would count into one tally and
-        // fail each other's check with each other's queries; say so instead.
-        let mut open = tallied();
-        assert!(
-            open.is_none(),
-            "another harness test is already counting coverage in this process; \
-             run one at a time with --exact"
-        );
-        *open = Some(Tally::default());
+        open_tally();
     }
 
     /// Checks what `tally` counted against what was asked: every declared
@@ -603,7 +623,7 @@ impl Shape {
     /// Stops counting, prints and records the coverage, and fails the run if
     /// it is not exactly what was asked less what was excluded.
     fn close(&mut self) {
-        let tally = tallied().take().unwrap_or_default();
+        let tally = tallied(Option::take).unwrap_or_default();
         let failures = self.finish(&tally);
         assert!(
             failures.is_empty(),
@@ -687,7 +707,7 @@ impl Drop for Shape {
             // The run already failed; stop counting so nothing after it in
             // this process is counted against it, and leave the failure as
             // the one reported.
-            tallied().take();
+            tallied(Option::take);
             return;
         }
         self.close();
@@ -840,6 +860,33 @@ mod tests {
             ),
             Vec::<String>::new()
         );
+    }
+
+    /// Two tests publishing at once, as libtest runs them, each count only
+    /// what they scored.
+    #[test]
+    fn two_tests_count_their_own_coverage() {
+        let run = |table: &'static str, ids: &'static [&'static str]| {
+            std::thread::spawn(move || {
+                open_tally();
+                tables([table]);
+                self::table(table);
+                for id in ids {
+                    tally("g", id);
+                }
+                tallied(Option::take).expect("an open tally")
+            })
+        };
+        let first = run("first", &["q1", "q2"]);
+        let second = run("second", &["q3"]);
+        let (first, second) = (first.join().unwrap(), second.join().unwrap());
+        assert_eq!(first.declared, ["first".to_string()].into());
+        assert_eq!(first.counts.len(), 2);
+        assert!(first.counts.keys().all(|(table, ..)| table == "first"));
+        assert_eq!(second.declared, ["second".to_string()].into());
+        assert_eq!(second.counts.len(), 1);
+        // Nothing leaked onto a thread that published nothing.
+        assert!(tallied(|open| open.is_none()));
     }
 
     /// A completed record survives a rerun of the same run that fails.
