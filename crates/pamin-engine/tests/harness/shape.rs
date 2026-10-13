@@ -242,10 +242,20 @@ fn arm(settings: &[String]) -> String {
     format!("arm-{short}")
 }
 
-/// Where a run's record is kept until its coverage holds: beside the record,
-/// so a rerun that fails never replaces the last one that completed.
+/// A path beside `path` that no other writer uses: named by this process and
+/// the time, then `suffix`.
+fn unique(path: &Path, suffix: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    path.with_extension(format!("{}.{nanos}.{suffix}", std::process::id()))
+}
+
+/// Where one run keeps its record until its coverage holds: beside the
+/// record, so a run that fails never replaces the last one that completed,
+/// and its own, so two runs of one record never share or remove each other's.
 fn in_progress(record: &Path) -> PathBuf {
-    record.with_extension("inprogress.json")
+    unique(record, "inprogress.json")
 }
 
 /// Whether anything at all was scored into `table`.
@@ -321,6 +331,8 @@ pub struct Shape {
     /// Where [`publish`](Self::publish) wrote the record; set only on a
     /// published shape, which is also the one whose coverage is checked.
     record: Option<PathBuf>,
+    /// This run's [`in_progress`] file, set beside `record`.
+    progress: PathBuf,
     /// Which test, profile and arm the run was, as `publish` was told.
     run: [String; 3],
     /// What set the arm apart, from [`settings`].
@@ -368,6 +380,7 @@ impl Shape {
             excluded: Vec::new(),
             coverage: None,
             record: None,
+            progress: PathBuf::new(),
             run: Default::default(),
             settings: Vec::new(),
         }
@@ -519,10 +532,11 @@ impl Shape {
         .map(file_part)
         .join("-");
         let record = dir.join(format!("{file}.json"));
-        self.write(&in_progress(&record));
+        self.progress = in_progress(&record);
+        self.write(&self.progress);
         println!(
             "  shape {name}: recording in {}, and in {} once its coverage holds",
-            in_progress(&record).display(),
+            self.progress.display(),
             record.display()
         );
         self.record = Some(record);
@@ -677,9 +691,9 @@ impl Shape {
         };
         if failures.is_empty() {
             self.write(&record);
-            let _ = std::fs::remove_file(in_progress(&record));
+            let _ = std::fs::remove_file(&self.progress);
         } else {
-            self.write(&in_progress(&record));
+            self.write(&self.progress);
         }
         failures
     }
@@ -719,10 +733,7 @@ impl Shape {
         // last whole record rather than half of a new one. Named by process
         // and time, so two runs writing one record never share a partial
         // file; the last rename wins with a whole record either way.
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.as_nanos());
-        let partial = path.with_extension(format!("json.{}.{nanos}.part", std::process::id()));
+        let partial = unique(path, "part");
         let written = std::fs::write(
             &partial,
             serde_json::to_vec_pretty(&body).expect("serialise"),
@@ -760,8 +771,7 @@ impl Drop for Shape {
                 lines.join("; ")
             );
             self.coverage = Some(recorded);
-            let record = self.record.as_ref().expect("checked above");
-            if let Err(error) = self.try_write(&in_progress(record)) {
+            if let Err(error) = self.try_write(&self.progress) {
                 eprintln!("  shape {}: {error}", self.name);
             }
             return;
@@ -969,7 +979,11 @@ mod tests {
         let (lines, failures, recorded) = asked().coverage(&Tally::default());
         assert_eq!(recorded["groups"]["g"]["scored"], 0, "{recorded}");
         assert!(lines[0].contains("scored 0"), "{lines:?}");
-        assert!(failures.iter().any(|failure| failure.contains("declared no table")));
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("declared no table"))
+        );
     }
 
     /// A run that scored everything and then failed a floor records what it
@@ -978,10 +992,12 @@ mod tests {
     fn a_run_that_fails_after_scoring_keeps_its_coverage() {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let record = dir.path().join("test-run.json");
-        let into = record.clone();
+        let progress = in_progress(&record);
+        let (into, kept_in) = (record.clone(), progress.clone());
         let failed = std::thread::spawn(move || {
             let mut shape = asked();
             shape.record = Some(into);
+            shape.progress = kept_in;
             open_tally();
             tables(["t"]);
             table("t");
@@ -992,10 +1008,9 @@ mod tests {
         .join();
         assert!(failed.is_err());
         assert!(!record.exists(), "a failed run wrote the record");
-        let kept: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(in_progress(&record)).expect("the in-progress file"),
-        )
-        .expect("JSON");
+        let kept: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&progress).expect("the in-progress file"))
+                .expect("JSON");
         assert_eq!(kept["scored"]["groups"]["g"]["scored"], 2, "{kept}");
     }
 
@@ -1007,7 +1022,8 @@ mod tests {
         let run = |scored: Scored<'_>| {
             let mut shape = asked();
             shape.record = Some(record.clone());
-            shape.write(&in_progress(&record));
+            shape.progress = in_progress(&record);
+            shape.write(&shape.progress);
             let tally = Tally {
                 declared: ["t".to_string()].into(),
                 current: String::new(),
@@ -1024,16 +1040,26 @@ mod tests {
             let failures = shape.finish(&tally);
             // Finished here, so dropping it checks nothing more.
             shape.record = None;
-            failures
+            (failures, shape.progress.clone())
         };
 
-        assert!(run(&[("t", "g", "q1", 1), ("t", "g", "q2", 1)]).is_empty());
-        assert!(!in_progress(&record).exists());
+        // A failed run's in-progress file, left beside the record as a
+        // concurrent run's would be while it is still going.
+        let (failures, other) = run(&[("t", "g", "q1", 1)]);
+        assert!(!failures.is_empty());
+        assert!(other.exists(), "the failed run left nothing");
+
+        let (failures, own) = run(&[("t", "g", "q1", 1), ("t", "g", "q2", 1)]);
+        assert!(failures.is_empty());
+        assert_ne!(own, other, "two runs shared an in-progress file");
+        assert!(!own.exists(), "a completed run left its in-progress file");
+        assert!(other.exists(), "a completed run removed another run's");
         let completed = std::fs::read(&record).expect("the completed record");
 
-        assert!(!run(&[("t", "g", "q1", 1)]).is_empty());
+        let (failures, again) = run(&[("t", "g", "q1", 1)]);
+        assert!(!failures.is_empty());
         assert_eq!(std::fs::read(&record).expect("the record"), completed);
-        assert!(in_progress(&record).exists(), "the failed run left nothing");
+        assert!(again.exists(), "the failed run left nothing");
     }
 
     /// An arm is named by everything set that changes a result, and by
