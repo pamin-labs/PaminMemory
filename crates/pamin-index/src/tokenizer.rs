@@ -1,5 +1,7 @@
 //! One loaded copy of a vocabulary, however many models tokenize with it, in
-//! a layout a twentieth the size of the `tokenizers` crate's own.
+//! a more compact layout than the `tokenizers` crate's own. With BGE-M3 and
+//! the `accurate` reranker loaded, the process holds about 250 MiB less
+//! anonymous memory with it (see `docs/measured.md`).
 //!
 //! With its weights mapped from a prepared copy (see `crate::prepared`), what
 //! an XLM-R-family model still holds is almost all tokenizer. The `tokenizers`
