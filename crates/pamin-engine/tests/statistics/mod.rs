@@ -129,7 +129,9 @@ pub fn fewest_for_significance() -> usize {
 ///
 /// Called before the corpus is indexed: a gate certain to fail is otherwise
 /// found only after all of that work. `SIGNIFICANCE_GATE=off` opts an
-/// exploratory run out of the gate, and the harness then skips it.
+/// exploratory run out of the gate, and the harness then skips it; its shape
+/// record is then named by the setting and is not canonical (see
+/// `harness::shape`).
 pub fn gate(what: &str, n: usize) -> bool {
     if std::env::var("SIGNIFICANCE_GATE").as_deref() == Ok("off") {
         return false;
