@@ -698,6 +698,7 @@ impl Hardware {
         let ran = |name: &str| {
             providers.iter().any(|line| {
                 line.rsplit_once('=').is_some_and(|(_, on)| {
+                    let on = on.split('@').next().unwrap_or(on);
                     on == name
                         || on
                             .strip_prefix(name)
@@ -877,12 +878,54 @@ pub fn engines(
                 engine
                     .providers()
                     .into_iter()
-                    .map(move |(role, target)| (format!("{label}/{role}"), target))
+                    .map(move |(role, plan)| (format!("{label}/{role}"), provider(&plan)))
             })
             .collect();
         providers.sort();
         providers
     }
+}
+
+/// One plan a model ran on, as a record names it: its target, the first
+/// sixteen hex digits of its plan key's hash, and `!unstable` for a plan
+/// that does not name its hardware stably across processes.
+pub fn provider(plan: &pamin_index::PlanUse) -> String {
+    format!(
+        "{}@{}{}",
+        plan.target,
+        plan.plan.get(..16).unwrap_or(&plan.plan),
+        if plan.stable { "" } else { UNSTABLE }
+    )
+}
+
+const UNSTABLE: &str = "!unstable";
+
+/// Why a run's plans keep its record from being canonical, if they do: a
+/// plan whose hardware is not named stably across processes (a DirectML
+/// adapter ordinal, an NPU id -- the plans pamin-index will not persist),
+/// or a model whose plan changed during the run, as a fallback does.
+fn plan_reasons(providers: &[(String, String)]) -> Vec<String> {
+    let mut reasons = Vec::new();
+    let unstable: BTreeSet<&str> = providers
+        .iter()
+        .filter_map(|(_, provider)| provider.strip_suffix(UNSTABLE))
+        .map(|provider| provider.split(['@', ':']).next().unwrap_or(provider))
+        .collect();
+    if !unstable.is_empty() {
+        let names: Vec<&str> = unstable.into_iter().collect();
+        reasons.push(format!(
+            "unstable accelerator identity ({})",
+            names.join(", ")
+        ));
+    }
+    let mut roles: BTreeMap<&str, usize> = BTreeMap::new();
+    for (role, _) in providers {
+        *roles.entry(role.as_str()).or_default() += 1;
+    }
+    if roles.values().any(|plans| *plans > 1) {
+        reasons.push("fallback during run".to_string());
+    }
+    reasons
 }
 
 /// How a shape asks its run which execution providers it ran on.
@@ -958,8 +1001,11 @@ impl Shape {
     /// A model the harness loaded itself rather than through an engine --
     /// a second reranker an arm prices against the shipped one -- as `role`
     /// on `device`, recorded with what [`ran_on`](Self::ran_on)'s probe says.
-    pub fn also_ran(&mut self, role: &str, target: String) {
-        self.loaded.push((format!("harness/{role}"), target));
+    pub fn also_ran(&mut self, role: &str, plans: Vec<pamin_index::PlanUse>) {
+        for plan in plans {
+            self.loaded
+                .push((format!("harness/{role}"), provider(&plan)));
+        }
     }
 
     /// Asks the probe, if there is one, and keeps its answer with `loaded`
@@ -967,9 +1013,9 @@ impl Shape {
     /// The probe never panics (see [`engines`]), so a failing run asks it
     /// too.
     ///
-    /// `probe` says whether the hardware behind them may be probed now (see
+    /// `probe_hardware` says whether the hardware behind them may be probed now (see
     /// [`Hardware::accelerators_for`]); a failed run's unwind passes false.
-    fn resolve_providers(&mut self, probe: bool) -> bool {
+    fn resolve_providers(&mut self, probe_hardware: bool) -> bool {
         let Some(probe) = &self.probe else {
             return false;
         };
@@ -977,11 +1023,20 @@ impl Shape {
         providers.extend(self.loaded.iter().cloned());
         providers.sort();
         providers.dedup();
+        for reason in plan_reasons(&providers) {
+            let noncanonical = self.source.noncanonical.get_or_insert_with(String::new);
+            if !noncanonical.split("; ").any(|known| known == reason) {
+                if !noncanonical.is_empty() {
+                    noncanonical.push_str("; ");
+                }
+                noncanonical.push_str(&reason);
+            }
+        }
         self.providers = providers
             .into_iter()
             .map(|(role, provider)| format!("{role}={provider}"))
             .collect();
-        self.hardware.accelerators = Hardware::accelerators_for(&self.providers, probe);
+        self.hardware.accelerators = Hardware::accelerators_for(&self.providers, probe_hardware);
         true
     }
 
@@ -2058,6 +2113,65 @@ mod tests {
                 .any(|line| line.starts_with("CARGO_CFG_TARGET_ARCH=")),
             "{:?}",
             build.cargo
+        );
+    }
+
+    /// A run whose model fell back names both plans, so it is a different
+    /// record from a run that only ever ran on the CPU, and neither it nor a
+    /// run on a plan without a stable hardware identity is canonical.
+    #[test]
+    fn a_fallback_or_an_unstable_plan_is_not_canonical() {
+        let fell_back = vec![
+            ("primary/embedding".to_string(), "cuda@aaaa".to_string()),
+            ("primary/embedding".to_string(), "cpu@bbbb".to_string()),
+        ];
+        let cpu = vec![("primary/embedding".to_string(), "cpu@bbbb".to_string())];
+        let lines = |providers: &[(String, String)]| -> Vec<String> {
+            providers
+                .iter()
+                .map(|(role, provider)| format!("{role}={provider}"))
+                .collect()
+        };
+        let named = |providers: &[(String, String)]| {
+            Identity {
+                providers: lines(providers),
+                ..identity()
+            }
+            .short()
+        };
+        assert_ne!(named(&fell_back), named(&cpu));
+        assert_eq!(plan_reasons(&fell_back), ["fallback during run"]);
+        assert!(plan_reasons(&cpu).is_empty());
+        let unstable = vec![(
+            "primary/embedding".to_string(),
+            format!("directml@cccc{UNSTABLE}"),
+        )];
+        assert_eq!(
+            plan_reasons(&unstable),
+            ["unstable accelerator identity (directml)"]
+        );
+        let plan = pamin_index::PlanUse {
+            target: "npu:qnn:0".into(),
+            plan: "d".repeat(64),
+            stable: false,
+        };
+        assert_eq!(
+            provider(&plan),
+            format!("npu:qnn:0@{}{UNSTABLE}", "d".repeat(16))
+        );
+
+        // And the record says so, as it does for an ungated run.
+        let mut shape = asked();
+        shape.ran_on(move || unstable.clone());
+        assert!(shape.resolve_providers(false));
+        assert!(
+            shape
+                .source
+                .noncanonical
+                .as_deref()
+                .is_some_and(|reason| reason.contains("unstable accelerator identity")),
+            "{:?}",
+            shape.source.noncanonical
         );
     }
 
