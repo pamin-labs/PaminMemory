@@ -335,7 +335,13 @@ impl Routes {
     }
 
     pub fn report(&self, title: &str) {
-        report(title, &self.labels, Some(1), &self.measured, false);
+        report(
+            title,
+            &self.labels,
+            Some(1),
+            &self.measured,
+            crate::channels::Units::Questions,
+        );
         println!("  pairs a search, small model / large model");
         for ((label, _), (cheap, dear)) in self.labels.iter().zip(&self.pairs) {
             println!(
@@ -373,8 +379,9 @@ pub struct Priced {
     /// `RESCORE_IN`: another model's scores for those shortlists, one line a
     /// search in the order they were written, priced as extra rows.
     rescore: Option<Vec<Rescored>>,
-    /// Whether queries come in linked sets, for the cross-validated choice.
-    linked: bool,
+    /// Per group, the unit each scored query belongs to, in `per_query`
+    /// order, for the cross-validated choice and its paired test.
+    clusters: BTreeMap<String, Vec<String>>,
 }
 
 /// The shape table `SUFFICIENCY_OUT`'s first-result check is scored into.
@@ -404,9 +411,14 @@ fn rescored_rules(model: &str) -> Vec<(String, Rule)> {
     ]
 }
 
+impl Default for Priced {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Priced {
-    /// `linked` as [`report`] takes it.
-    pub fn new(linked: bool) -> Self {
+    pub fn new() -> Self {
         let mut rules = rules();
         let shortlist = std::env::var("SHORTLIST_OUT").ok().map(|path| {
             std::io::BufWriter::new(
@@ -449,21 +461,33 @@ impl Priced {
             sufficiency,
             shortlist,
             rescore,
-            linked,
+            clusters: BTreeMap::new(),
         }
     }
 
-    /// One shipped search. `score` scores one ranking into its group; `group`
-    /// only labels the sufficiency row.
+    /// One shipped search. `score` scores one ranking into its group or
+    /// groups; `group` only labels the sufficiency row.
+    ///
+    /// `cluster` names the unit the search belongs to: searches that share
+    /// one share a fold, and the paired test runs over each unit's mean. A
+    /// LOCOMO conversation is one, since its questions share a corpus, index
+    /// and graph. `None` makes the search its own unit, which also keeps the
+    /// answer keys one search is scored under together.
     pub fn observe(
         &mut self,
         group: &str,
         query: &str,
         hits: &[SearchHit],
         replayed: &Replayed,
+        cluster: Option<&str>,
         score: impl Fn(&mut BTreeMap<String, crate::scoring::Scores>, &[String]),
     ) {
         let at = self.queries as usize;
+        let cluster = cluster.map_or_else(|| format!("search {at}"), str::to_string);
+        let before: BTreeMap<String, usize> = self.measured[0]
+            .iter()
+            .map(|(group, scores)| (group.clone(), scores.per_query.len()))
+            .collect();
         self.queries += 1;
         if let Some(file) = &mut self.shortlist {
             use std::io::Write;
@@ -513,6 +537,14 @@ impl Priced {
             score(into, &replayed.order(*rule));
             *pairs += replayed.pairs(*rule) as u64;
         }
+        // Every row scores the same groups, so the first says which grew.
+        for (group, scores) in &self.measured[0] {
+            let grown = scores.per_query.len() - before.get(group).copied().unwrap_or(0);
+            self.clusters
+                .entry(group.clone())
+                .or_default()
+                .extend(std::iter::repeat_n(cluster.clone(), grown));
+        }
         if let Some(file) = &mut self.sufficiency {
             use std::io::Write;
             let shipped = replayed.order(shipped_rule(Rerank::default()));
@@ -554,7 +586,7 @@ impl Priced {
             &self.rules,
             shipped(&self.rules),
             &self.measured,
-            self.linked,
+            crate::channels::Units::Clusters(&self.clusters),
         );
         println!("  model pairs a search");
         for ((label, _), pairs) in self.rules.iter().zip(&self.pairs) {
@@ -573,12 +605,12 @@ pub fn report<T>(
     labels: &[(String, T)],
     ship: Option<usize>,
     measured: &[BTreeMap<String, crate::scoring::Scores>],
-    linked: bool,
+    units: crate::channels::Units,
 ) {
     let shipped = &measured[ship.expect("the shipped row is measured")];
     println!("\n  {title}");
     for (group, scores) in shipped {
-        crate::channels::sweep_table(
+        crate::channels::clustered_sweep_table(
             group,
             scores,
             labels,
@@ -586,6 +618,7 @@ pub fn report<T>(
                 .iter()
                 .map(|row| row.get(group))
                 .collect::<Vec<_>>(),
+            &units.group_keys(group, scores),
         );
     }
     crate::channels::cross_validated(
@@ -595,7 +628,7 @@ pub fn report<T>(
         labels,
         ship,
         measured,
-        linked,
+        units,
     );
     println!();
 }
