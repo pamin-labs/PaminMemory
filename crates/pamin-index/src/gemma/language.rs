@@ -17,7 +17,8 @@
 //! part of [`super::identity`].
 //!
 //! Why this one. Through the search entry point (the engine's XQuAD-R and
-//! MuSiQue-600 tests, 768 dimensions, CPU), against no transform, it moved
+//! MuSiQue-600 tests, 768 dimensions, CPU), on the export's first revision
+//! (`2d2e08e`) with constants fitted on it, against no transform, it moved
 //! XQuAD-R cross-lingual nDCG@10 0.6664 -> 0.6883 (+0.0218, paired sign-flip
 //! p 0.0001), same-language 0.8785 -> 0.8767 (-0.0018, p 0.38) and MuSiQue
 //! 0.7887 -> 0.7845 (-0.0042, p 0.14); the two losses are not significant.
@@ -25,7 +26,8 @@
 //! (cross-lingual 0.6912, same-language 0.8724) and with one direction
 //! (0.6851, 0.8740) gave up more same-language ranking, and `T` on stored
 //! text as well (0.6936, 0.8756) needs every index rebuilt for a difference
-//! inside the noise.
+//! inside the noise. The entry point has not yet been measured on the
+//! pinned revision with the refitted constants.
 //!
 //! Provenance and attribution. The constants (`language-d768.f32`,
 //! little-endian `f32`, `mu` then `U`'s two columns, `3 x 768` values) were
@@ -33,12 +35,16 @@
 //! the Tatoeba contributors), not on any evaluation corpus: per language (ar
 //! de el en es hi ru th tr vi zh) 200 seeded-sample statements embedded as
 //! stored text (`title: none | text: `) and 200 questions under the query
-//! prompt, through this export (`embeddinggemma-2-int8@13db5bcca6ab6934`)
+//! prompt, through the pinned export (`embeddinggemma-2-int8@8a326248ba277cb7`)
 //! under ONNX Runtime 1.28's Python wheel, one text per pass; `mu` is the
 //! mean of the 4,400 unit vectors, `U` the top right singular vectors of the
 //! 11 language means less their own mean. Scripts `xl_embed.py --jobs
 //! eg2-tatoeba` then `xl_constants.py --source tato` of the EG2 cross-lingual
-//! screen; the sampled sentence ids are kept with it for attribution.
+//! screen; the sampled sentence ids are kept with it for attribution. Refitted
+//! for the pinned revision by the same procedure on the same sentences: the
+//! same procedure on the first revision's vectors reproduces the constants it
+//! replaced bit for bit, and the refit moved them little (cosine of `mu`
+//! 0.9999995, largest change 8.4e-5; of `U`'s columns 0.99995 and 0.99965).
 //!
 //! Cost: about 6.8 thousand multiply-adds per query (a subtraction, two dot
 //! products and two updates, a copy, a blend and two norms over 768 values),
@@ -58,9 +64,12 @@ use crate::error::{IndexError, Result};
 /// Chosen on a held-out half of the XQuAD-R queries in the embedder-only
 /// screen, by a rule written before the table was read: the highest
 /// cross-lingual nDCG@10 whose same-language nDCG@10 is at least 0.005
-/// above no transform's. Embedder-only it moved cross-lingual nDCG@10 by
-/// +0.0496, same-language by +0.0056 and MuSiQue by +0.0098; the search entry
-/// point's figures are in the module comment. With unit `q` and `T(q)` and
+/// above no transform's, on the first revision. Embedder-only it moved
+/// cross-lingual nDCG@10 by +0.0496, same-language by +0.0056 and MuSiQue by
+/// +0.0098 there; on the pinned revision with the refitted constants, +0.0499
+/// (p 0.0001), +0.0071 (p 0.04) and +0.0119 (p 0.02), where the same rule
+/// would now pick 0.55 and 0.7 on the two halves -- kept at 0.5, the value
+/// chosen before. The search entry point's figures are in the module comment. With unit `q` and `T(q)` and
 /// stored vectors left as the graph's, the blend scores a stored vector by
 /// the sum of its cosines to the two views, so it fuses them in one search
 /// over the unchanged index; the final renormalisation scales every score
@@ -172,8 +181,9 @@ mod tests {
     /// of it, `unit(unit(x - mu) - (y U) U^T)` in float64 on these
     /// constants.
     ///
-    /// The fixture holds two EmbeddingGemma 2 query vectors from the screen's
-    /// cache (an English and a Chinese XQuAD-R question, 768 dimensions),
+    /// The fixture holds two query vectors of the pinned EmbeddingGemma 2
+    /// revision from the screen's cache (an English and a Chinese XQuAD-R
+    /// question, 768 dimensions),
     /// then the numpy image of each, written by the script that wrote the
     /// constants: `[inputs: 2 x 768][images: 2 x 768]`.
     #[test]
