@@ -168,7 +168,10 @@ fn load() -> Vec<Conversation> {
             sessions.sort_unstable();
 
             // The date goes into the text, as `benchmarks/datasets/locomo.py`
-            // puts it, because two of the five categories ask when.
+            // puts it, because two of the five categories ask when. A shared
+            // image's caption goes in too, the way LOCOMO's own textual
+            // evaluation renders it, because some answers are only in it.
+            // The Python arms do not add it yet.
             let mut turns = Vec::new();
             for (_, key) in sessions {
                 let when = conversation
@@ -184,10 +187,18 @@ fn load() -> Vec<Conversation> {
                         continue;
                     }
                     let speaker = turn["speaker"].as_str().unwrap_or("");
+                    let mut record = format!("[{when}] {speaker}: {text}");
+                    if let Some(caption) = turn["blip_caption"]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|caption| !caption.is_empty())
+                    {
+                        record.push_str(&format!(" [shared an image: {caption}]"));
+                    }
                     turns.push(Turn {
                         topic: topic_of(dia_id),
                         session: key.to_string(),
-                        record: format!("[{when}] {speaker}: {text}"),
+                        record,
                     });
                 }
             }
