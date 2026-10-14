@@ -10,8 +10,12 @@
 //! restored before the run leave no trace a run could see.
 //!
 //! The script reruns when `HEAD` or the ref it points at moves, when the
-//! index changes (a stage, or a restore), and when the workspace's sources or
-//! manifests change, so the flag follows an edit made after a clean build.
+//! index changes (a stage, or a restore), and when anything the workspace
+//! compiles changes: its crates, its manifests, and the files outside the
+//! crates that `include_str!` or `include_bytes!` reads. So the flag follows
+//! an edit made after a clean build. `SOURCES` names those roots, and a
+//! harness test fails when an include reads from outside them. The dirty
+//! check itself covers every tracked file, a superset of `SOURCES`.
 //! `HEAD`'s reflog is watched as well: a commit on a branch whose ref was
 //! packed creates a loose ref that did not exist to be watched, and leaves
 //! `HEAD` and `packed-refs` alone, but it appends to the reflog. A worktree
@@ -26,6 +30,15 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+
+/// What the workspace compiles, relative to its root.
+const SOURCES: [&str; 4] = [
+    "crates",
+    "Cargo.toml",
+    "Cargo.lock",
+    // Benchmark manifests the evaluation harnesses compile in.
+    "benchmarks/results/retrieval",
+];
 
 fn git(args: &[&str]) -> Option<String> {
     let output = Command::new("git").args(args).output().ok()?;
@@ -49,6 +62,7 @@ fn main() {
     ])
     .is_none_or(|changes| !changes.is_empty());
     println!("cargo:rustc-env=PAMIN_ENGINE_DIRTY={dirty}");
+    println!("cargo:rustc-env=PAMIN_ENGINE_SOURCES={}", SOURCES.join(":"));
 
     // Watched only if they exist: Cargo reruns on every build for a path
     // that does not.
@@ -70,7 +84,7 @@ fn main() {
         let root = PathBuf::from(root);
         // Every crate in the workspace, not only this one: the harnesses
         // compile its dependencies too. The build output is outside them.
-        watched.extend(["crates", "Cargo.toml", "Cargo.lock"].map(|path| root.join(path)));
+        watched.extend(SOURCES.map(|path| root.join(path)));
     }
     for path in watched.into_iter().filter(|path| path.exists()) {
         println!("cargo:rerun-if-changed={}", path.display());
