@@ -459,21 +459,19 @@ impl Models {
     /// `reranking <tier>`, in tier-name order. Handles are cloned out from
     /// under the registry lock first, as in [`counted`](Self::counted).
     fn reranker_devices(&self) -> Vec<(String, pamin_index::Device)> {
-        let held: Vec<(Rerank, Arc<Mutex<Reranker>>)> = self
-            .rerankers
-            .lock()
-            .expect("the reranker registry lock is poisoned")
+        let Some(registry) = held_now(self.rerankers.as_ref()) else {
+            return Vec::new();
+        };
+        let held: Vec<(Rerank, Arc<Mutex<Reranker>>)> = registry
             .iter()
             .map(|(tier, (_, reranker))| (*tier, Arc::clone(reranker)))
             .collect();
+        drop(registry);
         let mut devices: Vec<(String, pamin_index::Device)> = held
             .into_iter()
-            .map(|(tier, reranker)| {
-                let device = reranker
-                    .lock()
-                    .expect("the reranker lock is poisoned")
-                    .device();
-                (format!("reranking {}", tier.name()), device)
+            .filter_map(|(tier, reranker)| {
+                let device = held_now(reranker.as_ref())?.device();
+                Some((format!("reranking {}", tier.name()), device))
             })
             .collect();
         devices.sort_by(|left, right| left.0.cmp(&right.0));
@@ -560,6 +558,16 @@ impl Models {
             rerankers.remove(tier);
         }
         idle
+    }
+}
+
+/// `lock` if it is free now, read through a poison: for a caller that must
+/// neither wait nor panic, such as a report written while a run fails.
+fn held_now<T>(lock: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
+    match lock.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
     }
 }
 
@@ -1502,10 +1510,13 @@ impl Engine {
     ///
     /// For an evaluation to say which execution path produced it: under
     /// `PAMIN_DEVICE=auto` the same build runs on whatever the machine has.
+    ///
+    /// Never panics or waits, so a run that is already failing can still ask:
+    /// a poisoned lock is read through, since the device it guards is set at
+    /// load, and a model another thread holds right now is left out.
     pub fn providers(&self) -> Vec<(String, pamin_index::Device)> {
         let mut providers = Vec::new();
-        if let Some(embedder) = self.embedder.get() {
-            let embedder = embedder.lock().expect("the embedder lock is poisoned");
+        if let Some(embedder) = self.embedder.get().and_then(|held| held_now(held.as_ref())) {
             providers.push(("embedding".to_string(), embedder.device()));
             if let Some(device) = embedder.secondary_device() {
                 providers.push(("embedding secondary".to_string(), device));
