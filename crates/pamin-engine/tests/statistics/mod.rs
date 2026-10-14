@@ -372,6 +372,41 @@ pub fn cluster_means(scores: &[f64], keys: &[String]) -> Vec<f64> {
         .collect()
 }
 
+/// One score per cluster, in the order clusters first appear, under the same
+/// rule as a macro mean over groups: each of the cluster's groups is the mean
+/// of its questions there, and the cluster is the mean of its groups, each
+/// group counting once whatever its size.
+///
+/// A conversation that asks three questions in one category and one in
+/// another is then weighed as the reported macro mean weighs it, rather than
+/// as three to one. A cluster of one question is that question's score, and
+/// one question under each of several answer keys is the mean of its keys.
+pub fn cluster_macro_means(scores: &[f64], groups: &[usize], keys: &[String]) -> Vec<f64> {
+    assert_eq!(scores.len(), keys.len(), "one key a score");
+    assert_eq!(groups.len(), keys.len(), "one group a score");
+    let mut first: std::collections::BTreeMap<&str, usize> = Default::default();
+    let mut sums: Vec<std::collections::BTreeMap<usize, (f64, usize)>> = Vec::new();
+    for ((score, group), key) in scores.iter().zip(groups).zip(keys) {
+        let next = sums.len();
+        let at = *first.entry(key.as_str()).or_insert(next);
+        if at == next {
+            sums.push(Default::default());
+        }
+        let entry = sums[at].entry(*group).or_insert((0.0, 0));
+        entry.0 += score;
+        entry.1 += 1;
+    }
+    sums.into_iter()
+        .map(|by_group| {
+            by_group
+                .values()
+                .map(|(sum, count)| sum / *count as f64)
+                .sum::<f64>()
+                / by_group.len() as f64
+        })
+        .collect()
+}
+
 /// What a selection procedure is worth on queries it did not choose on.
 pub struct Selected {
     /// Per query, in the input's order, the score of the setting that was
@@ -738,6 +773,32 @@ mod tests {
         assert!(six.p >= smallest_p(6) * 0.5, "p was {}", six.p);
         assert_eq!(smallest_p(0), 1.0);
         assert_eq!(smallest_p(10_000), 1.0 / (RESAMPLES + 1) as f64);
+    }
+
+    /// A conversation with three questions up a little in one category and
+    /// one down more in another is a loss by the macro rule the report uses,
+    /// and a win when its questions are pooled.
+    #[test]
+    fn a_cluster_is_weighed_as_the_macro_mean_weighs_it() {
+        let keys: Vec<String> = ["c"; 4].map(String::from).to_vec();
+        let groups = [0, 0, 0, 1];
+        let differences = [1.0, 1.0, 1.0, -2.0];
+        assert_eq!(cluster_means(&differences, &keys), vec![0.25]);
+        assert_eq!(
+            cluster_macro_means(&differences, &groups, &keys),
+            vec![-0.5]
+        );
+        // One question a cluster, and one question under two answer keys.
+        let single: Vec<String> = (0..3).map(|at| at.to_string()).collect();
+        assert_eq!(
+            cluster_macro_means(&[0.1, 0.2, 0.3], &[0, 1, 1], &single),
+            vec![0.1, 0.2, 0.3]
+        );
+        let linked: Vec<String> = ["a", "b", "a", "b"].map(String::from).to_vec();
+        assert_eq!(
+            cluster_macro_means(&[1.0, 3.0, 5.0, 7.0], &[0, 0, 1, 1], &linked),
+            vec![3.0, 5.0]
+        );
     }
 
     /// Choosing the best of many settings on the same queries that grade it
