@@ -30,7 +30,7 @@ pub use descriptors::raise_open_file_limit;
 pub use embedding::{Embedder, Encoded, Profile};
 pub use error::{IndexError, Result};
 pub use half::as_stored;
-pub use inference::{CUDA_SELECTION, Device, cuda_devices};
+pub use inference::{CUDA_SELECTION, Device, PlanUse, cuda_devices};
 
 /// What this crate was built from and how: a sha256 over its sources, the
 /// workspace manifests and Cargo config, the target, profile, opt-level,
