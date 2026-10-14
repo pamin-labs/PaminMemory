@@ -288,17 +288,14 @@ async fn search_answers_questions_that_take_several_steps() {
             .output()
             .expect("run git")
     };
-    let commit = String::from_utf8(git(&["rev-parse", "HEAD"]).stdout).expect("UTF-8 commit");
-    let changed = !git(&["diff", "--quiet", "HEAD"]).status.success();
-    println!(
-        "  benchmark code commit: {}{}",
-        commit.trim(),
-        if changed {
-            " (with tracked changes)"
-        } else {
-            ""
-        }
+    let head = git(&["rev-parse", "HEAD"]);
+    assert!(head.status.success(), "identify the benchmark code commit");
+    assert!(
+        git(&["diff", "--quiet", "HEAD"]).status.success(),
+        "benchmark checkout has tracked changes"
     );
+    let commit = String::from_utf8(head.stdout).expect("UTF-8 commit");
+    println!("  benchmark code commit: {}", commit.trim());
 
     let corpus = Corpus::load();
     corpus.describe();
