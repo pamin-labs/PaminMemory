@@ -517,10 +517,26 @@ class Mem0:
             response = original_generate_response(*args, **kwargs)
             if kwargs.get("response_format", {}).get("type") != "json_object":
                 return response
+            cleaned = remove_code_blocks(response)
             try:
-                parsed = json.loads(remove_code_blocks(response))
+                parsed = json.loads(cleaned)
             except (TypeError, ValueError):
-                return response
+                # mem0's own fallback (`extract_json`) finds the first `{`
+                # and last `}`, which is the wrong pair of brackets for a
+                # bare array and either drops its own `[`/`]` or, for an
+                # empty array with no nested object to anchor on, returns
+                # the surrounding text untouched -- both still read as a
+                # list once mem0 retries the parse, and still raise the
+                # same `.get("memory", [])` error one step further down.
+                # Matching the array's own brackets is the fix for exactly
+                # that case; anything else still falls through unchanged.
+                start, end = cleaned.find("["), cleaned.rfind("]")
+                if start == -1 or end <= start:
+                    return response
+                try:
+                    parsed = json.loads(cleaned[start:end + 1])
+                except (TypeError, ValueError):
+                    return response
             return json.dumps({"memory": parsed}) if isinstance(parsed, list) else response
 
         self.memory.llm.generate_response = generate_response_tolerant
