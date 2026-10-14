@@ -75,7 +75,7 @@ pub enum Rule {
     /// both a lexical channel and the vector channel rank it in their top
     /// three -- and the shipped pass otherwise. `n` of zero skips the model.
     Confident { lead: f64, n: usize },
-    /// Score in fused order, [`BATCH`] at a time, and stop after the first
+    /// Score in fused order, [`batch`] at a time, and stop after the first
     /// batch past the second that put nothing into the model's top `top` so
     /// far: the remaining candidates are behind in fusion, and the last batch
     /// says they are behind in the model too. An anytime stop, not a safe one
@@ -83,8 +83,11 @@ pub enum Rule {
     Patience { top: usize },
 }
 
-/// Pairs per model pass, as the engine batches them at most.
-pub const BATCH: usize = 4;
+/// Pairs per model pass, as the engine batches them at most: the reranker's
+/// own setting, `PAMIN_RERANK_BATCH` included, read the way it reads it.
+pub fn batch() -> usize {
+    pamin_index::reranking::batch()
+}
 
 /// Every rule measured, labelled. The shipped rule is found by value, not by
 /// position, by [`shipped`].
@@ -814,7 +817,10 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
         })
         .collect();
 
-    let results = Fusion::default().fuse(&crate::channels::replay(hits));
+    // The fusion this search ran, a profile's secondary vector channel
+    // included, rather than the default.
+    let fusion = crate::channels::effective_fusion(hits, &Fusion::default());
+    let results = fusion.fuse(&crate::channels::replay(hits));
     // The engine's own rule for what the model is shown, not a copy of it.
     let traces: Vec<&[Why]> = results.iter().map(|result| result.why.as_slice()).collect();
     let movable = pamin_engine::rerankable(&traces, tier);
@@ -1024,11 +1030,12 @@ impl Replayed {
                 .then(|| (0..n.min(count)).collect())
                 .or_else(|| Some((0..count).collect())),
             Rule::Patience { top } => {
+                let size = batch();
                 let mut scored = 0;
                 while scored < count {
-                    let batch = scored..(scored + BATCH).min(count);
+                    let batch = scored..(scored + size).min(count);
                     scored = batch.end;
-                    if batch.start < 2 * BATCH {
+                    if batch.start < 2 * size {
                         continue;
                     }
                     let mut best: Vec<usize> = (0..scored).collect();
@@ -1174,7 +1181,8 @@ mod tests {
 
     #[test]
     fn patience_stops_after_a_batch_that_reaches_nothing() {
-        let count = 6 * BATCH;
+        let size = batch();
+        let count = 6 * size;
         let fusion: Vec<f64> = (0..count)
             .map(|at| 1.0 - at as f64 / count as f64)
             .collect();
@@ -1185,14 +1193,14 @@ mod tests {
         scores.movable = (1..=count).collect();
         scores.graph = vec![0.0; count];
         scores.head = count + 1;
-        assert_eq!(scores.pairs(Rule::Patience { top: 3 }), 3 * BATCH);
+        assert_eq!(scores.pairs(Rule::Patience { top: 3 }), 3 * size);
         // A model that prefers the last candidate keeps reading to the end.
         let mut model = fusion.clone();
         model[count - 1] = 9.0;
-        model[2 * BATCH] = 8.0;
-        model[3 * BATCH] = 7.0;
-        model[4 * BATCH] = 6.0;
-        model[5 * BATCH] = 5.0;
+        model[2 * size] = 8.0;
+        model[3 * size] = 7.0;
+        model[4 * size] = 6.0;
+        model[5 * size] = 5.0;
         assert_eq!(
             scores.rescored(model).pairs(Rule::Patience { top: 3 }),
             count
