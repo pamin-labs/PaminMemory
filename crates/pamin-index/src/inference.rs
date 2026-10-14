@@ -1083,6 +1083,18 @@ struct DiskPlan {
     references: References,
 }
 
+/// The execution target `model` runs on, as its execution plans are keyed
+/// ([`target_identity`]): `npu:<provider>:<id>` for an NPU, the device's name
+/// otherwise. A model loaded without a plan names its device.
+pub(crate) fn target_key(model: &impl RuntimeModel, device: Device) -> String {
+    let target = &model.runtime_plan().target;
+    if target.is_empty() {
+        device.name().to_string()
+    } else {
+        target.clone()
+    }
+}
+
 fn target_identity(device: Device, target: &Target) -> String {
     match target {
         Target::Npu { provider, id } => format!("npu:{provider}:{id}"),
