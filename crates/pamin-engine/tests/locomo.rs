@@ -435,6 +435,7 @@ async fn locomo_evidence_with_and_without_links() {
                         );
                     },
                 );
+                rules.planned_like(&engines[1]);
                 continue;
             }
             for (side, engine) in engines.iter().enumerate() {

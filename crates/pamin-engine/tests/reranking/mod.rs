@@ -384,6 +384,10 @@ pub struct Priced {
     /// The shipped tier's reranker, loaded for its tokenizer and planner
     /// only, so [`Rule::Patience`] replays the passes the engine ran.
     reranker: pamin_index::Reranker,
+    /// Searches checked by [`planned_like`](Self::planned_like), and why
+    /// the replay's plan was not the engine's, if it ever was not.
+    checked: u64,
+    unlike: Option<String>,
 }
 
 /// The shape table `SUFFICIENCY_OUT`'s first-result check is scored into.
@@ -463,6 +467,8 @@ impl Priced {
             rescore,
             clusters: BTreeMap::new(),
             reranker,
+            checked: 0,
+            unlike: None,
         }
     }
 
@@ -579,7 +585,63 @@ impl Priced {
         }
     }
 
+    /// Checks, after a search `engine` ran, that the replay plans passes as
+    /// the engine's reranker does: the same tier on the same execution
+    /// provider. The planner is the same code; what can differ is the
+    /// model's batch limits, and those follow from the tier and the provider
+    /// (a compiled CoreML session has its own) under this process's
+    /// settings. A reranker that fell back mid-run -- CoreML to the CPU, say
+    /// -- plans differently from the replay, and the Patience rows are then
+    /// not reported rather than reported with the wrong pair counts.
+    pub fn planned_like(&mut self, engine: &pamin_engine::Engine) {
+        self.checked += 1;
+        if self.unlike.is_some() {
+            return;
+        }
+        let role = format!("reranking {}", self.reranker.tier().name());
+        let replay = self.reranker.device();
+        let ran = engine
+            .providers()
+            .into_iter()
+            .find(|(name, _)| *name == role)
+            .map(|(_, device)| device);
+        if ran != Some(replay) {
+            self.unlike = Some(format!(
+                "the engine's {role} ran on {}, and the replay plans for {}",
+                ran.map_or("nothing", |device| device.name()),
+                replay.name()
+            ));
+        }
+    }
+
     pub fn report(&mut self, title: &str) {
+        assert_eq!(
+            self.checked, self.queries,
+            "every search is checked with planned_like before Patience is priced"
+        );
+        if let Some(unlike) = &self.unlike {
+            // Refused, not reported: the rows are scored, so the run's
+            // coverage still holds, but their pair counts would be wrong.
+            println!(
+                "\n  patience rows not reported: {unlike}, so the passes they replay are not the ones that ran"
+            );
+            let keep: Vec<bool> = self
+                .rules
+                .iter()
+                .map(|(_, rule)| !matches!(rule, Rule::Patience { .. }))
+                .collect();
+            fn kept<T>(values: &mut Vec<T>, keep: &[bool]) {
+                let mut at = 0;
+                values.retain(|_| {
+                    at += 1;
+                    keep[at - 1]
+                });
+            }
+            self.firsts -= keep[..self.firsts].iter().filter(|kept| !**kept).count();
+            kept(&mut self.rules, &keep);
+            kept(&mut self.measured, &keep);
+            kept(&mut self.pairs, &keep);
+        }
         // Flushed with errors checked, so a truncated artifact fails the run
         // instead of being dropped silently with its writer.
         for file in [&mut self.sufficiency, &mut self.shortlist]
