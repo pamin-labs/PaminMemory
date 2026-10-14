@@ -62,3 +62,4 @@ pub use segmentation::{Segmenter, detect_language};
 pub use settings::{
     DeviceChoice, InferenceSettings, RerankSettings, shown_path, spelled_path, spelled_paths,
 };
+pub use tokenizer::SpanTokens;
