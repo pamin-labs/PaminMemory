@@ -378,7 +378,7 @@ async fn locomo_evidence_with_and_without_links() {
     // every rule for using the reranker's scores. See `reranking`.
     let mut rules = std::env::var("RERANK_RULES")
         .is_ok()
-        .then(reranking::Priced::new);
+        .then(|| reranking::Priced::new(&workspace.root().join("models")));
     let mut questions = 0usize;
     let mut linked_edges = 0usize;
     for conversation in &conversations {

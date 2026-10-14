@@ -50,8 +50,11 @@ The `main` and `dot` columns compare `dot` with its predecessor `main`. The
 
 - **Memory:** not measured. Neither change adds a buffer or keeps one alive:
   both arms allocate one 1024-wide `Vec<f32>` per candidate, as `main` does.
-- **Disk:** not measured as a size. The release binary gains the `half` and
-  `crunchy` crates' code.
+- **Disk:** not measured as a size. The release binary gains the `half`
+  crate's code. `half` lists `crunchy` only for targets this project does not
+  build: `cargo tree -e normal -i crunchy` prints nothing for
+  `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin` or
+  `aarch64-unknown-linux-gnu`.
 - **p95:** not reported. The per-pass p95 ranged from 247 to 631 µs for `main`
   under the competing builds. It waits for the clean rerun, pooled over all
   passes.
@@ -93,14 +96,21 @@ moved macOS to the NEON kernel Linux aarch64 already used.
   three runs of each run's pooled p50 and p95
   ([per-run figures](m4-result.md), [raw output](m4-raw/)).
 
-| Metric | `mac-main` | `mac-pr` | `half-neon` | Δ vs `mac-pr` | Stack Δ vs `mac-main` |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Max abs cosine error vs f64 oracle | 1.176e-8 | 1.176e-8 | 1.428e-8 | +2.52e-9 (+21.4%) | +2.52e-9 (+21.4%) |
-| Top-10 overlap with oracle (of 10) | 10 | 10 | 10 | 0 | 0 |
-| p50 µs per 100×1024 rescore | 40.38 | 22.42 | 21.46 | −0.96 (−4.3%) | −18.92 (−46.9%) |
-| p95 µs | 47.08 | 24.17 | 22.62 | −1.55 (−6.4%) | −24.46 (−52.0%) |
-| Memory | N/A | N/A | N/A | N/A | N/A |
-| Disk | N/A | N/A | N/A | N/A | N/A |
+| Metric | `mac-main` | `mac-pr` | Δ `mac-pr` vs `mac-main` | `half-neon` | Δ vs `mac-pr` | Stack Δ vs `mac-main` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Max abs cosine error vs f64 oracle | 1.176e-8 | 1.176e-8 | 0 (0%) | 1.428e-8 | +2.52e-9 (+21.4%) | +2.52e-9 (+21.4%) |
+| Top-10 overlap with oracle (of 10) | 10 | 10 | 0 | 10 | 0 | 0 |
+| p50 µs per 100×1024 rescore | 40.38 | 22.42 | −17.96 (−44.5%) | 21.46 | −0.96 (−4.3%) | −18.92 (−46.9%) |
+| p95 µs | 47.08 | 24.17 | −22.91 (−48.7%) | 22.62 | −1.55 (−6.4%) | −24.46 (−52.0%) |
+| Memory | N/A | N/A | N/A | N/A | N/A | N/A |
+| Disk | N/A | N/A | N/A | N/A | N/A | N/A |
+
+The `mac-main` → `mac-pr` step is the fp16 conversion alone: both arms use
+Accelerate's `cblas_sdot`, so the step is `half`'s slice conversion replacing
+the scalar `decode`. Its cosine error is unchanged because the conversion is
+exact (it equals `decode` for all 65536 codes in every run) and the dot product
+is the same. Memory and disk are N/A for every column: the screen measured
+neither, and the M4 run retained no binary sizes.
 
 NEON's cosine error is 2.5e-9 larger than Accelerate's. Both errors are about 70× below the 1e-6 premise, and neither changes the top 10.
 
