@@ -170,9 +170,13 @@ measure from outside. If you want more control over retrieval, use `grep`,
 
 ### When to stop searching
 
-Every `search` at the default tier costs about a second and a half and a page
-of results in your context. A second search pays off only when it can find
-something the first could not. Most of them can't.
+Every `search` at the default tier costs more than a second and a page of
+results in your context. The 1522 ms in the table above was measured at twenty
+reranked candidates; the default now reranks thirty, and `docs/measured.md`
+records slower medians on busier machines. A second search pays off only when
+it can find something the first could not. The rules below are a heuristic for
+spending that cost; no agent-task measurement yet shows how often a repeat
+search finds something new.
 
 - **Before searching again, name what is missing.** List the facts the
   question needs, then check them against the results you already have. Stop
@@ -184,11 +188,18 @@ something the first could not. Most of them can't.
   the ranking is not the problem and a third phrasing will land there too.
   Switch to a path that does not rank:
   - `grep` for an exact string you expect the answer to contain;
-  - `neighbors` from the best topic you found;
-  - `topics` to see what the workspace calls things.
-- **Two misses and a `grep` miss mean it is not in memory.** Say so. Searching
-  more after that will not make up a memory nobody wrote, and an answer built
-  from the closest near-miss is worse than an honest "not recorded".
+  - `neighbors` from the best topic you found.
+
+  `topics` is not one of them: it merges name matches with the same ranked
+  search, unreranked, so only its name matches are new evidence. Use it to see
+  what the workspace calls things.
+- **After two searches and a `grep` miss, stop and say what you tried.**
+  Report that those probes found nothing, not that the memory does not exist:
+  `grep` matches one exact literal, case-sensitive unless you pass `-i`, and
+  `search` returns five results by default, so differently worded or
+  lower-ranked memories can still be there. More searching rarely changes
+  that, and an answer built from the closest near-miss is worse than an honest
+  "I searched for X and Y and found nothing".
 
 ## Relationships
 
