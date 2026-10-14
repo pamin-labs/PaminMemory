@@ -11,7 +11,7 @@
     "pure-open.log": "a65771d312b73bce3751bb7ffc03a817b008784a5e39b273c299fbed2f3bb0c9",
     "vector.log": "8aa40c88921c56b8d9bb48d8aacbbcaca17e74e8b3a7749c14d99749bec76ca0"
   },
-  "scope": "One recorded observation per before/cold-after/warm-after case on a shared Linux host, same16retained metadata excerpts. No SDK/database/model/product call. Timers cover verify(evidence), including metadata parsing/validation, log checks and canonical evidence digest; exclude interpreter startup/imports, input loading and Git source-byte verification. Future probes produce new observations, not identical timings. No statistical latency/speedup or product-search claim.",
+  "scope": "One recorded observation per before/cold-after/warm-after case on a shared Linux host, same16retained metadata excerpts. No SDK/database/model/product call. Timers cover verify(evidence), including metadata parsing/validation, log checks and canonical evidence digest; exclude interpreter startup/imports, the initial evidence.json load and Git source-byte verification; input loading is otherwise included, because the timed verify() reads public-source-binding.json and both logs. Future probes produce new observations, not identical timings. No statistical latency/speedup or product-search claim.",
   "before": {
     "wall_seconds": 2.1530451889993856,
     "process_cpu_seconds": 2.152929824,
@@ -55,7 +55,7 @@
   },
   "measurement_precision": "Full clock-derived float values retained; shared-host single observations, not repeated distributions.",
   "probe_inputs_sha256": {
-    "verify.py": "53ecab1f12b9da9289ff7523664e6db3d0d1918fb718db6d9d526032d19df6c3",
+    "verify.py": "77aa3cb870ddfc78769235ef8f56eabea59358e4df5bf75142ea064a0b9b0c93",
     "source_binding.py": "88a92a8fb0935b923dd24f687f33d6840ccf4a1d11c1e674085b7eed02cfc913",
     "evidence.json": "87eee27a582ab572086d34f22af24b033c5043952a9956686574043614cc207c",
     "public-source-binding.json": "d619f9b1954a3d0c78e57a77d981e51ba1a8ecda126a57282257175abf7ad0b0",
@@ -64,7 +64,7 @@
   },
   "probe_inputs_scope": "Prospective package input pins after missing-tree handling; original after_inputs_sha256 above retain the exact historical measured-source identities. The modified source-binding Git availability path is outside the metadata-only timed path.",
   "suite_probe_inputs_sha256": {
-    "verify.py": "53ecab1f12b9da9289ff7523664e6db3d0d1918fb718db6d9d526032d19df6c3",
+    "verify.py": "77aa3cb870ddfc78769235ef8f56eabea59358e4df5bf75142ea064a0b9b0c93",
     "source_binding.py": "88a92a8fb0935b923dd24f687f33d6840ccf4a1d11c1e674085b7eed02cfc913",
     "test_verify.py": "118629108a2f225d3c03e74535ba282ae3a5ac007a3d24a717cfb28dd0313a2e",
     "test_source_binding.py": "ef24fa3142038a70050fa361eb6ba17e50b472cd98ed4f1c13a8902add15b648",
