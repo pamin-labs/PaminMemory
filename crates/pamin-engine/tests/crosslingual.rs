@@ -1446,7 +1446,7 @@ async fn report_channels(
         &variants,
         channels::shipped_row(&variants),
         &offline,
-        true,
+        channels::Units::AnswerKeys,
     );
     channels::lexical_cross_validated(
         &format!("XQuAD-R lexical weights only, {named}"),
@@ -1455,7 +1455,7 @@ async fn report_channels(
         &variants,
         channels::shipped_row(&variants),
         &offline,
-        true,
+        channels::Units::AnswerKeys,
     );
 
     // Per language, against the vector channel alone rather than against
@@ -3378,7 +3378,7 @@ async fn run<'a>(engine: &Engine, queries: &[Query<'a>], route: Route) -> BTreeM
 async fn rerank_rules(engine: &Engine, queries: &[Query<'_>], named: &str) {
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
-    let mut priced = reranking::Priced::new(true);
+    let mut priced = reranking::Priced::new();
     for query in queries {
         let hits = engine
             .search_reranked(query.text(), WIDE, DEPTHS, tier)
@@ -3391,6 +3391,8 @@ async fn rerank_rules(engine: &Engine, queries: &[Query<'_>], named: &str) {
             query.text(),
             &hits,
             &replayed,
+            // One search, scored under both answer keys: one unit.
+            None,
             |into, ranking| score(into, query, ranking),
         );
     }
@@ -3435,7 +3437,7 @@ async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query<'_>], 
         &labels,
         reranking::shipped_context(),
         &measured,
-        true,
+        channels::Units::AnswerKeys,
     );
 }
 
