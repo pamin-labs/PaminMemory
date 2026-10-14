@@ -75,18 +75,14 @@ pub enum Rule {
     /// both a lexical channel and the vector channel rank it in their top
     /// three -- and the shipped pass otherwise. `n` of zero skips the model.
     Confident { lead: f64, n: usize },
-    /// Score in fused order, [`batch`] at a time, and stop after the first
-    /// batch past the second that put nothing into the model's top `top` so
-    /// far: the remaining candidates are behind in fusion, and the last batch
-    /// says they are behind in the model too. An anytime stop, not a safe one
-    /// -- a cross-encoder's score has no bound to stop against.
+    /// Score the shortlist in the passes the reranker runs -- its own
+    /// planner, shortest pairs first -- and stop after the first pass past
+    /// the second that put nothing into the model's top `top` so far: the
+    /// last pass says the pairs still to come are behind in the model too.
+    /// An anytime stop, not a safe one -- a cross-encoder's score has no bound
+    /// to stop against -- and an order by length, not by fusion, since that is
+    /// the order the passes run in.
     Patience { top: usize },
-}
-
-/// Pairs per model pass, as the engine batches them at most: the reranker's
-/// own setting, `PAMIN_RERANK_BATCH` included, read the way it reads it.
-pub fn batch() -> usize {
-    pamin_index::reranking::batch()
 }
 
 /// Every rule measured, labelled. The shipped rule is found by value, not by
@@ -128,7 +124,7 @@ pub fn rules() -> Vec<(String, Rule)> {
     }
     for top in [3, 5, 10] {
         rules.push((
-            format!("patience: stop when a batch misses the top {top}"),
+            format!("patience: stop when a pass misses the top {top}"),
             Rule::Patience { top },
         ));
     }
@@ -385,6 +381,9 @@ pub struct Priced {
     /// Per group, the unit each scored query belongs to, in `per_query`
     /// order, for the cross-validated choice and its paired test.
     clusters: BTreeMap<String, Vec<String>>,
+    /// The shipped tier's reranker, loaded for its tokenizer and planner
+    /// only, so [`Rule::Patience`] replays the passes the engine ran.
+    reranker: pamin_index::Reranker,
 }
 
 /// The shape table `SUFFICIENCY_OUT`'s first-result check is scored into.
@@ -414,14 +413,12 @@ fn rescored_rules(model: &str) -> Vec<(String, Rule)> {
     ]
 }
 
-impl Default for Priced {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Priced {
-    pub fn new() -> Self {
+    /// `models` is the workspace's model cache, where the shipped tier's
+    /// reranker is loaded from.
+    pub fn new(models: &std::path::Path) -> Self {
+        let reranker = pamin_index::Reranker::load(Rerank::default(), models)
+            .expect("load the shipped reranker for its planner");
         let mut rules = rules();
         let shortlist = std::env::var("SHORTLIST_OUT").ok().map(|path| {
             std::io::BufWriter::new(
@@ -465,6 +462,7 @@ impl Priced {
             shortlist,
             rescore,
             clusters: BTreeMap::new(),
+            reranker,
         }
     }
 
@@ -522,6 +520,13 @@ impl Priced {
             );
             replayed.rescored(other.scores.clone())
         });
+        let names = replayed.movable();
+        let documents = shown(hits, &names);
+        let documents: Vec<&str> = documents.iter().map(String::as_str).collect();
+        let planned =
+            replayed
+                .rescored(replayed.model.clone())
+                .planned(&self.reranker, query, &documents);
         for (row, (((label, rule), into), pairs)) in self
             .rules
             .iter()
@@ -530,7 +535,7 @@ impl Priced {
             .enumerate()
         {
             let replayed = if row < self.firsts {
-                replayed
+                &planned
             } else {
                 rescored
                     .as_ref()
@@ -796,6 +801,10 @@ pub struct Replayed {
     /// Whether a lexical channel and the vector channel both rank the fused
     /// first in their top three.
     agree: bool,
+    /// The reranker's passes over the movable candidates, as indices into
+    /// them in the order it runs them, once [`Replayed::planned`] has asked
+    /// it; what [`Rule::Patience`] replays.
+    passes: Option<Vec<Vec<usize>>>,
 }
 
 /// Rebuilds one shipped search at `tier` and checks the rebuild.
@@ -861,6 +870,7 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
             head: tier.depth(),
             lead,
             agree,
+            passes: None,
         }
     } else {
         assert_eq!(
@@ -899,6 +909,7 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
             head: tier.depth(),
             lead,
             agree,
+            passes: None,
             fused,
             movable,
         }
@@ -947,7 +958,29 @@ impl Replayed {
             head: self.head,
             lead: self.lead,
             agree: self.agree,
+            passes: self.passes.clone(),
         }
+    }
+
+    /// The same query with the passes `reranker` runs over what it was
+    /// shown, `documents` in movable order: their encoded lengths through
+    /// the planner [`pamin_index::Reranker::rank`] runs.
+    pub fn planned(
+        mut self,
+        reranker: &pamin_index::Reranker,
+        query: &str,
+        documents: &[&str],
+    ) -> Replayed {
+        assert_eq!(
+            documents.len(),
+            self.movable.len(),
+            "one document per movable candidate"
+        );
+        let lengths = reranker
+            .lengths(query, documents)
+            .expect("encode the shortlist");
+        self.passes = Some(reranker.plan(&lengths));
+        self
     }
 
     /// The whole list under `rule`: unmovable positions stay, movable ones are
@@ -1030,26 +1063,29 @@ impl Replayed {
                 .then(|| (0..n.min(count)).collect())
                 .or_else(|| Some((0..count).collect())),
             Rule::Patience { top } => {
-                let size = batch();
-                let mut scored = 0;
-                while scored < count {
-                    let batch = scored..(scored + size).min(count);
-                    scored = batch.end;
-                    if batch.start < 2 * size {
+                let passes = self
+                    .passes
+                    .as_ref()
+                    .expect("Patience replays the reranker's passes: plan them first");
+                let mut scored: Vec<usize> = Vec::new();
+                for (pass, positions) in passes.iter().enumerate() {
+                    scored.extend(positions);
+                    if pass < 2 {
                         continue;
                     }
-                    let mut best: Vec<usize> = (0..scored).collect();
+                    let mut best = scored.clone();
                     best.sort_by(|left, right| {
                         self.model[*right]
                             .total_cmp(&self.model[*left])
                             .then(left.cmp(right))
                     });
                     best.truncate(top);
-                    if !best.iter().any(|at| batch.contains(at)) {
+                    if !best.iter().any(|at| positions.contains(at)) {
                         break;
                     }
                 }
-                Some((0..scored).collect())
+                scored.sort_unstable();
+                Some(scored)
             }
             Rule::Substitute | Rule::Blend { .. } | Rule::GraphBlend { .. } => None,
         }
@@ -1101,6 +1137,7 @@ mod tests {
             head: 4,
             lead: 0.0,
             agree: false,
+            passes: None,
         }
     }
 
@@ -1180,30 +1217,38 @@ mod tests {
     }
 
     #[test]
-    fn patience_stops_after_a_batch_that_reaches_nothing() {
-        let size = batch();
-        let count = 6 * size;
+    fn patience_stops_after_a_pass_that_reaches_nothing() {
+        let count = 12;
         let fusion: Vec<f64> = (0..count)
             .map(|at| 1.0 - at as f64 / count as f64)
             .collect();
-        // The model agrees with fusion, so the third batch reaches nothing in
-        // the top three and the pass stops there.
         let mut scores = replayed(&fusion, &fusion);
         scores.fused = (0..=count).map(|at| at.to_string()).collect();
         scores.movable = (1..=count).collect();
         scores.graph = vec![0.0; count];
         scores.head = count + 1;
-        assert_eq!(scores.pairs(Rule::Patience { top: 3 }), 3 * size);
-        // A model that prefers the last candidate keeps reading to the end.
+        // Passes in the order the reranker runs them, by length, not by
+        // fusion.
+        scores.passes = Some(vec![
+            vec![11, 7, 3],
+            vec![10, 6, 2],
+            vec![9, 5, 1],
+            vec![8, 4, 0],
+        ]);
+        // The model agrees with fusion, so the third pass puts candidate 1
+        // into the top three and the fourth, holding 0, does too: all read.
+        assert_eq!(scores.pairs(Rule::Patience { top: 3 }), count);
+        // A model that prefers what the first two passes held stops after
+        // the third, which reaches nothing, and never scores the fourth.
         let mut model = fusion.clone();
-        model[count - 1] = 9.0;
-        model[2 * size] = 8.0;
-        model[3 * size] = 7.0;
-        model[4 * size] = 6.0;
-        model[5 * size] = 5.0;
+        for (at, score) in [(11, 9.0), (10, 8.0), (7, 7.0)] {
+            model[at] = score;
+        }
+        let rescored = scores.rescored(model);
+        assert_eq!(rescored.pairs(Rule::Patience { top: 3 }), 9);
         assert_eq!(
-            scores.rescored(model).pairs(Rule::Patience { top: 3 }),
-            count
+            rescored.scored(Rule::Patience { top: 3 }),
+            Some(vec![1, 2, 3, 5, 6, 7, 9, 10, 11])
         );
     }
 }
