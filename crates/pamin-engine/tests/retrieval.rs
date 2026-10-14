@@ -683,7 +683,7 @@ async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query]) {
         &labels,
         reranking::shipped_context(),
         &measured,
-        false,
+        channels::Units::Questions,
     );
 }
 
@@ -701,7 +701,7 @@ async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query]) {
 async fn rerank_rules(engine: &Engine, queries: &[Query]) {
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
-    let mut priced = reranking::Priced::new(false);
+    let mut priced = reranking::Priced::new();
     for query in queries {
         let hits = engine
             .search_reranked(&query.query, WIDE, DEPTHS, tier)
@@ -716,6 +716,7 @@ async fn rerank_rules(engine: &Engine, queries: &[Query]) {
             &query.query,
             &hits,
             &replayed,
+            None,
             |into, ranking| {
                 into.entry(query.group.clone()).or_default().add(
                     ranking,
@@ -902,7 +903,7 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
         &variants,
         channels::shipped_row(&variants),
         &offline,
-        false,
+        channels::Units::Questions,
     );
 
     println!(
