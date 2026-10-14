@@ -580,6 +580,15 @@ async fn search_answers_questions_that_take_several_steps() {
         &ARMS,
     );
     corpus.describe();
+    // The run ends on a significance gate per hop count; a sample too small
+    // to ever pass it fails here, before the corpus is indexed.
+    let mut asked: BTreeMap<&str, usize> = BTreeMap::new();
+    for query in &corpus.queries {
+        *asked.entry(query.group.as_str()).or_default() += 1;
+    }
+    let gated = asked.iter().all(|(group, questions)| {
+        statistics::gate(&format!("MuSiQue {group}, the graph's worth"), *questions)
+    });
     let home = std::env::var("PAMIN_EVAL_HOME").ok();
     let scratch = home
         .is_none()
@@ -903,7 +912,7 @@ async fn search_answers_questions_that_take_several_steps() {
     // 0.6834 shipped, and the graph worth 0.0406 of it (114W/238L, p=0.0001).
     // Asserted as a direction rather than a figure, because the group's mean
     // moves with how many questions are asked.
-    for (group, scores) in &shipped {
+    for (group, scores) in shipped.iter().filter(|_| gated) {
         let without = statistics::compare(&scores.per_query, &graphless[group].per_query);
         assert!(
             without.mean < 0.0 && without.is_significant(),
