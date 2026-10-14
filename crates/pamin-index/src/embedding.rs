@@ -70,15 +70,17 @@ pub enum Profile {
     /// described as an order of magnitude more expensive.
     #[default]
     Accuracy,
-    /// Experimental: EmbeddingGemma 2 with int8 weights, 768 dimensions, read
-    /// from the local directory `PAMIN_EG2_DIR` names -- see `crate::gemma`.
+    /// Experimental: EmbeddingGemma 2 with int8 weights, 768 dimensions,
+    /// downloaded from a pinned hub revision -- see `crate::gemma`.
     ///
     /// The candidate to replace BGE-M3 as the dense channel. Measured outside
     /// the product on one thread, it embeds a short text in three quarters of
     /// BGE-M3's time with 366 MB less resident; whether the product's search
     /// keeps BGE-M3's accuracy is what the evaluation harnesses are run under
-    /// this profile to find out. Not a default, and not downloadable: the
-    /// export is hosted nowhere yet. The licence note above applies to it.
+    /// this profile to find out. Not a default. Unlike the first
+    /// EmbeddingGemma, which the licence note above is about, EmbeddingGemma 2
+    /// is Apache-2.0; its card asks users to follow the Gemma Prohibited Use
+    /// Policy.
     Gemma,
 }
 
@@ -91,7 +93,7 @@ impl Profile {
             Self::Accuracy | Self::DualAccuracy => {
                 unreachable!("the accuracy profile runs the joint BGE-M3 export")
             }
-            Self::Gemma => unreachable!("the gemma profile reads a local export"),
+            Self::Gemma => unreachable!("the gemma profile runs its own export"),
         }
     }
 
@@ -141,7 +143,7 @@ impl Profile {
             Self::DualAccuracy => {
                 "bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4"
             }
-            // No hub revision to name, so a digest of the files and the width.
+            // A digest of the pinned files and the width -- see the function.
             Self::Gemma => crate::gemma::identity(),
         }
     }
@@ -171,7 +173,8 @@ impl Profile {
     }
 
     /// Whether each text runs in a forward pass of its own, because its
-    /// vector would otherwise depend on its batch -- see [`Embedder::run`].
+    /// vector would otherwise depend on its batch -- see [`Embedder::run`] --
+    /// or, for gemma, because batching it has not been measured.
     fn singleton(self) -> bool {
         matches!(self, Self::Accuracy | Self::DualAccuracy | Self::Gemma)
     }
@@ -402,8 +405,8 @@ fn primary_model(
 ) -> Result<(Encoder, crate::inference::Device)> {
     std::fs::create_dir_all(cache_dir)?;
     let repository = match profile {
-        Profile::Gemma => None,
-        Profile::Accuracy | Profile::DualAccuracy => Some(Repository::open_at(
+        Profile::Gemma => crate::gemma::repository(cache_dir)?,
+        Profile::Accuracy | Profile::DualAccuracy => Repository::open_at(
             cache_dir,
             JOINT_REPOSITORY,
             if profile == Profile::DualAccuracy {
@@ -411,21 +414,18 @@ fn primary_model(
             } else {
                 "main"
             },
-        )?),
+        )?,
         Profile::Speed | Profile::Balanced => {
             let model = profile.model();
             let info = TextEmbedding::get_model_info(&model)
                 .map_err(|error| IndexError::Engine(format!("finding embedding model: {error}")))?;
-            Some(Repository::open(cache_dir, &info.model_code)?)
+            Repository::open(cache_dir, &info.model_code)?
         }
     };
     let identity = format!(
         "embedding-query-v4:max512:joint-singleton:e5-cpu256-accelerator8:{}:{}",
         profile.model_id(),
-        match &repository {
-            Some(repository) => repository.identity(cache_dir),
-            None => crate::gemma::source()?,
-        }
+        repository.identity(cache_dir)
     );
     let references = std::cell::RefCell::new(crate::inference::References::default());
     let long = "migration ".repeat(600);
@@ -487,8 +487,7 @@ fn primary_model(
         },
     )?;
 
-    if let Some(repository) = &repository
-        && device == crate::inference::Device::Cpu
+    if device == crate::inference::Device::Cpu
         && matches!(profile, Profile::Accuracy | Profile::DualAccuracy)
     {
         crate::prepared::release(&repository.file(cache_dir, JOINT_FILE), cache_dir);
@@ -578,7 +577,7 @@ fn load_on(
     target: crate::inference::Target,
 ) -> Result<Encoder> {
     if profile == Profile::Gemma {
-        let encoder = crate::gemma::load(JOINT_MAX_TOKENS, target)?;
+        let encoder = crate::gemma::load(cache_dir, JOINT_MAX_TOKENS, target)?;
         encoder.require_accelerator(device)?;
         return Ok(encoder);
     }

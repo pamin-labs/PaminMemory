@@ -60,7 +60,8 @@ impl Encoder {
     }
 
     /// The model `model` finds, on `providers`, with a tokenizer the caller
-    /// has already loaded -- for a model that comes from no repository.
+    /// has already loaded -- for a repository [`crate::tokenizer::load`]
+    /// cannot read.
     pub(crate) fn load_with(
         model: impl FnOnce() -> Result<PathBuf>,
         tokenizer: Tokenizer,

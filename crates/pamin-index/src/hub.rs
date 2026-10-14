@@ -88,6 +88,35 @@ impl Repository {
         })
     }
 
+    /// [`Self::get`] for a file whose size and SHA-256 are pinned beside the
+    /// revision, refused when the file on disk is not that file.
+    ///
+    /// The size is checked on every call, which costs a `stat`; the digest
+    /// when this call downloaded the file, because hashing a 273 MB weight
+    /// file takes about a second and a cached file that kept its size is the
+    /// one the first call checked.
+    pub(crate) fn get_pinned(&self, file: &Pinned) -> Result<PathBuf> {
+        let cached = cached_at(&self.cache_dir, &self.name, &self.revision, file.name).is_some();
+        let path = self.get(file.name)?;
+        let size = std::fs::metadata(&path)?.len();
+        if size != file.size {
+            return Err(IndexError::Engine(format!(
+                "{}@{}/{} is {size} bytes, not the pinned {}",
+                self.name, self.revision, file.name, file.size
+            )));
+        }
+        if !cached {
+            let digest = crate::prepared::source_digest(&path)?;
+            if digest != file.sha256 {
+                return Err(IndexError::Engine(format!(
+                    "{}@{}/{} has SHA-256 {digest}, not the pinned {}",
+                    self.name, self.revision, file.name, file.sha256
+                )));
+            }
+        }
+        Ok(path)
+    }
+
     /// hf-hub releases its blob lock before linking the snapshot. In our
     /// owned cache, fetch and cleanup share a repository transaction through
     /// that final link/ref publication. Shared external caches are never cleaned.
@@ -115,6 +144,13 @@ impl Repository {
             file,
         }
     }
+}
+
+/// One file of a pinned revision, as [`Repository::get_pinned`] checks it.
+pub(crate) struct Pinned {
+    pub(crate) name: &'static str,
+    pub(crate) size: u64,
+    pub(crate) sha256: &'static str,
 }
 
 /// One file of a [`Repository`] -- a model's weights.
@@ -321,6 +357,23 @@ mod tests {
             "the entry is left"
         );
         assert!(!blob.exists(), "the blob is left");
+    }
+
+    /// A cached file is served only at its pinned size: a truncated or
+    /// replaced file is refused, not loaded.
+    #[test]
+    fn a_pinned_file_of_another_size_is_refused() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (entry, _) = downloaded(dir.path());
+        let repository = Repository::open(dir.path(), NAME).expect("open");
+        let pinned = |size| Pinned {
+            name: FILE,
+            size,
+            sha256: "unchecked for a cached file",
+        };
+        assert_eq!(repository.get_pinned(&pinned(7)).expect("pinned"), entry);
+        let error = repository.get_pinned(&pinned(8)).expect_err("another size");
+        assert!(error.to_string().contains("not the pinned 8"), "{error}");
     }
 
     #[test]

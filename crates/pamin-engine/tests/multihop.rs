@@ -289,8 +289,9 @@ async fn search_answers_questions_that_take_several_steps() {
         (None, None) => unreachable!("one of the two is always set"),
     };
 
-    // The experimental profile's model is a local file, not a hub revision, so
-    // its identity -- a digest of the files and the width -- names the project.
+    // The experimental profile's export has had more than one graph, so its
+    // identity -- a digest of the pinned files and the width -- names the
+    // project.
     let project = match profile {
         Profile::Gemma => format!(
             "musique-{named}-{}-{}",
