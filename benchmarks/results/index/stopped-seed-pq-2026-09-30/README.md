@@ -39,8 +39,11 @@ check internal consistency, not independent authenticity.
 
 [verify.py](verify.py) independently recomputes container-header/footer/table
 CRCs (those complete bytes are included), section layout including padding and
-non-overlap of every occupied section extent, document counts,
-PQ header/payload agreement and codebook/code-length arithmetic. It checks
+non-overlap of every occupied section extent, zero v2 header/footer reserved
+fields, document counts, the pinned 1,026 stored / 1,024 quantizer dimension
+relationship, PQ header/payload agreement and codebook/code-length arithmetic.
+The random header magic, clock fields, check point and content CRC have no
+pinned value and are not checked. It checks
 reported native/file identity against the public pretrial manifest and prints
 `public_whole_file_sha_or_complete_section_crc_verified: false`. Offsets are
 parsed from the segment table; they are not assumed from a sample file.
