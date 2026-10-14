@@ -488,6 +488,70 @@ pub struct Shape {
     providers: Vec<String>,
 }
 
+/// Everything that tells one run's record from another's, serialised
+/// canonically into the record and hashed into its file name.
+///
+/// The file name was built from hand-picked parts, and every review found one
+/// missing -- the providers' roles, then the build profile. Now the readable
+/// prefix is only for people, and the name's hash covers this whole struct,
+/// so a field added here is in the name without anyone remembering to put it
+/// there. `every_identity_field_names_the_record` fails for a field that
+/// does not change the hash.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+struct Identity {
+    harness: String,
+    test: String,
+    profile: String,
+    arm: String,
+    /// The arm's settings in full, `SIGNIFICANCE_GATE` included.
+    settings: Vec<String>,
+    commit: String,
+    /// Why the run cannot vouch for its commit -- a dirty build or
+    /// checkout, a moved checkout, the gate off -- if it cannot.
+    noncanonical_reason: Option<String>,
+    corpus_sha256: String,
+    sequence_sha256: String,
+    selection: String,
+    seed: Option<u64>,
+    /// `role=provider`, roles kept.
+    providers: Vec<String>,
+    build: Build,
+}
+
+/// What the harness binary was compiled as, from the build script.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+struct Build {
+    /// Cargo's `PROFILE`: `debug` or `release`.
+    profile: String,
+    opt_level: String,
+    target: String,
+}
+
+impl Build {
+    fn compiled() -> Self {
+        Self {
+            profile: env!("PAMIN_ENGINE_BUILD_PROFILE").to_string(),
+            opt_level: env!("PAMIN_ENGINE_OPT_LEVEL").to_string(),
+            target: env!("PAMIN_ENGINE_TARGET").to_string(),
+        }
+    }
+}
+
+impl Identity {
+    /// The identity's canonical form: its fields in declaration order.
+    fn canonical(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("serialise the identity")
+    }
+
+    /// The first twelve hex digits of the canonical form's sha256.
+    fn short(&self) -> String {
+        Sha256::digest(self.canonical())[..6]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+}
+
 /// A probe for [`Shape::ran_on`] over every engine a run searched: each
 /// one's [`Engine::providers`](pamin_engine::Engine::providers), sorted, a
 /// role listed once per provider it ran on.
@@ -943,23 +1007,34 @@ impl Shape {
     /// that cannot vouch for its commit, a name of its own beside the
     /// canonical record and never over it, nor over another such run's.
     fn named(&self, record: &Path) -> PathBuf {
-        let on: Vec<&str> = self
-            .providers
-            .iter()
-            .map(|line| {
-                line.split_once('=')
-                    .map_or(line.as_str(), |(_, provider)| provider)
-            })
-            .collect();
-        let on = if on.is_empty() {
-            "none".to_string()
-        } else {
-            file_part(&on.join("+"))
-        };
-        let canonical = PathBuf::from(format!("{}-on-{on}.json", record.display()));
+        let canonical = PathBuf::from(format!(
+            "{}-{}.json",
+            record.display(),
+            self.identity().short()
+        ));
         match self.source.noncanonical {
             None => canonical,
             Some(_) => unique(&canonical, "noncanonical.json"),
+        }
+    }
+
+    /// Everything that tells this run apart from another; see [`Identity`].
+    fn identity(&self) -> Identity {
+        let [test, profile, arm] = self.run.clone();
+        Identity {
+            harness: self.name.clone(),
+            test,
+            profile,
+            arm,
+            settings: self.settings.clone(),
+            commit: self.source.commit.clone(),
+            noncanonical_reason: self.source.noncanonical.clone(),
+            corpus_sha256: self.digest(),
+            sequence_sha256: self.sequence(),
+            selection: self.selection.clone(),
+            seed: self.seed,
+            providers: self.providers.clone(),
+            build: Build::compiled(),
         }
     }
 
@@ -1005,6 +1080,8 @@ impl Shape {
             "noncanonical_reason": self.source.noncanonical,
             "settings": self.settings,
             "providers": self.providers,
+            "identity": self.identity(),
+            "identity_sha256_12": self.identity().short(),
             "corpus_sha256": self.digest(),
             "sequence_sha256": self.sequence(),
             "selection": self.selection,
@@ -1412,7 +1489,14 @@ mod tests {
     fn a_failed_rerun_leaves_the_completed_record() {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let base = dir.path().join("test-run");
-        let record = dir.path().join("test-run-on-cpu+coreml.json");
+        let record = {
+            let mut shape = asked();
+            shape.providers = vec![
+                "embedding=cpu".to_string(),
+                "reranking accurate=coreml".to_string(),
+            ];
+            shape.named(&base)
+        };
         let run = |scored: Scored<'_>| {
             let mut shape = asked();
             shape.record = Some(base.clone());
@@ -1465,6 +1549,105 @@ mod tests {
         assert!(!failures.is_empty());
         assert_eq!(std::fs::read(&record).expect("the record"), completed);
         assert!(again.exists(), "the failed run left nothing");
+    }
+
+    fn identity() -> Identity {
+        Identity {
+            harness: "h".into(),
+            test: "t".into(),
+            profile: "accuracy".into(),
+            arm: "shipped".into(),
+            settings: Vec::new(),
+            commit: "a".repeat(40),
+            noncanonical_reason: None,
+            corpus_sha256: "c".repeat(64),
+            sequence_sha256: "s".repeat(64),
+            selection: "all".into(),
+            seed: None,
+            providers: vec!["embedding=cpu".into(), "reranking accurate=coreml".into()],
+            build: Build {
+                profile: "release".into(),
+                opt_level: "3".into(),
+                target: "x86_64-unknown-linux-gnu".into(),
+            },
+        }
+    }
+
+    /// Two runs that differ only in which role ran where, or only in how
+    /// the harness was compiled, are two records.
+    #[test]
+    fn swapped_roles_and_build_profiles_are_different_records() {
+        let base = identity();
+        let swapped = Identity {
+            providers: vec!["embedding=coreml".into(), "reranking accurate=cpu".into()],
+            ..base.clone()
+        };
+        let debug = Identity {
+            build: Build {
+                profile: "debug".into(),
+                opt_level: "0".into(),
+                ..base.build.clone()
+            },
+            ..base.clone()
+        };
+        let names: BTreeSet<String> = [&base, &swapped, &debug].map(Identity::short).into();
+        assert_eq!(names.len(), 3, "{names:?}");
+        assert_eq!(base.short().len(), 12);
+        assert_eq!(base.short(), identity().short(), "the name is stable");
+    }
+
+    /// Every field of the identity changes the name, and every field is
+    /// changed here: a field added to `Identity` without a line below fails.
+    #[test]
+    fn every_identity_field_names_the_record() {
+        type Mutation = (&'static str, fn(&mut Identity));
+        let mutations: Vec<Mutation> = vec![
+            ("harness", |id| id.harness.push('x')),
+            ("test", |id| id.test.push('x')),
+            ("profile", |id| id.profile.push('x')),
+            ("arm", |id| id.arm.push('x')),
+            ("settings", |id| {
+                id.settings.push("SIGNIFICANCE_GATE=off".into())
+            }),
+            ("commit", |id| id.commit = "b".repeat(40)),
+            ("noncanonical_reason", |id| {
+                id.noncanonical_reason = Some("dirty".into())
+            }),
+            ("corpus_sha256", |id| id.corpus_sha256.push('x')),
+            ("sequence_sha256", |id| id.sequence_sha256.push('x')),
+            ("selection", |id| id.selection.push('x')),
+            ("seed", |id| id.seed = Some(1)),
+            ("providers", |id| id.providers.reverse()),
+            ("build.profile", |id| id.build.profile = "debug".into()),
+            ("build.opt_level", |id| id.build.opt_level = "0".into()),
+            ("build.target", |id| {
+                id.build.target = "aarch64-apple-darwin".into()
+            }),
+        ];
+        let base = identity();
+        for (field, mutate) in &mutations {
+            let mut changed = base.clone();
+            mutate(&mut changed);
+            assert_ne!(
+                changed.short(),
+                base.short(),
+                "{field} does not name the record"
+            );
+        }
+        let value = serde_json::to_value(&base).expect("JSON");
+        let leaves = |value: &serde_json::Value| -> usize {
+            value
+                .as_object()
+                .expect("an object")
+                .values()
+                .map(|field| field.as_object().map_or(1, |inner| inner.len()))
+                .sum()
+        };
+        assert_eq!(
+            leaves(&value),
+            mutations.len(),
+            "a field of Identity has no mutation here"
+        );
     }
 
     /// A published run that never says what it ran on fails, and leaves its
