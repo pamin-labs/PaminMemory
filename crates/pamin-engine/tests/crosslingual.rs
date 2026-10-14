@@ -1668,11 +1668,14 @@ fn the_model_reaches_across_languages() {
     let mut embedder =
         Embedder::load(profile, &home.join("models")).expect("load the embedding model");
     let mut providers = vec![(
-        "embedding".to_string(),
+        "harness/embedding".to_string(),
         embedder.device().name().to_string(),
     )];
     if let Some(device) = embedder.secondary_device() {
-        providers.push(("embedding secondary".to_string(), device.name().to_string()));
+        providers.push((
+            "harness/embedding secondary".to_string(),
+            device.name().to_string(),
+        ));
     }
     shape.ran_on(move || providers.clone());
 
@@ -1922,7 +1925,7 @@ async fn search_reaches_across_languages() {
     )
     .await
     .expect("open the engine");
-    shape.ran_on(harness::shape::engines(&[&engine]));
+    shape.ran_on(harness::shape::engines(&[("primary", &engine)]));
 
     assert_eq!(
         engine.passage(),
