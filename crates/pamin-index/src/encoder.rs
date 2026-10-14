@@ -11,9 +11,10 @@
 //! member, its ids and attention mask fed as `i64` in the batch's shape, and
 //! token type ids only to a graph that declares an input of that name.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 
-use ort::session::{Session, SessionOutputs};
+use ort::session::{Session, SessionInputValue, SessionOutputs};
 use ort::value::Tensor;
 use tokenizers::{EncodeInput, Encoding};
 
@@ -65,18 +66,22 @@ impl Encoder {
         max_length: usize,
     ) -> Result<Self> {
         let tokenizer = crate::tokenizer::load(repository, max_length)?;
+        Ok(Self::from_parts(session, tokenizer))
+    }
+
+    fn from_parts(session: Session, tokenizer: Tokenizer) -> Self {
         let token_type_ids = session
             .inputs()
             .iter()
             .any(|input| input.name() == "token_type_ids");
-        Ok(Self {
+        Self {
             runtime_plan: crate::inference::RuntimePlan::default(),
             tokenizer,
             session,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             fixed: None,
             token_type_ids,
-        })
+        }
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -222,22 +227,7 @@ impl Encoder {
         if logical_rows > rows || length > tokens {
             return Err(failed(&"batch exceeds the static execution shape"));
         }
-        let shape = [rows, tokens];
-        let column = |field: fn(&Encoding) -> &[u32], padding| {
-            let values = input_values(encodings, shape, field, padding);
-            Tensor::from_array((shape, values)).map_err(|error| failed(&error))
-        };
-
-        let mut feed = ort::inputs![
-            "input_ids" => column(Encoding::get_ids, 1)?,
-            "attention_mask" => column(Encoding::get_attention_mask, 0)?,
-        ];
-        if self.token_type_ids {
-            feed.push((
-                "token_type_ids".into(),
-                column(Encoding::get_type_ids, 0)?.into(),
-            ));
-        }
+        let feed = feed(encodings, [rows, tokens], self.token_type_ids)?;
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let session = if let Some((short, long)) = &mut self.fixed {
             match tokens {
@@ -270,6 +260,30 @@ impl Encoder {
         }
         Ok(outputs)
     }
+}
+
+/// What a session is fed for `encodings` in the execution shape `shape`.
+fn feed(
+    encodings: &[Encoding],
+    shape: [usize; 2],
+    token_type_ids: bool,
+) -> Result<Vec<(Cow<'static, str>, SessionInputValue<'static>)>> {
+    let column = |field: fn(&Encoding) -> &[u32], padding| {
+        let values = input_values(encodings, shape, field, padding);
+        Tensor::from_array((shape, values)).map_err(|error| failed(&error))
+    };
+
+    let mut feed = ort::inputs![
+        "input_ids" => column(Encoding::get_ids, 1)?,
+        "attention_mask" => column(Encoding::get_attention_mask, 0)?,
+    ];
+    if token_type_ids {
+        feed.push((
+            "token_type_ids".into(),
+            column(Encoding::get_type_ids, 0)?.into(),
+        ));
+    }
+    Ok(feed)
 }
 
 /// Fill only the model inputs. Static CoreML rows duplicate the last logical

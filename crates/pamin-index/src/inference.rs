@@ -197,10 +197,7 @@ pub(crate) fn options(target: impl Into<Target>) -> Result<SessionBuilder> {
     };
     let unready =
         |error: &dyn std::fmt::Display| IndexError::Engine(format!("preparing a session: {error}"));
-    let threads = match threads() {
-        Some(threads) => threads,
-        None => std::thread::available_parallelism()?.get(),
-    };
+    let threads = budget()?;
     let builder = Session::builder().map_err(|error| unready(&error))?;
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     let builder = if providers
@@ -411,6 +408,14 @@ fn coreml_cache(model: &std::path::Path, rows: usize, tokens: usize) -> Result<P
 /// working.
 pub(crate) fn threads() -> Option<usize> {
     pamin_core::env::positive("PAMIN_INFERENCE_THREADS")
+}
+
+/// How many threads inference may keep busy: [`threads`], or one per core.
+pub(crate) fn budget() -> Result<usize> {
+    Ok(match threads() {
+        Some(threads) => threads,
+        None => std::thread::available_parallelism()?.get(),
+    })
 }
 
 /// The execution provider selected for a model's forward passes.
