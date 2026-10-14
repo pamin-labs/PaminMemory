@@ -599,9 +599,14 @@ impl Hardware {
     /// The accelerators behind `providers` (`engine/role=provider` lines).
     fn accelerators_for(providers: &[String]) -> Vec<String> {
         let ran = |name: &str| {
-            providers
-                .iter()
-                .any(|line| line.rsplit_once('=').is_some_and(|(_, on)| on == name))
+            providers.iter().any(|line| {
+                line.rsplit_once('=').is_some_and(|(_, on)| {
+                    on == name
+                        || on
+                            .strip_prefix(name)
+                            .is_some_and(|key| key.starts_with(':'))
+                })
+            })
         };
         let mut accelerators = Vec::new();
         if ran("cuda") {
@@ -761,9 +766,10 @@ pub fn engines(
         let mut providers: Vec<(String, String)> = engines
             .iter()
             .flat_map(|(label, engine)| {
-                engine.providers().into_iter().map(move |(role, device)| {
-                    (format!("{label}/{role}"), device.name().to_string())
-                })
+                engine
+                    .providers()
+                    .into_iter()
+                    .map(move |(role, target)| (format!("{label}/{role}"), target))
             })
             .collect();
         providers.sort();
@@ -844,9 +850,8 @@ impl Shape {
     /// A model the harness loaded itself rather than through an engine --
     /// a second reranker an arm prices against the shipped one -- as `role`
     /// on `device`, recorded with what [`ran_on`](Self::ran_on)'s probe says.
-    pub fn also_ran(&mut self, role: &str, device: pamin_index::Device) {
-        self.loaded
-            .push((format!("harness/{role}"), device.name().to_string()));
+    pub fn also_ran(&mut self, role: &str, target: String) {
+        self.loaded.push((format!("harness/{role}"), target));
     }
 
     /// Asks the probe, if there is one, and keeps its answer with `loaded`
@@ -1889,6 +1894,29 @@ mod tests {
         assert_eq!(Hardware::accelerators_for(&providers), ["coreml"]);
         assert!(Hardware::accelerators_for(&providers[..1]).is_empty());
         assert!(Hardware::detect().logical_cores > 0);
+    }
+
+    /// A provider is recorded as the execution target its plans are keyed
+    /// by, so two NPUs that differ in provider or in id are two records, and
+    /// either is still an NPU among the accelerators.
+    #[test]
+    fn npu_targets_name_the_record() {
+        let on = |target: &str| Identity {
+            providers: vec![format!("primary/embedding={target}")],
+            ..identity()
+        };
+        let names: BTreeSet<String> = [
+            on("npu:qnn:0"),
+            on("npu:qnn:1"),
+            on("npu:openvino:0"),
+            on("npu"),
+        ]
+        .iter()
+        .map(Identity::short)
+        .collect();
+        assert_eq!(names.len(), 4, "{names:?}");
+        let providers = ["primary/embedding=npu:qnn:1".to_string()];
+        assert_eq!(Hardware::accelerators_for(&providers), ["npu"]);
     }
 
     /// The build a record names is pamin-index's own fingerprint, so a field

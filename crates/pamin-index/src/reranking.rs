@@ -943,6 +943,12 @@ impl Reranker {
         self.device
     }
 
+    /// The execution target its passes run on, as its execution plans are
+    /// keyed: `npu:<provider>:<id>` for an NPU, the device's name otherwise.
+    pub fn target(&self) -> String {
+        crate::inference::target_key(&self.model, self.device)
+    }
+
     pub fn tier(&self) -> Rerank {
         self.tier
     }

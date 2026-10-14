@@ -1667,15 +1667,9 @@ fn the_model_reaches_across_languages() {
     let home = eval_home();
     let mut embedder =
         Embedder::load(profile, &home.join("models")).expect("load the embedding model");
-    let mut providers = vec![(
-        "harness/embedding".to_string(),
-        embedder.device().name().to_string(),
-    )];
-    if let Some(device) = embedder.secondary_device() {
-        providers.push((
-            "harness/embedding secondary".to_string(),
-            device.name().to_string(),
-        ));
+    let mut providers = vec![("harness/embedding".to_string(), embedder.target())];
+    if let Some(target) = embedder.secondary_target() {
+        providers.push(("harness/embedding secondary".to_string(), target));
     }
     shape.ran_on(move || providers.clone());
 
@@ -2093,7 +2087,7 @@ async fn search_reaches_across_languages() {
         let tier = Rerank::default();
         let mut small = pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
             .expect("load the small reranker");
-        shape.also_ran("routes small reranker", small.device());
+        shape.also_ran("routes small reranker", small.target());
         let mut routes = reranking::Routes::default();
         for query in &queries {
             let hits = engine
@@ -3444,7 +3438,7 @@ async fn context(
     let tier = Rerank::default();
     let mut model = pamin_index::Reranker::load(tier, &workspace.root().join("models"))
         .expect("load the reranker");
-    shape.also_ran("context reranker", model.device());
+    shape.also_ran("context reranker", model.target());
     let labels = reranking::context_labels();
     let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
     harness::shape::tables(labels.iter().map(|(label, _)| label));
