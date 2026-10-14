@@ -6,7 +6,11 @@
 //! a run whose clean checkout is at this commit writes the canonical record.
 //!
 //! The script reruns only when `HEAD` or the ref it points at moves, so an
-//! ordinary edit does not rebuild the crate. Outside a git checkout, as from
+//! ordinary edit does not rebuild the crate. `HEAD`'s reflog is watched as
+//! well: a commit on a branch whose ref was packed creates a loose ref that
+//! did not exist to be watched, and leaves `HEAD` and `packed-refs` alone,
+//! but it appends to the reflog. A worktree keeps its own `HEAD` and reflog
+//! in its own git dir, and shares the refs in the common one. Outside a git checkout, as from
 //! a source archive, the value is `unknown` and nothing changes.
 
 use std::path::PathBuf;
@@ -29,7 +33,9 @@ fn main() {
     // that does not.
     let mut watched: Vec<PathBuf> = Vec::new();
     if let Some(git_dir) = git(&["rev-parse", "--absolute-git-dir"]) {
-        watched.push(PathBuf::from(&git_dir).join("HEAD"));
+        let git_dir = PathBuf::from(git_dir);
+        watched.push(git_dir.join("HEAD"));
+        watched.push(git_dir.join("logs").join("HEAD"));
     }
     if let Some(common) = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]) {
         let common = PathBuf::from(common);
