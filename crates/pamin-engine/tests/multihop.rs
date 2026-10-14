@@ -569,15 +569,17 @@ fn score(into: &mut Scores, query: &Query, ranked: &[String]) {
 #[ignore = "provisions postgres, downloads the dataset and model weights, and embeds the corpus"]
 async fn search_answers_questions_that_take_several_steps() {
     let corpus = Corpus::load();
-    corpus.describe();
     let named = std::env::var("PAMIN_PROFILE").unwrap_or_else(|_| DEFAULT_PROFILE.into());
     let profile = Profile::parse(&named).unwrap_or_else(|| panic!("unknown profile {named}"));
     let mut shape = corpus.shape();
+    // Published before anything is printed, so a failed write to stdout
+    // still leaves the in-progress record.
     shape.publish(
         "search_answers_questions_that_take_several_steps",
         &named,
         &ARMS,
     );
+    corpus.describe();
     let home = std::env::var("PAMIN_EVAL_HOME").ok();
     let scratch = home
         .is_none()

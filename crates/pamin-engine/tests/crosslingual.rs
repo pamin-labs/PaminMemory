@@ -1856,13 +1856,15 @@ async fn search_reaches_across_languages() {
         "benchmark checkout has tracked changes"
     );
     let commit = String::from_utf8(git.stdout).expect("git prints a UTF-8 commit hash");
-    println!("  benchmark code commit: {}", commit.trim());
-    println!("  reranker device: cpu; export: onnx/model_int8.onnx");
     let corpus = Corpus::load();
     let queries = corpus.queries();
     let (named, profile) = profile();
     let mut shape = corpus.shape(&queries);
+    // Published before anything is printed, so a failed write to stdout
+    // still leaves the in-progress record.
     shape.publish("search_reaches_across_languages", &named, &ARMS);
+    println!("  benchmark code commit: {}", commit.trim());
+    println!("  reranker device: cpu; export: onnx/model_int8.onnx");
 
     // A named workspace is reused; an unnamed one is thrown away. Indexing
     // thirteen thousand sentences is minutes, and a harness that pays that on
