@@ -600,15 +600,23 @@ impl Priced {
         }
         let role = format!("reranking {}", self.reranker.tier().name());
         let replay = self.reranker.target();
-        let ran = engine
+        // Every plan the engine's reranker ran on so far: one, unless it fell
+        // back mid-run, and then its passes were planned two ways.
+        let mut ran: Vec<String> = engine
             .providers()
             .into_iter()
-            .find(|(name, _)| *name == role)
-            .map(|(_, target)| target);
-        if ran.as_ref() != Some(&replay) {
+            .filter(|(name, _)| *name == role)
+            .map(|(_, plan)| plan.target)
+            .collect();
+        ran.dedup();
+        if ran != [replay.clone()] {
             self.unlike = Some(format!(
                 "the engine's {role} ran on {}, and the replay plans for {replay}",
-                ran.as_deref().unwrap_or("nothing"),
+                if ran.is_empty() {
+                    "nothing".to_string()
+                } else {
+                    ran.join(" then ")
+                },
             ));
         }
     }
