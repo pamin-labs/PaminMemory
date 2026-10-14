@@ -432,8 +432,12 @@ impl Local {
                 let mut combined = String::new();
                 for file in LOCAL_FILES {
                     let path = directory.join(file);
-                    // The graph may hold its weights itself.
-                    if file == "model.onnx.data" && !path.exists() {
+                    // The graph may hold its weights itself, and the
+                    // tokenizer loads without a special-tokens map (see
+                    // `crate::tokenizer::load_dir`).
+                    if matches!(file, "model.onnx.data" | "special_tokens_map.json")
+                        && !path.exists()
+                    {
                         continue;
                     }
                     let digest = crate::prepared::source_digest(&path).map_err(|error| {
