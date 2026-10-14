@@ -37,6 +37,9 @@
 //! | `LOCOMO_DIR` | where `locomo10.json` is cached, instead of fetching it |
 //! | `LOCOMO_CONVERSATIONS` | read only the first this many conversations |
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
+//!
+//! Projects are named after a digest of the records and links they hold, so a
+//! reused `PAMIN_EVAL_HOME` never scores a corpus built by older code or data.
 
 mod harness;
 mod scoring;
@@ -52,9 +55,13 @@ use pamin_index::{Access, Rerank, VectorIndex};
 use pamin_store::Workspace;
 use pamin_store::graph::{self, EdgeClaim};
 use scoring::{NDCG_AT, RECALL_AT, Scores};
+use sha2::{Digest, Sha256};
 
-/// The upstream release, pinned to its file in the authors' repository.
-const DATA: &str = "https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json";
+/// The upstream release, pinned to a commit of the authors' repository.
+const DATA: &str = "https://raw.githubusercontent.com/snap-research/locomo/3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376/data/locomo10.json";
+
+/// SHA-256 of `locomo10.json` at that commit; a cached copy must match it too.
+const DATA_SHA256: &str = "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4";
 
 /// What the product's `pamin search` asks for by default.
 const DEPTHS: Depths = Depths {
@@ -188,12 +195,42 @@ fn load() -> Vec<Conversation> {
         .collect()
 }
 
-/// Fetches the file if it is not already cached, through `curl` for the reason
-/// the other harnesses give, under a partial name renamed on success.
-fn download(path: &Path) {
-    if path.exists() {
-        return;
+/// What a conversation's projects hold: every topic, record and session, in
+/// order, which also fixes the links `link` derives from them.
+fn corpus_digest(conversation: &Conversation) -> String {
+    let mut hash = Sha256::new();
+    for turn in &conversation.turns {
+        for field in [&turn.topic, &turn.session, &turn.record] {
+            hash.update(field.len().to_le_bytes());
+            hash.update(field.as_bytes());
+        }
     }
+    format!("{:x}", hash.finalize())[..12].to_string()
+}
+
+/// Fetches the file if it is not already cached, through `curl` for the reason
+/// the other harnesses give, under a partial name renamed on success, and
+/// checks it is the pinned release either way.
+fn download(path: &Path) {
+    if !path.exists() {
+        fetch(path);
+    }
+    let actual = format!(
+        "{:x}",
+        Sha256::digest(
+            std::fs::read(path)
+                .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()))
+        )
+    );
+    assert_eq!(
+        actual,
+        DATA_SHA256,
+        "{} is not the pinned LOCOMO release; remove it to fetch {DATA}",
+        path.display()
+    );
+}
+
+fn fetch(path: &Path) {
     let partial = path.with_extension("part");
     let status = Command::new("curl")
         .args(["-sSLf", "--max-time", "300", "-o"])
@@ -275,11 +312,15 @@ async fn locomo_evidence_with_and_without_links() {
     let mut questions = 0usize;
     let mut linked_edges = 0usize;
     for conversation in &conversations {
+        let digest = corpus_digest(conversation);
         let mut engines = Vec::new();
         for side in ["flat", "linked"] {
             let engine = Engine::open(
                 &workspace,
-                &format!("locomo-{named}-{}-{side}", conversation.id.to_lowercase()),
+                &format!(
+                    "locomo-{named}-{}-{side}-{digest}",
+                    conversation.id.to_lowercase()
+                ),
                 profile,
                 VectorIndex::default(),
                 Access::ReadWrite,
