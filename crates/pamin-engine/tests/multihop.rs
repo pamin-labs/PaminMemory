@@ -609,7 +609,7 @@ async fn search_answers_questions_that_take_several_steps() {
     )
     .await
     .expect("open the engine");
-    shape.ran_on(harness::shape::engines(&[&engine]));
+    shape.ran_on(harness::shape::engines(&[("primary", &engine)]));
     if std::env::var("CHANNELS").is_ok() {
         assert_eq!(engine.passage(), pamin_index::Passage::Named);
     }
@@ -643,7 +643,10 @@ async fn search_answers_questions_that_take_several_steps() {
         )
         .await
         .expect("open the named project");
-        shape.ran_on(harness::shape::engines(&[&engine, &other]));
+        shape.ran_on(harness::shape::engines(&[
+            ("primary", &engine),
+            ("named", &other),
+        ]));
         write_corpus(&other, &corpus).await;
         assert_eq!(
             engine.passage(),
@@ -749,7 +752,10 @@ async fn search_answers_questions_that_take_several_steps() {
         )
         .await
         .expect("open the entity project; run ENTITIES first");
-        shape.ran_on(harness::shape::engines(&[&engine, &entities]));
+        shape.ran_on(harness::shape::engines(&[
+            ("primary", &engine),
+            ("entities", &entities),
+        ]));
         reach(&entities, &corpus, "with shared names").await;
         return;
     }
@@ -1023,7 +1029,10 @@ async fn entities(
     )
     .await
     .expect("open the entity project");
-    shape.ran_on(harness::shape::engines(&[base, &engine]));
+    shape.ran_on(harness::shape::engines(&[
+        ("primary", base),
+        ("entities", &engine),
+    ]));
     write_corpus(&engine, corpus).await;
 
     let names: Vec<HashSet<String>> = corpus
