@@ -3419,6 +3419,7 @@ async fn rerank_rules(
             None,
             |into, ranking| score(into, query, ranking),
         );
+        priced.planned_like(engine);
     }
     priced.report(&format!(
         "rules for the {} reranker's scores, XQuAD-R, {named}",
