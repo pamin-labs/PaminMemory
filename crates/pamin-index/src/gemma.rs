@@ -24,7 +24,9 @@
 //! every activation per token, so its card reports a text's vector bitwise
 //! identical alone and in a batch; the first revision shared one scale across
 //! a batch. The profile still runs one text per pass, as `crate::embedding`
-//! does for BGE-M3: batching it has not been measured here.
+//! does for BGE-M3: batching it has not been measured here. On the CPU every
+//! pass has one intra-op thread, and stored texts run several passes at once
+//! -- see [`QUERY_THREADS`] and `Encoder::run_each`.
 
 use std::sync::OnceLock;
 
@@ -91,6 +93,11 @@ pub(crate) fn repository(cache_dir: &std::path::Path) -> Result<Repository> {
 /// (`embeddinggemma-2-int8@13db5bcca6ab6934:d768`) is refused. Two revisions
 /// of this export can differ in the graph alone, as those two do, and each
 /// produces its own space.
+///
+/// The suffix is an encoding revision, as E5's `+p1` is: `+t1` for passes of
+/// one intra-op thread (see [`QUERY_THREADS`]). The same text through four
+/// threads came out different on 144 of 500 short texts (cosine down to
+/// 0.9972), so vectors stored before then are another encoding.
 pub(crate) fn identity() -> &'static str {
     static IDENTITY: OnceLock<String> = OnceLock::new();
     IDENTITY.get_or_init(|| {
@@ -99,15 +106,33 @@ pub(crate) fn identity() -> &'static str {
             .map(|file| file.sha256)
             .collect();
         let digest = format!("{:x}", Sha256::digest(combined.as_bytes()));
-        format!("embeddinggemma-2-int8@{}:d{WIDTH}", &digest[..16])
+        format!("embeddinggemma-2-int8@{}:d{WIDTH}+t1", &digest[..16])
     })
 }
 
+/// Intra-op threads for a query's forward pass on the CPU: one.
+///
+/// Measured through `Embedder` on four cores (ONNX Runtime 1.28, Xeon with
+/// AMX), 100 queries: a median of 49.7 ms at one thread and 65.5 ms at four,
+/// p95 64.4 and 81.4. This graph has 2,768 nodes, and handing each to four
+/// threads costs more than its small matrices gain from them. One is also the
+/// thread count of the passes [`Encoder::run_each`] runs stored text on, so a
+/// query and a stored text come from the same arithmetic.
+const QUERY_THREADS: usize = 1;
+
 /// The model on `target`, with its tokenizer, truncating at `max_length`,
 /// downloading the pinned files first if they are not cached.
+///
+/// On the CPU, from a mapped copy (see `crate::prepared`) loaded
+/// [`side_by_side`](Encoder::side_by_side), so that stored texts run several
+/// passes at once over one copy of the weights. The download is kept: the
+/// copy is keyed by the graph alone, and its 273 MB of weights are a second
+/// file that release would not remove, while the next load asks for every
+/// pinned file again.
 pub(crate) fn load(
     cache_dir: &std::path::Path,
     max_length: usize,
+    device: crate::inference::Device,
     target: impl Into<crate::inference::Target>,
 ) -> Result<Encoder> {
     let repository = repository(cache_dir)?;
@@ -121,6 +146,11 @@ pub(crate) fn load(
         .parent()
         .ok_or_else(|| IndexError::Engine("a model file with no directory".into()))?;
     let tokenizer = crate::tokenizer::load_dir(directory, max_length)?;
+    if device == crate::inference::Device::Cpu {
+        let copy = crate::prepared::load_path(&repository.file(cache_dir, MODEL.name), cache_dir)?;
+        return Encoder::side_by_side(copy, QUERY_THREADS, tokenizer)
+            .map_err(|error| error.context("loading embedding model"));
+    }
     Encoder::load_with(|| Ok(model), tokenizer, target)
         .map_err(|error| error.context("loading embedding model"))
 }
@@ -266,7 +296,7 @@ mod tests {
             )
         );
         assert_eq!(&first[..16], "13db5bcca6ab6934");
-        assert_eq!(identity(), "embeddinggemma-2-int8@8a326248ba277cb7:d768");
+        assert_eq!(identity(), "embeddinggemma-2-int8@8a326248ba277cb7:d768+t1");
     }
 
     #[test]
