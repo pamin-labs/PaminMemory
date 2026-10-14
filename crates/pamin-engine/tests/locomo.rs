@@ -111,6 +111,32 @@ fn topic_of(dia_id: &str) -> String {
         .collect()
 }
 
+/// The dialogue ids an upstream evidence string names, canonicalised.
+///
+/// Upstream sometimes packs several ids into one string (`D8:6; D9:17`,
+/// `D9:1 D4:4 D4:6`) or zero-pads a turn (`D30:05`). Those are split and
+/// written as `D{session}:{turn}`; a piece that is not `D<n>:<n>`, such as
+/// `D:11:26`, is returned as is and fails the existence check.
+fn evidence_ids(evidence: &str) -> Vec<String> {
+    evidence
+        .split(|c: char| c == ';' || c == ',' || c.is_whitespace())
+        .filter(|piece| !piece.is_empty())
+        .map(|piece| {
+            piece
+                .strip_prefix('D')
+                .and_then(|rest| rest.split_once(':'))
+                .and_then(|(session, turn)| {
+                    Some(format!(
+                        "D{}:{}",
+                        session.parse::<u32>().ok()?,
+                        turn.parse::<u32>().ok()?
+                    ))
+                })
+                .unwrap_or_else(|| piece.to_string())
+        })
+        .collect()
+}
+
 fn load() -> Vec<Conversation> {
     let dir = harness::dataset_dir("LOCOMO_DIR", "locomo");
     std::fs::create_dir_all(&dir)
@@ -176,14 +202,15 @@ fn load() -> Vec<Conversation> {
                     if category == ADVERSARIAL {
                         return None;
                     }
-                    // Evidence ids are sometimes written with a typo upstream
-                    // (`D:11:26`, `D30:05`); a question none of whose evidence
-                    // names a turn that exists cannot be graded and is left out.
+                    // A question none of whose evidence names a turn that
+                    // exists, even after `evidence_ids` recovers what it can,
+                    // cannot be graded and is left out.
                     let evidence: HashSet<String> = qa["evidence"]
                         .as_array()?
                         .iter()
                         .filter_map(|id| id.as_str())
-                        .map(topic_of)
+                        .flat_map(evidence_ids)
+                        .map(|id| topic_of(&id))
                         .filter(|topic| known.contains(topic.as_str()))
                         .collect();
                     if evidence.is_empty() {
