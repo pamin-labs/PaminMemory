@@ -11,8 +11,12 @@
 //! lanes, which the compiler vectorizes for whatever SIMD the target has.
 //!
 //! The SIMD kernels sum in a different order from a sequential loop, so a
-//! result can differ from one in the last bits. Splitting the sum across
-//! lanes makes it closer to the exact value, not further.
+//! result can differ from one in the last bits, in either direction. On the
+//! rescore benchmark's sample of 100 candidates × 1024 dimensions, the largest
+//! cosine error against an f64 sum was 1.54e-8 for the AVX-512 kernel against
+//! 7.75e-8 for the sequential loop, and 1.43e-8 for NEON against 1.18e-8 for
+//! Accelerate on an M4 (`benchmarks/results/inference/rescore-simd-2026-10-12`).
+//! The unit test holds every kernel within 1e-5 × √n of an f64 sum.
 
 /// The dot product of the dimensions `left` and `right` share.
 pub(crate) fn dot(left: &[f32], right: &[f32]) -> f32 {
