@@ -29,6 +29,14 @@ for name,expected in baseline.items():
 compiled={str(f.relative_to(source)) for crate in [source/'crates'/name for name in ['pamin-core','pamin-store','pamin-index','pamin-engine']] for f in crate.rglob('*') if f.is_file() and (f.suffix=='.rs' or f.name=='Cargo.toml') and 'tests' not in f.relative_to(crate).parts}
 unrecorded=sorted(compiled-set(baseline))
 assert not unrecorded,'unrecorded build input in source: '+', '.join(unrecorded)
+# migrate.rs embeds every migration with include_str!, so the SQL files are
+# build inputs too: require exactly the archived migration set, byte for byte.
+audit=json.loads((artifact.parent/'retrospective-sql-audit.json').read_text())['migration_sources']
+embedded={str(f.relative_to(source)) for crate in [source/'crates'/name for name in ['pamin-core','pamin-store','pamin-index','pamin-engine']] for f in crate.rglob('*.sql') if 'tests' not in f.relative_to(crate).parts}
+assert embedded==set(audit),'embedded migration SQL set differs from archived copies: '+', '.join(sorted(embedded^set(audit)))
+for name,entry in audit.items():
+ archived=(artifact.parent/entry['published_file']).read_bytes();assert hashlib.sha256(archived).hexdigest()==entry['sha256'],'archived migration copy differs: '+name
+ path=source/name;assert path.is_file() and not path.is_symlink() and path.read_bytes()==archived,'embedded migration SQL differs from archived copy: '+name
 switch='const USE_SCORED_GRAPH_RECALL: bool = false;'
 engine=(source/'crates/pamin-engine/src/engine.rs').read_text();assert engine.count(switch)==1
 assert 'seed_relevance(&named, lists, options.k)' in engine and 'k: fusion.k()' in engine
