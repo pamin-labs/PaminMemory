@@ -1000,12 +1000,7 @@ pub(crate) fn measured<T: RuntimeModel>(
         .collect();
     let cuda = plans.iter().any(|(device, _)| *device == Device::Cuda);
     let cuda_inventory = cuda.then(cuda_identity).flatten();
-    let cuda_settings = [
-        "CUDA_VISIBLE_DEVICES",
-        "CUDA_DEVICE_ORDER",
-        "NVIDIA_VISIBLE_DEVICES",
-    ]
-    .map(|name| (name, std::env::var_os(name)));
+    let cuda_settings = CUDA_SELECTION.map(|name| (name, std::env::var_os(name)));
     let key = format!(
         "persistent-plan-v6|executable:{executable:?}|build:{}|{identity}|{signature:?}|{settings:?}|threads:{:?}|cores:{:?}|runtime:{}|host:{}|features:{:?}|libraries:{libraries:?}|cuda:{cuda_inventory:?}|cuda-settings:{cuda_settings:?}",
         env!("PAMIN_INFERENCE_BUILD"),
@@ -1364,6 +1359,23 @@ fn persistence_supported(plans: &[(Device, Target)], cuda_identified: bool) -> b
         Device::Cuda => cuda_identified,
         Device::DirectMl | Device::Npu => false,
     })
+}
+
+/// The variables that choose which CUDA devices a session sees, and in
+/// what order: part of every persistent plan's identity, and of any record
+/// that has to say which GPU a CUDA run used.
+pub const CUDA_SELECTION: [&str; 3] = [
+    "CUDA_VISIBLE_DEVICES",
+    "CUDA_DEVICE_ORDER",
+    "NVIDIA_VISIBLE_DEVICES",
+];
+
+/// The machine's NVIDIA GPUs -- index, UUID, PCI bus, name and driver, as
+/// `nvidia-smi` lists them -- the inventory a CUDA plan's identity holds;
+/// `None` where it cannot be read. With [`CUDA_SELECTION`], it says which
+/// physical GPU a CUDA session ran on.
+pub fn cuda_devices() -> Option<String> {
+    cuda_identity()
 }
 
 fn cuda_identity() -> Option<String> {
