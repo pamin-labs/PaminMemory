@@ -254,8 +254,104 @@ const NOT_IDENTITY: [(&str, &str); 6] = [
     ("HOSTNAME", "who holds a cascade claim in a shared store"),
 ];
 
+/// Variables outside `PAMIN_` the evaluation tests read that choose what a
+/// run measures: an arm's knobs, a sample's size, a replay's input. Every one
+/// that is set names the record, whichever harness reads it, so no harness
+/// keeps a list of its own that can miss one.
+/// `every_evaluation_read_is_classified` holds the tests to this.
+const EVAL_SETTINGS: [&str; 28] = [
+    "AT_LIMIT",
+    "CALIBRATE",
+    "CHANNELS",
+    "COLD",
+    "COLD_ROUNDS",
+    "CONTEXT",
+    "DEPTH_VARIANTS",
+    "EFFORTS",
+    "ENTITIES",
+    "FEATURES_OUT",
+    "GATE",
+    "GRAPHS",
+    "LABELS",
+    "LOCOMO_CONVERSATIONS",
+    "MEMORY",
+    "MIRACL_MAX_DOCS",
+    "MUSIQUE_QUESTIONS",
+    "MUSIQUE_SAMPLE",
+    "PAIRS",
+    "PASSAGES",
+    "REACH",
+    "RERANK_RULES",
+    "RESHAPE",
+    "ROUTES",
+    "SWEEP",
+    "SWEEP_AGAINST",
+    "TIERS",
+    "XQUAD_ALL_QUERIES",
+];
+
+/// Variables the evaluation tests read that change nothing a record is
+/// named by, with why.
+const EVAL_NOT_IDENTITY: [(&str, &str); 6] = [
+    ("CHANNELS_OUT", "where a table is written"),
+    (
+        "ESCI_DIR",
+        "where a dataset is; what it holds is the corpus digest",
+    ),
+    (
+        "LAREQA_DIR",
+        "where a dataset is; what it holds is the corpus digest",
+    ),
+    (
+        "LOCOMO_DIR",
+        "where a dataset is; what it holds is the corpus digest",
+    ),
+    (
+        "MIRACL_DIR",
+        "where a dataset is; what it holds is the corpus digest",
+    ),
+    (
+        "MUSIQUE_DIR",
+        "where a dataset is; what it holds is the corpus digest",
+    ),
+];
+
+/// Environment reads in the evaluation tests whose name is not a literal at
+/// the read, with where the names come from.
+const EVAL_INDIRECT: [(&str, &str); 7] = [
+    (
+        "pamin-engine/tests/harness/mod.rs: std::env::var(var)",
+        "dataset_dir's variable, a literal at every dataset_dir call",
+    ),
+    (
+        "pamin-index/tests/prepared.rs: std::env::var(ARM)",
+        "PAMIN_PREPARED_ARM, a measuring child's arm",
+    ),
+    (
+        "pamin-index/tests/prepared.rs: std::env::var(CACHE)",
+        "PAMIN_PREPARED_CACHE, a measuring child's cache",
+    ),
+    (
+        "pamin-index/tests/shared_vocabulary.rs: std::env::var(ARM)",
+        "PAMIN_SHARED_ARM, a measuring child's arm",
+    ),
+    (
+        "pamin-index/tests/shared_vocabulary.rs: std::env::var(CACHE)",
+        "PAMIN_SHARED_CACHE, a measuring child's cache",
+    ),
+    (
+        "pamin-index/tests/shared_vocabulary.rs: std::env::var(name)",
+        "PAMIN_SHARED_*_COPY, the prepared copies a child loads",
+    ),
+    (
+        "pamin-index/tests/shared_vocabulary.rs: std::env::var_os(tuned)",
+        "PAMIN_RERANK_* batch limits, asserted unset",
+    ),
+];
+
 fn identity_variable(name: &str) -> bool {
     ALWAYS_SETTINGS.contains(&name)
+        || EVAL_SETTINGS.contains(&name)
         || pamin_index::CUDA_SELECTION.contains(&name)
         || ALWAYS_PREFIXES
             .iter()
@@ -263,20 +359,21 @@ fn identity_variable(name: &str) -> bool {
 }
 
 /// What makes this run an arm other than the shipped one, as sorted
-/// `NAME=value` lines: each of the harness's own `vars` that is set, each
-/// one [`ALWAYS_SETTINGS`] covers, and every set `PAMIN_` variable but
+/// `NAME=value` lines: each set variable [`ALWAYS_SETTINGS`] or
+/// [`EVAL_SETTINGS`] covers, and every set `PAMIN_` variable but
 /// [`NOT_SETTINGS`].
 ///
 /// The `PAMIN_` variables are found rather than listed. A list was kept per
 /// harness, and the product's runtime knobs -- `PAMIN_RERANK_DEPTH`,
 /// `PAMIN_SEARCH_EFFORT` -- were never on it, so a run with one set was
-/// recorded as the shipped run, over the shipped run's record.
-fn settings(vars: &[&str], set: impl IntoIterator<Item = (String, String)>) -> Vec<String> {
+/// recorded as the shipped run, over the shipped run's record. The
+/// harnesses' own knobs were listed per harness as well, and MuSiQue's list
+/// left out `RERANK_RULES`, so they are one shared list now.
+fn settings(set: impl IntoIterator<Item = (String, String)>) -> Vec<String> {
     let mut settings: Vec<String> = set
         .into_iter()
         .filter(|(name, _)| {
-            vars.contains(&name.as_str())
-                || identity_variable(name)
+            identity_variable(name)
                 || (name.starts_with("PAMIN_") && !NOT_SETTINGS.contains(&name.as_str()))
         })
         .map(|(name, value)| format!("{name}={value}"))
@@ -958,13 +1055,13 @@ impl Shape {
     /// still said what it was running.
     ///
     /// The record is named by `test`, `profile` and arm as well as the
-    /// digest, the arm being the harness's `vars` and the `PAMIN_` settings
-    /// that are set (see [`settings`]). It was named by the digest alone, and
+    /// digest, the arm being every setting that is set (see [`settings`]).
+    /// It was named by the digest alone, and
     /// every arm over one corpus wrote the same file, so the last run's
     /// coverage replaced the others'. It is named by the evaluated commit
     /// too, so a run of another revision keeps its own record rather than
     /// replacing this one's.
-    pub fn publish(&mut self, test: &str, profile: &str, vars: &[&str]) {
+    pub fn publish(&mut self, test: &str, profile: &str) {
         let digest = self.digest();
         let set = std::env::vars_os().map(|(name, value)| {
             (
@@ -972,7 +1069,7 @@ impl Shape {
                 value.to_string_lossy().into_owned(),
             )
         });
-        self.settings = settings(vars, set);
+        self.settings = settings(set);
         let arm = arm(&self.settings);
         self.run = [test.to_string(), profile.to_string(), arm.clone()];
         let name = self.name.clone();
@@ -2006,6 +2103,109 @@ mod tests {
         );
     }
 
+    /// Every environment variable the evaluation tests read outside `PAMIN_`
+    /// -- each `var("...")`, `var_os("...")` and `dataset_dir("...")` under a
+    /// crate's `tests/` -- names the record or is excluded with a reason, and
+    /// a read whose name is not a literal is listed with where its names
+    /// come from: reading a new one without deciding fails here.
+    #[test]
+    fn every_evaluation_read_is_classified() {
+        let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crates directory");
+        let mut found = BTreeSet::new();
+        let mut indirect = BTreeSet::new();
+        for entry in std::fs::read_dir(crates).expect("read the crates") {
+            let tests = entry.expect("a crate").path().join("tests");
+            if tests.is_dir() {
+                evaluation_reads(crates, &tests, &mut found, &mut indirect);
+            }
+        }
+        assert!(
+            found.contains("RERANK_RULES") && found.contains("MUSIQUE_DIR"),
+            "this test is not reading the tests: {found:?}"
+        );
+        let excluded = |name: &str| {
+            NOT_IDENTITY
+                .iter()
+                .chain(&EVAL_NOT_IDENTITY)
+                .any(|(excluded, _)| *excluded == name)
+        };
+        let unclassified: Vec<&String> = found
+            .iter()
+            .filter(|name| !name.starts_with("PAMIN_"))
+            .filter(|name| !identity_variable(name) && !excluded(name))
+            .collect();
+        assert!(
+            unclassified.is_empty(),
+            "read by an evaluation test, and neither naming the record (EVAL_SETTINGS) nor \
+             in EVAL_NOT_IDENTITY: {unclassified:?}"
+        );
+        let listed: BTreeSet<String> = EVAL_INDIRECT
+            .iter()
+            .map(|(read, _)| read.to_string())
+            .collect();
+        assert_eq!(
+            indirect, listed,
+            "a read with a computed name is not in EVAL_INDIRECT, or is gone"
+        );
+        let gone: Vec<&str> = EVAL_SETTINGS
+            .iter()
+            .copied()
+            .chain(EVAL_NOT_IDENTITY.iter().map(|(name, _)| *name))
+            .filter(|name| !found.contains(*name))
+            .collect();
+        assert!(gone.is_empty(), "listed but no test reads them: {gone:?}");
+    }
+
+    /// The names of the environment reads in every `.rs` file under `dir`,
+    /// and, as `path: expression`, the reads whose name is not a literal --
+    /// leaving out the ones in this file, whose names are its own lists'.
+    fn evaluation_reads(
+        root: &Path,
+        dir: &Path,
+        found: &mut BTreeSet<String>,
+        indirect: &mut BTreeSet<String>,
+    ) {
+        for entry in std::fs::read_dir(dir).expect("read a test directory") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                evaluation_reads(root, &path, found, indirect);
+                continue;
+            }
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let relative = path.strip_prefix(root).expect("under the crates");
+            if relative.ends_with("harness/shape.rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("read a test file");
+            for call in ["env::var(", "env::var_os(", "dataset_dir("] {
+                for (at, _) in source.match_indices(call) {
+                    let argument = source[at + call.len()..].trim_start();
+                    let name = argument
+                        .strip_prefix('"')
+                        .and_then(|rest| rest.split_once('"'))
+                        .map(|(name, _)| name);
+                    match name {
+                        Some(name) => {
+                            found.insert(name.to_string());
+                        }
+                        None if call != "dataset_dir(" => {
+                            let expression = argument.split(')').next().unwrap_or_default();
+                            indirect.insert(format!(
+                                "{}: std::{call}{expression})",
+                                relative.display()
+                            ));
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+    }
+
     /// The upper-case, non-`PAMIN_` string literals of every source file
     /// under `dir` that reads the environment, up to its test module.
     fn environment_reads(dir: &Path, into: &mut BTreeSet<String>) {
@@ -2079,7 +2279,7 @@ mod tests {
             let set = set
                 .iter()
                 .map(|(name, value)| (name.to_string(), value.to_string()));
-            arm(&settings(&["SWEEP"], set))
+            arm(&settings(set))
         };
         let shipped = named(&[
             ("PAMIN_EVAL_HOME", "/data"),
@@ -2099,7 +2299,7 @@ mod tests {
             named(&[("PAMIN_RERANK_DEPTH", "20"), ("PAMIN_SEARCH_EFFORT", "low")])
         );
         assert_eq!(
-            settings(&[], [("PAMIN_DEVICE".to_string(), "cpu".to_string())]),
+            settings([("PAMIN_DEVICE".to_string(), "cpu".to_string())]),
             ["PAMIN_DEVICE=cpu"]
         );
         // Named by every harness, though no harness lists it.
