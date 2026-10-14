@@ -209,9 +209,15 @@ const NOT_SETTINGS: [&str; 12] = [
     "PAMIN_TEST_MODEL_CACHE",
 ];
 
+/// Variables every harness's record is named by, whichever harness it is:
+/// `SIGNIFICANCE_GATE`, which `statistics::gate` reads, decides whether a
+/// run's significance gate was applied at all.
+const ALWAYS_SETTINGS: [&str; 1] = ["SIGNIFICANCE_GATE"];
+
 /// What makes this run an arm other than the shipped one, as sorted
-/// `NAME=value` lines: each of the harness's own `vars` that is set, and
-/// every set `PAMIN_` variable but [`NOT_SETTINGS`].
+/// `NAME=value` lines: each of the harness's own `vars` that is set, each of
+/// [`ALWAYS_SETTINGS`], and every set `PAMIN_` variable but
+/// [`NOT_SETTINGS`].
 ///
 /// The `PAMIN_` variables are found rather than listed. A list was kept per
 /// harness, and the product's runtime knobs -- `PAMIN_RERANK_DEPTH`,
@@ -222,6 +228,7 @@ fn settings(vars: &[&str], set: impl IntoIterator<Item = (String, String)>) -> V
         .into_iter()
         .filter(|(name, _)| {
             vars.contains(&name.as_str())
+                || ALWAYS_SETTINGS.contains(&name.as_str())
                 || (name.starts_with("PAMIN_") && !NOT_SETTINGS.contains(&name.as_str()))
         })
         .map(|(name, value)| format!("{name}={value}"))
@@ -256,6 +263,23 @@ struct Source {
     /// Why this run cannot vouch for `commit`, if it cannot: its record is
     /// then written beside the canonical one, never over it.
     noncanonical: Option<String>,
+}
+
+/// `source`, not canonical when `settings` turn the significance gate off: a
+/// run that skipped its gate cannot stand for one that passed it, however
+/// clean its checkout.
+fn ungated(mut source: Source, settings: &[String]) -> Source {
+    if settings
+        .iter()
+        .any(|setting| setting == "SIGNIFICANCE_GATE=off")
+    {
+        const OFF: &str = "significance gate off";
+        source.noncanonical = Some(match source.noncanonical {
+            None => OFF.to_string(),
+            Some(reason) => format!("{reason}; {OFF}"),
+        });
+    }
+    source
 }
 
 /// [`provenance`] of this binary and the checkout it runs in, asking `git`
@@ -440,7 +464,9 @@ pub struct Shape {
     excluded: Vec<Excluded>,
     /// What the check found, recorded beside the rest once it has run.
     coverage: Option<serde_json::Value>,
-    /// Where [`publish`](Self::publish) wrote the record; set only on a
+    /// Where [`publish`](Self::publish) will write the record, without its
+    /// extension or the execution providers, which are known only once the
+    /// models have loaded (see [`ran_on`](Self::ran_on)); set only on a
     /// published shape, which is also the one whose coverage is checked.
     record: Option<PathBuf>,
     /// This run's [`in_progress`] file, set beside `record`.
@@ -452,7 +478,38 @@ pub struct Shape {
     source: Source,
     /// What set the arm apart, from [`settings`].
     settings: Vec<String>,
+    /// Asks the run which execution provider each of its models resolved
+    /// to, as `role=provider` lines; see [`ran_on`](Self::ran_on).
+    probe: Option<Probe>,
+    /// Models the harness loaded itself, beside the engine's, from
+    /// [`also_ran`](Self::also_ran).
+    loaded: Vec<(String, String)>,
+    /// What `probe` answered, with `loaded`, once the coverage is checked.
+    providers: Vec<String>,
 }
+
+/// A probe for [`Shape::ran_on`] over every engine a run searched: each
+/// one's [`Engine::providers`](pamin_engine::Engine::providers), sorted, a
+/// role listed once per provider it ran on.
+pub fn engines(
+    engines: &[&pamin_engine::Engine],
+) -> impl Fn() -> Vec<(String, String)> + Send + 'static {
+    let engines: Vec<pamin_engine::Engine> =
+        engines.iter().map(|engine| (*engine).clone()).collect();
+    move || {
+        let mut providers: Vec<(String, String)> = engines
+            .iter()
+            .flat_map(|engine| engine.providers())
+            .map(|(role, device)| (role, device.name().to_string()))
+            .collect();
+        providers.sort();
+        providers.dedup();
+        providers
+    }
+}
+
+/// How a shape asks its run which execution providers it ran on.
+type Probe = Box<dyn Fn() -> Vec<(String, String)> + Send>;
 
 /// One record's digest: its fields, separated so that no two field lists
 /// share a byte string.
@@ -502,7 +559,30 @@ impl Shape {
                 noncanonical: None,
             },
             settings: Vec::new(),
+            probe: None,
+            loaded: Vec::new(),
+            providers: Vec::new(),
         }
+    }
+
+    /// How to ask, once the run is over, which execution provider each of
+    /// its models ran on, as `(role, provider)` pairs. The answer names the
+    /// record and is kept in it: two runs that differ only in what
+    /// `PAMIN_DEVICE=auto` found on the machine are two arms, not one record
+    /// written over the other. Asked at the end rather than now, because the
+    /// models load lazily -- a published shape comes before the first search
+    /// -- and an arm loads only the tiers it uses. A run that never says
+    /// fails its coverage.
+    pub fn ran_on(&mut self, probe: impl Fn() -> Vec<(String, String)> + Send + 'static) {
+        self.probe = Some(Box::new(probe));
+    }
+
+    /// A model the harness loaded itself rather than through an engine --
+    /// a second reranker an arm prices against the shipped one -- as `role`
+    /// on `device`, recorded with what [`ran_on`](Self::ran_on)'s probe says.
+    pub fn also_ran(&mut self, role: &str, device: pamin_index::Device) {
+        self.loaded
+            .push((role.to_string(), device.name().to_string()));
     }
 
     /// One document, by every field that reaches the index.
@@ -608,7 +688,7 @@ impl Shape {
         self.run = [test.to_string(), profile.to_string(), arm.clone()];
         let name = self.name.clone();
         let name = &name;
-        self.source = source();
+        self.source = ungated(source(), &self.settings);
         let sequence = self.sequence();
 
         // The in-progress record is on disk before anything is reported, so a
@@ -627,14 +707,8 @@ impl Shape {
         ]
         .map(file_part)
         .join("-");
-        let canonical = dir.join(format!("{file}.json"));
-        // Beside the canonical record and never over it, nor over another
-        // such run's.
-        let record = match self.source.noncanonical {
-            None => canonical,
-            Some(_) => unique(&canonical, "noncanonical.json"),
-        };
-        self.progress = in_progress(&record);
+        self.progress = in_progress(&dir.join(format!("{file}.json")));
+        let record = dir.join(file);
         self.write(&self.progress);
 
         report(&format!(
@@ -676,7 +750,7 @@ impl Shape {
             ));
         }
         report(&format!(
-            "  shape {name}: recording in {}, and in {} once its coverage holds",
+            "  shape {name}: recording in {}, and in {}-on-<providers>.json once its coverage holds",
             self.progress.display(),
             record.display()
         ));
@@ -824,14 +898,29 @@ impl Shape {
     /// itself is written only when there are none: a run that fails leaves
     /// its in-progress file and the last completed record as it was.
     fn finish(&mut self, tally: &Tally) -> Vec<String> {
-        let (lines, failures, recorded) = self.coverage(tally);
+        let (lines, mut failures, recorded) = self.coverage(tally);
         self.coverage = Some(recorded);
         let Some(record) = self.record.clone() else {
             report(&format!("  coverage {}: {}", self.name, lines.join("; ")));
             return failures;
         };
+        match &self.probe {
+            Some(probe) => {
+                let mut providers = probe();
+                providers.extend(self.loaded.iter().cloned());
+                providers.sort();
+                providers.dedup();
+                self.providers = providers
+                    .into_iter()
+                    .map(|(role, provider)| format!("{role}={provider}"))
+                    .collect();
+            }
+            None => failures.push(
+                "the run never said which execution providers it ran on (Shape::ran_on)".into(),
+            ),
+        }
         let path = if failures.is_empty() {
-            record
+            self.named(&record)
         } else {
             self.progress.clone()
         };
@@ -840,8 +929,38 @@ impl Shape {
         }
         if failures.is_empty() {
             let _ = std::fs::remove_file(&self.progress);
+            report(&format!(
+                "  shape {}: ran on {}; recorded in {}",
+                self.name,
+                self.providers.join(", "),
+                path.display()
+            ));
         }
         failures
+    }
+
+    /// The record's file: `record`, the providers it ran on, and for a run
+    /// that cannot vouch for its commit, a name of its own beside the
+    /// canonical record and never over it, nor over another such run's.
+    fn named(&self, record: &Path) -> PathBuf {
+        let on: Vec<&str> = self
+            .providers
+            .iter()
+            .map(|line| {
+                line.split_once('=')
+                    .map_or(line.as_str(), |(_, provider)| provider)
+            })
+            .collect();
+        let on = if on.is_empty() {
+            "none".to_string()
+        } else {
+            file_part(&on.join("+"))
+        };
+        let canonical = PathBuf::from(format!("{}-on-{on}.json", record.display()));
+        match self.source.noncanonical {
+            None => canonical,
+            Some(_) => unique(&canonical, "noncanonical.json"),
+        }
     }
 
     /// Writes the record to `path`, and only then reports `lines` and any
@@ -885,6 +1004,7 @@ impl Shape {
             "canonical": self.source.noncanonical.is_none(),
             "noncanonical_reason": self.source.noncanonical,
             "settings": self.settings,
+            "providers": self.providers,
             "corpus_sha256": self.digest(),
             "sequence_sha256": self.sequence(),
             "selection": self.selection,
@@ -1291,11 +1411,18 @@ mod tests {
     #[test]
     fn a_failed_rerun_leaves_the_completed_record() {
         let dir = tempfile::tempdir().expect("a temporary directory");
-        let record = dir.path().join("test-run.json");
+        let base = dir.path().join("test-run");
+        let record = dir.path().join("test-run-on-cpu+coreml.json");
         let run = |scored: Scored<'_>| {
             let mut shape = asked();
-            shape.record = Some(record.clone());
+            shape.record = Some(base.clone());
             shape.progress = in_progress(&record);
+            shape.ran_on(|| {
+                vec![
+                    ("embedding".into(), "cpu".into()),
+                    ("reranking accurate".into(), "coreml".into()),
+                ]
+            });
             shape.write(&shape.progress);
             let tally = Tally {
                 declared: ["t".to_string()].into(),
@@ -1328,11 +1455,43 @@ mod tests {
         assert!(!own.exists(), "a completed run left its in-progress file");
         assert!(other.exists(), "a completed run removed another run's");
         let completed = std::fs::read(&record).expect("the completed record");
+        let kept: serde_json::Value = serde_json::from_slice(&completed).expect("JSON");
+        assert_eq!(
+            kept["providers"],
+            serde_json::json!(["embedding=cpu", "reranking accurate=coreml"])
+        );
 
         let (failures, again) = run(&[("t", "g", "q1", 1)]);
         assert!(!failures.is_empty());
         assert_eq!(std::fs::read(&record).expect("the record"), completed);
         assert!(again.exists(), "the failed run left nothing");
+    }
+
+    /// A published run that never says what it ran on fails, and leaves its
+    /// in-progress file rather than a record named by no provider.
+    #[test]
+    fn a_run_that_never_names_its_providers_fails() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let mut shape = asked();
+        shape.record = Some(dir.path().join("test-run"));
+        shape.progress = in_progress(&dir.path().join("test-run.json"));
+        let tally = Tally {
+            declared: ["t".to_string()].into(),
+            current: String::new(),
+            counts: [("q1", 1), ("q2", 1)]
+                .map(|(id, count)| (("t".to_string(), "g".to_string(), id.to_string()), count))
+                .into(),
+        };
+        let failures = shape.finish(&tally);
+        shape.record = None;
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("execution providers")),
+            "{failures:?}"
+        );
+        assert!(shape.progress.exists());
+        assert_eq!(std::fs::read_dir(dir.path()).expect("list").count(), 1);
     }
 
     /// An arm is named by everything set that changes a result, and by
@@ -1365,6 +1524,32 @@ mod tests {
         assert_eq!(
             settings(&[], [("PAMIN_DEVICE".to_string(), "cpu".to_string())]),
             ["PAMIN_DEVICE=cpu"]
+        );
+        // Named by every harness, though no harness lists it.
+        let ungated = named(&[("SIGNIFICANCE_GATE", "off")]);
+        assert!(!distinct.contains(&ungated), "{ungated}");
+    }
+
+    /// A run with its significance gate off is never the canonical record.
+    #[test]
+    fn a_run_without_its_gate_is_not_canonical() {
+        let clean = || Source {
+            commit: "a".repeat(40),
+            noncanonical: None,
+        };
+        let off = ["SIGNIFICANCE_GATE=off".to_string()];
+        assert_eq!(
+            ungated(clean(), &off).noncanonical.as_deref(),
+            Some("significance gate off")
+        );
+        assert_eq!(ungated(clean(), &[]), clean());
+        let dirty = Source {
+            noncanonical: Some("dirty".into()),
+            ..clean()
+        };
+        assert_eq!(
+            ungated(dirty, &off).noncanonical.as_deref(),
+            Some("dirty; significance gate off")
         );
     }
 
