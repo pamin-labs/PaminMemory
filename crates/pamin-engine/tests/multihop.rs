@@ -590,7 +590,6 @@ async fn search_answers_questions_that_take_several_steps() {
         "benchmark checkout has tracked changes"
     );
     let commit = String::from_utf8(head.stdout).expect("UTF-8 commit");
-    println!("  benchmark code commit: {}", commit.trim());
 
     let corpus = Corpus::load();
     let named = std::env::var("PAMIN_PROFILE").unwrap_or_else(|_| DEFAULT_PROFILE.into());
@@ -603,6 +602,7 @@ async fn search_answers_questions_that_take_several_steps() {
         &named,
         &ARMS,
     );
+    println!("  benchmark code commit: {}", commit.trim());
     corpus.describe();
     let home = std::env::var("PAMIN_EVAL_HOME").ok();
     let scratch = home
