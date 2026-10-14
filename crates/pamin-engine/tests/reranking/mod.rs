@@ -212,6 +212,7 @@ impl Default for Routes {
                 .map(|n| (format!("cascade: fast picks {n}"), ())),
         );
         labels.extend(GATES.iter().map(|gate| (gate.to_string(), ())));
+        crate::harness::shape::tables(labels.iter().map(|(label, _)| label));
         let rows = labels.len();
         Self {
             labels,
@@ -321,10 +322,12 @@ impl Routes {
             });
         }
 
-        for ((order, cheap_pairs, dear_pairs), (into, pairs)) in orders
+        for (((order, cheap_pairs, dear_pairs), (into, pairs)), (label, _)) in orders
             .iter()
             .zip(self.measured.iter_mut().zip(self.pairs.iter_mut()))
+            .zip(&self.labels)
         {
+            crate::harness::shape::table(label);
             score(into.entry(group.to_string()).or_default(), order);
             pairs.0 += cheap_pairs;
             pairs.1 += dear_pairs;
@@ -373,6 +376,9 @@ pub struct Priced {
     /// Whether queries come in linked sets, for the cross-validated choice.
     linked: bool,
 }
+
+/// The shape table `SUFFICIENCY_OUT`'s first-result check is scored into.
+const SUFFICIENCY_TABLE: &str = "sufficiency: shipped first result";
 
 /// Another model's scores for one dumped shortlist.
 #[derive(serde::Deserialize)]
@@ -430,6 +436,10 @@ impl Priced {
             writeln!(file, "group\tfirst_relevant\tbest\tgap\tscored").expect("write the header");
             file
         });
+        crate::harness::shape::tables(rules.iter().map(|(label, _)| label));
+        if sufficiency.is_some() {
+            crate::harness::shape::tables([SUFFICIENCY_TABLE]);
+        }
         Self {
             measured: vec![BTreeMap::new(); rules.len()],
             pairs: vec![0; rules.len()],
@@ -485,7 +495,7 @@ impl Priced {
             );
             replayed.rescored(other.scores.clone())
         });
-        for (row, (((_, rule), into), pairs)) in self
+        for (row, (((label, rule), into), pairs)) in self
             .rules
             .iter()
             .zip(&mut self.measured)
@@ -499,6 +509,7 @@ impl Priced {
                     .as_ref()
                     .expect("rescored rows only with RESCORE_IN")
             };
+            crate::harness::shape::table(label);
             score(into, &replayed.order(*rule));
             *pairs += replayed.pairs(*rule) as u64;
         }
@@ -508,6 +519,7 @@ impl Priced {
             // A one-result list scores above zero exactly when that result is
             // relevant, whatever the corpus's own judgements are.
             let mut first = BTreeMap::new();
+            crate::harness::shape::table(SUFFICIENCY_TABLE);
             score(&mut first, &shipped[..shipped.len().min(1)]);
             let first = first.values().any(|scores| scores.ndcg > 0.0);
             let mut model = replayed.model.clone();
