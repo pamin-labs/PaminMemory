@@ -336,8 +336,8 @@ impl Query<'_> {
     /// The relevant sentence keys for one group, and what to drop first.
     ///
     /// Each group removes from the ranking the answers it does not count,
-    /// rather than leaving them in as non-relevant. The two groups are the
-    /// same question under two answer keys, and every answer the key leaves
+    /// rather than leaving them in as non-relevant. The groups are the same
+    /// question under different answer keys, and every answer a key leaves
     /// out is still a correct answer.
     ///
     /// The cross-lingual group answers "can a query reach a memory written in
@@ -1995,9 +1995,10 @@ async fn search_reaches_across_languages() {
     }
 
     // `FEATURES_OUT`: every candidate fusion saw, one row each, for fitting a
-    // fusion offline. See `features`. Each query is written in both groups,
-    // and its question id is the dataset's, so every asking of one question
-    // can be kept in one fold.
+    // fusion offline. See `features`. Each query is written once in each of
+    // `GROUPS` -- three rows per query, 3,570 question-group pairs on a full
+    // run -- and its question id is the dataset's, so every asking of one
+    // question can be kept in one fold.
     if let Some(mut dump) = features::Features::from_env("xquad-r") {
         const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
         harness::shape::tables(["features"]);
