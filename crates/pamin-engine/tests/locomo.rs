@@ -497,10 +497,7 @@ async fn locomo_evidence_with_and_without_links() {
             flat.mean_recall(),
             linked.mean_ndcg(),
             linked.mean_recall(),
-            statistics::compare(
-                &by_conversation[0][category],
-                &by_conversation[1][category]
-            )
+            statistics::compare(&by_conversation[0][category], &by_conversation[1][category])
         );
     }
 }
