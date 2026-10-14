@@ -267,37 +267,61 @@ pub fn folds(groups: &[usize], k: usize) -> Vec<usize> {
     assigned
 }
 
-/// Keep multiple judgements of the same questions in the same held-out fold.
+/// Which fold each query falls in when queries come in clusters: queries that
+/// share a key share a fold.
 ///
-/// Each group's scores must list the same physical questions in the same
-/// order. XQuAD-R scores every asking once as cross-language and once as
-/// same-language; shuffling the views independently lets training see the
-/// held-out question under its other answer key.
-pub fn linked_folds(group_lengths: &[usize], k: usize) -> Vec<usize> {
-    let Some(&questions) = group_lengths.first() else {
-        return Vec::new();
-    };
-    assert!(
-        group_lengths.iter().all(|length| *length == questions),
-        "linked groups must contain the same questions"
-    );
-    let one = folds(&vec![0; questions], k);
-    (0..group_lengths.len())
-        .flat_map(|_| one.iter().copied())
-        .collect()
+/// A cluster is one unit of evidence: questions asked of one LOCOMO
+/// conversation share its corpus, index and graph, and XQuAD-R scores every
+/// asking once under each of two answer keys. Dealing their questions to
+/// different folds lets the selection train on part of a cluster and be
+/// scored on the rest of it.
+///
+/// Clusters are dealt by [`folds`], in the order they first appear. A cluster
+/// whose queries all sit in one group is stratified by that group; one that
+/// spans groups joins a single shared stratum. So a key per query gives
+/// exactly `folds(groups, k)`, and one key per position across groups that
+/// list the same questions gives every group the folds of its questions.
+pub fn cluster_folds(groups: &[usize], keys: &[String], k: usize) -> Vec<usize> {
+    assert_eq!(groups.len(), keys.len(), "one key a query");
+    let mut first: std::collections::BTreeMap<&str, usize> = Default::default();
+    let mut strata: Vec<Option<usize>> = Vec::new();
+    let mut cluster = Vec::with_capacity(keys.len());
+    for (key, group) in keys.iter().zip(groups) {
+        let next = strata.len();
+        let at = *first.entry(key.as_str()).or_insert(next);
+        if at == next {
+            strata.push(Some(*group));
+        } else if strata[at] != Some(*group) {
+            strata[at] = None;
+        }
+        cluster.push(at);
+    }
+    let spanning = groups.iter().max().map_or(0, |max| max + 1);
+    let strata: Vec<usize> = strata
+        .iter()
+        .map(|stratum| stratum.unwrap_or(spanning))
+        .collect();
+    let dealt = folds(&strata, k);
+    cluster.iter().map(|at| dealt[*at]).collect()
 }
 
-/// One score per physical query when the same questions have several answer keys.
-pub fn linked_mean(scores: &[f64], groups: usize) -> Vec<f64> {
-    assert!(groups > 0 && scores.len().is_multiple_of(groups));
-    let questions = scores.len() / groups;
-    (0..questions)
-        .map(|query| {
-            (0..groups)
-                .map(|group| scores[group * questions + query])
-                .sum::<f64>()
-                / groups as f64
-        })
+/// One score per cluster, its queries' mean, in the order clusters first
+/// appear: the unit a paired test over clustered queries counts.
+pub fn cluster_means(scores: &[f64], keys: &[String]) -> Vec<f64> {
+    assert_eq!(scores.len(), keys.len(), "one key a score");
+    let mut first: std::collections::BTreeMap<&str, usize> = Default::default();
+    let mut sums: Vec<(f64, usize)> = Vec::new();
+    for (score, key) in scores.iter().zip(keys) {
+        let next = sums.len();
+        let at = *first.entry(key.as_str()).or_insert(next);
+        if at == next {
+            sums.push((0.0, 0));
+        }
+        sums[at].0 += score;
+        sums[at].1 += 1;
+    }
+    sums.into_iter()
+        .map(|(sum, count)| sum / count as f64)
         .collect()
 }
 
@@ -604,15 +628,54 @@ mod tests {
 
     #[test]
     fn two_answer_keys_for_one_question_never_cross_folds() {
-        let assigned = linked_folds(&[11, 11], 5);
+        // Eleven questions, each listed once in each of two groups.
+        let groups: Vec<usize> = [0; 11].into_iter().chain([1; 11]).collect();
+        let keys: Vec<String> = (0..22).map(|at| (at % 11).to_string()).collect();
+        let assigned = cluster_folds(&groups, &keys, 5);
         assert_eq!(&assigned[..11], &assigned[11..]);
-        assert_eq!(assigned, linked_folds(&[11, 11], 5));
-        for fold in 0..5 {
-            let first = assigned[..11].iter().filter(|at| **at == fold).count();
-            let second = assigned[11..].iter().filter(|at| **at == fold).count();
-            assert_eq!(first, second);
+        assert_eq!(&assigned[..11], folds(&[0; 11], 5).as_slice());
+        let means = cluster_means(
+            &[1.0, 3.0, 5.0, 7.0],
+            &["a", "b", "a", "b"].map(String::from),
+        );
+        assert_eq!(means, vec![3.0, 5.0]);
+    }
+
+    /// A key per query is the plain stratified split, and a paired test over
+    /// one-query clusters is a test over queries.
+    #[test]
+    fn a_query_its_own_cluster_changes_nothing() {
+        let groups: Vec<usize> = (0..60).map(|query| usize::from(query >= 50)).collect();
+        let keys: Vec<String> = (0..60).map(|query| query.to_string()).collect();
+        assert_eq!(cluster_folds(&groups, &keys, 5), folds(&groups, 5));
+        let scores: Vec<f64> = (0..60).map(|query| query as f64 / 7.0).collect();
+        assert_eq!(cluster_means(&scores, &keys), scores);
+    }
+
+    /// The questions of one conversation, spread over several categories,
+    /// stay in one fold and count once.
+    #[test]
+    fn a_conversation_never_crosses_folds() {
+        let groups: Vec<usize> = (0..40).map(|query| query % 4).collect();
+        let keys: Vec<String> = (0..40).map(|query| format!("conv-{}", query / 4)).collect();
+        let assigned = cluster_folds(&groups, &keys, 5);
+        for conversation in 0..10 {
+            let folds: std::collections::BTreeSet<usize> = assigned
+                [conversation * 4..conversation * 4 + 4]
+                .iter()
+                .copied()
+                .collect();
+            assert_eq!(folds.len(), 1, "conversation {conversation} crossed folds");
         }
-        assert_eq!(linked_mean(&[1.0, 3.0, 5.0, 7.0], 2), vec![3.0, 5.0]);
+        for fold in 0..5 {
+            let held = (0..40).filter(|query| assigned[*query] == fold).count();
+            assert_eq!(held, 8, "two conversations a fold");
+        }
+        let scores: Vec<f64> = (0..40).map(|query| (query / 4) as f64).collect();
+        assert_eq!(
+            cluster_means(&scores, &keys),
+            (0..10).map(f64::from).collect::<Vec<_>>()
+        );
     }
 
     /// Choosing the best of many settings on the same queries that grade it
