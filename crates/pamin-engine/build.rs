@@ -2,8 +2,8 @@
 //!
 //! Only the evaluation harnesses read it (`tests/harness/shape.rs`): a shape
 //! record names the evaluated commit, and a test binary built at one commit
-//! and run after a checkout moved would otherwise name the later one. The
-//! harness refuses to run when this and the checkout's `HEAD` differ.
+//! and run after a checkout moved would otherwise name the later one. Only
+//! a run whose clean checkout is at this commit writes the canonical record.
 //!
 //! The script reruns only when `HEAD` or the ref it points at moves, so an
 //! ordinary edit does not rebuild the crate. Outside a git checkout, as from
