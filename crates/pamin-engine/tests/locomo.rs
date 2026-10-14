@@ -378,7 +378,7 @@ async fn locomo_evidence_with_and_without_links() {
     // every rule for using the reranker's scores. See `reranking`.
     let mut rules = std::env::var("RERANK_RULES")
         .is_ok()
-        .then(|| reranking::Priced::new(false));
+        .then(reranking::Priced::new);
     let mut questions = 0usize;
     let mut linked_edges = 0usize;
     for conversation in &conversations {
@@ -424,6 +424,9 @@ async fn locomo_evidence_with_and_without_links() {
                     &question.text,
                     &hits,
                     &replayed,
+                    // The conversation's questions share its corpus, index
+                    // and graph: one unit for the folds and the paired test.
+                    Some(conversation.id.as_str()),
                     |into, ranking| {
                         into.entry(question.category.clone()).or_default().add(
                             ranking,
