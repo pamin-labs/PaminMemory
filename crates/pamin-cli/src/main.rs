@@ -345,13 +345,7 @@ mod tests {
         "PAMIN_INFERENCE_BUILD",
         // Compile-time harness provenance from pamin-engine's build.rs: how the
         // evaluation binary was compiled, recorded in its shape records.
-        "PAMIN_ENGINE_BUILD_PROFILE",
-        "PAMIN_ENGINE_OPT_LEVEL",
-        "PAMIN_ENGINE_TARGET",
-        "PAMIN_ENGINE_DEBUG",
-        "PAMIN_ENGINE_TARGET_FEATURES",
-        "PAMIN_ENGINE_RUSTFLAGS",
-        "PAMIN_ENGINE_RUSTC",
+        "PAMIN_ENGINE_CARGO",
         "PAMIN_ENGINE_BUILD_ENVIRONMENT",
         "PAMIN_CATCH_UP_BATCH",
         "PAMIN_EVAL_HOME",
