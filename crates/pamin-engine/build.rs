@@ -15,7 +15,9 @@
 //! crates that `include_str!` or `include_bytes!` reads. So the flag follows
 //! an edit made after a clean build. `SOURCES` names those roots, and a
 //! harness test fails when an include reads from outside them. The dirty
-//! check itself covers every tracked file, a superset of `SOURCES`.
+//! check itself covers every tracked file, a superset of `SOURCES`, and the
+//! untracked and ignored files under `SOURCES` that a build compiles in
+//! (`tests/harness/compiled.rs`, shared with the run-time check).
 //! `HEAD`'s reflog is watched as well: a commit on a branch whose ref was
 //! packed creates a loose ref that did not exist to be watched, and leaves
 //! `HEAD` and `packed-refs` alone, but it appends to the reflog. A worktree
@@ -30,6 +32,9 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+
+#[path = "tests/harness/compiled.rs"]
+mod compiled;
 
 /// What the workspace compiles, relative to its root.
 const SOURCES: [&str; 4] = [
@@ -54,13 +59,19 @@ fn main() {
     println!("cargo:rustc-env=PAMIN_ENGINE_COMMIT={commit}");
     // Without the optional lock, `status` does not refresh the index it
     // would otherwise rewrite, which is watched below.
-    let dirty = git(&[
+    let tracked = git(&[
         "--no-optional-locks",
         "status",
         "--porcelain",
         "--untracked-files=no",
     ])
     .is_none_or(|changes| !changes.is_empty());
+    // Untracked and ignored files count only where a build compiles them in,
+    // such as a gitignored `tests/scratch_*.rs`.
+    let args = compiled::status_args(&SOURCES.join(":"));
+    let untracked = git(&args.iter().map(String::as_str).collect::<Vec<_>>())
+        .is_none_or(|status| compiled::compiled_in(&status));
+    let dirty = tracked || untracked;
     println!("cargo:rustc-env=PAMIN_ENGINE_DIRTY={dirty}");
     println!("cargo:rustc-env=PAMIN_ENGINE_SOURCES={}", SOURCES.join(":"));
 

@@ -439,11 +439,12 @@ pub fn clustered_sweep_table<T>(
 /// go to the shipped setting, so a sweep that finds nothing changes nothing.
 /// `recall@50` is not in the rule; it is reported beside it.
 ///
-/// Five folds stratified by group, dealt by `units`: the queries of one unit
-/// share a fold, and the paired test runs over each unit's mean, so related
+/// Five folds stratified by group, or as many as there are units when there
+/// are fewer, dealt by `units`: the queries of one unit share a fold, and the
+/// paired test runs over each unit's macro mean over its groups, so related
 /// questions are neither split between training and holdout nor counted as
-/// independent. For each fold, the rule sees the other four folds' means and
-/// its choice is scored on the fifth. Three numbers come out,
+/// independent. For each fold, the rule sees the other folds' means and its
+/// choice is scored on that one. Three numbers come out,
 /// and the gap between the first two is the one this repository never had:
 ///
 /// - the best macro nDCG@10 of any row, scored on the queries that chose it --
@@ -528,11 +529,25 @@ pub fn cross_validated<T>(
         .fold(f64::MIN, f64::max);
     let keys = units.keys(&groups, shipped);
     let assigned = statistics::cluster_folds(&labels, &keys, 5);
+    // Fewer units than folds deal fewer folds; one fold holds nothing out.
+    let folds = assigned.iter().collect::<BTreeSet<_>>().len();
+    assert!(
+        folds >= 2,
+        "{title}: {folds} fold from {} units, so nothing is held out to choose on",
+        keys.iter().collect::<BTreeSet<_>>().len()
+    );
     let selected = statistics::cross_validate(&matrix, &labels, &assigned, rule);
     let procedure = macro_mean(&by_group(&selected.held_out));
     let current = macro_mean(&by_group(&baseline));
 
-    println!("\n  choosing from this sweep, cross-validated over five folds, {title}");
+    let spelled = match folds {
+        2 => "two".to_string(),
+        3 => "three".to_string(),
+        4 => "four".to_string(),
+        5 => "five".to_string(),
+        folds => folds.to_string(),
+    };
+    println!("\n  choosing from this sweep, cross-validated over {spelled} folds, {title}");
     let mut members: BTreeMap<&str, BTreeSet<usize>> = BTreeMap::new();
     let mut sizes: BTreeMap<&str, usize> = BTreeMap::new();
     for (key, label) in keys.iter().zip(&labels) {
@@ -564,9 +579,11 @@ pub fn cross_validated<T>(
         "  optimism of choosing in-sample                  {:+.4}",
         in_sample - procedure
     );
+    // Each unit weighed as the macro means above weigh it: per group, then
+    // equally over the groups it has.
     let paired = statistics::compare(
-        &statistics::cluster_means(&baseline, &keys),
-        &statistics::cluster_means(&selected.held_out, &keys),
+        &statistics::cluster_macro_means(&baseline, &labels, &keys),
+        &statistics::cluster_macro_means(&selected.held_out, &labels, &keys),
     );
     println!("  the procedure against what ships: {paired}");
     let chosen: Vec<&str> = selected
