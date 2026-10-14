@@ -33,12 +33,31 @@
 //! recall loss that could have come from either is a measurement of neither;
 //! `pamin-index`'s own `recall.rs` is where the approximation is measured.
 //!
-//! ## Two groups, reported separately, never summed
+//! ## Three groups, reported separately, never summed
 //!
 //! | group | the relevant sentences | why it is its own number |
 //! |---|---|---|
 //! | `same_language` | the answer sentence in the query's own language, with its ten translations removed from the ranking | the baseline the other is read against |
-//! | `cross_lingual` | the answer sentence in the other ten languages, with the query's own removed from the ranking | the claim this project makes |
+//! | `cross_lingual` | the answer sentence in the other ten languages, with the query's own removed from the ranking | the claim this project makes, as it has always been measured |
+//! | `single_target` | the answer sentence in one other language, chosen per query by a seeded hash, with the other ten removed from the ranking | the product's case: one relevant memory, in another language |
+//!
+//! The third group exists because the second rewards the wrong thing for a
+//! memory store. Ten relevant translations per query means nDCG@10 is only
+//! full when ten near-duplicates fill the head, and that is what reranking
+//! deep buys; a real store usually holds one or two memories that answer a
+//! question, not ten parallel ones. `single_target` asks for one. The first two
+//! are kept unchanged so every figure below stays comparable.
+//!
+//! **What "removed" means here, for all three.** The sentences a group does not
+//! count are struck from the ranking the product returned, not from the index
+//! before it ranked: `search_reranked` has no way to exclude topics, and
+//! adding one would measure an entry point that does not ship. So in
+//! `single_target` the other nine translations still take places in the
+//! fused list and in the reranker's head before they are struck. That is not a
+//! bound in either direction -- without them the target could enter the head
+//! it was pushed out of, or meet a stronger distractor there -- and a depth
+//! decision that turns on the difference needs a corpus that holds one
+//! translation, not this group.
 //!
 //! Removing the same-language answer from the ranking is what makes the second
 //! group honest. Left in, it takes a top rank on nearly every query and the
@@ -172,6 +191,13 @@
 //! queries. The default asks each question in one language, rotating through
 //! the eleven, which is 1,190 queries covering every language and every
 //! question and takes a eleventh of the time.
+//!
+//! Every arm scores all three groups. `EVAL_SEED` redraws each query's
+//! `single_target` language (see `harness::shape::SEED` for the default); the
+//! other two groups do not depend on it. Each run prints its `shape` lines --
+//! corpus digest, seed, asked and excluded -- and a `coverage` line at the
+//! end, and records them under `$PAMIN_EVAL_HOME/shape/`, one file per test,
+//! profile, arm, digest and query order.
 
 mod channels;
 mod features;
@@ -202,13 +228,15 @@ const LANGUAGES: [&str; 11] = [
 /// is a different and much easier task.
 const SOURCE: &str = "https://raw.githubusercontent.com/google-research-datasets/lareqa/9bc8c7fb6dd8d01d72a05a93c2cb96882b0d299c/xquad-r";
 
+use harness::shape::Shape;
 use harness::{DEFAULT_PROFILE, eval_home, profile};
 use scoring::{NDCG_AT, RECALL_AT, Scores};
 /// How deep to retrieve.
 ///
 /// [`RECALL_AT`] plus what a group drops from the ranking before scoring it:
 /// the cross-lingual group drops the query's own language, the same-language
-/// group its ten translations, and each still needs fifty left. Asking for
+/// group its ten translations, the single-target group the ten answers it does
+/// not count, and each still needs fifty left. Asking for
 /// more changes nothing but how many come back, because the reranker's head
 /// is well inside either depth.
 const DEPTH: usize = RECALL_AT + LANGUAGES.len() - 1;
@@ -254,6 +282,9 @@ struct Sentence {
 struct Question {
     /// The dataset's own id, the same in all eleven files.
     id: String,
+    /// Where the id falls among every id the dataset has, sorted: what the
+    /// rotation turns on, so excluding one question moves no other's language.
+    position: usize,
     /// The question text, per language.
     asked: HashMap<&'static str, String>,
     /// The key of the answering sentence, per language.
@@ -264,17 +295,42 @@ struct Question {
 struct Corpus {
     sentences: Vec<Sentence>,
     questions: Vec<Question>,
+    /// Questions the dataset has and this harness cannot score: not answered
+    /// in every language. Listed in every run's shape, one exclusion per query
+    /// the run would have asked, rather than dropped unseen.
+    excluded: Vec<Question>,
+}
+
+impl Question {
+    /// The languages a run asks this question in: all eleven under
+    /// `XQUAD_ALL_QUERIES`, else the one its position rotates to.
+    fn languages(&self, all: bool) -> Vec<&'static str> {
+        if all {
+            LANGUAGES.to_vec()
+        } else {
+            vec![LANGUAGES[self.position % LANGUAGES.len()]]
+        }
+    }
 }
 
 /// One query: a question, and the language it is asked in.
 struct Query<'a> {
     question: &'a Question,
     language: &'static str,
+    /// The one other language whose answer `single_target` counts, chosen by
+    /// [`harness::shape::choose`] from the question id and the query language
+    /// alone, so it is the same on every run with the same seed.
+    target: &'static str,
 }
 
 impl Query<'_> {
     fn text(&self) -> &str {
         &self.question.asked[self.language]
+    }
+
+    /// The question asked in this language, as the run's shape knows it.
+    fn id(&self) -> String {
+        format!("{}/{}", self.question.id, self.language)
     }
 
     /// The relevant sentence keys for one group, and what to drop first.
@@ -302,7 +358,12 @@ impl Query<'_> {
     /// non-relevant candidate can only raise the relevant one, so every
     /// same-language figure taken before this change is a lower bound on the
     /// same ranking scored now.
+    ///
+    /// Every arm that grades a query reads its answer key here, once per
+    /// group, so this is where the run's coverage is counted -- into the
+    /// table the arm last named with `harness::shape::table`.
     fn relevant(&self, group: &str) -> (HashSet<&str>, HashSet<&str>) {
+        harness::shape::tally(group, &self.id());
         let own = self.question.answers[self.language].as_str();
         let translations: HashSet<&str> = self
             .question
@@ -314,13 +375,162 @@ impl Query<'_> {
         match group {
             "same_language" => (HashSet::from([own]), translations),
             "cross_lingual" => (translations, HashSet::from([own])),
+            // One relevant sentence, and every other answer -- the query's own
+            // and nine translations -- struck, for the reason the other two
+            // groups strike theirs: each is still a correct answer.
+            "single_target" => {
+                let target = self.question.answers[self.target].as_str();
+                let others = self
+                    .question
+                    .answers
+                    .values()
+                    .map(String::as_str)
+                    .filter(|key| *key != target)
+                    .collect();
+                (HashSet::from([target]), others)
+            }
             other => panic!("unknown group {other}"),
         }
     }
 }
 
+/// The variables that pick an arm of `search_reaches_across_languages`, for
+/// the name of the run's shape record.
+const ARMS: [&str; 13] = [
+    "SWEEP",
+    "FEATURES_OUT",
+    "CHANNELS",
+    "DEPTH_VARIANTS",
+    "RERANK_RULES",
+    "ROUTES",
+    "CONTEXT",
+    "AT_LIMIT",
+    "LABELS",
+    "CALIBRATE",
+    "GATE",
+    "PAIRS",
+    "TIERS",
+];
+
 /// The groups, in the order they are reported.
-const GROUPS: [&str; 2] = ["cross_lingual", "same_language"];
+const GROUPS: [&str; 3] = ["cross_lingual", "same_language", "single_target"];
+
+/// The single-target group's premise: one relevant answer, in a language
+/// other than the query's, every other answer struck -- and a target that
+/// moves across languages rather than collapsing onto one.
+#[test]
+fn single_target_counts_one_translation_and_strikes_the_rest() {
+    let questions: Vec<Question> = (0..110)
+        .map(|at| {
+            let per_language = |prefix: &str| {
+                LANGUAGES
+                    .into_iter()
+                    .map(|language| (language, format!("{prefix}{language}:{at}")))
+                    .collect()
+            };
+            Question {
+                id: format!("q{at}"),
+                position: at,
+                asked: per_language("asked "),
+                answers: per_language(""),
+            }
+        })
+        .collect();
+    let corpus = Corpus {
+        sentences: Vec::new(),
+        questions,
+        excluded: Vec::new(),
+    };
+    // Each query's invariants hold under whatever seed the run was given;
+    // whether 110 draws reach every language depends on the seed, so that is
+    // checked under the fixed default alone.
+    let reached: HashSet<&str> = corpus
+        .drawn(harness::shape::SEED)
+        .iter()
+        .map(|query| query.target)
+        .collect();
+    assert_eq!(reached.len(), LANGUAGES.len(), "{reached:?}");
+    let queries = corpus.queries();
+    for query in &queries {
+        let (relevant, drop) = query.relevant("single_target");
+        assert_eq!(relevant.len(), 1, "{}", query.question.id);
+        assert_eq!(drop.len(), LANGUAGES.len() - 1, "{}", query.question.id);
+        assert_ne!(query.target, query.language, "{}", query.question.id);
+        assert!(relevant.contains(query.question.answers[query.target].as_str()));
+        assert!(drop.contains(query.question.answers[query.language].as_str()));
+    }
+    let again = corpus.queries();
+    assert!(
+        queries
+            .iter()
+            .zip(&again)
+            .all(|(a, b)| a.target == b.target),
+        "the same seed drew a different target"
+    );
+
+    // A question excluded at load is excluded as the query the rotation would
+    // have asked, and moves no other question's language.
+    let before: Vec<(String, &str)> = queries
+        .iter()
+        .map(|query| (query.question.id.clone(), query.language))
+        .collect();
+    let mut questions = corpus.questions;
+    let partial = questions.remove(3);
+    assert_eq!(partial.languages(false), [LANGUAGES[3]]);
+    assert_eq!(partial.languages(true), LANGUAGES);
+    let corpus = Corpus {
+        sentences: Vec::new(),
+        questions,
+        excluded: vec![partial],
+    };
+    let kept: HashMap<String, &str> = corpus
+        .queries()
+        .iter()
+        .map(|query| (query.question.id.clone(), query.language))
+        .collect();
+    for (id, language) in &before {
+        if let Some(kept) = kept.get(id) {
+            assert_eq!(kept, language, "{id}");
+        }
+    }
+    assert_eq!(kept.len(), before.len() - 1);
+}
+
+/// The digest's premise for this corpus: it names which language each answer
+/// is in, so swapping two languages' answers is a different run.
+#[test]
+fn the_digest_sees_which_language_an_answer_is_in() {
+    let question = |swap: bool| {
+        let mut answers: HashMap<&'static str, String> = LANGUAGES
+            .into_iter()
+            .map(|language| (language, format!("{language}:0:0")))
+            .collect();
+        if swap {
+            let (de, el) = (answers["de"].clone(), answers["el"].clone());
+            answers.insert("de", el);
+            answers.insert("el", de);
+        }
+        Question {
+            id: "q0".into(),
+            position: 0,
+            asked: LANGUAGES
+                .into_iter()
+                .map(|language| (language, format!("asked {language}")))
+                .collect(),
+            answers,
+        }
+    };
+    let digest = |swap: bool| {
+        let corpus = Corpus {
+            sentences: Vec::new(),
+            questions: vec![question(swap)],
+            excluded: Vec::new(),
+        };
+        corpus.shape(&corpus.queries()).digest()
+    };
+    assert_eq!(digest(false), digest(false));
+    assert_ne!(digest(false), digest(true));
+}
 
 impl Corpus {
     /// Reads the eleven language files, fetching them if they are not there.
@@ -413,18 +623,20 @@ impl Corpus {
         let mut ids: Vec<String> = answers.keys().cloned().collect();
         ids.sort();
 
-        let questions: Vec<Question> = ids
+        // A question the eleven files do not agree on cannot be scored
+        // cross-lingually. There are none today; this is what would happen if
+        // the dataset gained a language it does not cover everywhere, and it
+        // is recorded as an exclusion so that it would show.
+        let (questions, excluded): (Vec<Question>, Vec<Question>) = ids
             .into_iter()
-            .map(|id| Question {
+            .enumerate()
+            .map(|(position, id)| Question {
                 asked: asked.remove(&id).expect("the question text"),
                 answers: answers.remove(&id).expect("the answering sentences"),
                 id,
+                position,
             })
-            // A question the eleven files do not agree on cannot be scored
-            // cross-lingually. There are none today; this is what would happen
-            // if the dataset gained a language it does not cover everywhere.
-            .filter(|question| question.answers.len() == LANGUAGES.len())
-            .collect();
+            .partition(|question| question.answers.len() == LANGUAGES.len());
 
         assert!(
             !questions.is_empty(),
@@ -434,6 +646,7 @@ impl Corpus {
         Self {
             sentences,
             questions,
+            excluded,
         }
     }
 
@@ -445,22 +658,75 @@ impl Corpus {
     /// question and every language and costs an eleventh of that. The rotation
     /// is positional rather than random so that a rerun compares against the
     /// same queries.
+    ///
+    /// Each query's `single_target` language is drawn here, from the seed.
     fn queries(&self) -> Vec<Query<'_>> {
-        let all = std::env::var("XQUAD_ALL_QUERIES").is_ok();
+        self.drawn(harness::shape::seed())
+    }
+
+    /// [`queries`](Self::queries), with each target drawn from `seed`.
+    fn drawn(&self, seed: u64) -> Vec<Query<'_>> {
+        let all = every_language();
         self.questions
             .iter()
-            .enumerate()
-            .flat_map(|(position, question)| {
-                let languages: Vec<&'static str> = if all {
-                    LANGUAGES.to_vec()
-                } else {
-                    vec![LANGUAGES[position % LANGUAGES.len()]]
-                };
-                languages
-                    .into_iter()
-                    .map(move |language| Query { question, language })
+            .flat_map(|question| {
+                question.languages(all).into_iter().map(move |language| {
+                    let others: Vec<&'static str> = LANGUAGES
+                        .into_iter()
+                        .filter(|other| *other != language)
+                        .collect();
+                    let key = format!("{}/{language}", question.id);
+                    let target = *harness::shape::choose(seed, &key, &others);
+                    Query {
+                        question,
+                        language,
+                        target,
+                    }
+                })
             })
             .collect()
+    }
+
+    /// What a run over `queries` asks: every sentence, every query with its
+    /// whole answer key, and the questions excluded at load. See
+    /// [`harness::shape`].
+    fn shape(&self, queries: &[Query<'_>]) -> Shape {
+        let selection = if every_language() {
+            "every question in all eleven languages"
+        } else {
+            "every question, asked in one language by rotation"
+        };
+        // The seed draws no question, only each query's single target, which
+        // is part of the answer key and so of the digest.
+        let selection = format!("{selection}; single target drawn per query");
+        let mut shape = Shape::new("xquad-r", selection, Some(harness::shape::seed()));
+        for sentence in &self.sentences {
+            shape.document(&[&sentence.key, &sentence.text]);
+        }
+        // The answer key as (language, sentence) pairs in language order: a
+        // sorted bag of sentences did not say which language each answered
+        // in, and swapping two would have kept the digest.
+        for query in queries {
+            let mut fields = vec![query.text(), query.target];
+            for language in LANGUAGES {
+                if let Some(answer) = query.question.answers.get(language) {
+                    fields.extend([language, answer.as_str()]);
+                }
+            }
+            shape.query(&GROUPS, &query.id(), &fields);
+        }
+        for question in &self.excluded {
+            let reason = format!(
+                "answered in {} of {} languages",
+                question.answers.len(),
+                LANGUAGES.len()
+            );
+            for language in question.languages(every_language()) {
+                let id = format!("{}/{language}", question.id);
+                shape.exclude(&GROUPS, &id, &reason);
+            }
+        }
+        shape
     }
 
     /// A short digest, so a dataset that has changed does not reuse a cache.
@@ -474,6 +740,11 @@ impl Corpus {
         }
         format!("{hash:016x}")
     }
+}
+
+/// `XQUAD_ALL_QUERIES`: every question in every language, not one by rotation.
+fn every_language() -> bool {
+    std::env::var("XQUAD_ALL_QUERIES").is_ok()
 }
 
 /// Downloads the language files that are not there yet.
@@ -999,6 +1270,18 @@ async fn report_channels(
     let variants = channels::variants();
     let mut offline: Vec<BTreeMap<String, Scores>> =
         variants.iter().map(|_| BTreeMap::new()).collect();
+    harness::shape::tables(
+        ["fused", "by language", "dense by language"]
+            .map(String::from)
+            .into_iter()
+            .chain(channels::CHANNELS.iter().map(channels::alone_table))
+            .chain(channels::CHANNELS.iter().map(channels::without_table))
+            .chain(
+                variants
+                    .iter()
+                    .map(|(label, _)| channels::variant_table(label)),
+            ),
+    );
 
     for query in queries {
         let hits = engine
@@ -1012,6 +1295,7 @@ async fn report_channels(
         let each = channels::each_alone(&hits);
         for channel in channels::CHANNELS {
             let ranking = each.get(&channel).map(Vec::as_slice).unwrap_or(&[]);
+            harness::shape::table(channels::alone_table(&channel));
             score(alone.entry(channel).or_default(), query, ranking);
         }
         for missing in channels::CHANNELS {
@@ -1019,19 +1303,23 @@ async fn report_channels(
                 &hits,
                 &channels::effective_fusion(&hits, &Fusion::default()).without(missing),
             );
+            harness::shape::table(channels::without_table(&missing));
             score(without.entry(missing).or_default(), query, &ranking);
         }
 
         let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
+        harness::shape::table("fused");
         score(&mut whole, query, &ranked);
 
-        for ((_, fusion), into) in variants.iter().zip(&mut offline) {
+        for ((label, fusion), into) in variants.iter().zip(&mut offline) {
+            harness::shape::table(channels::variant_table(label));
             score(into, query, &channels::as_if(&hits, fusion));
         }
 
         // The per-language table, on a key the two-group map does not use, so
         // nothing that indexes that map by bare group name is disturbed.
         let mut one = BTreeMap::new();
+        harness::shape::table("by language");
         score(&mut one, query, &ranked);
         for (group, scores) in one {
             by_language
@@ -1046,6 +1334,7 @@ async fn report_channels(
         // not fusing*, and those are different questions.
         if let Some(vector) = each.get(&Channel::Vector) {
             let mut one = BTreeMap::new();
+            harness::shape::table("dense by language");
             score(&mut one, query, vector);
             for (group, scores) in one {
                 dense_by_language
@@ -1366,6 +1655,8 @@ fn the_model_reaches_across_languages() {
     let corpus = Corpus::load();
     let queries = corpus.queries();
     let (named, profile) = profile();
+    let mut shape = corpus.shape(&queries);
+    shape.publish("the_model_reaches_across_languages", &named, &[]);
     println!(
         "  {} sentences in {} languages, {} queries, profile {named}",
         corpus.sentences.len(),
@@ -1381,6 +1672,8 @@ fn the_model_reaches_across_languages() {
     let vectors = embed_corpus(&mut embedder, &corpus, &home, width);
 
     let mut groups = BTreeMap::new();
+    harness::shape::tables(["embedding space"]);
+    harness::shape::table("embedding space");
     let started = std::time::Instant::now();
     for query in &queries {
         let vector = unit(embedder.embed_query(query.text()).expect("embed the query"));
@@ -1568,6 +1861,8 @@ async fn search_reaches_across_languages() {
     let corpus = Corpus::load();
     let queries = corpus.queries();
     let (named, profile) = profile();
+    let mut shape = corpus.shape(&queries);
+    shape.publish("search_reaches_across_languages", &named, &ARMS);
 
     // A named workspace is reused; an unnamed one is thrown away. Indexing
     // thirteen thousand sentences is minutes, and a harness that pays that on
@@ -1634,17 +1929,28 @@ async fn search_reaches_across_languages() {
     println!("  vector index completeness: {completeness:.4}");
 
     if let Some(settings) = sweep() {
-        println!("\n  setting              cross nDCG@10   same nDCG@10   cross recall@50");
-        println!("  --------------------------------------------------------------------");
+        // nDCG@10 for every group, then cross-lingual recall@50.
+        let mut header = format!("\n  {:<20}", format!("setting, nDCG@{NDCG_AT}"));
+        for group in GROUPS {
+            header.push_str(&format!("   {:>13}", group));
+        }
+        header.push_str(&format!("   {:>15}", format!("cross recall@{RECALL_AT}")));
+        println!("{header}");
+        println!("  {}", "-".repeat(header.len() - 3));
         let mut measured: Vec<(String, BTreeMap<String, Scores>)> = Vec::new();
+        harness::shape::tables(settings.iter().map(|(label, _)| label));
         for (label, fusion) in settings {
+            harness::shape::table(&label);
             let groups = run(&engine, &queries, Route::Fused(fusion)).await;
-            println!(
-                "  {label:<20}   {:>13.4}   {:>12.4}   {:>15.4}",
-                groups["cross_lingual"].mean_ndcg(),
-                groups["same_language"].mean_ndcg(),
-                groups["cross_lingual"].mean_recall(),
-            );
+            let mut row = format!("  {label:<20}");
+            for group in GROUPS {
+                row.push_str(&format!("   {:>13.4}", groups[group].mean_ndcg()));
+            }
+            row.push_str(&format!(
+                "   {:>15.4}",
+                groups["cross_lingual"].mean_recall()
+            ));
+            println!("{row}");
             measured.push((label, groups));
         }
 
@@ -1653,8 +1959,8 @@ async fn search_reaches_across_languages() {
         // separated by thousandths on one group and by tenths on the other, so
         // the means are worth very different amounts in the two columns, and
         // the table cannot show that. Priced against the best cross-lingual row,
-        // query by query, in both groups -- because the weight this sweep
-        // settles is the one that trades one group against the other.
+        // query by query, in every group -- because the weight this sweep
+        // settles is the one that trades one group against the others.
         if let Some((best, top)) =
             statistics::baseline(&measured, |groups: &BTreeMap<String, Scores>| {
                 groups["cross_lingual"].mean_ndcg()
@@ -1665,21 +1971,13 @@ async fn search_reaches_across_languages() {
                 if label == best {
                     continue;
                 }
-                println!(
-                    "  {label:<20}   cross {}",
-                    statistics::compare(
-                        &top["cross_lingual"].per_query,
-                        &groups["cross_lingual"].per_query
-                    )
-                );
-                println!(
-                    "  {:<20}   same  {}",
-                    "",
-                    statistics::compare(
-                        &top["same_language"].per_query,
-                        &groups["same_language"].per_query
-                    )
-                );
+                for (at, group) in GROUPS.into_iter().enumerate() {
+                    let label = if at == 0 { label.as_str() } else { "" };
+                    println!(
+                        "  {label:<20}   {group:<13} {}",
+                        statistics::compare(&top[group].per_query, &groups[group].per_query)
+                    );
+                }
             }
         }
         println!();
@@ -1692,6 +1990,8 @@ async fn search_reaches_across_languages() {
     // can be kept in one fold.
     if let Some(mut dump) = features::Features::from_env("xquad-r") {
         const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        harness::shape::tables(["features"]);
+        harness::shape::table("features");
         for query in &queries {
             let hits = engine
                 .search_fused(query.text(), WIDE, DEPTHS, Fusion::default())
@@ -1815,7 +2115,10 @@ async fn search_reaches_across_languages() {
     // model.
     if let Ok(value) = std::env::var("AT_LIMIT") {
         let limit: u32 = value.parse().expect("AT_LIMIT is a number of results");
-        for tier in [Rerank::Off, Rerank::default()] {
+        let tiers = [Rerank::Off, Rerank::default()];
+        harness::shape::tables(tiers.map(|tier| tier.name()));
+        for tier in tiers {
+            harness::shape::table(tier.name());
             let started = std::time::Instant::now();
             let _ = run(&engine, &queries, Route::AtLimit(tier, limit)).await;
             println!(
@@ -1869,12 +2172,20 @@ async fn search_reaches_across_languages() {
         let tiers: Vec<Rerank> = if wanted == "1" {
             vec![Rerank::Off, Rerank::Fast, Rerank::Accurate]
         } else {
-            std::iter::once(Rerank::Off)
-                .chain(wanted.split(',').map(|name| {
-                    Rerank::parse(name.trim())
-                        .unwrap_or_else(|| panic!("TIERS names an unknown tier: {name}"))
-                }))
-                .collect()
+            // Each tier is one table of every query: naming `off`, or a tier
+            // twice, would score every query twice into one table and fail
+            // the coverage check only after the whole run.
+            let mut tiers = vec![Rerank::Off];
+            for name in wanted.split(',') {
+                let tier = Rerank::parse(name.trim())
+                    .unwrap_or_else(|| panic!("TIERS names an unknown tier: {name}"));
+                assert!(
+                    !tiers.contains(&tier),
+                    "TIERS names {name} twice, or names off, which always runs first"
+                );
+                tiers.push(tier);
+            }
+            tiers
         };
 
         // Kept so the tiers can be compared against each other with paired
@@ -1886,7 +2197,9 @@ async fn search_reaches_across_languages() {
         // knowing what each tier cost in this same run.
         let mut priced: Vec<(Rerank, f64, BTreeMap<String, Scores>)> = Vec::new();
 
+        harness::shape::tables(tiers.iter().map(|tier| tier.name()));
         for tier in tiers {
+            harness::shape::table(tier.name());
             let started = std::time::Instant::now();
             let groups = run(&engine, &queries, Route::Shipped(tier)).await;
             let cost = started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64;
@@ -1947,6 +2260,11 @@ async fn search_reaches_across_languages() {
         return;
     }
 
+    harness::shape::tables(["shipped"]);
+    if named == DEFAULT_PROFILE {
+        harness::shape::tables(["fusion alone"]);
+    }
+    harness::shape::table("shipped");
     let started = std::time::Instant::now();
     let groups = run(&engine, &queries, Route::Shipped(Rerank::default())).await;
     report(
@@ -1961,6 +2279,7 @@ async fn search_reaches_across_languages() {
     // minutes above, and without it nothing here notices the reranker going
     // missing -- see `RERANK_IS_WORTH`.
     if named == DEFAULT_PROFILE {
+        harness::shape::table("fusion alone");
         let alone = run(&engine, &queries, Route::Shipped(Rerank::Off)).await;
         let (with, without) = (
             groups["cross_lingual"].mean_ndcg(),
@@ -1975,12 +2294,14 @@ async fn search_reaches_across_languages() {
             &alone["cross_lingual"].per_query,
             &groups["cross_lingual"].per_query,
         );
-        let same = statistics::compare(
-            &alone["same_language"].per_query,
-            &groups["same_language"].per_query,
-        );
-        println!("  reranking is worth {paired} cross-lingual nDCG@{NDCG_AT}");
-        println!("  and {same} same-language\n");
+        println!("  reranking is worth, in nDCG@{NDCG_AT}:");
+        for group in GROUPS {
+            println!(
+                "    {group:<13} {}",
+                statistics::compare(&alone[group].per_query, &groups[group].per_query)
+            );
+        }
+        println!();
 
         assert!(
             paired.is_significant(),
@@ -2091,7 +2412,9 @@ async fn labels(engine: &Engine, queries: &[Query<'_>], named: &str) {
 
     // Measured in this run, so the saving below is priced against what these
     // tiers cost here rather than against a figure from another run.
+    harness::shape::tables(LADDER.map(|tier| tier.name()));
     for (at, tier) in LADDER.iter().enumerate() {
+        harness::shape::table(tier.name());
         let started = std::time::Instant::now();
         let groups = run(engine, queries, Route::Shipped(*tier)).await;
         cost[at] = started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64;
@@ -2278,6 +2601,8 @@ async fn calibration(engine: &Engine, queries: &[Query<'_>], named: &str) {
     let mut fit: BTreeMap<String, Vec<(f64, bool)>> = BTreeMap::new();
     let mut test: BTreeMap<String, Vec<(f64, bool)>> = BTreeMap::new();
 
+    harness::shape::tables(["calibration"]);
+    harness::shape::table("calibration");
     for (at, query) in queries.iter().enumerate() {
         let hits = engine
             .search_reranked(query.text(), DEPTH as u32, DEPTHS, tier)
@@ -2653,6 +2978,17 @@ async fn gate_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
     let mut dropped_relative = vec![0usize; RELATIVE.len()];
     let mut reranked_total = 0usize;
 
+    let by_coverage_table = |at: usize| format!("decline at coverage >= {}", COVERAGE[at]);
+    let by_absolute_table = |at: usize| format!("keep scores >= {}", ABSOLUTE[at]);
+    let by_relative_table = |at: usize| format!("keep within {} of the best", RELATIVE[at]);
+    harness::shape::tables(
+        ["reranker off", "ungated"]
+            .map(String::from)
+            .into_iter()
+            .chain((0..COVERAGE.len()).map(by_coverage_table))
+            .chain((0..ABSOLUTE.len()).map(by_absolute_table))
+            .chain((0..RELATIVE.len()).map(by_relative_table)),
+    );
     for query in queries {
         let off = engine
             .search_reranked(query.text(), DEPTH as u32, DEPTHS, Rerank::Off)
@@ -2668,7 +3004,9 @@ async fn gate_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
         };
         let off_order = names(&off);
         let on_order = names(&on);
+        harness::shape::table("reranker off");
         score(&mut plain, query, &off_order);
+        harness::shape::table("ungated");
         score(&mut ungated, query, &on_order);
 
         // The signal, read off the ordering the gate would see: the gate runs
@@ -2698,6 +3036,7 @@ async fn gate_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
             if decline {
                 declined[at] += 1;
             }
+            harness::shape::table(by_coverage_table(at));
             score(
                 &mut by_coverage[at],
                 query,
@@ -2727,11 +3066,13 @@ async fn gate_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
         for (at, cut) in ABSOLUTE.iter().enumerate() {
             let kept = keeping(*cut);
             dropped_absolute[at] += on_order.len() - kept.len();
+            harness::shape::table(by_absolute_table(at));
             score(&mut by_absolute[at], query, &kept);
         }
         for (at, margin) in RELATIVE.iter().enumerate() {
             let kept = keeping(best - *margin);
             dropped_relative[at] += on_order.len() - kept.len();
+            harness::shape::table(by_relative_table(at));
             score(&mut by_relative[at], query, &kept);
         }
     }
@@ -2858,6 +3199,13 @@ async fn pairs_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
     let mut pairs = vec![0usize; CAPS.len()];
     let mut ran = 0usize;
 
+    let capped_table = |at: usize| format!("at most {} candidates", CAPS[at]);
+    harness::shape::tables(
+        ["fused only", "shipped"]
+            .map(String::from)
+            .into_iter()
+            .chain((0..CAPS.len()).map(capped_table)),
+    );
     for query in queries {
         let off = engine
             .search_reranked(query.text(), DEPTH as u32, DEPTHS, Rerank::Off)
@@ -2870,7 +3218,9 @@ async fn pairs_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
 
         let fused: Vec<String> = off.iter().map(|hit| hit.topic.clone()).collect();
         let shipped_order: Vec<String> = on.iter().map(|hit| hit.topic.clone()).collect();
+        harness::shape::table("fused only");
         score(&mut fused_only, query, &fused);
+        harness::shape::table("shipped");
         score(&mut shipped, query, &shipped_order);
 
         // What the model scored each candidate it saw, keyed by topic because
@@ -2913,6 +3263,7 @@ async fn pairs_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
         }
 
         for (at, cap) in CAPS.iter().enumerate() {
+            harness::shape::table(capped_table(at));
             if !pass_ran {
                 score(&mut capped[at], query, &fused);
                 continue;
@@ -3025,8 +3376,7 @@ async fn run<'a>(engine: &Engine, queries: &[Query<'a>], route: Route) -> BTreeM
 async fn rerank_rules(engine: &Engine, queries: &[Query<'_>], named: &str) {
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
-    let rules = reranking::rules();
-    let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); rules.len()];
+    let mut priced = reranking::Priced::new(true);
     for query in queries {
         let hits = engine
             .search_reranked(query.text(), WIDE, DEPTHS, tier)
@@ -3034,20 +3384,18 @@ async fn rerank_rules(engine: &Engine, queries: &[Query<'_>], named: &str) {
             .expect("search");
         channels::enough_room(&hits, WIDE);
         let replayed = reranking::replay(&hits, tier);
-        for ((_, rule), into) in rules.iter().zip(&mut measured) {
-            score(into, query, &replayed.order(*rule));
-        }
+        priced.observe(
+            query.language,
+            query.text(),
+            &hits,
+            &replayed,
+            |into, ranking| score(into, query, ranking),
+        );
     }
-    reranking::report(
-        &format!(
-            "rules for the {} reranker's scores, XQuAD-R, {named}",
-            tier.name()
-        ),
-        &rules,
-        reranking::shipped(&rules),
-        &measured,
-        true,
-    );
+    priced.report(&format!(
+        "rules for the {} reranker's scores, XQuAD-R, {named}",
+        tier.name()
+    ));
 }
 
 /// What the shipped tier is worth when it is shown each candidate's topic
@@ -3063,6 +3411,7 @@ async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query<'_>], 
         .expect("load the reranker");
     let labels = reranking::context_labels();
     let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
+    harness::shape::tables(labels.iter().map(|(label, _)| label));
     for query in queries {
         let hits = engine
             .search_reranked(query.text(), WIDE, DEPTHS, tier)
@@ -3071,7 +3420,8 @@ async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query<'_>], 
         channels::enough_room(&hits, WIDE);
         let replayed = reranking::replay(&hits, tier);
         let (orders, _) = reranking::in_context(&hits, &replayed, &mut model, query.text());
-        for (order, into) in orders.iter().zip(&mut measured) {
+        for ((order, into), (label, _)) in orders.iter().zip(&mut measured).zip(&labels) {
+            harness::shape::table(label);
             score(into, query, order);
         }
     }
