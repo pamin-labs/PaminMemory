@@ -1191,9 +1191,17 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
     let session = |device: Device, providers, _validated: bool| -> Result<Encoder> {
         if let (Some(local), Device::Cpu) = (local, device) {
             let model = || {
+                let graph = local.directory.join("model.onnx");
                 // The source rather than the copy: it is on disk, and holds
                 // the table under the name it was exported with.
-                require_positions(&local.directory.join("model.onnx"))?;
+                require_positions(&graph)?;
+                // A prepared copy is keyed by the graph file alone, so one
+                // written before the export's `model.onnx.data` changed would
+                // be reused with the old weights. Such an export loads
+                // unmapped instead.
+                if local.directory.join("model.onnx.data").exists() {
+                    return Ok(graph);
+                }
                 crate::prepared::load_path(&local.graph(), cache_dir)
             };
             let tokenizer = crate::tokenizer::load_dir(&local.directory, max_tokens())?;
