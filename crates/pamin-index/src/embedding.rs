@@ -730,6 +730,13 @@ fn e5_vectors(model: &mut Encoder, texts: &[String], batch_size: usize) -> Resul
 /// -- see `crate::prepared`, which writes a copy the runtime maps instead, and
 /// falls back to the file itself when it cannot. Once the copy has loaded the
 /// download is removed, since nothing reads it again.
+///
+/// On the CPU loaded [`side_by_side`](Encoder::side_by_side): a query keeps a
+/// pass of the whole budget, its fastest, and stored texts run several
+/// one-threaded passes at once. Measured through `Embedder` on four cores
+/// (ONNX Runtime 1.28, Xeon with AMX), a query's median was 37.7 ms at four
+/// threads and 52.4 at one; and no vector changes: 500 texts as passages and
+/// 100 as queries came out bit-identical at one thread and at four.
 fn joint_session(
     repository: &Repository,
     weights: &impl crate::prepared::Download,
@@ -737,11 +744,14 @@ fn joint_session(
     device: crate::inference::Device,
     providers: impl Into<crate::inference::Target>,
 ) -> Result<Encoder> {
+    if device == crate::inference::Device::Cpu {
+        let copy = crate::prepared::load_path(weights, cache_dir)?;
+        let tokenizer = crate::tokenizer::load(repository, JOINT_MAX_TOKENS)?;
+        return Encoder::side_by_side(copy, crate::inference::budget()?, tokenizer)
+            .map_err(|error| error.context("loading embedding model"));
+    }
     let encoder = Encoder::load(
-        || match device {
-            crate::inference::Device::Cpu => crate::prepared::load_path(weights, cache_dir),
-            _ => repository.get(JOINT_FILE),
-        },
+        || repository.get(JOINT_FILE),
         repository,
         JOINT_MAX_TOKENS,
         providers,
@@ -1283,20 +1293,34 @@ mod tests {
     }
 
     /// The gemma profile's stored texts, run side by side, are the vectors
-    /// each gets alone on the query's session, bit for bit and in order.
+    /// each gets alone on the query's one-threaded session, bit for bit and in
+    /// order.
     ///
-    /// Alone is one pass after another on one thread; side by side is as many
-    /// passes at once as there are cores, each on a session of its own, taking
-    /// texts in whatever order they finish. Lengths from a few tokens to the
-    /// 512-token cap, more texts than cores, so every session runs several.
+    /// Alone is one pass after another; side by side is as many passes at once
+    /// as there are cores, each on a session of its own, taking texts in
+    /// whatever order they finish. Lengths from a few tokens to the 512-token
+    /// cap, more texts than cores, so every session runs several.
     /// The model is read from, or downloaded into, `PAMIN_TEST_MODEL_CACHE`.
     #[test]
     #[ignore = "downloads the pinned EmbeddingGemma 2 export; set PAMIN_TEST_MODEL_CACHE"]
     fn gemma_side_by_side_is_each_text_alone() {
+        side_by_side_is_each_text_alone(Profile::Gemma);
+    }
+
+    /// As [`gemma_side_by_side_is_each_text_alone`], for BGE-M3, whose query
+    /// session has every core: its vectors do not change with the thread
+    /// count.
+    #[test]
+    #[ignore = "downloads BGE-M3's int8 export; set PAMIN_TEST_MODEL_CACHE"]
+    fn bge_side_by_side_is_each_text_alone() {
+        side_by_side_is_each_text_alone(Profile::Accuracy);
+    }
+
+    fn side_by_side_is_each_text_alone(profile: Profile) {
         let cache = std::path::PathBuf::from(
             std::env::var_os("PAMIN_TEST_MODEL_CACHE").expect("set PAMIN_TEST_MODEL_CACHE"),
         );
-        let mut embedder = Embedder::load(Profile::Gemma, &cache).expect("load gemma");
+        let mut embedder = Embedder::load(profile, &cache).expect("load the model");
         assert_eq!(embedder.device(), crate::inference::Device::Cpu);
         let long = "migration rollback ".repeat(300);
         let texts = [

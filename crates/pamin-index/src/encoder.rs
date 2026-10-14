@@ -225,10 +225,11 @@ impl Encoder {
     /// passes side by side pay none of it. Measured through `Embedder` on four
     /// cores (ONNX Runtime 1.28, Xeon with AMX), 500 texts stored 64 at a time,
     /// two runs each: EmbeddingGemma 2 from 50.2 s at four threads a pass to
-    /// 15.0 and 15.1 s, every vector bit-identical to one thread's. The cost is
-    /// the passes' working memory: anonymous memory 180 MB higher. One session
-    /// run from several threads would not save it, and `ort` runs a session
-    /// only through `&mut`.
+    /// 15.0 and 15.1 s, BGE-M3 from 38.3 and 40.3 s to 18.7 and 17.3 s, every
+    /// vector bit-identical to one thread's. The cost is the passes' working
+    /// memory: anonymous memory 180 MB higher for the one, 60 to 100 MB for the
+    /// other. One session run from several threads would not save it, and
+    /// `ort` runs a session only through `&mut`.
     ///
     /// The sessions are loaded the first time they are wanted, as many as the
     /// batches can use, so a model that only ever answers queries loads none.
