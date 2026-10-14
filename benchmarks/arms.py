@@ -425,6 +425,8 @@ class Mem0:
 
     def __init__(self):
         from mem0 import Memory
+        from mem0.memory.utils import remove_code_blocks
+        self._remove_code_blocks = remove_code_blocks
         # mem0 reaches OpenAI through the SDK's own environment, and the shim
         # is OpenAI-shaped, so pointing the environment at it is enough and
         # needs no per-provider knowledge of where each config key lives.
@@ -495,6 +497,33 @@ class Mem0:
             r"[^a-z0-9_]", "_", conversation_id.lower())
         self.memory = self.Memory.from_config(config)
         self.user = conversation_id
+
+        # Haiku, driven by mem0's own extraction prompt, occasionally returns
+        # a bare JSON array instead of the `{"memory": [...]}` object mem0's
+        # own parser hard-codes (confirmed on real LongMemEval sessions: not
+        # every call, and not reproducible on short synthetic input, so it is
+        # the model's compliance under this exact prompt, not a schema bug in
+        # the prompt itself). Unhandled, that shape mismatch is what mem0's
+        # own `.get("memory", [])` raises on, and the whole session's
+        # extraction silently degrades to zero facts. The array already
+        # holds the same elements the object would have wrapped, so
+        # normalising the one ambiguous shape here changes nothing about
+        # what the model decided to extract -- it only repairs the one
+        # formatting variant mem0's parser cannot survive.
+        original_generate_response = self.memory.llm.generate_response
+        remove_code_blocks = self._remove_code_blocks
+
+        def generate_response_tolerant(*args, **kwargs):
+            response = original_generate_response(*args, **kwargs)
+            if kwargs.get("response_format", {}).get("type") != "json_object":
+                return response
+            try:
+                parsed = json.loads(remove_code_blocks(response))
+            except (TypeError, ValueError):
+                return response
+            return json.dumps({"memory": parsed}) if isinstance(parsed, list) else response
+
+        self.memory.llm.generate_response = generate_response_tolerant
 
         # A session at a time, not a turn at a time. mem0 calls the LLM once
         # per `add`, so per-turn ingestion would be four hundred calls a
@@ -702,6 +731,13 @@ class MemPalaceRaw(MemPalace):
 
         # The premise, and the whole point of this arm: no model ran. An arm
         # named `raw` that quietly used one would be the default arm twice.
+        # `shim_stats()` is a global counter on whatever SHIM_URL points at,
+        # so this premise only holds when nothing else sharing that shim
+        # calls chat/completions during this window -- run mempalace-raw
+        # against its own SHIM_URL (not the one mem0 or the default
+        # `mempalace` arm use) whenever it runs concurrently with either, or
+        # their calls get blamed on this one (confirmed 2026-10-14: mem0's
+        # own concurrent extraction calls read here as 18-52 "stray" calls).
         calls = after.get("calls", 0) - before.get("calls", 0)
         if calls:
             raise RuntimeError(
