@@ -209,10 +209,19 @@ const NOT_SETTINGS: [&str; 12] = [
     "PAMIN_TEST_MODEL_CACHE",
 ];
 
-/// Variables every harness's record is named by, whichever harness it is:
-/// `SIGNIFICANCE_GATE`, which `statistics::gate` reads, decides whether a
-/// run's significance gate was applied at all.
-const ALWAYS_SETTINGS: [&str; 1] = ["SIGNIFICANCE_GATE"];
+/// Variables outside `PAMIN_` that every harness's record is named by,
+/// whichever harness it is. `SIGNIFICANCE_GATE`, which `statistics::gate`
+/// reads, decides whether a run's significance gate was applied at all. The
+/// rest set how many threads the runtime, the tokenizer and the model's
+/// kernels use: they change timings, and a reduction split over a different
+/// number of threads can round differently.
+const ALWAYS_SETTINGS: [&str; 5] = [
+    "SIGNIFICANCE_GATE",
+    "TOKIO_WORKER_THREADS",
+    "RAYON_NUM_THREADS",
+    "TOKENIZERS_PARALLELISM",
+    "OMP_NUM_THREADS",
+];
 
 /// What makes this run an arm other than the shipped one, as sorted
 /// `NAME=value` lines: each of the harness's own `vars` that is set, each of
@@ -486,24 +495,178 @@ pub struct Shape {
     loaded: Vec<(String, String)>,
     /// What `probe` answered, with `loaded`, once the coverage is checked.
     providers: Vec<String>,
+    /// The machine, read at `publish`; accelerators once `providers` are.
+    hardware: Hardware,
 }
 
-/// A probe for [`Shape::ran_on`] over every engine a run searched: each
-/// one's [`Engine::providers`](pamin_engine::Engine::providers), sorted, a
-/// role listed once per provider it ran on.
+/// Everything that tells one run's record from another's, serialised
+/// canonically into the record and hashed into its file name.
+///
+/// The file name was built from hand-picked parts, and every review found one
+/// missing -- the providers' roles, then the build profile. Now the readable
+/// prefix is only for people, and the name's hash covers this whole struct,
+/// so a field added here is in the name without anyone remembering to put it
+/// there. `every_identity_field_names_the_record` fails for a field that
+/// does not change the hash.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+struct Identity {
+    harness: String,
+    test: String,
+    profile: String,
+    arm: String,
+    /// The arm's settings in full, `SIGNIFICANCE_GATE` included.
+    settings: Vec<String>,
+    commit: String,
+    /// Why the run cannot vouch for its commit -- a dirty build or
+    /// checkout, a moved checkout, the gate off -- if it cannot.
+    noncanonical_reason: Option<String>,
+    corpus_sha256: String,
+    sequence_sha256: String,
+    selection: String,
+    seed: Option<u64>,
+    /// `engine/role=provider`: which engine, which model, where it ran.
+    providers: Vec<String>,
+    build: Build,
+    hardware: Hardware,
+}
+
+/// The machine a run ran on, as far as it can be read cheaply.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+struct Hardware {
+    /// The CPU's model name, or `unknown`.
+    cpu: String,
+    /// Logical cores this process may use.
+    logical_cores: usize,
+    /// Accelerators a provider ran on, by name where the platform says:
+    /// NVIDIA GPUs through `nvidia-smi` when a model ran on CUDA. CoreML runs
+    /// on the Apple chip `cpu` names; DirectML is named only as itself.
+    accelerators: Vec<String>,
+}
+
+impl Hardware {
+    /// The CPU and core count; accelerators are added once the providers
+    /// are known, by [`Hardware::accelerators_for`].
+    fn detect() -> Self {
+        Self {
+            cpu: cpu_model().unwrap_or_else(|| "unknown".into()),
+            logical_cores: std::thread::available_parallelism().map_or(0, usize::from),
+            accelerators: Vec::new(),
+        }
+    }
+
+    /// The accelerators behind `providers` (`engine/role=provider` lines).
+    fn accelerators_for(providers: &[String]) -> Vec<String> {
+        let ran = |name: &str| {
+            providers
+                .iter()
+                .any(|line| line.rsplit_once('=').is_some_and(|(_, on)| on == name))
+        };
+        let mut accelerators = Vec::new();
+        if ran("cuda") {
+            let named = std::process::Command::new("nvidia-smi")
+                .args(["--query-gpu=name", "--format=csv,noheader"])
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+                .filter(|names| !names.is_empty());
+            accelerators.extend(
+                named
+                    .unwrap_or_else(|| "cuda: unknown".into())
+                    .lines()
+                    .map(|name| format!("cuda: {}", name.trim())),
+            );
+        }
+        for other in ["coreml", "directml", "npu"] {
+            if ran(other) {
+                accelerators.push(other.to_string());
+            }
+        }
+        accelerators
+    }
+}
+
+/// The CPU's model name: `/proc/cpuinfo` on Linux, `sysctl` on macOS, the
+/// environment on Windows.
+fn cpu_model() -> Option<String> {
+    if let Ok(info) = std::fs::read_to_string("/proc/cpuinfo") {
+        return info
+            .lines()
+            .find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                matches!(key.trim(), "model name" | "Hardware" | "Model")
+                    .then(|| value.trim().to_string())
+            })
+            .filter(|name| !name.is_empty());
+    }
+    if cfg!(target_os = "macos") {
+        return std::process::Command::new("sysctl")
+            .args(["-n", "machdep.cpu.brand_string"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .filter(|name| !name.is_empty());
+    }
+    std::env::var("PROCESSOR_IDENTIFIER").ok()
+}
+
+/// What the harness binary was compiled as, from the build script.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+struct Build {
+    /// Cargo's `PROFILE`: `debug` or `release`.
+    profile: String,
+    opt_level: String,
+    target: String,
+}
+
+impl Build {
+    fn compiled() -> Self {
+        Self {
+            profile: env!("PAMIN_ENGINE_BUILD_PROFILE").to_string(),
+            opt_level: env!("PAMIN_ENGINE_OPT_LEVEL").to_string(),
+            target: env!("PAMIN_ENGINE_TARGET").to_string(),
+        }
+    }
+}
+
+impl Identity {
+    /// The identity's canonical form: its fields in declaration order.
+    fn canonical(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("serialise the identity")
+    }
+
+    /// The first twelve hex digits of the canonical form's sha256.
+    fn short(&self) -> String {
+        Sha256::digest(self.canonical())[..6]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+}
+
+/// A probe for [`Shape::ran_on`] over every engine a run searched, each
+/// under its label (`primary`, `second`, ...): each one's
+/// [`Engine::providers`](pamin_engine::Engine::providers) as
+/// `label/role`, kept apart, sorted. It neither panics nor waits, as
+/// `Engine::providers` does neither.
 pub fn engines(
-    engines: &[&pamin_engine::Engine],
+    engines: &[(&str, &pamin_engine::Engine)],
 ) -> impl Fn() -> Vec<(String, String)> + Send + 'static {
-    let engines: Vec<pamin_engine::Engine> =
-        engines.iter().map(|engine| (*engine).clone()).collect();
+    let engines: Vec<(String, pamin_engine::Engine)> = engines
+        .iter()
+        .map(|(label, engine)| (label.to_string(), (*engine).clone()))
+        .collect();
     move || {
         let mut providers: Vec<(String, String)> = engines
             .iter()
-            .flat_map(|engine| engine.providers())
-            .map(|(role, device)| (role, device.name().to_string()))
+            .flat_map(|(label, engine)| {
+                engine.providers().into_iter().map(move |(role, device)| {
+                    (format!("{label}/{role}"), device.name().to_string())
+                })
+            })
             .collect();
         providers.sort();
-        providers.dedup();
         providers
     }
 }
@@ -562,6 +725,7 @@ impl Shape {
             probe: None,
             loaded: Vec::new(),
             providers: Vec::new(),
+            hardware: Hardware::default(),
         }
     }
 
@@ -582,7 +746,27 @@ impl Shape {
     /// on `device`, recorded with what [`ran_on`](Self::ran_on)'s probe says.
     pub fn also_ran(&mut self, role: &str, device: pamin_index::Device) {
         self.loaded
-            .push((role.to_string(), device.name().to_string()));
+            .push((format!("harness/{role}"), device.name().to_string()));
+    }
+
+    /// Asks the probe, if there is one, and keeps its answer with `loaded`
+    /// as `engine/role=provider` lines; whether there was a probe to ask.
+    /// The probe never panics (see [`engines`]), so a failing run asks it
+    /// too.
+    fn resolve_providers(&mut self) -> bool {
+        let Some(probe) = &self.probe else {
+            return false;
+        };
+        let mut providers = probe();
+        providers.extend(self.loaded.iter().cloned());
+        providers.sort();
+        providers.dedup();
+        self.providers = providers
+            .into_iter()
+            .map(|(role, provider)| format!("{role}={provider}"))
+            .collect();
+        self.hardware.accelerators = Hardware::accelerators_for(&self.providers);
+        true
     }
 
     /// One document, by every field that reaches the index.
@@ -689,6 +873,7 @@ impl Shape {
         let name = self.name.clone();
         let name = &name;
         self.source = ungated(source(), &self.settings);
+        self.hardware = Hardware::detect();
         let sequence = self.sequence();
 
         // The in-progress record is on disk before anything is reported, so a
@@ -904,20 +1089,10 @@ impl Shape {
             report(&format!("  coverage {}: {}", self.name, lines.join("; ")));
             return failures;
         };
-        match &self.probe {
-            Some(probe) => {
-                let mut providers = probe();
-                providers.extend(self.loaded.iter().cloned());
-                providers.sort();
-                providers.dedup();
-                self.providers = providers
-                    .into_iter()
-                    .map(|(role, provider)| format!("{role}={provider}"))
-                    .collect();
-            }
-            None => failures.push(
+        if !self.resolve_providers() {
+            failures.push(
                 "the run never said which execution providers it ran on (Shape::ran_on)".into(),
-            ),
+            );
         }
         let path = if failures.is_empty() {
             self.named(&record)
@@ -943,23 +1118,35 @@ impl Shape {
     /// that cannot vouch for its commit, a name of its own beside the
     /// canonical record and never over it, nor over another such run's.
     fn named(&self, record: &Path) -> PathBuf {
-        let on: Vec<&str> = self
-            .providers
-            .iter()
-            .map(|line| {
-                line.split_once('=')
-                    .map_or(line.as_str(), |(_, provider)| provider)
-            })
-            .collect();
-        let on = if on.is_empty() {
-            "none".to_string()
-        } else {
-            file_part(&on.join("+"))
-        };
-        let canonical = PathBuf::from(format!("{}-on-{on}.json", record.display()));
+        let canonical = PathBuf::from(format!(
+            "{}-{}.json",
+            record.display(),
+            self.identity().short()
+        ));
         match self.source.noncanonical {
             None => canonical,
             Some(_) => unique(&canonical, "noncanonical.json"),
+        }
+    }
+
+    /// Everything that tells this run apart from another; see [`Identity`].
+    fn identity(&self) -> Identity {
+        let [test, profile, arm] = self.run.clone();
+        Identity {
+            harness: self.name.clone(),
+            test,
+            profile,
+            arm,
+            settings: self.settings.clone(),
+            commit: self.source.commit.clone(),
+            noncanonical_reason: self.source.noncanonical.clone(),
+            corpus_sha256: self.digest(),
+            sequence_sha256: self.sequence(),
+            selection: self.selection.clone(),
+            seed: self.seed,
+            providers: self.providers.clone(),
+            build: Build::compiled(),
+            hardware: self.hardware.clone(),
         }
     }
 
@@ -1005,6 +1192,8 @@ impl Shape {
             "noncanonical_reason": self.source.noncanonical,
             "settings": self.settings,
             "providers": self.providers,
+            "identity": self.identity(),
+            "identity_sha256_12": self.identity().short(),
             "corpus_sha256": self.digest(),
             "sequence_sha256": self.sequence(),
             "selection": self.selection,
@@ -1053,6 +1242,8 @@ impl Drop for Shape {
             };
             let (lines, _, recorded) = self.coverage(&tally);
             self.coverage = Some(recorded);
+            // What it ran on, too: the probe neither panics nor waits.
+            self.resolve_providers();
             let progress = self.progress.clone();
             let _ = self.persist(&progress, " (failed run)", &lines);
             return;
@@ -1412,7 +1603,15 @@ mod tests {
     fn a_failed_rerun_leaves_the_completed_record() {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let base = dir.path().join("test-run");
-        let record = dir.path().join("test-run-on-cpu+coreml.json");
+        let record = {
+            let mut shape = asked();
+            shape.providers = vec![
+                "embedding=cpu".to_string(),
+                "reranking accurate=coreml".to_string(),
+            ];
+            shape.hardware.accelerators = vec!["coreml".to_string()];
+            shape.named(&base)
+        };
         let run = |scored: Scored<'_>| {
             let mut shape = asked();
             shape.record = Some(base.clone());
@@ -1465,6 +1664,130 @@ mod tests {
         assert!(!failures.is_empty());
         assert_eq!(std::fs::read(&record).expect("the record"), completed);
         assert!(again.exists(), "the failed run left nothing");
+    }
+
+    fn identity() -> Identity {
+        Identity {
+            harness: "h".into(),
+            test: "t".into(),
+            profile: "accuracy".into(),
+            arm: "shipped".into(),
+            settings: Vec::new(),
+            commit: "a".repeat(40),
+            noncanonical_reason: None,
+            corpus_sha256: "c".repeat(64),
+            sequence_sha256: "s".repeat(64),
+            selection: "all".into(),
+            seed: None,
+            providers: vec!["embedding=cpu".into(), "reranking accurate=coreml".into()],
+            build: Build {
+                profile: "release".into(),
+                opt_level: "3".into(),
+                target: "x86_64-unknown-linux-gnu".into(),
+            },
+            hardware: Hardware {
+                cpu: "Example CPU".into(),
+                logical_cores: 4,
+                accelerators: vec!["coreml".into()],
+            },
+        }
+    }
+
+    /// Two runs that differ only in which role ran where, or only in how
+    /// the harness was compiled, are two records.
+    #[test]
+    fn swapped_roles_and_build_profiles_are_different_records() {
+        let base = identity();
+        let swapped = Identity {
+            providers: vec!["embedding=coreml".into(), "reranking accurate=cpu".into()],
+            ..base.clone()
+        };
+        let debug = Identity {
+            build: Build {
+                profile: "debug".into(),
+                opt_level: "0".into(),
+                ..base.build.clone()
+            },
+            ..base.clone()
+        };
+        let names: BTreeSet<String> = [&base, &swapped, &debug].map(Identity::short).into();
+        assert_eq!(names.len(), 3, "{names:?}");
+        assert_eq!(base.short().len(), 12);
+        assert_eq!(base.short(), identity().short(), "the name is stable");
+    }
+
+    /// Every field of the identity changes the name, and every field is
+    /// changed here: a field added to `Identity` without a line below fails.
+    #[test]
+    fn every_identity_field_names_the_record() {
+        type Mutation = (&'static str, fn(&mut Identity));
+        let mutations: Vec<Mutation> = vec![
+            ("harness", |id| id.harness.push('x')),
+            ("test", |id| id.test.push('x')),
+            ("profile", |id| id.profile.push('x')),
+            ("arm", |id| id.arm.push('x')),
+            ("settings", |id| {
+                id.settings.push("SIGNIFICANCE_GATE=off".into())
+            }),
+            ("commit", |id| id.commit = "b".repeat(40)),
+            ("noncanonical_reason", |id| {
+                id.noncanonical_reason = Some("dirty".into())
+            }),
+            ("corpus_sha256", |id| id.corpus_sha256.push('x')),
+            ("sequence_sha256", |id| id.sequence_sha256.push('x')),
+            ("selection", |id| id.selection.push('x')),
+            ("seed", |id| id.seed = Some(1)),
+            ("providers", |id| id.providers.reverse()),
+            ("build.profile", |id| id.build.profile = "debug".into()),
+            ("build.opt_level", |id| id.build.opt_level = "0".into()),
+            ("hardware.cpu", |id| id.hardware.cpu.push('x')),
+            ("hardware.logical_cores", |id| {
+                id.hardware.logical_cores += 1
+            }),
+            ("hardware.accelerators", |id| {
+                id.hardware.accelerators.clear()
+            }),
+            ("build.target", |id| {
+                id.build.target = "aarch64-apple-darwin".into()
+            }),
+        ];
+        let base = identity();
+        for (field, mutate) in &mutations {
+            let mut changed = base.clone();
+            mutate(&mut changed);
+            assert_ne!(
+                changed.short(),
+                base.short(),
+                "{field} does not name the record"
+            );
+        }
+        let value = serde_json::to_value(&base).expect("JSON");
+        let leaves = |value: &serde_json::Value| -> usize {
+            value
+                .as_object()
+                .expect("an object")
+                .values()
+                .map(|field| field.as_object().map_or(1, |inner| inner.len()))
+                .sum()
+        };
+        assert_eq!(
+            leaves(&value),
+            mutations.len(),
+            "a field of Identity has no mutation here"
+        );
+    }
+
+    /// Accelerators are read off what each engine's models ran on, with the
+    /// engine label and role kept apart.
+    #[test]
+    fn accelerators_follow_the_providers() {
+        let providers = [
+            "primary/embedding=cpu".to_string(),
+            "second/reranking accurate=coreml".to_string(),
+        ];
+        assert_eq!(Hardware::accelerators_for(&providers), ["coreml"]);
+        assert!(Hardware::accelerators_for(&providers[..1]).is_empty());
+        assert!(Hardware::detect().logical_cores > 0);
     }
 
     /// A published run that never says what it ran on fails, and leaves its
@@ -1528,6 +1851,14 @@ mod tests {
         // Named by every harness, though no harness lists it.
         let ungated = named(&[("SIGNIFICANCE_GATE", "off")]);
         assert!(!distinct.contains(&ungated), "{ungated}");
+        for threads in [
+            "TOKIO_WORKER_THREADS",
+            "RAYON_NUM_THREADS",
+            "OMP_NUM_THREADS",
+        ] {
+            assert_ne!(named(&[(threads, "1")]), shipped, "{threads}");
+        }
+        assert_ne!(named(&[("TOKENIZERS_PARALLELISM", "false")]), shipped);
     }
 
     /// A run with its significance gate off is never the canonical record.
