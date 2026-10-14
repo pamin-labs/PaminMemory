@@ -455,10 +455,10 @@ impl Models {
         )
     }
 
-    /// The execution target of every reranker this process has loaded, as
+    /// The execution plans of every reranker this process has loaded, as
     /// `reranking <tier>`, in tier-name order. Handles are cloned out from
     /// under the registry lock first, as in [`counted`](Self::counted).
-    fn reranker_targets(&self) -> Vec<(String, String)> {
+    fn reranker_plans(&self) -> Vec<(String, pamin_index::PlanUse)> {
         let Some(registry) = held_now(self.rerankers.as_ref()) else {
             return Vec::new();
         };
@@ -467,15 +467,17 @@ impl Models {
             .map(|(tier, (_, reranker))| (*tier, Arc::clone(reranker)))
             .collect();
         drop(registry);
-        let mut targets: Vec<(String, String)> = held
+        let mut plans: Vec<(String, pamin_index::PlanUse)> = held
             .into_iter()
             .filter_map(|(tier, reranker)| {
-                let target = held_now(reranker.as_ref())?.target();
-                Some((format!("reranking {}", tier.name()), target))
+                let plans = held_now(reranker.as_ref())?.plans();
+                let role = format!("reranking {}", tier.name());
+                Some(plans.into_iter().map(move |plan| (role.clone(), plan)))
             })
+            .flatten()
             .collect();
-        targets.sort_by(|left, right| left.0.cmp(&right.0));
-        targets
+        plans.sort_by(|left, right| left.0.cmp(&right.0));
+        plans
     }
 
     /// Gives back the embedders no open engine is holding any more.
@@ -1502,12 +1504,14 @@ impl Engine {
         self.models.counted(tier)
     }
 
-    /// The execution target each model this engine has used resolved to, as
-    /// its execution plans are keyed (`npu:<provider>:<id>` for an NPU, the
-    /// device's name otherwise), by role: `embedding`, `embedding secondary` for a profile with a
-    /// second vector model, and `reranking <tier>` for each tier this process
-    /// has loaded. A model not loaded is not listed. Read as it stands now,
-    /// so a model that fell back to the CPU during a run reports the CPU.
+    /// Every execution plan each model this engine has used ran on, by role:
+    /// `embedding`, `embedding secondary` for a profile with a second vector
+    /// model, and `reranking <tier>` for each tier this process has loaded --
+    /// oldest first, so a model that fell back to the CPU during a run lists
+    /// the plan it left and then the CPU's. Each plan is its target as plans
+    /// are keyed, the hash of its full plan key, and whether it is stable
+    /// across processes ([`pamin_index::PlanUse`]). A model not loaded is not
+    /// listed.
     ///
     /// For an evaluation to say which execution path produced it: under
     /// `PAMIN_DEVICE=auto` the same build runs on whatever the machine has.
@@ -1515,15 +1519,17 @@ impl Engine {
     /// Never panics or waits, so a run that is already failing can still ask:
     /// a poisoned lock is read through, since the device it guards is set at
     /// load, and a model another thread holds right now is left out.
-    pub fn providers(&self) -> Vec<(String, String)> {
+    pub fn providers(&self) -> Vec<(String, pamin_index::PlanUse)> {
         let mut providers = Vec::new();
         if let Some(embedder) = self.embedder.get().and_then(|held| held_now(held.as_ref())) {
-            providers.push(("embedding".to_string(), embedder.target()));
-            if let Some(target) = embedder.secondary_target() {
-                providers.push(("embedding secondary".to_string(), target));
+            for plan in embedder.plans() {
+                providers.push(("embedding".to_string(), plan));
+            }
+            for plan in embedder.secondary_plans().into_iter().flatten() {
+                providers.push(("embedding secondary".to_string(), plan));
             }
         }
-        providers.extend(self.models.reranker_targets());
+        providers.extend(self.models.reranker_plans());
         providers
     }
 

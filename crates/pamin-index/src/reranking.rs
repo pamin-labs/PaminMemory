@@ -949,6 +949,12 @@ impl Reranker {
         crate::inference::target_key(&self.model, self.device)
     }
 
+    /// Every execution plan this reranker has run on in this process,
+    /// oldest first, the current one last. See [`crate::PlanUse`].
+    pub fn plans(&self) -> Vec<crate::PlanUse> {
+        crate::inference::plans_of(&self.model, self.device)
+    }
+
     pub fn tier(&self) -> Rerank {
         self.tier
     }

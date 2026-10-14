@@ -668,7 +668,7 @@ async fn search_answers_questions_that_take_several_steps() {
         let tier = Rerank::default();
         let mut small = pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
             .expect("load the small reranker");
-        shape.also_ran("routes small reranker", small.target());
+        shape.also_ran("routes small reranker", small.plans());
         let mut routes = reranking::Routes::default();
         for query in &corpus.queries {
             let hits = engine
@@ -820,7 +820,7 @@ async fn search_answers_questions_that_take_several_steps() {
         let tier = Rerank::default();
         let mut model = pamin_index::Reranker::load(tier, &workspace.root().join("models"))
             .expect("load the reranker");
-        shape.also_ran("context reranker", model.target());
+        shape.also_ran("context reranker", model.plans());
         let labels = reranking::context_labels();
         let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
         harness::shape::tables(labels.iter().map(|(label, _)| label));
