@@ -246,6 +246,11 @@ fn arm(settings: &[String]) -> String {
 /// HEAD` names it there -- the way the XQuAD-R baseline names its code --
 /// with `+dirty-` and [`patched`]'s hash of the tracked changes when there are
 /// any, so two different patches on one commit are two different sources.
+///
+/// Read when the run starts, and checked against the commit the binary was
+/// compiled from (`PAMIN_ENGINE_COMMIT`, which `build.rs` sets): a binary
+/// built at one commit and run after the checkout moved would otherwise name
+/// the later commit for code it does not contain. Such a run is refused.
 fn source() -> String {
     let git = |args: &[&str]| {
         std::process::Command::new("git")
@@ -260,12 +265,23 @@ fn source() -> String {
         "git could not name the evaluated commit"
     );
     let commit = String::from_utf8(head.stdout).expect("git prints a UTF-8 commit hash");
+    built_from(env!("PAMIN_ENGINE_COMMIT"), commit.trim());
     let diff = git(&["diff", "--binary", "HEAD"]);
     assert!(
         diff.status.success(),
         "git could not list the tracked changes"
     );
     format!("{}{}", commit.trim(), patched(&diff.stdout))
+}
+
+/// Refuses a run whose checkout is not at the commit its harness was
+/// compiled from.
+fn built_from(built: &str, checked_out: &str) {
+    assert_eq!(
+        built, checked_out,
+        "this harness was compiled at {built} but the checkout is at {checked_out}; \
+         rebuild it before running, so its record names the code it ran"
+    );
 }
 
 /// What a source adds to its commit for `diff`, the tracked changes as `git
@@ -957,6 +973,13 @@ mod tests {
         assert_eq!(forward.0, backward.0);
         assert_ne!(forward.1, backward.1);
         assert_eq!(forward, build(&["q1", "q2"]));
+    }
+
+    /// A binary compiled at one commit and run after the checkout moved.
+    #[test]
+    #[should_panic(expected = "rebuild it before running")]
+    fn a_harness_built_at_another_commit_is_refused() {
+        built_from(&"a".repeat(40), &"b".repeat(40));
     }
 
     /// Two queries asked, one excluded, in one group.
