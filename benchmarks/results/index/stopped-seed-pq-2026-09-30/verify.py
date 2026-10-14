@@ -26,14 +26,20 @@ def verify_row(row):
 
     size = row['bytes']
     header = read('container_header', 0, 64)
-    hc, _, version, revision, _, hs, fs, fo, co, *_ = struct.unpack('<IHHIIHHIQQQQQ', header)
+    # Pinned v2 MetaHeader: magic is random per package and setup_time is a
+    # clock value, so only their widths are fixed; every reserved field is zero.
+    hc, reserved1, version, revision, _magic, hs, fs, fo, co, _setup_time, *reserved3 = struct.unpack('<IHHIIHHIQQQQQ', header)
     require((version, revision, hs, fs, co) == (2, 0, 64, 128, 64), 'Unknown container format')
     require(crc32c(b'\0' * 4 + header[4:]) == hc, 'Header CRC mismatch')
+    require((reserved1, reserved3) == (0, [0, 0, 0]), 'Unknown container format')
     footer_offset = fo if fo < 2**31 else size + fo - 2**32
     require(footer_offset == size - 128, 'Unsupported footer location')
     footer = read('container_footer', footer_offset, 128)
-    fc, table_crc, _, count, table_size, _, content_size, padding, *tail = struct.unpack('<IIIIII13Q', footer)
+    # Pinned v2 MetaFooter: content_crc covers omitted content bytes, and
+    # check_point/update_time are runtime values; every reserved field is zero.
+    fc, table_crc, _content_crc, count, table_size, footer_reserved1, content_size, padding, _check_point, _update_time, *tail = struct.unpack('<IIIIII13Q', footer)
     require(crc32c(b'\0' * 4 + footer[4:]) == fc, 'Footer CRC mismatch')
+    require(footer_reserved1 == 0 and tail[:7] == [0] * 7, 'Unknown container footer format')
     require(tail[-2] == 0 and tail[-1] == size, 'Chained package unsupported')
     require(0 < count <= 64 and count * 32 <= table_size <= 65536, 'Invalid table length')
     require(co + content_size + padding + table_size == footer_offset, 'Invalid container extent')
@@ -67,6 +73,8 @@ def verify_row(row):
     original_dim, quantizer_chunks, chunk_dim, centroids, zero_mean, input_dtype, rotate, payload_reserved = struct.unpack('<IIIIBBBB', q[24:])
     require(magic == 0x52545A51 and (qv, qt, dtype, reserved, metric) == (1, 5, 1, 0, 0), 'Unknown quantizer format')
     require(dims == original_dim and quantizer_chunks == chunks, 'PQ header/payload disagreement')
+    # README: 1,024 quantizer input dimensions; 1,026 stored after metric conversion.
+    require((stored_dims, dims) == (1026, 1024), 'Stored/quantizer dimensions differ from pinned metric-conversion relationship')
     require(dims % chunks == 0 and chunk_dim == dims // chunks, 'Invalid chunk dimensions')
     require((centroids, zero_mean, input_dtype, rotate, payload_reserved) == (256, 0, 2, 0, 0), 'Unsupported quantizer payload')
     require(payload_size == quantizer_bytes - 24 == 20 + dims * centroids * 2, 'Codebook length mismatch')

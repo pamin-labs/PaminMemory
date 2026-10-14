@@ -694,6 +694,12 @@ impl Default for Diagnosis {
     fn default() -> Self {
         let variants = variants();
         let offline = vec![BTreeMap::new(); variants.len()];
+        crate::harness::shape::tables(
+            std::iter::once("fused".to_string())
+                .chain(CHANNELS.iter().map(alone_table))
+                .chain(CHANNELS.iter().map(without_table))
+                .chain(variants.iter().map(|(label, _)| variant_table(label))),
+        );
         Self {
             variants,
             whole: BTreeMap::new(),
@@ -737,12 +743,14 @@ impl Diagnosis {
             score(into.entry(group.to_string()).or_default(), ranking);
         };
 
+        crate::harness::shape::table("fused");
         note(
             &mut self.whole,
             &hits.iter().map(|hit| hit.topic.clone()).collect::<Vec<_>>(),
         );
         let each = each_alone(hits);
         for channel in CHANNELS {
+            crate::harness::shape::table(alone_table(&channel));
             note(
                 self.alone.entry(channel).or_default(),
                 each.get(&channel).map(Vec::as_slice).unwrap_or(&[]),
@@ -753,9 +761,11 @@ impl Diagnosis {
                 hits,
                 &effective_fusion(hits, &Fusion::default()).without(channel),
             );
+            crate::harness::shape::table(without_table(&channel));
             note(self.without.entry(channel).or_default(), &ranking);
         }
-        for ((_, fusion), into) in self.variants.iter().zip(&mut self.offline) {
+        for ((label, fusion), into) in self.variants.iter().zip(&mut self.offline) {
+            crate::harness::shape::table(variant_table(label));
             note(into, &as_if(hits, fusion));
         }
     }
@@ -838,6 +848,21 @@ impl Diagnosis {
     }
 }
 
+/// The coverage table of one channel on its own. See [`crate::harness::shape`].
+pub fn alone_table(channel: &Channel) -> String {
+    format!("{channel:?} alone")
+}
+
+/// The coverage table of the fused list with one channel taken away.
+pub fn without_table(channel: &Channel) -> String {
+    format!("fused without {channel:?}")
+}
+
+/// The coverage table of one offline fusion setting.
+pub fn variant_table(label: &str) -> String {
+    format!("fusion {label}")
+}
+
 /// The same questions asked of two projects that hold the same memories
 /// differently -- one built before a change, one after -- scored per question,
 /// so each row is a paired comparison inside one run rather than two runs
@@ -846,10 +871,25 @@ impl Diagnosis {
 /// Records the fused list and the vector channel alone, because a change to
 /// what the vector is shown should show in the channel first and in fusion
 /// only as far as fusion lets it.
-#[derive(Default)]
 pub struct Paired {
     fused: [BTreeMap<String, crate::scoring::Scores>; 2],
     vector: [BTreeMap<String, crate::scoring::Scores>; 2],
+}
+
+/// The coverage tables, `before` first, as `Paired` fills them.
+const PAIRED_TABLES: [[&str; 2]; 2] = [
+    ["fused before", "vector before"],
+    ["fused after", "vector after"],
+];
+
+impl Default for Paired {
+    fn default() -> Self {
+        crate::harness::shape::tables(PAIRED_TABLES.concat());
+        Self {
+            fused: Default::default(),
+            vector: Default::default(),
+        }
+    }
 }
 
 impl Paired {
@@ -863,6 +903,7 @@ impl Paired {
     ) {
         for (side, hits) in [before, after].into_iter().enumerate() {
             let fused: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
+            crate::harness::shape::table(PAIRED_TABLES[side][0]);
             score(
                 self.fused[side].entry(group.to_string()).or_default(),
                 &fused,
@@ -870,6 +911,7 @@ impl Paired {
             let vector = each_alone(hits)
                 .remove(&Channel::Vector)
                 .unwrap_or_default();
+            crate::harness::shape::table(PAIRED_TABLES[side][1]);
             score(
                 self.vector[side].entry(group.to_string()).or_default(),
                 &vector,
@@ -966,10 +1008,14 @@ pub async fn compare_reranked(
     let settings: Vec<Setting> = std::iter::once(Setting::default())
         .chain(variants.iter().map(|(_, setting)| setting.clone()))
         .collect();
+    let tables: Vec<String> = std::iter::once("shipped settings".to_string())
+        .chain(variants.iter().map(|(label, _)| label.clone()))
+        .collect();
+    crate::harness::shape::tables(&tables);
     let mut measured: Vec<BTreeMap<String, crate::scoring::Scores>> =
         vec![BTreeMap::new(); settings.len()];
     for (index, (text, group)) in questions.iter().enumerate() {
-        for (setting, into) in settings.iter().zip(&mut measured) {
+        for ((setting, into), table) in settings.iter().zip(&mut measured).zip(&tables) {
             // SAFETY: the harness runs one test on one thread, and nothing
             // else reads the environment while this is written.
             match setting.depth {
@@ -982,6 +1028,7 @@ pub async fn compare_reranked(
                 .search_reranked_with(text, limit, depths, rerank, setting.fusion.clone())
                 .await
                 .expect("search");
+            crate::harness::shape::table(table);
             score(index, into.entry(group.clone()).or_default(), &hits);
         }
     }
