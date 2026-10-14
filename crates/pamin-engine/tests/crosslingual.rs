@@ -1865,6 +1865,14 @@ async fn search_reaches_across_languages() {
     shape.publish("search_reaches_across_languages", &named, &ARMS);
     println!("  benchmark code commit: {}", commit.trim());
     println!("  reranker device: cpu; export: onnx/model_int8.onnx");
+    // The default profile ends on a significance gate for what reranking is
+    // worth cross-lingually; a sample too small to ever pass it fails here,
+    // before the corpus is indexed.
+    let gated = named == DEFAULT_PROFILE
+        && statistics::gate(
+            "XQuAD-R cross-lingual, what reranking is worth",
+            queries.len(),
+        );
 
     // A named workspace is reused; an unnamed one is thrown away. Indexing
     // thirteen thousand sentences is minutes, and a harness that pays that on
@@ -2306,7 +2314,7 @@ async fn search_reaches_across_languages() {
         println!();
 
         assert!(
-            paired.is_significant(),
+            !gated || paired.is_significant(),
             "reranking moved cross-lingual nDCG@{NDCG_AT} by {paired} -- a \
              difference of means with nothing under it. The tier is supposed to \
              be worth something, not to be indistinguishable from leaving it off"

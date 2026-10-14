@@ -10,6 +10,7 @@
 // modules here.
 #![allow(dead_code)]
 
+pub mod compiled;
 pub mod shape;
 
 use std::path::PathBuf;
