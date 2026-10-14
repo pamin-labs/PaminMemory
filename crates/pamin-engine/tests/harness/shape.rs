@@ -272,13 +272,23 @@ fn source() -> Source {
     let head = git(&["rev-parse", "HEAD"])
         .and_then(|output| String::from_utf8(output.stdout).ok())
         .map(|head| head.trim().to_string());
-    let changed = git(&["diff", "--quiet", "HEAD"])
+    let tracked = git(&["diff", "--quiet", "HEAD"])
         .map(|_| false)
         .or_else(|| {
             // `--quiet` exits 1 for changes, which `git` above reads as a
             // failure; ask again for the list to tell the two apart.
             git(&["diff", "--name-only", "HEAD"]).map(|output| !output.stdout.is_empty())
         });
+    // Untracked and ignored files the build compiles in, as the build script
+    // counts them.
+    let args = super::compiled::status_args(env!("PAMIN_ENGINE_SOURCES"));
+    let untracked = git(&args.iter().map(String::as_str).collect::<Vec<_>>())
+        .map(|output| super::compiled::compiled_in(&String::from_utf8_lossy(&output.stdout)));
+    let changed = match (tracked, untracked) {
+        (Some(false), Some(false)) => Some(false),
+        (Some(true), _) | (_, Some(true)) => Some(true),
+        _ => None,
+    };
     // Anything but an explicit "false" counts as dirty, which errs towards
     // a noncanonical record.
     let built_dirty = env!("PAMIN_ENGINE_DIRTY") != "false";
@@ -292,17 +302,22 @@ fn source() -> Source {
 
 /// Whether a run compiled at `built`, from a checkout that was `built_dirty`
 /// or not, may write the canonical record, given the checkout's `head` and
-/// whether it has tracked `changed`s (`None` where `git` could not say).
+/// whether it has `changed` files a build compiles in (`None` where `git`
+/// could not say): tracked changes anywhere, and untracked or ignored files
+/// under the build script's sources.
 ///
 /// Only a clean build run from a clean checkout at the compiled commit can:
-/// edits compiled in may since have been restored, tracked changes at run
-/// time may or may not be what was compiled, and a build with no commit, or
+/// edits compiled in may since have been restored, changes at run time may
+/// or may not be what was compiled, and a build with no commit, or
 /// a checkout `git` cannot read, names nothing a reader could rebuild.
 fn provenance(built: &str, built_dirty: bool, head: Option<&str>, changed: Option<bool>) -> Source {
     let noncanonical = if built == "unknown" {
         Some("compiled outside a git checkout, so no commit names it".to_string())
     } else if built_dirty {
-        Some("compiled from a checkout with tracked changes, which no commit names".to_string())
+        Some(
+            "compiled from a checkout with changes a build compiles in, which no commit names"
+                .to_string(),
+        )
     } else if head.is_none() {
         Some("git could not read the checkout it runs in".to_string())
     } else if head != Some(built) {
@@ -314,9 +329,10 @@ fn provenance(built: &str, built_dirty: bool, head: Option<&str>, changed: Optio
         match changed {
             Some(false) => None,
             Some(true) => Some(
-                "the checkout has tracked changes, which may not be the compiled ones".to_string(),
+                "the checkout has changes a build compiles in, which may not be the compiled ones"
+                    .to_string(),
             ),
-            None => Some("git could not list the checkout's tracked changes".to_string()),
+            None => Some("git could not list the checkout's changes".to_string()),
         }
     };
     Source {
@@ -1072,7 +1088,10 @@ mod tests {
         // names the commit it was built at.
         assert!(reason(provenance(&a, false, Some(&b), Some(false))).contains(&b));
         // A dirty checkout may or may not be what was compiled.
-        assert!(reason(provenance(&a, false, Some(&a), Some(true))).contains("tracked changes"));
+        assert!(
+            reason(provenance(&a, false, Some(&a), Some(true)))
+                .contains("changes a build compiles in")
+        );
         // Edits compiled in and restored before the run: the checkout looks
         // clean at the compiled commit, but the binary is not that commit.
         assert!(reason(provenance(&a, true, Some(&a), Some(false))).contains("compiled from"));
