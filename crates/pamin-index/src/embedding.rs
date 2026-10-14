@@ -215,11 +215,18 @@ impl Embedder {
         crate::inference::target_key(&self.model, self.device)
     }
 
-    /// The second vector model's target, as [`Embedder::target`].
-    pub fn secondary_target(&self) -> Option<String> {
+    /// Every execution plan this model has run on in this process, oldest
+    /// first, the current one last: more than one when a failure fell back
+    /// or a revalidation moved it. See [`crate::PlanUse`].
+    pub fn plans(&self) -> Vec<crate::PlanUse> {
+        crate::inference::plans_of(&self.model, self.device)
+    }
+
+    /// The second vector model's plans, as [`Embedder::plans`].
+    pub fn secondary_plans(&self) -> Option<Vec<crate::PlanUse>> {
         self.secondary
             .as_ref()
-            .map(|(model, device)| crate::inference::target_key(model, *device))
+            .map(|(model, device)| crate::inference::plans_of(model, *device))
     }
 
     pub fn profile(&self) -> Profile {
