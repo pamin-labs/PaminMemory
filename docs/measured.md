@@ -1074,6 +1074,14 @@ three:
 | anonymous MiB after loading both models | 345.0 | 95.8 | −249.2 (−72.2%) |
 | anonymous MiB held after use and trim | 314.4 | 47.1 | −267.3 (−85.0%) |
 | peak RSS MiB | 991.2 | 744.2 | −247.0 (−24.9%) |
+| release `pamin` binary, bytes | 38,494,728 | 38,523,368 | +28,640 (+0.074%) |
+| new cache or index files | none | none | N/A: no file write added |
+| model cache | unchanged | unchanged | N/A: no model or prepared-copy path touched |
+| entry-point latency p50/p95, search and ingest | pending | pending | pending: entry-point p50/p95, search and ingest, vs perf/rescore-simd; scheduled |
+
+The disk rows compare the release binary built at `perf/rescore-simd`
+(`67fd1f3`) and at this change (`21d249d`). The change's product code is the
+tokenizer and its `yada` dependency, and it adds no file write.
 
 Outputs were bit-identical in all six runs. Encoding time was not measured,
 because the host was busy; load time moved by less than its run-to-run spread.
