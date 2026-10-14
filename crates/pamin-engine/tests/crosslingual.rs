@@ -336,8 +336,8 @@ impl Query<'_> {
     /// The relevant sentence keys for one group, and what to drop first.
     ///
     /// Each group removes from the ranking the answers it does not count,
-    /// rather than leaving them in as non-relevant. The two groups are the
-    /// same question under two answer keys, and every answer the key leaves
+    /// rather than leaving them in as non-relevant. The groups are the same
+    /// question under different answer keys, and every answer a key leaves
     /// out is still a correct answer.
     ///
     /// The cross-lingual group answers "can a query reach a memory written in
@@ -1667,6 +1667,14 @@ fn the_model_reaches_across_languages() {
     let home = eval_home();
     let mut embedder =
         Embedder::load(profile, &home.join("models")).expect("load the embedding model");
+    let mut providers = vec![(
+        "embedding".to_string(),
+        embedder.device().name().to_string(),
+    )];
+    if let Some(device) = embedder.secondary_device() {
+        providers.push(("embedding secondary".to_string(), device.name().to_string()));
+    }
+    shape.ran_on(move || providers.clone());
 
     let width = profile.dimensions() as usize;
     let vectors = embed_corpus(&mut embedder, &corpus, &home, width);
@@ -1914,6 +1922,7 @@ async fn search_reaches_across_languages() {
     )
     .await
     .expect("open the engine");
+    shape.ran_on(harness::shape::engines(&[&engine]));
 
     assert_eq!(
         engine.passage(),
@@ -1995,9 +2004,10 @@ async fn search_reaches_across_languages() {
     }
 
     // `FEATURES_OUT`: every candidate fusion saw, one row each, for fitting a
-    // fusion offline. See `features`. Each query is written in both groups,
-    // and its question id is the dataset's, so every asking of one question
-    // can be kept in one fold.
+    // fusion offline. See `features`. Each query is written once in each of
+    // `GROUPS` -- three rows per query, 3,570 question-group pairs on a full
+    // run -- and its question id is the dataset's, so every asking of one
+    // question can be kept in one fold.
     if let Some(mut dump) = features::Features::from_env("xquad-r") {
         const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
         harness::shape::tables(["features"]);
@@ -2080,6 +2090,7 @@ async fn search_reaches_across_languages() {
         let tier = Rerank::default();
         let mut small = pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
             .expect("load the small reranker");
+        shape.also_ran("routes small reranker", small.device());
         let mut routes = reranking::Routes::default();
         for query in &queries {
             let hits = engine
@@ -2110,7 +2121,7 @@ async fn search_reaches_across_languages() {
     // `CONTEXT`: the shipped tier shown each candidate's name and seed. See
     // `reranking::in_context`.
     if std::env::var("CONTEXT").is_ok() {
-        context(&engine, &workspace, &queries, &named).await;
+        context(&engine, &mut shape, &workspace, &queries, &named).await;
         return;
     }
 
@@ -3421,11 +3432,18 @@ async fn rerank_rules(
 /// This corpus's names are keys chosen to be unlike any text, so the named
 /// renderings ask what a name that carries nothing costs; it has no edges, so
 /// the seeded renderings equal their unseeded counterparts.
-async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query<'_>], named: &str) {
+async fn context(
+    engine: &Engine,
+    shape: &mut Shape,
+    workspace: &Workspace,
+    queries: &[Query<'_>],
+    named: &str,
+) {
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
     let mut model = pamin_index::Reranker::load(tier, &workspace.root().join("models"))
         .expect("load the reranker");
+    shape.also_ran("context reranker", model.device());
     let labels = reranking::context_labels();
     let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
     harness::shape::tables(labels.iter().map(|(label, _)| label));
