@@ -694,41 +694,38 @@ fn cpu_model() -> Option<String> {
     std::env::var("PROCESSOR_IDENTIFIER").ok()
 }
 
-/// What the harness binary was compiled as, from the build script.
+/// What the harness binary was compiled as.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 struct Build {
-    /// Cargo's `PROFILE`: `debug` or `release`.
-    profile: String,
-    opt_level: String,
-    target: String,
-    /// Cargo's `DEBUG`: whether debug information was compiled in.
-    debug: String,
-    /// The target features enabled, `CARGO_CFG_TARGET_FEATURE`.
-    target_features: String,
-    /// The flags rustc was given, `CARGO_ENCODED_RUSTFLAGS`.
-    rustflags: String,
-    /// `rustc -V` of the compiler that built it.
-    rustc: String,
+    /// pamin-index's build fingerprint, verbatim
+    /// ([`pamin_index::BUILD_FINGERPRINT`]): its sources, the workspace
+    /// manifests and Cargo config, target, profile, opt-level, debug
+    /// setting, rustflags, target features, Cargo profile overrides and
+    /// rustc's version. Whatever pamin-index adds to it names records too.
+    inference: String,
+    /// The same build, readable: each Cargo profile override set and each
+    /// target `cfg` (`CARGO_CFG_*`, the target features among them), as
+    /// `NAME=value`.
+    cargo: Vec<String>,
     /// The `ORT_*`, `ZVEC_*` and rustc-wrapper build variables that were
-    /// set, as `NAME=value`.
+    /// set, as `NAME=value`: what chooses the native libraries linked in,
+    /// which the fingerprint does not hold.
     environment: Vec<String>,
 }
 
 impl Build {
     fn compiled() -> Self {
-        Self {
-            profile: env!("PAMIN_ENGINE_BUILD_PROFILE").to_string(),
-            opt_level: env!("PAMIN_ENGINE_OPT_LEVEL").to_string(),
-            target: env!("PAMIN_ENGINE_TARGET").to_string(),
-            debug: env!("PAMIN_ENGINE_DEBUG").to_string(),
-            target_features: env!("PAMIN_ENGINE_TARGET_FEATURES").to_string(),
-            rustflags: env!("PAMIN_ENGINE_RUSTFLAGS").to_string(),
-            rustc: env!("PAMIN_ENGINE_RUSTC").to_string(),
-            environment: env!("PAMIN_ENGINE_BUILD_ENVIRONMENT")
+        let lines = |joined: &str| -> Vec<String> {
+            joined
                 .split('\x1f')
                 .filter(|line| !line.is_empty())
                 .map(str::to_string)
-                .collect(),
+                .collect()
+        };
+        Self {
+            inference: pamin_index::BUILD_FINGERPRINT.to_string(),
+            cargo: lines(env!("PAMIN_ENGINE_CARGO")),
+            environment: lines(env!("PAMIN_ENGINE_BUILD_ENVIRONMENT")),
         }
     }
 }
@@ -1784,13 +1781,8 @@ mod tests {
             seed: None,
             providers: vec!["embedding=cpu".into(), "reranking accurate=coreml".into()],
             build: Build {
-                profile: "release".into(),
-                opt_level: "3".into(),
-                target: "x86_64-unknown-linux-gnu".into(),
-                debug: "false".into(),
-                target_features: "fxsr,sse,sse2".into(),
-                rustflags: String::new(),
-                rustc: "rustc 1.98.1".into(),
+                inference: "f".repeat(64),
+                cargo: vec!["CARGO_CFG_TARGET_FEATURE=fxsr,sse,sse2".into()],
                 environment: Vec::new(),
             },
             hardware: Hardware {
@@ -1812,8 +1804,7 @@ mod tests {
         };
         let debug = Identity {
             build: Build {
-                profile: "debug".into(),
-                opt_level: "0".into(),
+                inference: "d".repeat(64),
                 ..base.build.clone()
             },
             ..base.clone()
@@ -1846,8 +1837,6 @@ mod tests {
             ("selection", |id| id.selection.push('x')),
             ("seed", |id| id.seed = Some(1)),
             ("providers", |id| id.providers.reverse()),
-            ("build.profile", |id| id.build.profile = "debug".into()),
-            ("build.opt_level", |id| id.build.opt_level = "0".into()),
             ("hardware.cpu", |id| id.hardware.cpu.push('x')),
             ("hardware.logical_cores", |id| {
                 id.hardware.logical_cores += 1
@@ -1855,17 +1844,10 @@ mod tests {
             ("hardware.accelerators", |id| {
                 id.hardware.accelerators.clear()
             }),
-            ("build.target", |id| {
-                id.build.target = "aarch64-apple-darwin".into()
+            ("build.inference", |id| id.build.inference = "d".repeat(64)),
+            ("build.cargo", |id| {
+                id.build.cargo.push("CARGO_PROFILE_RELEASE_LTO=fat".into())
             }),
-            ("build.debug", |id| id.build.debug = "true".into()),
-            ("build.target_features", |id| {
-                id.build.target_features.push_str(",avx2")
-            }),
-            ("build.rustflags", |id| {
-                id.build.rustflags = "-C target-cpu=native".into()
-            }),
-            ("build.rustc", |id| id.build.rustc.push('x')),
             ("build.environment", |id| {
                 id.build.environment.push("ORT_LIB_LOCATION=/ort".into())
             }),
@@ -1907,6 +1889,24 @@ mod tests {
         assert_eq!(Hardware::accelerators_for(&providers), ["coreml"]);
         assert!(Hardware::accelerators_for(&providers[..1]).is_empty());
         assert!(Hardware::detect().logical_cores > 0);
+    }
+
+    /// The build a record names is pamin-index's own fingerprint, so a field
+    /// pamin-index adds to it reaches the record, and the readable part says
+    /// what the target resolved to.
+    #[test]
+    fn the_build_is_pamin_index_s_fingerprint() {
+        let build = Build::compiled();
+        assert_eq!(build.inference, pamin_index::BUILD_FINGERPRINT);
+        assert_eq!(build.inference.len(), 64, "{}", build.inference);
+        assert!(
+            build
+                .cargo
+                .iter()
+                .any(|line| line.starts_with("CARGO_CFG_TARGET_ARCH=")),
+            "{:?}",
+            build.cargo
+        );
     }
 
     /// The GPUs a CUDA run could see are the ones `CUDA_VISIBLE_DEVICES`
