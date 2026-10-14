@@ -40,22 +40,24 @@ The two arms each started from the original seed; the arrows compare their indep
 | Metric | Before | After (each arm) | Absolute difference | Percentage change |
 | --- | --- | --- | --- | --- |
 | Four changed file sizes, total | 20,938,752 B | 20,938,752 B | 0 B | 0% |
-| Whole index disk bytes (private receipt) | 22,028,682 B | 22,028,682 B | 0 B | 0% |
+| Whole index apparent (logical) bytes (private receipt) | 22,028,682 B | 22,028,682 B | 0 B | 0% |
 | Added/removed index paths (private receipt) | 0 | 0 | 0 | N/A |
 | Product accuracy/quality | N/A | N/A | N/A | N/A |
 | Product latency p50/p95, CPU, RSS | N/A | N/A | N/A | N/A |
 
-Retained clone/snapshot overhead is diagnostic disk usage, not a product gain. Native test stdout elapsed seconds are raw harness completion times, not isolated latency measurements, and no speedup is claimed.
+The whole-index figure is the apparent (logical) byte sum of file sizes; allocated on-disk bytes were not measured (**N/A**). Retained clone/snapshot overhead is diagnostic disk usage, not a product gain. Native test stdout elapsed seconds are raw harness completion times, not isolated latency measurements, and no speedup is claimed.
 
 ## Public verification and omitted evidence
 
 [Pure-open stdout](pure-open.log) and [vector stdout](vector.log) are full native stdout copies inspected for private text. No lines required redaction. They carry no IDs, corpus text or vector bytes. Public JSON labels remove project IDs and paths; it includes only the 64-byte header, 128-byte footer, segment table reconstructed from nonzero runs plus zero padding, and 128 bytes containing the StreamerLinearMeta and LinearIndexHeader. Table segment names and arithmetic offsets are metadata; segment payloads are omitted. No database, complete index, features/vectors, UUID, private path, credentials, full source manifest, controller or execution harness is included.
 
+The producer of the primary 32-byte mutation diagnostic (the SDK probe helper, its controller and the copied seed) is private and is not published. The public procedure below only re-verifies the retained excerpts, logs and receipts; it cannot regenerate the mutation observation.
+
 Run only the offline verifier and invariant tests:
 
 ```sh
 python3 -B benchmarks/results/index/native-readonly-metadata-2026-10-01/verify.py
-(cd benchmarks/results/index/native-readonly-metadata-2026-10-01 && python3 -B -m unittest -v test_verify.py test_source_binding.py)
+(cd benchmarks/results/index/native-readonly-metadata-2026-10-01 && python3 -B -m unittest -v test_verify.py test_source_binding.py test_log_bytes.py)
 ```
 
 The verifier uses raw Castagnoli CRC32C with seed zero, not IEEE CRC32. Its lookup table is built once. Unchanged large tables reuse a two-entry cache keyed by immutable complete bytes: at most 4 MiB of input payload plus Python object overhead is retained; headers/footers and inputs above 2 MiB are not cached. Byte equality, rather than a digest or CRC alone, identifies cached inputs. Each new content still uses the scalar fallback; no optimized CRC32C dependency is required, and no SIMD or product-search speedup is claimed. Mutation checks continue to validate changed content and semantic invariants. Process RSS was not measured for this cache.
@@ -98,6 +100,11 @@ rotated rerun below repeats every arm under a rotated order.
 | Scalar CRC table bytes (warm) | 16839680 | 0 | -16839680 | -100.000000% |
 | Maximum retained CRC cache input payload bytes | 0 | 4194304 | +4194304 | N/A (zero baseline) |
 | Process RSS bytes | N/A | N/A | N/A | N/A |
+
+These before/after figures measure the combined change, the hoisted CRC
+lookup table together with the complete-input table cache. They do not
+attribute the difference to either part: a hoist-only intermediate arm was not
+measured (**N/A**), so neither individual contribution is established.
 
 All 16 retained tables have one identical complete byte payload. Cold validation
 has 1 scalar table scan and 15 cache hits; warm validation has 0 scalar table
