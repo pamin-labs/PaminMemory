@@ -10,9 +10,10 @@
 //! The graph takes `input_ids` and `attention_mask` and returns
 //! `sentence_embedding`, the attention-masked mean of the last hidden state
 //! projected to 768 dimensions and L2-normalized -- the model's own pooling
-//! and normalization, inside the graph, so a vector is used as it comes. Its
-//! Matryoshka training makes a prefix of it a vector too: `PAMIN_EG2_DIMS`
-//! keeps the first 512, 256 or 128 dimensions and normalizes them again.
+//! and normalization, inside the graph, so a vector is used as it comes, at
+//! its full width. Its Matryoshka training makes a prefix a vector too, but
+//! 512 dimensions measured below 768 through the search entry point (XQuAD-R
+//! cross-lingual nDCG@10 -0.0028, same-language -0.0017), so no width is cut.
 //!
 //! What this export is: every matrix int8 with per-token u8 activations, the
 //! rotary embedding and grouped-query attention as ONNX Runtime's contrib
@@ -33,9 +34,6 @@ use crate::error::{IndexError, Result};
 /// The directory the model is read from.
 const DIRECTORY: &str = "PAMIN_EG2_DIR";
 
-/// How many of the 768 dimensions to keep.
-const DIMENSIONS: &str = "PAMIN_EG2_DIMS";
-
 const MODEL: &str = "model.onnx";
 const DATA: &str = "model.onnx.data";
 const TOKENIZER: &str = "tokenizer.json";
@@ -47,8 +45,8 @@ const TOKENIZER: &str = "tokenizer.json";
 /// this export used, and changing it changes every stored vector.
 pub(crate) const PREFIXES: (&str, &str) = ("task: search result | query: ", "title: none | text: ");
 
-/// The width the graph returns.
-const WIDTH: u32 = 768;
+/// The width the graph returns, and the width this profile stores.
+pub(crate) const WIDTH: u32 = 768;
 
 /// The configured directory, or why there is none.
 pub(crate) fn directory() -> Result<PathBuf> {
@@ -62,29 +60,10 @@ pub(crate) fn directory() -> Result<PathBuf> {
         })
 }
 
-/// The vector width this profile stores: 768 unless `PAMIN_EG2_DIMS` names
-/// one of the model's Matryoshka widths.
-///
-/// Any other value falls back to 768 with a warning. The width is part of
-/// [`identity`], so a mistyped setting can build an index of the wrong width
-/// but never put two widths in one.
-pub(crate) fn dimensions() -> u32 {
-    static CHOSEN: OnceLock<u32> = OnceLock::new();
-    *CHOSEN.get_or_init(|| match std::env::var(DIMENSIONS) {
-        Err(_) => WIDTH,
-        Ok(value) => match value.trim().parse() {
-            Ok(width @ (768 | 512 | 256 | 128)) => width,
-            _ => {
-                tracing::warn!(%value, "{DIMENSIONS} is not 768, 512, 256 or 128; using 768");
-                WIDTH
-            }
-        },
-    })
-}
-
 /// The identity recorded with every vector this profile stores.
 ///
-/// A digest of the graph, its weights and its tokenizer, and the width: two
+/// A digest of the graph, its weights and its tokenizer, and the width (the
+/// `:d768` suffix stays so indexes built before the width was fixed open): two
 /// exports of this model differ in nothing but their quantization -- the two
 /// final candidates' weight files are the same size to the byte -- and each
 /// produces its own space. Read once per process; hashing the 275 MB of
@@ -101,7 +80,7 @@ pub(crate) fn identity() -> &'static str {
             Ok(format!("{:x}", Sha256::digest(combined.as_bytes())))
         });
         match digest {
-            Ok(digest) => format!("embeddinggemma-2-int8@{}:d{}", &digest[..16], dimensions()),
+            Ok(digest) => format!("embeddinggemma-2-int8@{}:d{WIDTH}", &digest[..16]),
             Err(_) => "embeddinggemma-2-int8:unconfigured".to_string(),
         }
     })
@@ -118,26 +97,14 @@ pub(crate) fn load(
         .map_err(|error| error.context("loading embedding model"))
 }
 
-/// A graph vector cut to [`dimensions`] and normalized again.
-///
-/// At the full width the graph's own normalization stands, untouched.
-pub(crate) fn truncated(mut vector: Vec<f32>) -> Result<Vec<f32>> {
+/// A graph vector, refused unless it has the width the graph declares; the
+/// graph's own normalization stands, untouched.
+pub(crate) fn checked(vector: Vec<f32>) -> Result<Vec<f32>> {
     if vector.len() != WIDTH as usize {
         return Err(IndexError::Engine(format!(
             "the gemma export returned {} dimensions, not {WIDTH}",
             vector.len()
         )));
-    }
-    let width = dimensions() as usize;
-    if width < vector.len() {
-        vector.truncate(width);
-        let norm = crate::projection::dot(&vector, &vector).sqrt();
-        if norm.is_nan() || norm <= 0.0 {
-            return Err(IndexError::Numerical("a zero gemma vector".into()));
-        }
-        for value in &mut vector {
-            *value /= norm;
-        }
     }
     Ok(vector)
 }
@@ -191,7 +158,6 @@ mod tests {
                 "parity.json was made from a different {file}"
             );
         }
-        assert_eq!(dimensions(), WIDTH, "compare at the graph's own width");
         let cache = tempfile::tempdir().unwrap();
         let mut embedder =
             crate::Embedder::load(crate::Profile::Gemma, cache.path()).expect("load gemma");
@@ -240,17 +206,9 @@ mod tests {
     }
 
     #[test]
-    fn a_shorter_width_is_renormalized_and_the_full_one_is_untouched() {
+    fn the_full_width_is_untouched_and_any_other_refused() {
         let full: Vec<f32> = (0..768).map(|i| ((i % 7) as f32 - 3.0) / 50.0).collect();
-        // The process-wide width is whatever the environment says; only the
-        // full width's behaviour is fixed, so test that and the arithmetic.
-        if dimensions() == WIDTH {
-            assert_eq!(truncated(full.clone()).unwrap(), full);
-        } else {
-            let cut = truncated(full).unwrap();
-            assert_eq!(cut.len(), dimensions() as usize);
-            assert!((crate::projection::dot(&cut, &cut) - 1.0).abs() < 1e-5);
-        }
-        assert!(truncated(vec![1.0; 512]).is_err());
+        assert_eq!(checked(full.clone()).unwrap(), full);
+        assert!(checked(vec![1.0; 512]).is_err());
     }
 }

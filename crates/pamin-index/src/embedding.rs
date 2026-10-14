@@ -119,7 +119,7 @@ impl Profile {
             Self::Speed => 384,
             Self::Balanced => 768,
             Self::Accuracy | Self::DualAccuracy => 1024,
-            Self::Gemma => crate::gemma::dimensions(),
+            Self::Gemma => crate::gemma::WIDTH,
         }
     }
 
@@ -508,7 +508,7 @@ fn profile_vectors(
         }
         Profile::Gemma => texts
             .iter()
-            .map(|text| crate::gemma::truncated(dense(model, text)?))
+            .map(|text| crate::gemma::checked(dense(model, text)?))
             .collect(),
         _ => e5_vectors(
             model,
