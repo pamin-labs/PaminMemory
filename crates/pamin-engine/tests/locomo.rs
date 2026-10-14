@@ -18,10 +18,12 @@
 //! comparison of the same search with and without the graph having anything
 //! to walk -- the graph channel's worth on this corpus, not a guess at it.
 //!
-//! **Scored by category.** LOCOMO's five categories are reported separately
-//! and never summed. Adversarial questions ask about something only the other
-//! speaker said; their evidence is still the turn that says it, so they grade
-//! retrieval the same way and are kept.
+//! **Scored by category.** LOCOMO's categories are reported separately and
+//! never summed. Adversarial questions (category 5) are left out: their
+//! `evidence` names the tempting wrong-speaker turn, not a turn holding the
+//! answer, because abstaining is the correct answer to them (see
+//! `benchmarks/datasets/locomo.py`). Rewarding retrieval of that turn would
+//! score the trap as the key.
 //!
 //! **Licence.** LOCOMO is CC BY-NC 4.0 (Maharana et al., ACL 2024). It is
 //! fetched at run time from the authors' repository, not vendored.
@@ -70,6 +72,9 @@ const DEPTHS: Depths = Depths {
     channel: 50,
     graph: 2,
 };
+
+/// LOCOMO's adversarial category, whose evidence is the trap.
+const ADVERSARIAL: usize = 5;
 
 const CATEGORY: [&str; 5] = [
     "multi-hop",
@@ -168,6 +173,9 @@ fn load() -> Vec<Conversation> {
                 .iter()
                 .filter_map(|qa| {
                     let category = qa["category"].as_u64()? as usize;
+                    if category == ADVERSARIAL {
+                        return None;
+                    }
                     // Evidence ids are sometimes written with a typo upstream
                     // (`D:11:26`, `D30:05`); a question none of whose evidence
                     // names a turn that exists cannot be graded and is left out.
