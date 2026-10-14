@@ -498,7 +498,7 @@ fn alone(model: &Encoder, texts: &[String]) -> Result<Vec<Vec<tokenizers::Encodi
 }
 
 /// Where BGE-M3's int8 export is published, and which of its files it is.
-const JOINT_REPOSITORY: &str = "gpahal/bge-m3-onnx-int8";
+pub(crate) const JOINT_REPOSITORY: &str = "gpahal/bge-m3-onnx-int8";
 const JOINT_FILE: &str = "model_quantized.onnx";
 
 /// The longest text BGE-M3 reads, in tokens.

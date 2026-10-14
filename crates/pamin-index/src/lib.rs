@@ -39,3 +39,4 @@ pub use projection::{
 pub use reranking::{Ranked, Rerank, Reranked, Reranker};
 pub use reshape::{Held, Reshape, Reshaped};
 pub use segmentation::{Segmenter, detect_language};
+pub use tokenizer::SpanTokens;
