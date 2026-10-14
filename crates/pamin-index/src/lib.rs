@@ -22,6 +22,7 @@ pub mod projection;
 pub mod reranking;
 mod reshape;
 pub mod segmentation;
+pub mod spans;
 mod tokenizer;
 #[cfg(target_os = "windows")]
 mod winml;
