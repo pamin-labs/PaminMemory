@@ -1084,6 +1084,7 @@ async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str, models: &st
                 );
             },
         );
+        priced.planned_like(engine);
     }
     priced.report(&format!(
         "rules for the {} reranker's scores, MIRACL, {named}",

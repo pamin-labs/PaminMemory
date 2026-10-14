@@ -376,7 +376,9 @@ pub fn sweep_table<T>(
 /// [`sweep_table`] whose tests run over units rather than questions: `keys`
 /// names each scored query's unit, in `per_query` order. The means are still
 /// over questions; the paired differences, the family p and what a row can
-/// see are over each unit's mean.
+/// see are over each unit's share of that mean
+/// (`statistics::cluster_macro_contributions`), whose mean is the `diff`
+/// shown.
 pub fn clustered_sweep_table<T>(
     title: &str,
     shipped: &crate::scoring::Scores,
@@ -392,8 +394,12 @@ pub fn clustered_sweep_table<T>(
         .enumerate()
         .filter_map(|(at, row)| row.map(|row| (at, row)))
         .collect();
-    let units =
-        |scores: &crate::scoring::Scores| statistics::cluster_means(&scores.per_query, keys);
+    // Each cluster's share of the table's question-weighted mean, so a paired
+    // mean over them is the `diff` shown.
+    let one = vec![0; keys.len()];
+    let units = |scores: &crate::scoring::Scores| {
+        statistics::cluster_macro_contributions(&scores.per_query, &one, keys)
+    };
     let shipped_units = units(shipped);
     let adjusted = statistics::family(
         &shipped_units,
@@ -441,7 +447,7 @@ pub fn clustered_sweep_table<T>(
 ///
 /// Five folds stratified by group, or as many as there are units when there
 /// are fewer, dealt by `units`: the queries of one unit share a fold, and the
-/// paired test runs over each unit's macro mean over its groups, so related
+/// paired test runs over each unit's share of the macro mean, so related
 /// questions are neither split between training and holdout nor counted as
 /// independent. For each fold, the rule sees the other folds' means and its
 /// choice is scored on that one. Three numbers come out,
@@ -562,7 +568,7 @@ pub fn cross_validated<T>(
         println!("  both answer keys for each physical query share one fold");
     } else if members.len() < keys.len() {
         println!(
-            "  {} clusters of related questions, each in one fold; the paired test is over their means",
+            "  {} clusters of related questions, each in one fold; the paired test is over their shares of the macro mean",
             members.len()
         );
     }
@@ -579,11 +585,11 @@ pub fn cross_validated<T>(
         "  optimism of choosing in-sample                  {:+.4}",
         in_sample - procedure
     );
-    // Each unit weighed as the macro means above weigh it: per group, then
-    // equally over the groups it has.
+    // Each unit's share of the macro means above, so the paired test's mean
+    // difference is the reported one, procedure less what ships.
     let paired = statistics::compare(
-        &statistics::cluster_macro_means(&baseline, &labels, &keys),
-        &statistics::cluster_macro_means(&selected.held_out, &labels, &keys),
+        &statistics::cluster_macro_contributions(&baseline, &labels, &keys),
+        &statistics::cluster_macro_contributions(&selected.held_out, &labels, &keys),
     );
     println!("  the procedure against what ships: {paired}");
     let chosen: Vec<&str> = selected
