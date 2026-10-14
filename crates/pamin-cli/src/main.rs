@@ -348,6 +348,11 @@ mod tests {
         "PAMIN_ENGINE_BUILD_PROFILE",
         "PAMIN_ENGINE_OPT_LEVEL",
         "PAMIN_ENGINE_TARGET",
+        "PAMIN_ENGINE_DEBUG",
+        "PAMIN_ENGINE_TARGET_FEATURES",
+        "PAMIN_ENGINE_RUSTFLAGS",
+        "PAMIN_ENGINE_RUSTC",
+        "PAMIN_ENGINE_BUILD_ENVIRONMENT",
         "PAMIN_CATCH_UP_BATCH",
         "PAMIN_EVAL_HOME",
         // Cached-export inputs used only by the native preparation regression.
