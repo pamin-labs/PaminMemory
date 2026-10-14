@@ -1183,9 +1183,12 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
         Rerank::Accurate => Local::configured()?,
         _ => None,
     };
+    let hub = repository.identity(cache_dir);
+    // With a local export the CPU loads it and an accelerator loads the hub's,
+    // so a plan measured across devices depends on both.
     let identity = match local {
-        Some(local) => local.identity.clone(),
-        None => repository.identity(cache_dir),
+        Some(local) => format!("{}+{hub}", local.identity),
+        None => hub.clone(),
     };
 
     let session = |device: Device, providers, _validated: bool| -> Result<Encoder> {
@@ -1318,7 +1321,10 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
         tier = tier.name(),
         device = device.name(),
         maximum_tokens = model.maximum_tokens(),
-        source = %identity,
+        source = %match local {
+            Some(local) if matches!(device, Device::Cpu) => local.identity.as_str(),
+            _ => hub.as_str(),
+        },
         "reranker loaded"
     );
 
