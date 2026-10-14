@@ -366,15 +366,45 @@ impl Keys {
 
     /// The primary key `topic` is stored under.
     fn key(self, topic: TopicId) -> String {
-        self.spell(topic.0).to_string()
+        self.span_key(topic, 0)
     }
 
-    /// The topic stored under `key`, or `None` for a key this crate did not
-    /// write.
+    /// The primary key span `ordinal` of `topic` is stored under: the
+    /// topic's own for the first, so a memory of one span is keyed as a topic
+    /// always was, and `{key}#{ordinal}` for the rest.
+    fn span_key(self, topic: TopicId, ordinal: u32) -> String {
+        let key = self.spell(topic.0).to_string();
+        match ordinal {
+            0 => key,
+            ordinal => format!("{key}#{ordinal}"),
+        }
+    }
+
+    /// The topic stored under `key`, whichever of its spans the key is, or
+    /// `None` for a key this crate did not write.
+    ///
+    /// Every channel reads its topics through this, and drops a key it
+    /// returns `None` for without a word -- so a span key read as anything
+    /// but its topic would lose that span from search silently.
     fn topic(self, key: &str) -> Option<TopicId> {
-        uuid::Uuid::parse_str(key)
-            .ok()
-            .map(|parsed| TopicId::from(self.spell(parsed)))
+        self.span(key).map(|(topic, _)| topic)
+    }
+
+    /// The topic and span ordinal stored under `key`. Only the spelling
+    /// [`span_key`](Self::span_key) writes is read: no `#0`, no leading zero.
+    fn span(self, key: &str) -> Option<(TopicId, u32)> {
+        let (key, ordinal) = match key.split_once('#') {
+            None => (key, 0),
+            Some((key, ordinal)) => (
+                key,
+                ordinal
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|&parsed| parsed > 0 && parsed.to_string() == ordinal)?,
+            ),
+        };
+        let topic = uuid::Uuid::parse_str(key).ok()?;
+        Some((TopicId::from(self.spell(topic)), ordinal))
     }
 
     /// Both directions at once, since reversing is its own inverse.
@@ -2383,6 +2413,34 @@ mod keys {
         assert_eq!(Keys::Topic.key(topic), topic.to_string());
         assert_ne!(Keys::Reversed.key(topic), topic.to_string());
         assert_eq!(KEYS, Keys::Reversed, "a new index spells keys reversed");
+    }
+
+    /// A span's key reads back as its topic and ordinal, and as its topic
+    /// alone where only that is asked for. A key `topic` failed to strip
+    /// would be dropped by every channel without an error.
+    #[test]
+    fn a_span_key_reads_back_as_its_topic_and_ordinal() {
+        let topics = [
+            TopicId::new(),
+            TopicId(uuid::Uuid::nil()),
+            TopicId(uuid::Uuid::max()),
+        ];
+        for keys in [Keys::Topic, Keys::Reversed] {
+            for topic in topics {
+                assert_eq!(keys.span_key(topic, 0), keys.key(topic));
+                for ordinal in [0, 1, 2, 9, 10, 4_000, u32::MAX] {
+                    let key = keys.span_key(topic, ordinal);
+                    assert_eq!(keys.span(&key), Some((topic, ordinal)), "{key}");
+                    assert_eq!(keys.topic(&key), Some(topic), "{key}");
+                }
+                let key = keys.key(topic);
+                for suffix in ["#0", "#01", "#", "#-1", "#+1", "#1#2", "#x", "#4294967296"] {
+                    assert_eq!(keys.span(&format!("{key}{suffix}")), None, "{suffix}");
+                }
+            }
+        }
+        let topic = topics[0];
+        assert_eq!(Keys::Topic.span_key(topic, 3), format!("{topic}#3"));
     }
 
     /// Topics created one after another do not make keys that ascend.
