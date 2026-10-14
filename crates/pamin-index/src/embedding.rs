@@ -209,6 +209,19 @@ impl Embedder {
         self.device
     }
 
+    /// The execution target this model runs on, as its execution plans are
+    /// keyed: `npu:<provider>:<id>` for an NPU, the device's name otherwise.
+    pub fn target(&self) -> String {
+        crate::inference::target_key(&self.model, self.device)
+    }
+
+    /// The second vector model's target, as [`Embedder::target`].
+    pub fn secondary_target(&self) -> Option<String> {
+        self.secondary
+            .as_ref()
+            .map(|(model, device)| crate::inference::target_key(model, *device))
+    }
+
     pub fn profile(&self) -> Profile {
         self.profile
     }
