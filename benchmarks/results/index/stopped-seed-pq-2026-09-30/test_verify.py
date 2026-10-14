@@ -51,6 +51,33 @@ class MetadataGuardTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Unknown container'):
             verify_row(self.row)
 
+    def test_nonzero_reserved_header_fields_with_valid_crc(self):
+        for offset, layout in [(4, '<H'), (40, '<Q'), (48, '<Q'), (56, '<Q')]:
+            with self.subTest(offset=offset):
+                self.setUp()
+                self.mutate('container_header', lambda b: struct.pack_into(layout, b, offset, 1), True)
+                with self.assertRaisesRegex(ValueError, 'Unknown container format'):
+                    verify_row(self.row)
+
+    def test_nonzero_reserved_footer_fields_with_valid_crc(self):
+        for offset in [20] + [56 + 8 * index for index in range(7)]:
+            with self.subTest(offset=offset):
+                self.setUp()
+                layout = '<I' if offset == 20 else '<Q'
+                self.mutate('container_footer', lambda b: struct.pack_into(layout, b, offset, 1), True)
+                with self.assertRaisesRegex(ValueError, 'Unknown container footer format'):
+                    verify_row(self.row)
+
+    def test_dimensions_bound_to_metric_conversion(self):
+        # A consistent 1,026-dimension quantizer would satisfy every other check.
+        self.mutate('diskann_meta_prefix', lambda b: struct.pack_into('<Q', b, 8, 1024))
+        with self.assertRaisesRegex(ValueError, 'Stored/quantizer dimensions'):
+            verify_row(self.row)
+        self.setUp()
+        self.mutate('diskann_meta_prefix', lambda b: struct.pack_into('<Q', b, 8, 2048))
+        with self.assertRaisesRegex(ValueError, 'Stored/quantizer dimensions'):
+            verify_row(self.row)
+
     def test_unknown_quantizer(self):
         self.mutate('quantizer_fixed_prefix', lambda b: struct.pack_into('<H', b, 6, 99))
         with self.assertRaisesRegex(ValueError, 'Unknown quantizer'):
