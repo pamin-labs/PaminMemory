@@ -94,8 +94,55 @@ impl Paired {
     /// that does not clear it is not a small result; it is an absent one, and
     /// the wins and losses are what to report instead.
     pub fn is_significant(&self) -> bool {
-        self.p < 0.05
+        self.p < SIGNIFICANCE
     }
+}
+
+/// The bar [`Paired::is_significant`] holds a p to.
+pub const SIGNIFICANCE: f64 = 0.05;
+
+/// The smallest p [`compare`] can report over `n` paired differences.
+///
+/// Only the two sign patterns that agree with every observed sign are as
+/// extreme as a run where every difference points one way, so the exact
+/// sign-flip p cannot fall below `2 / 2^n`, and the sampled estimate cannot
+/// fall below `1 / (RESAMPLES + 1)`. Ties make it larger still, so this is
+/// the best case.
+pub fn smallest_p(n: usize) -> f64 {
+    if n == 0 {
+        return 1.0;
+    }
+    let exact = 2.0 * 0.5f64.powi(n.min(1_100) as i32);
+    exact.max(1.0 / (RESAMPLES + 1) as f64)
+}
+
+/// The fewest paired observations whose [`smallest_p`] clears
+/// [`SIGNIFICANCE`].
+pub fn fewest_for_significance() -> usize {
+    (1..)
+        .find(|n| smallest_p(*n) < SIGNIFICANCE)
+        .expect("some count clears the bar")
+}
+
+/// Whether a harness applies its `is_significant` gate to `what`, measured
+/// over `n` paired units, failing up front when `n` can never clear it.
+///
+/// Called before the corpus is indexed: a gate certain to fail is otherwise
+/// found only after all of that work. `SIGNIFICANCE_GATE=off` opts an
+/// exploratory run out of the gate, and the harness then skips it.
+pub fn gate(what: &str, n: usize) -> bool {
+    if std::env::var("SIGNIFICANCE_GATE").as_deref() == Ok("off") {
+        return false;
+    }
+    assert!(
+        smallest_p(n) < SIGNIFICANCE,
+        "{what}: {n} paired units can reach p = {:.4} at best, never p < {SIGNIFICANCE}, so \
+         its significance gate would fail after all the indexing. Ask for at least {} \
+         units, or set SIGNIFICANCE_GATE=off for an exploratory run without the gate",
+        smallest_p(n),
+        fewest_for_significance()
+    );
+    true
 }
 
 impl fmt::Display for Paired {
@@ -676,6 +723,21 @@ mod tests {
             cluster_means(&scores, &keys),
             (0..10).map(f64::from).collect::<Vec<_>>()
         );
+    }
+
+    /// Six units are the fewest a one-sided run of signs can take below
+    /// five per cent; five cannot, whatever they say.
+    #[test]
+    fn too_few_units_cannot_be_significant() {
+        assert_eq!(fewest_for_significance(), 6);
+        assert!(smallest_p(5) >= SIGNIFICANCE);
+        let five = compare(&[0.0; 5], &[1.0; 5]);
+        assert!(!five.is_significant(), "p was {}", five.p);
+        let six = compare(&[0.0; 6], &[1.0; 6]);
+        assert!(six.is_significant(), "p was {}", six.p);
+        assert!(six.p >= smallest_p(6) * 0.5, "p was {}", six.p);
+        assert_eq!(smallest_p(0), 1.0);
+        assert_eq!(smallest_p(10_000), 1.0 / (RESAMPLES + 1) as f64);
     }
 
     /// Choosing the best of many settings on the same queries that grade it
