@@ -168,6 +168,39 @@ evaluation harness. Raising them costs latency for recall you have no way to
 measure from outside. If you want more control over retrieval, use `grep`,
 `read` and `neighbors` — paths whose behaviour you can actually verify.
 
+### When to stop searching
+
+Every `search` at the default tier costs more than a second and a page of
+results in your context. The 1522 ms in the table above was measured at twenty
+reranked candidates; the default now reranks thirty, and `docs/measured.md`
+records slower medians on busier machines. A second search pays off only when
+it can find something the first could not. The rules below are a heuristic for
+spending that cost; no agent-task measurement yet shows how often a repeat
+search finds something new.
+
+- **Before searching again, name what is missing.** List the facts the
+  question needs, then check them against the results you already have. Stop
+  when each one is either backed by a hit or is plainly not there. A result
+  that answers the question but that you have not read in full calls for
+  `read`, not another `search`.
+- **Rephrase at most once, and never to the same place.** If the second
+  phrasing brings back mostly the same topics (say, eight of the first ten),
+  the ranking is not the problem and a third phrasing will land there too.
+  Switch to a path that does not rank:
+  - `grep` for an exact string you expect the answer to contain;
+  - `neighbors` from the best topic you found.
+
+  `topics` is not one of them: it merges name matches with the same ranked
+  search, unreranked, so only its name matches are new evidence. Use it to see
+  what the workspace calls things.
+- **After two searches and a `grep` miss, stop and say what you tried.**
+  Report that those probes found nothing, not that the memory does not exist:
+  `grep` matches one exact literal, case-sensitive unless you pass `-i`, and
+  `search` returns five results by default, so differently worded or
+  lower-ranked memories can still be there. More searching rarely changes
+  that, and an answer built from the closest near-miss is worse than an honest
+  "I searched for X and Y and found nothing".
+
 ## Relationships
 
 Writing a memory that names another topic derives an edge automatically — no

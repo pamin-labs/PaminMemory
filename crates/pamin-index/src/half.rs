@@ -19,6 +19,7 @@
 
 use std::ffi::{CString, c_void};
 
+use half::slice::HalfFloatSliceExt;
 use zvec_rust::{DataType, Doc};
 
 use crate::error::{IndexError, Result};
@@ -122,8 +123,12 @@ pub(crate) fn get(doc: &Doc, name: &str) -> Result<Option<Vec<f32>>> {
         )));
     }
     // SAFETY: `size` bytes at `pointer` are the field's fp16 codes.
-    let codes = unsafe { std::slice::from_raw_parts(pointer.cast::<u16>(), size / 2) };
-    Ok(Some(codes.iter().map(|code| decode(*code)).collect()))
+    let codes = unsafe { std::slice::from_raw_parts(pointer.cast::<half::f16>(), size / 2) };
+    // The same values `decode` gives, converted by the CPU's own instruction
+    // where it has one; a test compares the two over every code.
+    let mut vector = vec![0.0; codes.len()];
+    codes.convert_to_f32_slice(&mut vector);
+    Ok(Some(vector))
 }
 
 /// What an index stores for `vector`: each component rounded to the nearest
@@ -171,6 +176,25 @@ mod tests {
                 continue;
             }
             assert_eq!(encode(decode(code)), code, "{code:#06x}");
+        }
+    }
+
+    /// The CPU conversion `get` uses gives what `decode` does for every code;
+    /// NaN payloads are not compared, as nothing stores one.
+    #[test]
+    fn the_cpu_conversion_matches_decode() {
+        use half::slice::{HalfBitsSliceExt, HalfFloatSliceExt};
+        let codes: Vec<u16> = (0..=u16::MAX).collect();
+        let mut widened = vec![0.0; codes.len()];
+        codes
+            .reinterpret_cast::<half::f16>()
+            .convert_to_f32_slice(&mut widened);
+        for (code, value) in codes.iter().zip(widened) {
+            let expected = decode(*code);
+            assert!(
+                value.to_bits() == expected.to_bits() || (value.is_nan() && expected.is_nan()),
+                "{code:#06x}: {value} vs {expected}"
+            );
         }
     }
 
