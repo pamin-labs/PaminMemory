@@ -716,6 +716,10 @@ if __name__ == '__main__':
             if not path.exists():path.parent.mkdir(parents=True,exist_ok=True);path.write_text('synthetic '+name+'\n')
             baseline[name]=hashlib.sha256(path.read_bytes()).hexdigest()
         (archive/'provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')
+        # migrate.rs embeds the migration SQL with include_str!; install the
+        # archived copies so the synthetic source matches the recorded base.
+        migrations=source/'crates/pamin-store/migrations';migrations.mkdir(parents=True,exist_ok=True)
+        for sql in (ROOT/'source/migrations').glob('*.sql'):shutil.copyfile(sql,migrations/sql.name)
         channel=source/'crates/pamin-core/src/channel.rs';original=channel.read_bytes();channel.write_text('another revision\n')
         rejected=Path(temp)/'future rejected'
         result=subprocess.run([sys.executable,str(archive/'source/prepare-future.py'),'--source',str(source),'--out',str(rejected)],capture_output=True,text=True)
@@ -725,7 +729,16 @@ if __name__ == '__main__':
         result=subprocess.run([sys.executable,str(archive/'source/prepare-future.py'),'--source',str(source),'--out',str(rejected)],capture_output=True,text=True)
         assert result.returncode!=0 and not rejected.exists() and 'unrecorded build input in source: crates/pamin-index/build.rs' in result.stderr,result.stderr
         build.unlink()
-        print('PASS: prospective preparation rejects a source that differs from the recorded base or adds a build input before copying')
+        initial=migrations/'V1__initial.sql';original_sql=initial.read_bytes()
+        for label,change,undo,expected in [
+            ('changed',lambda:initial.write_bytes(original_sql+b'-- changed\n'),lambda:initial.write_bytes(original_sql),'embedded migration SQL differs from archived copy: crates/pamin-store/migrations/V1__initial.sql'),
+            ('missing',initial.unlink,lambda:initial.write_bytes(original_sql),'embedded migration SQL set differs from archived copies: crates/pamin-store/migrations/V1__initial.sql'),
+            ('extra',lambda:(migrations/'V15__unarchived.sql').write_text('SELECT 1;\n'),(migrations/'V15__unarchived.sql').unlink,'embedded migration SQL set differs from archived copies: crates/pamin-store/migrations/V15__unarchived.sql')]:
+            change()
+            result=subprocess.run([sys.executable,str(archive/'source/prepare-future.py'),'--source',str(source),'--out',str(rejected)],capture_output=True,text=True)
+            assert result.returncode!=0 and not rejected.exists() and expected in result.stderr,(label,result.stderr)
+            undo()
+        print('PASS: prospective preparation rejects a source that differs from the recorded base, adds a build input, or changes, drops or adds embedded migration SQL before copying')
         future_out=Path(temp)/'future prepared'
         result=subprocess.run([sys.executable,str(archive/'source/prepare-future.py'),'--source',str(source),'--out',str(future_out)],capture_output=True,text=True)
         assert result.returncode==0,result.stderr
@@ -750,6 +763,10 @@ if __name__ == '__main__':
     for arm in ['baseline','scored']:
         run_case('extra early-stop field '+arm,lambda root,arm=arm:mutate_json(root/(arm+'.jsonl'),lambda row:row['early_stop'].update(product_latency_p50_ms=50)),expected_error='early-stop record must carry exactly the fixture-emitted fields')
     run_case('extra provenance field',lambda root:mutate_json(root/'provenance.json',lambda p:p.update(product_accuracy=1.0)),expected_error='provenance has a field outside its recorded schema')
+    for arm in ['baseline','scored']:
+        run_case('extra provenance arm field '+arm,lambda root,arm=arm:mutate_json(root/'provenance.json',lambda p:next(a for a in p['arms'] if a['arm']==arm).update(product_accuracy=1.0)),expected_error='provenance arm record has a field outside its recorded schema: '+arm)
+    for line in [': "${WORKSPACE:?set WORKSPACE to the prepared arm workspace}"\n','WORKSPACE=$(cd "$WORKSPACE" && pwd -P)\n','set -eu\n: "${WORKSPACE']:
+        run_case('unguarded reproduction workspace '+line.strip(),lambda root,line=line:(root/'README.md').write_text((root/'README.md').read_text().replace(line,line.removeprefix('set -eu\n') if line.endswith('WORKSPACE') else '',1)),expected_error='reproduction workspace must be rejected when empty and canonicalized before launch')
     for arm in ['baseline','scored']:
         run_case('float weak rank '+arm,lambda root,arm=arm:mutate_json(root/(arm+'.jsonl'),lambda row:row.update(weak_rank=float(row['weak_rank']))),expected_error='weak rank must be the exact native integer')
     run_case('Python -O', flags=('-O',))
