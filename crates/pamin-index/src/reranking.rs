@@ -387,109 +387,6 @@ fn max_tokens() -> usize {
     tuned("PAMIN_RERANK_MAX_TOKENS", MAX_TOKENS)
 }
 
-/// A directory to read the `accurate` tier's CPU export from instead of the
-/// hub: `model.onnx` (with the `model.onnx.data` it names, if any) and the
-/// tokenizer's `tokenizer.json`, `config.json`, `special_tokens_map.json` and
-/// `tokenizer_config.json`.
-///
-/// Undocumented on purpose, like [`tuned`]'s settings: it exists so a
-/// candidate export can be measured through the product's own load and
-/// search before it is hosted anywhere, not as a supported surface. The
-/// graph goes through the same prepared copy as the hub's, and is never
-/// removed afterwards (see [`LocalGraph`]). Accelerators still load the hub's
-/// half-precision export.
-const SOURCE: &str = "PAMIN_RERANK_SOURCE";
-
-/// The export [`SOURCE`] names.
-struct Local {
-    directory: PathBuf,
-    /// `local:` and a digest of every file, standing where the hub
-    /// repository's identity would, so calibration records and the plan
-    /// cache never take one export's measurements for another's.
-    identity: String,
-}
-
-const LOCAL_FILES: [&str; 6] = [
-    "model.onnx",
-    "model.onnx.data",
-    "tokenizer.json",
-    "config.json",
-    "special_tokens_map.json",
-    "tokenizer_config.json",
-];
-
-impl Local {
-    /// The configured directory, read once per process: hashing half a
-    /// gigabyte of weights takes a second or two.
-    fn configured() -> Result<Option<&'static Self>> {
-        static LOCAL: std::sync::OnceLock<std::result::Result<Option<Local>, String>> =
-            std::sync::OnceLock::new();
-        LOCAL
-            .get_or_init(|| {
-                let Some(directory) = std::env::var_os(SOURCE).map(PathBuf::from) else {
-                    return Ok(None);
-                };
-                let mut combined = String::new();
-                for file in LOCAL_FILES {
-                    let path = directory.join(file);
-                    // The graph may hold its weights itself, and the
-                    // tokenizer loads without a special-tokens map (see
-                    // `crate::tokenizer::load_dir`).
-                    if matches!(file, "model.onnx.data" | "special_tokens_map.json")
-                        && !path.exists()
-                    {
-                        continue;
-                    }
-                    let digest = crate::prepared::source_digest(&path).map_err(|error| {
-                        format!("{SOURCE}: reading {}: {error}", path.display())
-                    })?;
-                    combined.push_str(&digest);
-                }
-                let digest = format!("{:x}", Sha256::digest(combined.as_bytes()));
-                Ok(Some(Local {
-                    directory,
-                    identity: format!("local:{}", &digest[..16]),
-                }))
-            })
-            .as_ref()
-            .map(Option::as_ref)
-            .map_err(|error| IndexError::Engine(error.clone()))
-    }
-
-    fn graph(&self) -> LocalGraph<'_> {
-        LocalGraph(self)
-    }
-}
-
-/// The graph of a [`Local`] export, as `crate::prepared` asks for a model
-/// file. It is on disk or it is an error, and it is never removed: it is not
-/// the model directory's to remove.
-struct LocalGraph<'a>(&'a Local);
-
-impl crate::prepared::Download for LocalGraph<'_> {
-    fn label(&self) -> String {
-        format!("{}/model.onnx", self.0.identity)
-    }
-
-    fn on_disk(&self) -> Option<PathBuf> {
-        let path = self.0.directory.join("model.onnx");
-        path.is_file().then_some(path)
-    }
-
-    fn fetch(&self) -> Result<PathBuf> {
-        self.on_disk().ok_or_else(|| {
-            IndexError::Engine(format!(
-                "{SOURCE} names {}, which holds no model.onnx",
-                self.0.directory.display()
-            ))
-        })
-    }
-
-    fn remove(&self) -> Result<bool> {
-        Ok(false)
-    }
-}
-
 /// The longest candidate the model reads.
 ///
 /// Two hundred and fifty-six, and halving it is not the free saving this used
@@ -1051,11 +948,6 @@ impl Reranker {
     /// For a caller loading a tier nobody has asked for yet -- a resident
     /// server warming a project -- which should not be what downloads it.
     pub fn is_downloaded(tier: Rerank, cache_dir: &Path) -> bool {
-        if tier == Rerank::Accurate
-            && let Ok(Some(local)) = Local::configured()
-        {
-            return crate::prepared::is_ready(&local.graph(), cache_dir);
-        }
         tier != Rerank::Off
             && Repository::open(cache_dir, tier.repository()).is_ok_and(|repository| {
                 crate::prepared::is_ready(
@@ -1225,41 +1117,8 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
     std::fs::create_dir_all(cache_dir)?;
 
     let repository = Repository::open(cache_dir, tier.repository())?;
-    let local = match tier {
-        Rerank::Accurate => Local::configured()?,
-        _ => None,
-    };
-    let hub = repository.identity(cache_dir);
-    // With a local export the CPU loads it and an accelerator loads the hub's,
-    // so a plan measured across devices depends on both.
-    let identity = match local {
-        Some(local) => format!("{}+{hub}", local.identity),
-        None => hub.clone(),
-    };
 
     let session = |device: Device, providers, _validated: bool| -> Result<Encoder> {
-        if let (Some(local), Device::Cpu) = (local, device) {
-            let graph = local.directory.join("model.onnx");
-            // The source rather than the copy: it is on disk, and holds the
-            // table under the name it was exported with.
-            require_positions(&graph)?;
-            let tokenizer = crate::tokenizer::load_dir(&local.directory, max_tokens())?;
-            // A prepared copy is keyed by the graph file alone, so one written
-            // before the export's `model.onnx.data` changed would be reused
-            // with the old weights. Such an export loads unmapped, on one
-            // session, instead.
-            if local.directory.join("model.onnx.data").exists() {
-                return Encoder::load_with(|| Ok(graph), tokenizer, providers)
-                    .map_err(|error| error.context("loading the reranker"));
-            }
-            // Mapped and side by side, as the hub's CPU export is below.
-            let copy = crate::prepared::load_path(&local.graph(), cache_dir)?;
-            let encoder = Encoder::side_by_side(copy, crate::inference::budget()?, tokenizer)
-                .map_err(|error| error.context("loading the reranker"))?;
-            // Records what it was and removes nothing: see `LocalGraph`.
-            crate::prepared::release(&local.graph(), cache_dir);
-            return Ok(encoder);
-        }
         let weights = repository.file(cache_dir, tier.onnx(device));
         if device == Device::Cpu {
             // The file the hub serves is copied onto the heap whole; on the
@@ -1268,9 +1127,6 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
             // removed once the copy has loaded. Loaded side by side, so that
             // the batches of one call run at once (see `forward`).
             let copy = crate::prepared::load_path(&weights, cache_dir)?;
-            if tier == Rerank::Accurate {
-                require_positions(&copy)?;
-            }
             let tokenizer = crate::tokenizer::load(&repository, max_tokens())?;
             let encoder = Encoder::side_by_side(copy, crate::inference::budget()?, tokenizer)
                 .map_err(|error| error.context("loading the reranker"))?;
@@ -1316,7 +1172,7 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
                 &format!(
                     "reranker-v3:{}:{}:{}:{}:{}",
                     tier.name(),
-                    identity,
+                    repository.identity(cache_dir),
                     max_tokens(),
                     batch(),
                     batch_tokens()
@@ -1369,73 +1225,10 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
         tier = tier.name(),
         device = device.name(),
         maximum_tokens = model.maximum_tokens(),
-        source = %match local {
-            Some(local) if matches!(device, Device::Cpu) => local.identity.as_str(),
-            _ => hub.as_str(),
-        },
         "reranker loaded"
     );
 
     Ok((model, device))
-}
-
-/// The position table of the hub's `accurate` exports: a padding row, the
-/// row before the first position, and 8,192 positions.
-const POSITIONS: usize = 8194;
-
-/// Refuses a `PAMIN_RERANK_MAX_TOKENS` the `accurate` CPU graph at `model`
-/// cannot position.
-///
-/// An export may cut the position table short of [`POSITIONS`] -- a
-/// candidate with 514 rows holds 512 positions. A longer limit would pass the
-/// tokenizer, whose own limit is the model's 8,192, and fail inside the
-/// runtime on the first pair that long, as an out-of-range `Gather`. So it
-/// fails here, at load, saying which setting to change.
-fn require_positions(model: &Path) -> Result<()> {
-    let rows = position_rows(&std::fs::read(model)?).map_err(|error| {
-        IndexError::Engine(format!(
-            "reading the reranker graph {}: {error}",
-            model.display()
-        ))
-    })?;
-    check_positions(rows, max_tokens())
-}
-
-fn check_positions(rows: Option<usize>, limit: usize) -> Result<()> {
-    match rows {
-        Some(rows) if rows < POSITIONS && limit > rows.saturating_sub(2) => {
-            Err(IndexError::Engine(format!(
-                "PAMIN_RERANK_MAX_TOKENS={limit} exceeds the {} tokens the accurate reranker's \
-                 CPU export can position; set {} or less",
-                rows.saturating_sub(2),
-                rows.saturating_sub(2)
-            )))
-        }
-        _ => Ok(()),
-    }
-}
-
-/// The rows of the graph's position-embedding table -- an initializer named
-/// for `position_embeddings`, of two dimensions -- or `None` if it has none.
-fn position_rows(model: &[u8]) -> std::result::Result<Option<usize>, String> {
-    use crate::onnx::*;
-    let top = fields(model)?;
-    let graph = fields_of(only(&top, MODEL_GRAPH, "graph")?)?;
-    let mut rows: Option<usize> = None;
-    for field in graph
-        .iter()
-        .filter(|field| field.number == GRAPH_INITIALIZER)
-    {
-        let tensor = fields_of(field)?;
-        if !string(&tensor, TENSOR_NAME)?.is_some_and(|name| name.contains("position_embeddings")) {
-            continue;
-        }
-        if let [count, _] = int64s(&tensor, TENSOR_DIMS)?[..] {
-            let count = usize::try_from(count).map_err(|_| "a negative dimension")?;
-            rows = Some(rows.map_or(count, |rows| rows.min(count)));
-        }
-    }
-    Ok(rows)
 }
 
 fn calibration_pairs(tier: Rerank, long: &str) -> Vec<(&str, &str)> {
@@ -2866,68 +2659,6 @@ mod tests {
                 tier.name()
             );
         }
-    }
-
-    /// A graph whose position table is cut short refuses a longer limit at
-    /// load; the hub's full table, or a graph with none, is not capped here.
-    #[test]
-    fn a_short_position_table_caps_the_token_limit() {
-        use crate::onnx::*;
-        let graph = |name: &str, dims: &[i64]| {
-            let mut tensor = Vec::new();
-            for dim in dims {
-                put_varint_field(&mut tensor, TENSOR_DIMS, *dim as u64);
-            }
-            put_bytes(&mut tensor, TENSOR_NAME, name.as_bytes());
-            let mut graph = Vec::new();
-            put_bytes(&mut graph, GRAPH_INITIALIZER, &tensor);
-            let mut model = Vec::new();
-            put_bytes(&mut model, MODEL_GRAPH, &graph);
-            model
-        };
-        let cut = graph(
-            "roberta.embeddings.position_embeddings.weight",
-            &[514, 1024],
-        );
-        assert_eq!(position_rows(&cut), Ok(Some(514)));
-        let hub = graph(
-            "roberta.embeddings.position_embeddings.weight_quantized",
-            &[8194, 1024],
-        );
-        assert_eq!(position_rows(&hub), Ok(Some(8194)));
-        let other = graph("roberta.embeddings.word_embeddings.weight", &[250002, 1024]);
-        assert_eq!(position_rows(&other), Ok(None));
-        assert!(position_rows(b"not a model").is_err());
-
-        assert!(check_positions(Some(514), 512).is_ok());
-        let error = check_positions(Some(514), 513).unwrap_err().to_string();
-        assert!(
-            error.contains("PAMIN_RERANK_MAX_TOKENS=513") && error.contains("set 512 or less"),
-            "{error}"
-        );
-        assert!(check_positions(Some(8194), 9000).is_ok());
-        assert!(check_positions(None, 9000).is_ok());
-    }
-
-    /// A measured export's graph is never removed once its copy has loaded,
-    /// as a hub download is: it lives outside the model directory.
-    #[test]
-    fn a_local_export_is_found_and_never_removed() {
-        use crate::prepared::Download;
-        let directory = tempfile::tempdir().unwrap();
-        let local = Local {
-            directory: directory.path().to_path_buf(),
-            identity: "local:0123456789abcdef".into(),
-        };
-        assert!(local.graph().on_disk().is_none());
-        assert!(local.graph().fetch().is_err());
-        let graph = directory.path().join("model.onnx");
-        std::fs::write(&graph, b"graph").unwrap();
-        assert_eq!(local.graph().on_disk(), Some(graph.clone()));
-        assert_eq!(local.graph().fetch().unwrap(), graph);
-        assert!(!local.graph().remove().unwrap());
-        assert!(graph.is_file());
-        assert_eq!(local.graph().label(), "local:0123456789abcdef/model.onnx");
     }
 
     /// Whatever a tier parses from, it round-trips through its own name.

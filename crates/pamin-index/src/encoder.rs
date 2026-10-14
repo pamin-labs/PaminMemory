@@ -64,17 +64,6 @@ impl Encoder {
         Self::from_session(session, repository, max_length)
     }
 
-    /// The model `model` finds, on `providers`, with a tokenizer the caller
-    /// has already loaded -- for a model that comes from no repository.
-    pub(crate) fn load_with(
-        model: impl FnOnce() -> Result<PathBuf>,
-        tokenizer: Tokenizer,
-        providers: impl Into<crate::inference::Target>,
-    ) -> Result<Self> {
-        let session = crate::inference::session(providers, model)?;
-        Ok(Self::from_parts(session, tokenizer))
-    }
-
     pub(crate) fn from_session(
         session: Session,
         repository: &Repository,
