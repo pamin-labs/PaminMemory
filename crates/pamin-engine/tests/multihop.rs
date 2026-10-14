@@ -633,6 +633,7 @@ async fn search_answers_questions_that_take_several_steps() {
     )
     .await
     .expect("open the engine");
+    shape.ran_on(harness::shape::engines(&[&engine]));
     if std::env::var("CHANNELS").is_ok() {
         assert_eq!(engine.passage(), pamin_index::Passage::Named);
     }
@@ -666,6 +667,7 @@ async fn search_answers_questions_that_take_several_steps() {
         )
         .await
         .expect("open the named project");
+        shape.ran_on(harness::shape::engines(&[&engine, &other]));
         write_corpus(&other, &corpus).await;
         assert_eq!(
             engine.passage(),
@@ -704,6 +706,7 @@ async fn search_answers_questions_that_take_several_steps() {
         let tier = Rerank::default();
         let mut small = pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
             .expect("load the small reranker");
+        shape.also_ran("routes small reranker", small.device());
         let mut routes = reranking::Routes::default();
         for query in &corpus.queries {
             let hits = engine
@@ -733,7 +736,7 @@ async fn search_answers_questions_that_take_several_steps() {
     // against the shipped one from a single shipped run. See `reranking`.
     if std::env::var("RERANK_RULES").is_ok() {
         let tier = Rerank::default();
-        let mut priced = reranking::Priced::new();
+        let mut priced = reranking::Priced::new(&workspace.root().join("models"));
         for query in &corpus.queries {
             let hits = engine
                 .search_reranked(&query.text, WIDE, DEPTHS, tier)
@@ -769,12 +772,16 @@ async fn search_answers_questions_that_take_several_steps() {
         )
         .await
         .expect("open the entity project; run ENTITIES first");
+        shape.ran_on(harness::shape::engines(&[&engine, &entities]));
         reach(&entities, &corpus, "with shared names").await;
         return;
     }
 
     if std::env::var("ENTITIES").is_ok() {
-        entities(&engine, &workspace, &corpus, &project, profile, &named).await;
+        entities(
+            &engine, &mut shape, &workspace, &corpus, &project, profile, &named,
+        )
+        .await;
         return;
     }
 
@@ -847,6 +854,7 @@ async fn search_answers_questions_that_take_several_steps() {
         let tier = Rerank::default();
         let mut model = pamin_index::Reranker::load(tier, &workspace.root().join("models"))
             .expect("load the reranker");
+        shape.also_ran("context reranker", model.device());
         let labels = reranking::context_labels();
         let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
         harness::shape::tables(labels.iter().map(|(label, _)| label));
@@ -1013,6 +1021,7 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) {
 /// query, not added to the graph.
 async fn entities(
     base: &Engine,
+    shape: &mut Shape,
     workspace: &Workspace,
     corpus: &Corpus,
     project: &str,
@@ -1037,6 +1046,7 @@ async fn entities(
     )
     .await
     .expect("open the entity project");
+    shape.ran_on(harness::shape::engines(&[base, &engine]));
     write_corpus(&engine, corpus).await;
 
     let names: Vec<HashSet<String>> = corpus

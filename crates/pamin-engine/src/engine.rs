@@ -476,6 +476,31 @@ impl Models {
         )
     }
 
+    /// The execution provider of every reranker this process has loaded, as
+    /// `reranking <tier>`, in tier-name order. Handles are cloned out from
+    /// under the registry lock first, as in [`counted`](Self::counted).
+    fn reranker_devices(&self) -> Vec<(String, pamin_index::Device)> {
+        let held: Vec<(Rerank, Arc<Mutex<Reranker>>)> = self
+            .rerankers
+            .lock()
+            .expect("the reranker registry lock is poisoned")
+            .iter()
+            .map(|(tier, (_, reranker))| (*tier, Arc::clone(reranker)))
+            .collect();
+        let mut devices: Vec<(String, pamin_index::Device)> = held
+            .into_iter()
+            .map(|(tier, reranker)| {
+                let device = reranker
+                    .lock()
+                    .expect("the reranker lock is poisoned")
+                    .device();
+                (format!("reranking {}", tier.name()), device)
+            })
+            .collect();
+        devices.sort_by(|left, right| left.0.cmp(&right.0));
+        devices
+    }
+
     /// Gives back the embedders no open engine is holding any more.
     ///
     /// **Costs 1.6 GB to hold and 29 MB not to.** Measured on a server over
@@ -1506,6 +1531,27 @@ impl Engine {
     /// totals for the loaded model and are lost when an idle tier is released.
     pub fn reranked(&self, tier: Rerank) -> Option<pamin_index::Reranked> {
         self.models.counted(tier)
+    }
+
+    /// The execution provider each model this engine has used resolved to,
+    /// by role: `embedding`, `embedding secondary` for a profile with a
+    /// second vector model, and `reranking <tier>` for each tier this process
+    /// has loaded. A model not loaded is not listed. Read as it stands now,
+    /// so a model that fell back to the CPU during a run reports the CPU.
+    ///
+    /// For an evaluation to say which execution path produced it: under
+    /// `PAMIN_DEVICE=auto` the same build runs on whatever the machine has.
+    pub fn providers(&self) -> Vec<(String, pamin_index::Device)> {
+        let mut providers = Vec::new();
+        if let Some(embedder) = self.embedder.get() {
+            let embedder = embedder.lock().expect("the embedder lock is poisoned");
+            providers.push(("embedding".to_string(), embedder.device()));
+            if let Some(device) = embedder.secondary_device() {
+                providers.push(("embedding secondary".to_string(), device));
+            }
+        }
+        providers.extend(self.models.reranker_devices());
+        providers
     }
 
     /// Search, then reorder the head of the result with a cross-encoder.
