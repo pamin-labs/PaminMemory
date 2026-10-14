@@ -25,6 +25,12 @@
 //! `benchmarks/datasets/locomo.py`). Rewarding retrieval of that turn would
 //! score the trap as the key.
 //!
+//! **Significance is tested per conversation.** Every question of one
+//! conversation shares its corpus, index and graph, so the questions are not
+//! independent units. The paired test runs over each conversation's mean
+//! nDCG per category, which on a few conversations cannot reach a small p;
+//! that is the honest reading, not a defect of the test.
+//!
 //! **Licence.** LOCOMO is CC BY-NC 4.0 (Maharana et al., ACL 2024). It is
 //! fetched at run time from the authors' repository, not vendored.
 //!
@@ -363,6 +369,9 @@ async fn locomo_evidence_with_and_without_links() {
 
     // [flat, linked], by category; each question in the same order on both.
     let mut scores: [BTreeMap<String, Scores>; 2] = Default::default();
+    // [flat, linked], by category: each conversation's mean nDCG, the unit the
+    // paired test is run over.
+    let mut by_conversation: [BTreeMap<String, Vec<f64>>; 2] = Default::default();
     let mut questions = 0usize;
     let mut linked_edges = 0usize;
     for conversation in &conversations {
@@ -386,6 +395,12 @@ async fn locomo_evidence_with_and_without_links() {
         }
         linked_edges += link(&engines[1], conversation).await;
 
+        let before: [BTreeMap<String, usize>; 2] = std::array::from_fn(|side| {
+            scores[side]
+                .iter()
+                .map(|(category, scored)| (category.clone(), scored.per_query.len()))
+                .collect()
+        });
         for question in &conversation.questions {
             questions += 1;
             for (side, engine) in engines.iter().enumerate() {
@@ -400,6 +415,18 @@ async fn locomo_evidence_with_and_without_links() {
                     .add(&ranked, question.evidence.len(), |topic| {
                         question.evidence.contains(topic)
                     });
+            }
+        }
+        for (side, scored_side) in scores.iter().enumerate() {
+            for (category, scored) in scored_side {
+                let from = before[side].get(category).copied().unwrap_or(0);
+                let this = &scored.per_query[from..];
+                if !this.is_empty() {
+                    by_conversation[side]
+                        .entry(category.clone())
+                        .or_default()
+                        .push(this.iter().sum::<f64>() / this.len() as f64);
+                }
             }
         }
         println!(
@@ -421,7 +448,7 @@ async fn locomo_evidence_with_and_without_links() {
         conversations.len()
     );
     println!(
-        "  category        queries   flat nDCG@{NDCG_AT}  recall@{RECALL_AT}   linked nDCG@{NDCG_AT}  recall@{RECALL_AT}   paired nDCG@{NDCG_AT}"
+        "  category        queries   flat nDCG@{NDCG_AT}  recall@{RECALL_AT}   linked nDCG@{NDCG_AT}  recall@{RECALL_AT}   paired nDCG@{NDCG_AT} by conversation"
     );
     for (category, flat) in &scores[0] {
         let linked = &scores[1][category];
@@ -432,7 +459,10 @@ async fn locomo_evidence_with_and_without_links() {
             flat.mean_recall(),
             linked.mean_ndcg(),
             linked.mean_recall(),
-            statistics::compare(&flat.per_query, &linked.per_query)
+            statistics::compare(
+                &by_conversation[0][category],
+                &by_conversation[1][category]
+            )
         );
     }
 }
