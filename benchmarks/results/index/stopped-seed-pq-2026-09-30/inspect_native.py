@@ -55,17 +55,21 @@ def inspect(path, expected):
         raise ValueError('Stopped file differs from retained seed')
     with path.open('rb') as h:
         header = exact(h, 0, 64, size)
-        hc, _, version, revision, _, hs, fs, fo, co, *_ = struct.unpack('<IHHIIHHIQQQQQ', header)
+        hc, reserved1, version, revision, _magic, hs, fs, fo, co, _setup_time, *reserved3 = struct.unpack('<IHHIIHHIQQQQQ', header)
         if not ((version, revision, hs, fs, co) == (2, 0, 64, 128, 64)):
             raise ValueError('Unsupported or malformed index metadata')
         if not (crc32c(b'\x00' * 4 + header[4:]) == hc):
+            raise ValueError('Unsupported or malformed index metadata')
+        if not ((reserved1, reserved3) == (0, [0, 0, 0])):
             raise ValueError('Unsupported or malformed index metadata')
         footer_offset = fo if fo < 2**31 else size + fo - 2**32
         if not (footer_offset == size - 128):
             raise ValueError('Not a single immutable footer-at-end package')
         footer = exact(h, footer_offset, 128, size)
-        fc, table_crc, _, count, table_size, _, content_size, content_padding, *tail = struct.unpack('<IIIIII13Q', footer)
+        fc, table_crc, _content_crc, count, table_size, footer_reserved1, content_size, content_padding, _check_point, _update_time, *tail = struct.unpack('<IIIIII13Q', footer)
         if not (crc32c(b'\x00' * 4 + footer[4:]) == fc):
+            raise ValueError('Unsupported or malformed index metadata')
+        if not (footer_reserved1 == 0 and tail[:7] == [0] * 7):
             raise ValueError('Unsupported or malformed index metadata')
         if not (tail[-2] == 0 and tail[-1] == size):
             raise ValueError('Chained package unsupported')
@@ -117,6 +121,8 @@ def inspect(path, expected):
         if not (magic == 1381259857 and (qv, qt, dtype, reserved, metric) == (1, 5, 1, 0, 0)):
             raise ValueError('Unsupported or malformed index metadata')
         if not (dims == original_dim and quantizer_chunks == chunks):
+            raise ValueError('Unsupported or malformed index metadata')
+        if not ((stored_dims, dims) == (1026, 1024)):
             raise ValueError('Unsupported or malformed index metadata')
         if not (dims % chunks == 0 and chunk_dim == dims // chunks):
             raise ValueError('Unsupported or malformed index metadata')

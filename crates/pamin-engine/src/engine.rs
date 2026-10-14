@@ -123,6 +123,27 @@ pub(crate) fn off_the_runtime<T>(work: impl FnOnce() -> T) -> T {
     tokio::task::block_in_place(work)
 }
 
+/// Which of these documents the index does not already hold with exactly this
+/// text, and so still has to be embedded and written.
+///
+/// Compares the text alone, while a vector may be embedded from the topic's
+/// name as well ([`pamin_index::Passage`]). That is sound because a topic's
+/// name never changes once it is created; if renaming is ever added, a rename
+/// has to invalidate this, or a renamed topic keeps the vector of its old name.
+///
+/// An index that cannot answer -- a document missing a vector it should have,
+/// or a failed read -- is treated as holding nothing, so every state is written
+/// as it was before this check existed, which also repairs that document.
+fn unheld(index: &dyn Projection, wanted: &[(TopicId, &str)]) -> Vec<bool> {
+    match index.holds(wanted) {
+        Ok(held) => held.into_iter().map(|held| !held).collect(),
+        Err(error) => {
+            tracing::warn!(%error, "could not read the index back; writing every state");
+            vec![true; wanted.len()]
+        }
+    }
+}
+
 /// The store, the index, and the embedder, wired together.
 ///
 /// Cheap to clone, and every method takes `&self`, so one engine serves many
@@ -1001,10 +1022,28 @@ impl Engine {
     /// One model lock and one index lock for the whole batch rather than one
     /// each per state, which is the other saving and the reason this is one
     /// closure rather than a loop over the single-state form.
+    ///
+    /// A state whose document the index already holds with exactly this text
+    /// is skipped before anything is encoded (see [`unheld`]). A topic that
+    /// went from A to B and back to A before its coalesced sync drained, or a
+    /// sync re-run for a topic the index is already current on, would
+    /// otherwise pay a forward pass to write the vector that is there.
     pub(crate) async fn index_states(&self, states: &[TopicState]) -> Result<()> {
+        let wanted: Vec<(TopicId, &str)> = states
+            .iter()
+            .map(|state| (state.topic_id, state.content.as_str()))
+            .collect();
+        let unheld = off_the_runtime(|| unheld(&**self.index(), &wanted));
+        let states: Vec<TopicState> = states
+            .iter()
+            .zip(unheld)
+            .filter(|(_, unheld)| *unheld)
+            .map(|(state, _)| state.clone())
+            .collect();
         if states.is_empty() {
             return Ok(());
         }
+        let states = states.as_slice();
 
         let passages = self.passages(states).await?;
         let contents: Vec<&str> = passages.iter().map(String::as_str).collect();
@@ -3072,5 +3111,162 @@ mod tests {
             path_strength(1.0, 2),
             "half the confidence at one hop is one certain hop further away"
         );
+    }
+
+    /// A topic that went A -> B -> A before its sync drained is not embedded
+    /// again, and the index ends up holding what writing it again would have.
+    ///
+    /// Drives [`super::unheld`] the way `index_states` does, over a scripted
+    /// write sequence whose syncs coalesce per topic as the outbox's do, against
+    /// two indexes: one written the way it always was, every drained state
+    /// encoded, and one that skips what [`super::unheld`] says is held. The
+    /// stand-in encoder is a function of the text, as the model is, so a state
+    /// written twice gets the same vector twice -- which is the premise the
+    /// skip rests on, and why the two indexes must end up identical.
+    #[test]
+    fn a_topic_back_where_the_index_left_it_is_not_embedded_again() {
+        use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
+
+        for profile in [Profile::Speed, Profile::DualAccuracy] {
+            let open = |dir: &std::path::Path| {
+                ProjectionIndex::open(
+                    dir,
+                    &dir.join("legacy"),
+                    profile,
+                    VectorIndex::default(),
+                    Access::ReadWrite,
+                    0,
+                )
+                .expect("open index")
+            };
+            let encode = |text: &str, dimensions: u32| -> Vec<f32> {
+                let seed = text.bytes().fold(7u32, |hash, byte| {
+                    hash.wrapping_mul(31).wrapping_add(u32::from(byte))
+                });
+                (0..dimensions)
+                    .map(|at| {
+                        ((seed.wrapping_add(at.wrapping_mul(2_654_435_761)) >> 8) % 1000) as f32
+                            / 1000.0
+                            - 0.5
+                    })
+                    .collect()
+            };
+            let every_dir = tempfile::tempdir().expect("temp dir");
+            let skipping_dir = tempfile::tempdir().expect("temp dir");
+            let every = open(every_dir.path());
+            let skipping = open(skipping_dir.path());
+
+            let (one, two) = (TopicId::new(), TopicId::new());
+            // Each round is the writes committed before a drain, in order; a
+            // topic written twice in a round owes one sync, of its last text.
+            // `None` removes the topic's document, as a sync of a topic with no
+            // current state does.
+            let rounds: Vec<Vec<(TopicId, Option<&str>)>> = vec![
+                vec![(one, Some("alpha")), (two, Some("xi"))],
+                vec![(one, Some("beta")), (one, Some("alpha"))],
+                vec![(two, Some("ypsilon"))],
+                vec![(one, Some("alpha")), (two, Some("ypsilon"))],
+                vec![(one, Some("alpha ")), (two, None)],
+                vec![(two, Some("ypsilon"))],
+            ];
+            // Encoded per round by the path that writes every drained state,
+            // and by the path that skips what is held.
+            let mut encoded = (Vec::new(), Vec::new());
+            for round in &rounds {
+                let mut owed: Vec<(TopicId, Option<&str>)> = Vec::new();
+                for (topic, text) in round {
+                    owed.retain(|(owing, _)| owing != topic);
+                    owed.push((*topic, *text));
+                }
+                let (present, absent): (Vec<_>, Vec<_>) =
+                    owed.iter().partition(|(_, text)| text.is_some());
+                let wanted: Vec<(TopicId, &str)> = present
+                    .iter()
+                    .map(|(topic, text)| (*topic, text.expect("present")))
+                    .collect();
+                let absent: Vec<TopicId> = absent.iter().map(|(topic, _)| *topic).collect();
+
+                let unheld = super::unheld(&skipping, &wanted);
+                let needed: Vec<(TopicId, &str)> = wanted
+                    .iter()
+                    .zip(&unheld)
+                    .filter(|(_, unheld)| **unheld)
+                    .map(|(wanted, _)| *wanted)
+                    .collect();
+                for (index, writes) in [(&every, &wanted), (&skipping, &needed)] {
+                    let vectors: Vec<(Vec<f32>, Option<Vec<f32>>)> = writes
+                        .iter()
+                        .map(|(_, text)| {
+                            (
+                                encode(text, profile.dimensions()),
+                                profile
+                                    .secondary_dimensions()
+                                    .map(|dimensions| encode(text, dimensions)),
+                            )
+                        })
+                        .collect();
+                    let documents: Vec<pamin_index::VectorDocument<'_>> = writes
+                        .iter()
+                        .zip(&vectors)
+                        .map(|((topic, text), (primary, secondary))| {
+                            (*topic, *text, primary.as_slice(), secondary.as_deref())
+                        })
+                        .collect();
+                    index.upsert_vectors(&documents).expect("write");
+                    index.delete(&absent).expect("delete");
+                    index.flush().expect("flush");
+                }
+                encoded.0.push(wanted.len());
+                encoded.1.push(needed.len());
+            }
+
+            // Round two is the A -> B -> A topic, round four a sync of two
+            // topics already current, round six a removed topic restored to
+            // the text it had: that one has no document to keep, so it is
+            // embedded again. A trailing space is a different text.
+            assert_eq!(encoded.0, [2, 1, 1, 2, 1, 1], "{profile:?}");
+            assert_eq!(encoded.1, [2, 0, 1, 0, 1, 1], "{profile:?}");
+
+            let topics = [one, two];
+            assert_eq!(
+                every.stored(&topics).expect("read back"),
+                skipping.stored(&topics).expect("read back"),
+                "{profile:?}"
+            );
+            for text in ["alpha", "alpha ", "ypsilon"] {
+                let query = encode(text, profile.dimensions());
+                assert_eq!(
+                    every.recall_vector(&query, 2).expect("recall"),
+                    skipping.recall_vector(&query, 2).expect("recall"),
+                    "{profile:?}"
+                );
+            }
+        }
+    }
+
+    /// A write the index has buffered and not yet flushed is already held.
+    #[test]
+    fn a_buffered_write_is_already_held() {
+        use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let index = ProjectionIndex::open(
+            dir.path(),
+            &dir.path().join("legacy"),
+            Profile::Speed,
+            VectorIndex::default(),
+            Access::ReadWrite,
+            0,
+        )
+        .expect("open index");
+        let topic = TopicId::new();
+        let vector = vec![0.1; Profile::Speed.dimensions() as usize];
+        index
+            .upsert_vectors(&[(topic, "alpha", vector.as_slice(), None)])
+            .expect("write");
+        assert_eq!(super::unheld(&index, &[(topic, "alpha")]), [false]);
+        assert_eq!(super::unheld(&index, &[(topic, "Alpha")]), [true]);
+        index.delete(&[topic]).expect("delete");
+        assert_eq!(super::unheld(&index, &[(topic, "alpha")]), [true]);
     }
 }
