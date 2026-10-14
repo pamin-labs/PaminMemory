@@ -351,10 +351,15 @@ mod tests {
         // Embedding conformance controls compiled only under cfg(test).
         "PAMIN_TEST_MODEL_CACHE",
         "PAMIN_TEST_JOINT_GRAPH",
+        // Tokenizer parity controls compiled only under cfg(test).
+        "PAMIN_TEST_MODELS",
+        "PAMIN_PARITY_CORPORA",
         "PAMIN_RERANK_BATCH",
         "PAMIN_RERANK_BATCH_TOKENS",
         "PAMIN_RERANK_DEPTH",
         "PAMIN_RERANK_MAX_TOKENS",
+        // Measurement only: a candidate accurate-reranker CPU export on disk.
+        "PAMIN_RERANK_SOURCE",
         "PAMIN_SEARCH_EFFORT",
         "PAMIN_UNINDEXED_BUDGET",
     ];
