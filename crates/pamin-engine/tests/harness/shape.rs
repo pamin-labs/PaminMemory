@@ -1089,6 +1089,57 @@ mod tests {
         );
     }
 
+    /// Every file the workspace compiles in by a literal `include_str!` or
+    /// `include_bytes!` path lies under a root the build script watches, so
+    /// an edit to it reruns the script and moves the dirty flag. An include
+    /// built from `env!` or `concat!`, such as an `OUT_DIR` file, is a build
+    /// output, not a source.
+    #[test]
+    fn the_build_script_watches_every_compiled_in_file() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let root = root.canonicalize().expect("workspace root");
+        let roots: Vec<PathBuf> = env!("PAMIN_ENGINE_SOURCES")
+            .split(':')
+            .map(|path| root.join(path))
+            .collect();
+        let mut files = vec![root.join("crates")];
+        let mut included = 0;
+        while let Some(path) = files.pop() {
+            if path.is_dir() {
+                let entries = std::fs::read_dir(&path).expect("read a source directory");
+                files.extend(entries.map(|entry| entry.expect("a directory entry").path()));
+                continue;
+            }
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("read a source file");
+            // Built here so this file's own text does not match.
+            for macro_call in ["str", "bytes"].map(|kind| format!("include_{kind}!(")) {
+                for (at, _) in text.match_indices(&macro_call) {
+                    let rest = text[at + macro_call.len()..].trim_start();
+                    let Some(literal) = rest.strip_prefix('"') else {
+                        continue;
+                    };
+                    let relative = &literal[..literal.find('"').expect("a closed literal")];
+                    let file = path.parent().expect("a parent").join(relative);
+                    let file = file
+                        .canonicalize()
+                        .unwrap_or_else(|error| panic!("{}: {relative}: {error}", path.display()));
+                    assert!(
+                        roots.iter().any(|root| file.starts_with(root)),
+                        "{} compiles in {}, which build.rs does not watch",
+                        path.display(),
+                        file.display()
+                    );
+                    included += 1;
+                }
+            }
+        }
+        // The benchmark manifests and the store's migrations, at least.
+        assert!(included > 10, "found {included} includes");
+    }
+
     /// Reading the provenance never fails a run, with or without git.
     #[test]
     fn the_record_names_the_compiled_commit() {
