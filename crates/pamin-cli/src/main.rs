@@ -351,6 +351,9 @@ mod tests {
         // Embedding conformance controls compiled only under cfg(test).
         "PAMIN_TEST_MODEL_CACHE",
         "PAMIN_TEST_JOINT_GRAPH",
+        // Tokenizer parity controls compiled only under cfg(test).
+        "PAMIN_TEST_MODELS",
+        "PAMIN_PARITY_CORPORA",
         "PAMIN_RERANK_BATCH",
         "PAMIN_RERANK_BATCH_TOKENS",
         "PAMIN_RERANK_DEPTH",
