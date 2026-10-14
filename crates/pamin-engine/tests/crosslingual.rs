@@ -394,24 +394,6 @@ impl Query<'_> {
     }
 }
 
-/// The variables that pick an arm of `search_reaches_across_languages`, for
-/// the name of the run's shape record.
-const ARMS: [&str; 13] = [
-    "SWEEP",
-    "FEATURES_OUT",
-    "CHANNELS",
-    "DEPTH_VARIANTS",
-    "RERANK_RULES",
-    "ROUTES",
-    "CONTEXT",
-    "AT_LIMIT",
-    "LABELS",
-    "CALIBRATE",
-    "GATE",
-    "PAIRS",
-    "TIERS",
-];
-
 /// The groups, in the order they are reported.
 const GROUPS: [&str; 3] = ["cross_lingual", "same_language", "single_target"];
 
@@ -1656,7 +1638,7 @@ fn the_model_reaches_across_languages() {
     let queries = corpus.queries();
     let (named, profile) = profile();
     let mut shape = corpus.shape(&queries);
-    shape.publish("the_model_reaches_across_languages", &named, &[]);
+    shape.publish("the_model_reaches_across_languages", &named);
     println!(
         "  {} sentences in {} languages, {} queries, profile {named}",
         corpus.sentences.len(),
@@ -1867,7 +1849,7 @@ async fn search_reaches_across_languages() {
     let mut shape = corpus.shape(&queries);
     // Published before anything is printed, so a failed write to stdout
     // still leaves the in-progress record.
-    shape.publish("search_reaches_across_languages", &named, &ARMS);
+    shape.publish("search_reaches_across_languages", &named);
     println!("  benchmark code commit: {}", commit.trim());
     println!("  reranker device: cpu; export: onnx/model_int8.onnx");
     // The default profile ends on a significance gate for what reranking is
