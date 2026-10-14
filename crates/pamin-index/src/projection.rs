@@ -26,6 +26,7 @@ use zvec_rust::{
 
 use crate::error::{IndexError, Result};
 use crate::segmentation::Segmenter;
+use crate::vector_math::dot;
 
 const COLLECTION: &str = "memories";
 
@@ -184,6 +185,27 @@ pub trait Projection {
     /// index already holds it. A write the index has buffered and not yet
     /// flushed is read back like any other, because a query sees it too.
     fn stored(&self, topics: &[TopicId]) -> Result<Vec<Option<Stored>>>;
+
+    /// Whether this index already holds each topic with exactly the text
+    /// given for it, in the order asked.
+    ///
+    /// The rule a rebuild lends a stored vector by ([`Previous::lend`]), asked
+    /// of a served index: a document holding the same text was embedded from
+    /// it under this index's encoding, so writing it again would write what is
+    /// there. Read through [`stored`](Self::stored), so a buffered write
+    /// counts, a deleted topic does not, and a document missing a vector it
+    /// should have is an error rather than a match.
+    fn holds(&self, wanted: &[(TopicId, &str)]) -> Result<Vec<bool>> {
+        let topics: Vec<TopicId> = wanted.iter().map(|(topic, _)| *topic).collect();
+        Ok(self
+            .stored(&topics)?
+            .iter()
+            .zip(wanted)
+            .map(|(stored, (_, text))| {
+                holds_exactly(stored.as_ref().map(|stored| stored.content.as_str()), text)
+            })
+            .collect())
+    }
 
     /// Removes these topics.
     ///
@@ -1618,7 +1640,7 @@ impl Previous {
             let Some(content) = wanted.get(&topic) else {
                 continue;
             };
-            if doc.get_string(FIELD_NGRAM)?.as_deref() == Some(*content) {
+            if holds_exactly(doc.get_string(FIELD_NGRAM)?.as_deref(), content) {
                 visit(topic, doc)?;
             }
         }
@@ -1631,6 +1653,16 @@ impl Previous {
         drop(index);
         ProjectionIndex::discard(&dir)
     }
+}
+
+/// Whether a document holding `stored` as its text already holds `wanted`.
+///
+/// Raw text, not normalised: the lexical fields are derived from this text and
+/// the vector was embedded from it, so a difference in whitespace or case is a
+/// different document. One rule for both a rebuild lending a vector and a
+/// served index skipping a write, so the two cannot drift apart.
+fn holds_exactly(stored: Option<&str>, wanted: &str) -> bool {
+    stored == Some(wanted)
 }
 
 impl Projection for ProjectionIndex {
@@ -1985,40 +2017,6 @@ fn jittered(wait: Duration) -> Duration {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.subsec_nanos());
     wait / 2 + (wait / 2).mul_f64(f64::from(nanos % 1_000) / 1_000.0)
-}
-
-// Apple's Accelerate uses SIMD for this small host-side operation; moving
-// each shortlist to a GPU costs more than the arithmetic on this workload.
-#[cfg(target_os = "macos")]
-#[link(name = "Accelerate", kind = "framework")]
-unsafe extern "C" {
-    fn cblas_sdot(n: i32, x: *const f32, incx: i32, y: *const f32, incy: i32) -> f32;
-}
-
-/// The dot product used for exact rescoring after vector-index recall.
-pub(crate) fn dot(left: &[f32], right: &[f32]) -> f32 {
-    #[cfg(target_os = "macos")]
-    {
-        let count = i32::try_from(left.len().min(right.len())).expect("vector dimensions fit i32");
-        // SAFETY: both slices contain `count` contiguous f32 values, and the
-        // framework reads them only for this synchronous call.
-        unsafe { cblas_sdot(count, left.as_ptr(), 1, right.as_ptr(), 1) }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        left.iter().zip(right).map(|(a, b)| a * b).sum()
-    }
-}
-
-#[cfg(test)]
-mod vector_math {
-    use super::dot;
-
-    #[test]
-    fn dot_reads_only_the_shared_prefix_and_handles_zero() {
-        assert_eq!(dot(&[2.0, 3.0], &[4.0]), 8.0);
-        assert_eq!(dot(&[0.0; 1024], &[1.0; 1024]), 0.0);
-    }
 }
 
 /// The topics a query returned, best first, each with the score it was ranked by.

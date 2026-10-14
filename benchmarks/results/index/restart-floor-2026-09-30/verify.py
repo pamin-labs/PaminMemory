@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Read-only verifier and independent invocation of the archived calculator."""
-import hashlib,importlib.machinery,importlib.util,json,math,struct,sys
+import hashlib,importlib.machinery,importlib.util,json,math,re,struct,sys
 if sys.flags.optimize:
     raise SystemExit("Verification requires Python assertions; remove -O/-OO or PYTHONOPTIMIZE.")
 sys.dont_write_bytecode=True
@@ -125,6 +125,13 @@ disk_provenance=json.loads((disk_root/'provenance.json').read_text())
 provider_bindings=json.loads((disk_root/'provider-bindings.json').read_text())
 memory_provenance=json.loads((root/'provenance.json').read_text())
 review.historical_hardware(memory_provenance,(root/'README.md').read_text())
+# Bind the remaining runtime/toolchain provenance to the sibling Disk record
+# (manifest-authenticated above) and to the published library locations.
+for key in ['runtime_version','runtime_commit','rustc','cargo']:
+    assert memory_provenance[key]==disk_provenance['hardware'][key], 'HNSW runtime provenance differs from retained Disk record: '+key
+for key,path in [('runtime_library','${ORT_DIST}/lib/libonnxruntime.so.1.28.0'),('native_zvec_library','${SCRATCH}/bin/libzvec_c_api.so')]:
+    entry=memory_provenance[key]
+    assert set(entry)=={'path','bytes','sha256'} and entry['path']==path and all(entry[k]==disk_provenance[key][k] for k in ['bytes','sha256']), 'HNSW runtime provenance differs from retained Disk record: '+key
 assert memory_provenance['seed_documents']==18000, 'HNSW seed corpus premise differs'
 seed_entries=memory_provenance['stopped_seed_index_files']
 assert len(seed_entries)==len({e['path'] for e in seed_entries})==271, 'HNSW stopped seed inventory differs'
@@ -140,6 +147,9 @@ memory_entries=memory_provenance['model_assets']
 assert len(memory_entries)==len({e['path'] for e in memory_entries})==7, 'HNSW duplicate/incomplete prehashed model inventory'
 memory_assets={e['path'].replace('${MODEL_CACHE}','<MODEL_CACHE>'):e for e in memory_entries}
 disk_assets={e['path']:e for e in disk_provenance['source_assets']+disk_provenance['prepared_graphs_and_external_weights']}
+def model_identity(entry):
+    assert type(entry['bytes']) is int and entry['bytes']>=0 and type(entry['sha256']) is str and re.fullmatch('[0-9a-f]{64}',entry['sha256']), 'HNSW model identity must have nonnegative integer bytes and canonical SHA256'
+for entry in memory_entries+list(disk_assets.values()):model_identity(entry)
 # Check this HNSW endpoint itself: the later Disk inventory is a separate
 # observation, not a replacement for missing HNSW endpoint evidence.
 post=json.loads((root/'post-trial-assets.json').read_text())
@@ -160,6 +170,7 @@ expected_external={b['external_data'] for b in provider_bindings['roles'].values
 assert {e['path'].replace('${MODEL_CACHE}','<MODEL_CACHE>') for e in external}==expected_external, 'HNSW external-weight endpoint pathset differs'
 receipt_mtimes={'eecdcf109c0c08402aa8f893fc25d2d4':1790793669634082575,'ac146c082d1526dd1cd10597ae4a0ffc':1790793000506673216}
 for entry in external:
+    model_identity(entry)
     normalized=entry['path'].replace('${MODEL_CACHE}','<MODEL_CACHE>')
     assert set(entry)=={'path','bytes','sha256','mtime_ns','hash_scope'}, 'HNSW external-weight endpoint scope differs'
     assert normalized in disk_assets and all(entry[k]==disk_assets[normalized][k] for k in ['bytes','sha256']), 'HNSW external-weight endpoint identity differs'
@@ -210,8 +221,18 @@ for reference in ['predecessor','main']:
             difference=f'{delta/divisor:+.{precision}f}{unit}'
             percentage=f'{percent:+.3f}%' if percent is not None else 'N/A'
         expected.append(f'| {label} | {before/divisor:.{precision}f}{unit} | {after/divisor:.{precision}f}{unit} | {difference} | {percentage} |')
-displayed=[line for line in (root/'README.md').read_text().splitlines() if line.startswith('|')]
+readme=(root/'README.md').read_text()
+displayed=[line for line in readme.splitlines() if line.startswith('|')]
 assert displayed==expected, 'HNSW complete displayed rows disagree with recomputed summary/timing policy'
+# Render the published upkeep CPU sentence from the recomputed summary, which
+# is itself derived from the retained raw user/system tick counters.
+cpu={arm:summary['arms'][arm]['median_of_process_metrics']['maintenance_cpu_s'] for arm in ['predecessor','main','candidate']}
+cpu_sentence=f"median measured upkeep CPU is {cpu['predecessor']:.2f} s for predecessor, {cpu['main']:.2f} s for main and {round(cpu['candidate']*100)} observed ticks for candidate."
+assert cpu_sentence in readme, 'HNSW published upkeep CPU sentence differs from recomputed summary'
+# The retained rows count optimize jobs but not the upkeep predicate that queued
+# them; the README must keep that qualification on its 1->0 claim.
+OPTIMIZE_TRIGGER_QUALIFIER='The retained rows count optimize jobs but do not record which upkeep predicate queued them (file floor, unindexed graph remainder or unmerged block waste); attributing the predecessor and main jobs to the file-floor trigger is inferred from the patch and the 271-file seed, not retained per-arm evidence.'
+assert OPTIMIZE_TRIGGER_QUALIFIER in ' '.join(readme.split()), 'HNSW optimize-trigger qualification missing from README'
 binding_source=repo/'benchmarks/results/index/restart-floor-disk-2026-09-30/rebuild/verify.py'
 binding_loader=importlib.machinery.SourceFileLoader('retrospective_restart_binding',str(binding_source))
 binding_spec=importlib.util.spec_from_loader(binding_loader.name,binding_loader)

@@ -1057,6 +1057,25 @@ separately. Twenty rerank passes of sixteen pairs of about 200 tokens showed no 
 change: the per-round median moved between -22% and +9% against `fastembed`,
 median -2.5%, while one arm's own rounds moved by up to 40%.
 
+The 280 MiB is `tokenizers`' own Unigram model, a trie with a hash map in every
+node. The shared vocabulary has since been held in a double-array trie instead
+(see `crates/pamin-index/src/tokenizer.rs`), with ids tested equal to that
+model's. The figures above are for the layout before it. The same measuring
+child, run before (`ad33d2d`) and after (`c176020`) in the order A B, B A,
+A B on a shared 4-vCPU Xeon with a warm page cache, gave these medians of
+three:
+
+| metric | before | after | change |
+| --- | ---: | ---: | ---: |
+| anonymous MiB after loading both models | 345.0 | 95.8 | −249.2 (−72.2%) |
+| anonymous MiB held after use and trim | 314.4 | 47.1 | −267.3 (−85.0%) |
+| peak RSS MiB | 991.2 | 744.2 | −247.0 (−24.9%) |
+
+Outputs were bit-identical in all six runs. Encoding time was not measured,
+because the host was busy; load time moved by less than its run-to-run spread.
+These are whole-process figures, so they bound what the new layout holds but
+do not isolate it.
+
 **What the database is made of**, which is a figure this page has never carried
 and which turned out to be worth carrying. Broken down by table on the
 evaluation workspace, 1.7 GB across its projects, before either change below:
