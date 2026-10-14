@@ -279,19 +279,30 @@ fn source() -> Source {
             // failure; ask again for the list to tell the two apart.
             git(&["diff", "--name-only", "HEAD"]).map(|output| !output.stdout.is_empty())
         });
-    provenance(env!("PAMIN_ENGINE_COMMIT"), head.as_deref(), changed)
+    // Anything but an explicit "false" counts as dirty, which errs towards
+    // a noncanonical record.
+    let built_dirty = env!("PAMIN_ENGINE_DIRTY") != "false";
+    provenance(
+        env!("PAMIN_ENGINE_COMMIT"),
+        built_dirty,
+        head.as_deref(),
+        changed,
+    )
 }
 
-/// Whether a run compiled at `built` may write the canonical record, given
-/// the checkout's `head` and whether it has tracked `changed`s (`None` where
-/// `git` could not say).
+/// Whether a run compiled at `built`, from a checkout that was `built_dirty`
+/// or not, may write the canonical record, given the checkout's `head` and
+/// whether it has tracked `changed`s (`None` where `git` could not say).
 ///
-/// Only a clean checkout at the compiled commit can: tracked changes may or
-/// may not be what was compiled, and a build with no commit, or a checkout
-/// `git` cannot read, names nothing a reader could rebuild.
-fn provenance(built: &str, head: Option<&str>, changed: Option<bool>) -> Source {
+/// Only a clean build run from a clean checkout at the compiled commit can:
+/// edits compiled in may since have been restored, tracked changes at run
+/// time may or may not be what was compiled, and a build with no commit, or
+/// a checkout `git` cannot read, names nothing a reader could rebuild.
+fn provenance(built: &str, built_dirty: bool, head: Option<&str>, changed: Option<bool>) -> Source {
     let noncanonical = if built == "unknown" {
         Some("compiled outside a git checkout, so no commit names it".to_string())
+    } else if built_dirty {
+        Some("compiled from a checkout with tracked changes, which no commit names".to_string())
     } else if head.is_none() {
         Some("git could not read the checkout it runs in".to_string())
     } else if head != Some(built) {
@@ -1047,7 +1058,7 @@ mod tests {
     fn only_a_clean_checkout_at_the_compiled_commit_is_canonical() {
         let (a, b) = ("a".repeat(40), "b".repeat(40));
         assert_eq!(
-            provenance(&a, Some(&a), Some(false)),
+            provenance(&a, false, Some(&a), Some(false)),
             Source {
                 commit: a.clone(),
                 noncanonical: None
@@ -1059,13 +1070,16 @@ mod tests {
         };
         // A binary built at one commit and run after the checkout moved
         // names the commit it was built at.
-        assert!(reason(provenance(&a, Some(&b), Some(false))).contains(&b));
+        assert!(reason(provenance(&a, false, Some(&b), Some(false))).contains(&b));
         // A dirty checkout may or may not be what was compiled.
-        assert!(reason(provenance(&a, Some(&a), Some(true))).contains("tracked changes"));
-        assert!(reason(provenance(&a, Some(&a), None)).contains("could not list"));
-        assert!(reason(provenance(&a, None, None)).contains("could not read"));
+        assert!(reason(provenance(&a, false, Some(&a), Some(true))).contains("tracked changes"));
+        // Edits compiled in and restored before the run: the checkout looks
+        // clean at the compiled commit, but the binary is not that commit.
+        assert!(reason(provenance(&a, true, Some(&a), Some(false))).contains("compiled from"));
+        assert!(reason(provenance(&a, false, Some(&a), None)).contains("could not list"));
+        assert!(reason(provenance(&a, false, None, None)).contains("could not read"));
         // A source archive: no commit at build time, and no git at run time.
-        let archive = provenance("unknown", None, None);
+        let archive = provenance("unknown", true, None, None);
         assert_eq!(archive.commit, "unknown");
         assert!(
             archive
