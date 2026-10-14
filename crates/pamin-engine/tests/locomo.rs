@@ -63,7 +63,9 @@ const DATA: &str = "https://raw.githubusercontent.com/snap-research/locomo/3eb6f
 /// SHA-256 of `locomo10.json` at that commit; a cached copy must match it too.
 const DATA_SHA256: &str = "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4";
 
-/// What the product's `pamin search` asks for by default.
+/// What the product's `pamin search` asks for by default. A constant because
+/// the rule replay sizes a constant from it; the test asserts it still equals
+/// [`Depths::default`].
 const DEPTHS: Depths = Depths {
     channel: 50,
     graph: 2,
@@ -295,6 +297,12 @@ async fn link(engine: &Engine, conversation: &Conversation) -> usize {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "provisions postgres, downloads the dataset and model weights, and embeds the corpus"]
 async fn locomo_evidence_with_and_without_links() {
+    let shipped = Depths::default();
+    assert_eq!(
+        (DEPTHS.channel, DEPTHS.graph),
+        (shipped.channel, shipped.graph),
+        "DEPTHS must be what `pamin search` ships"
+    );
     let conversations = load();
     let (named, profile) = harness::profile();
     let home = std::env::var("PAMIN_EVAL_HOME").ok();
