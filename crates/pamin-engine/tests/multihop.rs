@@ -728,6 +728,7 @@ async fn search_answers_questions_that_take_several_steps() {
                 None,
                 |into, ranking| score(into.entry(query.group.clone()).or_default(), query, ranking),
             );
+            priced.planned_like(&engine);
         }
         priced.report(&format!(
             "rules for the {} reranker's scores, MuSiQue, {named}",
