@@ -211,21 +211,60 @@ const NOT_SETTINGS: [&str; 12] = [
 
 /// Variables outside `PAMIN_` that every harness's record is named by,
 /// whichever harness it is. `SIGNIFICANCE_GATE`, which `statistics::gate`
-/// reads, decides whether a run's significance gate was applied at all. The
-/// rest set how many threads the runtime, the tokenizer and the model's
-/// kernels use: they change timings, and a reduction split over a different
-/// number of threads can round differently.
-const ALWAYS_SETTINGS: [&str; 5] = [
+/// reads, decides whether a run's significance gate was applied at all.
+/// `HF_ENDPOINT` is where the product downloads its models from. The rest
+/// set how many threads the runtime, the tokenizer and the model's kernels
+/// use: they change timings, and a reduction split over a different number
+/// of threads can round differently. With them, every variable starting
+/// with one of [`ALWAYS_PREFIXES`], and the CUDA device selection
+/// ([`pamin_index::CUDA_SELECTION`], the product's own list, which names its
+/// CUDA plans).
+///
+/// `every_environment_read_is_classified` holds the product to this: each
+/// variable its code reads is here, under a prefix, or in
+/// [`NOT_IDENTITY`] with the reason it changes no result.
+const ALWAYS_SETTINGS: [&str; 6] = [
     "SIGNIFICANCE_GATE",
+    "HF_ENDPOINT",
     "TOKIO_WORKER_THREADS",
     "RAYON_NUM_THREADS",
     "TOKENIZERS_PARALLELISM",
     "OMP_NUM_THREADS",
 ];
 
+/// Families of variables the native libraries read at run time: ONNX
+/// Runtime's, the OpenMP, MKL and OpenBLAS thread pools', and the ROCm
+/// device selection (`HIP_VISIBLE_DEVICES`, `ROCR_VISIBLE_DEVICES`).
+const ALWAYS_PREFIXES: [&str; 7] = ["ORT_", "OMP_", "MKL_", "KMP_", "OPENBLAS_", "HIP_", "ROCR_"];
+
+/// Variables the product reads that change no result or timing, with why.
+/// Anything else it reads names the record.
+const NOT_IDENTITY: [(&str, &str); 6] = [
+    ("HF_HOME", "where downloaded models are cached, not which"),
+    ("LOCALAPPDATA", "where the WinML runtime is unpacked"),
+    ("OUT_DIR", "a build directory, compiled in"),
+    (
+        "COMPUTERNAME",
+        "the host's name, for a plan cache's key; the hardware is recorded",
+    ),
+    (
+        "PROCESSOR_IDENTIFIER",
+        "the CPU, recorded as the hardware's cpu",
+    ),
+    ("HOSTNAME", "who holds a cascade claim in a shared store"),
+];
+
+fn identity_variable(name: &str) -> bool {
+    ALWAYS_SETTINGS.contains(&name)
+        || pamin_index::CUDA_SELECTION.contains(&name)
+        || ALWAYS_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+}
+
 /// What makes this run an arm other than the shipped one, as sorted
-/// `NAME=value` lines: each of the harness's own `vars` that is set, each of
-/// [`ALWAYS_SETTINGS`], and every set `PAMIN_` variable but
+/// `NAME=value` lines: each of the harness's own `vars` that is set, each
+/// one [`ALWAYS_SETTINGS`] covers, and every set `PAMIN_` variable but
 /// [`NOT_SETTINGS`].
 ///
 /// The `PAMIN_` variables are found rather than listed. A list was kept per
@@ -237,7 +276,7 @@ fn settings(vars: &[&str], set: impl IntoIterator<Item = (String, String)>) -> V
         .into_iter()
         .filter(|(name, _)| {
             vars.contains(&name.as_str())
-                || ALWAYS_SETTINGS.contains(&name.as_str())
+                || identity_variable(name)
                 || (name.starts_with("PAMIN_") && !NOT_SETTINGS.contains(&name.as_str()))
         })
         .map(|(name, value)| format!("{name}={value}"))
@@ -537,9 +576,12 @@ struct Hardware {
     cpu: String,
     /// Logical cores this process may use.
     logical_cores: usize,
-    /// Accelerators a provider ran on, by name where the platform says:
-    /// NVIDIA GPUs through `nvidia-smi` when a model ran on CUDA. CoreML runs
-    /// on the Apple chip `cpu` names; DirectML is named only as itself.
+    /// Accelerators a provider ran on, by name where the platform says.
+    /// When a model ran on CUDA, the GPUs visible to it -- index, UUID, PCI
+    /// bus, name and driver, the inventory the product's CUDA plans are
+    /// named by ([`pamin_index::cuda_devices`]) -- narrowed to the ones
+    /// `CUDA_VISIBLE_DEVICES` selects where that can be read off. CoreML
+    /// runs on the Apple chip `cpu` names; DirectML is named only as itself.
     accelerators: Vec<String>,
 }
 
@@ -563,19 +605,12 @@ impl Hardware {
         };
         let mut accelerators = Vec::new();
         if ran("cuda") {
-            let named = std::process::Command::new("nvidia-smi")
-                .args(["--query-gpu=name", "--format=csv,noheader"])
-                .output()
-                .ok()
-                .filter(|output| output.status.success())
-                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-                .filter(|names| !names.is_empty());
-            accelerators.extend(
-                named
-                    .unwrap_or_else(|| "cuda: unknown".into())
-                    .lines()
-                    .map(|name| format!("cuda: {}", name.trim())),
-            );
+            let read = |name: &str| std::env::var(name).ok();
+            accelerators.extend(visible_cuda(
+                pamin_index::cuda_devices().as_deref(),
+                read("CUDA_VISIBLE_DEVICES").as_deref(),
+                read("CUDA_DEVICE_ORDER").as_deref(),
+            ));
         }
         for other in ["coreml", "directml", "npu"] {
             if ran(other) {
@@ -584,6 +619,54 @@ impl Hardware {
         }
         accelerators
     }
+}
+
+/// The GPUs of `inventory` (`nvidia-smi` lines: index, UUID, PCI bus, name,
+/// driver) that `visible` -- `CUDA_VISIBLE_DEVICES` -- selects, in its order,
+/// as `cuda: ` lines. An entry naming a UUID, or a prefix of one, picks that
+/// GPU. An index picks the GPU `nvidia-smi` numbers so only under
+/// `CUDA_DEVICE_ORDER=PCI_BUS_ID`, the order `nvidia-smi` numbers in; under
+/// CUDA's default, fastest first, an index is not read off here, and the
+/// whole inventory is recorded as unresolved, beside the selection itself
+/// in the settings. (`NVIDIA_VISIBLE_DEVICES` is applied by the container,
+/// before `nvidia-smi` sees any GPU.)
+fn visible_cuda(
+    inventory: Option<&str>,
+    visible: Option<&str>,
+    order: Option<&str>,
+) -> Vec<String> {
+    let Some(inventory) = inventory else {
+        return vec!["cuda: unknown".to_string()];
+    };
+    let lines: Vec<&str> = inventory.lines().map(str::trim).collect();
+    let field = |line: &str, at: usize| line.split(',').nth(at).map(str::trim).map(str::to_string);
+    let Some(visible) = visible else {
+        return lines.iter().map(|line| format!("cuda: {line}")).collect();
+    };
+    let by_bus = order == Some("PCI_BUS_ID");
+    let picked: Option<Vec<String>> = visible
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            lines
+                .iter()
+                .find(|line| {
+                    if entry.starts_with("GPU-") {
+                        field(line, 1).is_some_and(|uuid| uuid.starts_with(entry))
+                    } else {
+                        by_bus && field(line, 0).is_some_and(|index| index == entry)
+                    }
+                })
+                .map(|line| format!("cuda: {line}"))
+        })
+        .collect();
+    picked.unwrap_or_else(|| {
+        lines
+            .iter()
+            .map(|line| format!("cuda (selection unresolved): {line}"))
+            .collect()
+    })
 }
 
 /// The CPU's model name: `/proc/cpuinfo` on Linux, `sysctl` on macOS, the
@@ -618,6 +701,17 @@ struct Build {
     profile: String,
     opt_level: String,
     target: String,
+    /// Cargo's `DEBUG`: whether debug information was compiled in.
+    debug: String,
+    /// The target features enabled, `CARGO_CFG_TARGET_FEATURE`.
+    target_features: String,
+    /// The flags rustc was given, `CARGO_ENCODED_RUSTFLAGS`.
+    rustflags: String,
+    /// `rustc -V` of the compiler that built it.
+    rustc: String,
+    /// The `ORT_*`, `ZVEC_*` and rustc-wrapper build variables that were
+    /// set, as `NAME=value`.
+    environment: Vec<String>,
 }
 
 impl Build {
@@ -626,6 +720,15 @@ impl Build {
             profile: env!("PAMIN_ENGINE_BUILD_PROFILE").to_string(),
             opt_level: env!("PAMIN_ENGINE_OPT_LEVEL").to_string(),
             target: env!("PAMIN_ENGINE_TARGET").to_string(),
+            debug: env!("PAMIN_ENGINE_DEBUG").to_string(),
+            target_features: env!("PAMIN_ENGINE_TARGET_FEATURES").to_string(),
+            rustflags: env!("PAMIN_ENGINE_RUSTFLAGS").to_string(),
+            rustc: env!("PAMIN_ENGINE_RUSTC").to_string(),
+            environment: env!("PAMIN_ENGINE_BUILD_ENVIRONMENT")
+                .split('\x1f')
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect(),
         }
     }
 }
@@ -1684,6 +1787,11 @@ mod tests {
                 profile: "release".into(),
                 opt_level: "3".into(),
                 target: "x86_64-unknown-linux-gnu".into(),
+                debug: "false".into(),
+                target_features: "fxsr,sse,sse2".into(),
+                rustflags: String::new(),
+                rustc: "rustc 1.98.1".into(),
+                environment: Vec::new(),
             },
             hardware: Hardware {
                 cpu: "Example CPU".into(),
@@ -1750,6 +1858,17 @@ mod tests {
             ("build.target", |id| {
                 id.build.target = "aarch64-apple-darwin".into()
             }),
+            ("build.debug", |id| id.build.debug = "true".into()),
+            ("build.target_features", |id| {
+                id.build.target_features.push_str(",avx2")
+            }),
+            ("build.rustflags", |id| {
+                id.build.rustflags = "-C target-cpu=native".into()
+            }),
+            ("build.rustc", |id| id.build.rustc.push('x')),
+            ("build.environment", |id| {
+                id.build.environment.push("ORT_LIB_LOCATION=/ort".into())
+            }),
         ];
         let base = identity();
         for (field, mutate) in &mutations {
@@ -1788,6 +1907,113 @@ mod tests {
         assert_eq!(Hardware::accelerators_for(&providers), ["coreml"]);
         assert!(Hardware::accelerators_for(&providers[..1]).is_empty());
         assert!(Hardware::detect().logical_cores > 0);
+    }
+
+    /// The GPUs a CUDA run could see are the ones `CUDA_VISIBLE_DEVICES`
+    /// selects, by UUID always and by index only in `nvidia-smi`'s order.
+    #[test]
+    fn the_visible_gpus_are_the_selected_ones() {
+        let inventory = "0, GPU-aaa, 0000:01:00.0, A100, 580.0\n\
+                         1, GPU-bbb, 0000:02:00.0, H100, 580.0";
+        let all = visible_cuda(Some(inventory), None, None);
+        assert_eq!(all.len(), 2);
+        assert_eq!(
+            visible_cuda(Some(inventory), Some("GPU-bb"), None),
+            ["cuda: 1, GPU-bbb, 0000:02:00.0, H100, 580.0"]
+        );
+        assert_eq!(
+            visible_cuda(Some(inventory), Some("1,0"), Some("PCI_BUS_ID")),
+            [all[1].clone(), all[0].clone()]
+        );
+        let unresolved = visible_cuda(Some(inventory), Some("1"), None);
+        assert_eq!(unresolved.len(), 2);
+        assert!(unresolved.iter().all(|line| line.contains("unresolved")));
+        assert_eq!(visible_cuda(None, Some("0"), None), ["cuda: unknown"]);
+    }
+
+    /// Every environment variable the product reads outside `PAMIN_` either
+    /// names the record or is listed in [`NOT_IDENTITY`] with why it
+    /// changes nothing measured: reading a new one without deciding fails
+    /// here. Names are taken from the string literals of the source files
+    /// that read the environment, outside their tests, which is how every
+    /// read is written; build scripts are left out, because what they read
+    /// is compiled in and recorded as the build.
+    #[test]
+    fn every_environment_read_is_classified() {
+        let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crates directory");
+        let mut found = BTreeSet::new();
+        for name in [
+            "pamin-index",
+            "pamin-engine",
+            "pamin-store",
+            "pamin-cli",
+            "pamin-core",
+        ] {
+            environment_reads(&crates.join(name).join("src"), &mut found);
+        }
+        assert!(
+            found.contains("HF_ENDPOINT") && found.contains("CUDA_VISIBLE_DEVICES"),
+            "this test is not reading the source: {found:?}"
+        );
+        let unclassified: Vec<&String> = found
+            .iter()
+            .filter(|name| !identity_variable(name))
+            .filter(|name| !NOT_IDENTITY.iter().any(|(excluded, _)| excluded == name))
+            .collect();
+        assert!(
+            unclassified.is_empty(),
+            "read by the product, and neither naming the record nor in NOT_IDENTITY: \
+             {unclassified:?}"
+        );
+        let gone: Vec<&str> = NOT_IDENTITY
+            .iter()
+            .map(|(name, _)| *name)
+            .filter(|name| !found.contains(*name))
+            .collect();
+        assert!(
+            gone.is_empty(),
+            "in NOT_IDENTITY but no longer read: {gone:?}"
+        );
+    }
+
+    /// The upper-case, non-`PAMIN_` string literals of every source file
+    /// under `dir` that reads the environment, up to its test module.
+    fn environment_reads(dir: &Path, into: &mut BTreeSet<String>) {
+        for entry in std::fs::read_dir(dir).expect("read a source directory") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                environment_reads(&path, into);
+                continue;
+            }
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("read a source file");
+            if !["env::var", "var_os(", "env::vars"]
+                .iter()
+                .any(|read| source.contains(read))
+            {
+                continue;
+            }
+            let product = source
+                .find("#[cfg(test)]\nmod tests")
+                .map_or(source.as_str(), |at| &source[..at]);
+            for (at, _) in product.match_indices('"') {
+                let rest = &product[at + 1..];
+                let Some(end) = rest.find('"') else { continue };
+                let literal = &rest[..end];
+                let variable = literal.len() > 1
+                    && literal.starts_with(|first: char| first.is_ascii_uppercase())
+                    && literal
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+                if variable && !literal.starts_with("PAMIN_") {
+                    into.insert(literal.to_string());
+                }
+            }
+        }
     }
 
     /// A published run that never says what it ran on fails, and leaves its
