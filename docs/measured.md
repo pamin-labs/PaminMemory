@@ -1047,6 +1047,10 @@ measurement, in MiB:
 | before the trim | 778 in every round | 339 -- 346 |
 | seconds to load both | 3.30 -- 3.66 | 1.77 -- 1.95 |
 
+**Provisional and unretained:** the raw rows and the commands behind this
+table were not kept, so it cannot be re-checked, and it stands only until it
+is measured again.
+
 Every vector and every score is bit-identical: 18,432 embedding values over
 eighteen texts and 65 `accurate` scores, over eight scripts, runs of spaces,
 trailing and leading spaces, empty texts and one past both length limits --
@@ -1074,7 +1078,10 @@ three:
 Outputs were bit-identical in all six runs. Encoding time was not measured,
 because the host was busy; load time moved by less than its run-to-run spread.
 These are whole-process figures, so they bound what the new layout holds but
-do not isolate it.
+do not isolate it. The raw output of all six runs, the commands that drove them
+and the conditions are retained for maintainers in the private submodule (see
+[internal-docs.md](internal-docs.md)), at
+`internal-docs/pamin-memory/research/2026-10-13/raw/t1-tokenizer-memory/`.
 
 **What the database is made of**, which is a figure this page has never carried
 and which turned out to be worth carrying. Broken down by table on the
