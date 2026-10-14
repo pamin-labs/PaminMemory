@@ -363,8 +363,6 @@ mod tests {
         "PAMIN_RERANK_BATCH_TOKENS",
         "PAMIN_RERANK_DEPTH",
         "PAMIN_RERANK_MAX_TOKENS",
-        // Measurement only: a candidate accurate-reranker CPU export on disk.
-        "PAMIN_RERANK_SOURCE",
         "PAMIN_SEARCH_EFFORT",
         "PAMIN_UNINDEXED_BUDGET",
     ];

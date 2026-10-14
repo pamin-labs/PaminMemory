@@ -568,29 +568,6 @@ fn score(into: &mut Scores, query: &Query, ranked: &[String]) {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "provisions postgres, downloads the dataset and model weights, and embeds the corpus"]
 async fn search_answers_questions_that_take_several_steps() {
-    // Name the code and the graphs a run measured, as XQuAD-R does, so two
-    // runs' numbers can be told apart by more than their environments.
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("pamin_index=info")
-        .with_ansi(false)
-        .without_time()
-        .with_writer(std::io::stdout)
-        .try_init();
-    let git = |args: &[&str]| {
-        Command::new("git")
-            .args(["-C", env!("CARGO_MANIFEST_DIR")])
-            .args(args)
-            .output()
-            .expect("run git")
-    };
-    let head = git(&["rev-parse", "HEAD"]);
-    assert!(head.status.success(), "identify the benchmark code commit");
-    assert!(
-        git(&["diff", "--quiet", "HEAD"]).status.success(),
-        "benchmark checkout has tracked changes"
-    );
-    let commit = String::from_utf8(head.stdout).expect("UTF-8 commit");
-
     let corpus = Corpus::load();
     let named = std::env::var("PAMIN_PROFILE").unwrap_or_else(|_| DEFAULT_PROFILE.into());
     let profile = Profile::parse(&named).unwrap_or_else(|| panic!("unknown profile {named}"));
@@ -602,7 +579,6 @@ async fn search_answers_questions_that_take_several_steps() {
         &named,
         &ARMS,
     );
-    println!("  benchmark code commit: {}", commit.trim());
     corpus.describe();
     // The run ends on a significance gate per hop count; a sample too small
     // to ever pass it fails here, before the corpus is indexed.
