@@ -156,6 +156,11 @@ and run:
 python3 source/prepare-future.py --source "$SOURCE" --out "$ARMS"
 ```
 
+Preparation also requires the scratch checkout's
+`crates/pamin-store/migrations/*.sql`, which `migrate.rs` embeds with
+`include_str!`, to byte-match the [archived SQL copies](source/migrations), with
+no missing or extra SQL file.
+
 Build both generated integration targets with the installed pinned Rust/Cargo
 1.98.1 tools, two build workers, explicit runtime paths and no inherited flags or
 wrappers. Keep build and model work out of the run slot. The six retained
@@ -237,6 +242,10 @@ binary serially with `GRAPH_ARM=baseline` or `scored`, unique `GRAPH_OUT` and
 `GRAPH_CLK_TCK` set to the platform clock-tick frequency:
 
 ```sh
+(
+set -eu
+: "${WORKSPACE:?set WORKSPACE to the prepared arm workspace}"
+WORKSPACE=$(cd "$WORKSPACE" && pwd -P)
 LD_LIBRARY_PATH="$ORT_LIB:$ZVEC_LIB" \
 PAMIN_EVAL_HOME="$WORKSPACE" PAMIN_PROFILE=accuracy PAMIN_DEVICE=cpu \
 GRAPH_ARM="$ARM" GRAPH_OUT="$RESULTS/$ARM.jsonl" \
@@ -249,6 +258,7 @@ python3 source/future-accounting.py.in \
   --ort "$ORT_LIB/libonnxruntime.so.1.28.0" --zvec "$ZVEC_LIB/libzvec_c_api.so" \
   -- "$BINARY" scratch_scored_graph_finite_fixture \
   --exact --ignored --nocapture --test-threads=1
+)
 ```
 
 The new [accounting runner](source/future-accounting.py.in) is a prospective reconstruction of the Linux `wait4` method, not the original measurement-time runner source. It captures native stdout/stderr into a fresh `.log` and writes whole-process wall/user/system/RSS/exit values into `.usage.json`. The wall interval includes process launch, model/fixture setup and wait; wait4 CPU includes the native process and its reaped children, and excludes independent PostgreSQL services. RSS is Linux native-process high water in KiB, not aggregate service memory. This supplies the missing reproduction outputs without changing historical numbers or certifying historical runner bytes.
@@ -264,7 +274,7 @@ selection stays under the assigned workspace instead of an inherited hub cache
 or endpoint. Provisioned pinned assets remain prerequisites. It does not run a model itself.
 
 Set `WORKSPACE` to that arm's prepared pinned workspace and `ARM` to `baseline` or
-`scored`; retain the actual interference declaration in `INTERFERENCE`. The
+`scored`; the subshell rejects an unset or empty `WORKSPACE` (and other unset inputs) and canonicalizes it before launch; retain the actual interference declaration in `INTERFERENCE`. The
 archive declaration is `exclusive model/build slot; shared file cache and reclaim
 pressure; non-timing component reproduction`. Future runs must record their own
 conditions. Use separate output paths and retain every failure. Verify source/build hashes,

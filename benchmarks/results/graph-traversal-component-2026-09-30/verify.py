@@ -8,7 +8,7 @@ ROOT=Path(__file__).resolve().parent
 # Complete approved shell blocks, including final newline; prospective guards.
 # Membership checks alone permit a later assignment to override a pinned value.
 BUILD_RECIPE_SHA256='c4f73a8331bccd5734bc60c29c4bbf113ab509b7880149f0647b263dd9b135f8'
-RUNTIME_RECIPE_SHA256='b2be04af460d5222f662e6c59145bf4f37d41a502dbbe8729e80f8a2debac45d'
+RUNTIME_RECIPE_SHA256='125a31acdb6967acf3392e3ce4c9051d5e7231a6db5f82b68430d267232715f9'
 
 # Complete retained raw inventories, including native UUIDs/scores; capture-only pins.
 NON_GRAPH_PINS = {'baseline': '2798681a63379fc62f5abe0c79593d97b6533a38a9762224aa429c344d42199a', 'scored': '2fa0b1056f508318241aa00d6e0923e42653859621138fd454cfa3ebd822373b'}
@@ -77,7 +77,7 @@ future=provenance['future_reproduction']
 assert future.get('fixture_policy')=={'scope': 'prospective disabled-arm defect assertions; historical fixture and preparation bytes unchanged', 'historical_fixture': 'source/fixture.rs.in', 'historical_fixture_sha256': '0daa185fcf9eff2d174ce13569407ff972827cacecffce15996740352cdbaab1', 'fixture': 'source/fixture-future.rs.in', 'prepare': 'source/prepare-future.py', 'native_execution': 'N/A: prospective baseline assertions not compiled or run; benchmarks deferred'}, 'prospective fixture provenance/limitation differs'
 assert future['scope']=='prospective accounting and mapped-library collector; original runner source N/A; no historical data replacement', 'prospective runner scope differs'
 assert provenance['scope']=='native search_fused component reproduction; independently seeded UUID projects; no product quality/speed conclusion', 'component provenance scope differs'
-FUTURE_SOURCE_PINS={'source/future-accounting.py.in': '1e8e0e5a786628cd27632762b539c1c9136a97e4daaf9008a0ef45e94ccab38e', 'test_future_accounting.py': '3728da9133fb4a5b2e8b777d799027e81a1b533cf6800b4b34be3cf85b7dd345', 'source/fixture-future.rs.in': 'ecf3d00607854c0f8773941ad9b813b35ec73a46add2cc37f64b9bbbe1a03373', 'source/prepare-future.py': 'd9391134d9ea128ca6188d502aa84c7592f1bd8e8b3ea9833cd87dd7d0239123'}
+FUTURE_SOURCE_PINS={'source/future-accounting.py.in': '1e8e0e5a786628cd27632762b539c1c9136a97e4daaf9008a0ef45e94ccab38e', 'test_future_accounting.py': '3728da9133fb4a5b2e8b777d799027e81a1b533cf6800b4b34be3cf85b7dd345', 'source/fixture-future.rs.in': 'ecf3d00607854c0f8773941ad9b813b35ec73a46add2cc37f64b9bbbe1a03373', 'source/prepare-future.py': 'afbd63b6c17b12f26f6d50e6ec00648a51cfd3f4812b41c698e67288c1c932cd'}
 assert future['files']==FUTURE_SOURCE_PINS, 'future accounting source pins differ'
 for name,digest in FUTURE_SOURCE_PINS.items():assert sha(ROOT/name)==digest, 'future accounting source bytes differ'
 # Independent SHA-256 of Git blob 760cd200eebba61025615ea5a72384110f0ac9b5
@@ -222,7 +222,9 @@ arm_records={r['arm']:r for r in provenance['arms']}
 assert len(provenance['arms']) == 2 and set(arm_records) == {'baseline','scored'}
 SOURCE_PATHS = {'crates/pamin-engine/tests/graph_trace/mod.rs', 'crates/pamin-cli/Cargo.toml', 'crates/pamin-store/src/error.rs', 'crates/pamin-index/src/half.rs', 'crates/pamin-index/src/tokenizer.rs', 'crates/pamin-index/src/encoder.rs', 'crates/pamin-index/src/hub.rs', 'crates/pamin-index/src/inference.rs', 'crates/pamin-index/src/reshape.rs', 'crates/pamin-index/src/segmentation.rs', 'crates/pamin-core/src/version.rs', 'crates/pamin-core/src/graph.rs', 'benchmarks/results/inference/vector-rescore-device-2026-09-30/Cargo.toml', 'Cargo.lock', 'crates/pamin-store/src/lib.rs', 'crates/pamin-core/src/lib.rs', 'crates/pamin-index/src/onnx.rs', 'crates/pamin-index/src/reranking.rs', 'crates/pamin-core/Cargo.toml', 'crates/pamin-store/src/workspace.rs', 'crates/pamin-engine/Cargo.toml', 'crates/pamin-index/src/error.rs', 'crates/pamin-core/src/env.rs', 'crates/pamin-index/src/descriptors.rs', 'Cargo.toml', 'crates/pamin-core/src/id.rs', 'crates/pamin-store/src/sql.rs', 'crates/pamin-index/src/lib.rs', 'crates/pamin-core/src/channel.rs', 'crates/pamin-index/Cargo.toml', 'crates/pamin-index/src/prepared.rs', 'crates/pamin-store/src/repository.rs', 'crates/pamin-core/src/fusion.rs', 'crates/pamin-index/src/projection.rs', 'crates/pamin-engine/src/reshape.rs', 'crates/pamin-index/src/attention.rs', 'crates/pamin-store/src/database.rs', 'crates/pamin-engine/src/cascade.rs', 'benchmarks/results/inference/vector-rescore-accelerate-2026-09-30-Cargo.toml', 'crates/pamin-core/src/cascade.rs', 'crates/pamin-core/src/ledger.rs', 'crates/pamin-engine/tests/scratch_scored_fixture.rs', 'crates/pamin-store/src/migrate.rs', 'crates/pamin-index/src/native.rs', 'crates/pamin-store/Cargo.toml', 'crates/pamin-store/src/jobs.rs', 'crates/pamin-engine/src/engine.rs', 'crates/pamin-core/src/filter.rs', 'crates/pamin-engine/src/lib.rs', 'crates/pamin-store/src/graph.rs', 'crates/pamin-engine/tests/harness/mod.rs', 'crates/pamin-index/src/embedding.rs'}
 SOURCE_MAP_DIGESTS = {'baseline': 'a1559290a3d29640e927e2570191c90e3958caf75c224f7d70e61ac5f1107171', 'scored': '57410269c8ae2da52143afbb1c0b8e7a8644582785f2dc44a0e331bbce3eb0fa'}
+ARM_RECORD_FIELDS = {'arm', 'asset_hashes_after', 'asset_hashes_before', 'binary_sha256', 'fresh_compiler_artifacts', 'inference', 'launch_binding', 'process_usage', 'resources', 'source_hashes'}
 for arm, record in arm_records.items():
+ assert set(record) <= ARM_RECORD_FIELDS, 'provenance arm record has a field outside its recorded schema: '+arm
  assert record['binary_sha256'] == BINARY_PINS[arm], 'recorded binary digest differs'
  sources = record['source_hashes']
  assert set(sources) == SOURCE_PATHS, 'compiled source inventory differs'
@@ -436,6 +438,7 @@ build_commands=[block for block in re.findall(r'```sh\n(.*?)```',readme,re.S) if
 assert len(build_commands)==1, 'exact native-library build reproduction command required'
 assert hashlib.sha256(build_commands[0].encode()).hexdigest()==BUILD_RECIPE_SHA256, 'pinned native-library build environment missing or changed: complete approved recipe differs'
 runtime_commands=[block for block in re.findall(r'```sh\n(.*?)```',readme,re.S) if '"$BINARY" scratch_scored_graph_finite_fixture' in block]
+assert len(runtime_commands)==1 and runtime_commands[0].startswith('(\nset -eu\n: "${WORKSPACE:?set WORKSPACE to the prepared arm workspace}"\nWORKSPACE=$(cd "$WORKSPACE" && pwd -P)\n'), 'reproduction workspace must be rejected when empty and canonicalized before launch'
 assert len(runtime_commands)==1 and hashlib.sha256(runtime_commands[0].encode()).hexdigest()==RUNTIME_RECIPE_SHA256, 'pinned native-library runtime loader environment missing or changed: complete approved recipe differs'
 assert re.findall(r'The recorded local main ref was `([^`]+)`;',readme)==[MAIN_REF_NOT_RUN], 'README prepared main reference differs'
 assert readme.count(f'The recorded local main ref was `{MAIN_REF_NOT_RUN}`;\nthat separate main arm was prepared but was not executed here.')==1, 'README prepared main execution limitation differs'

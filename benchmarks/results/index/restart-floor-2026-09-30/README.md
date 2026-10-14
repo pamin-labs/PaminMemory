@@ -1,6 +1,6 @@
 # Restarted Engine upkeep on a legacy HNSW index
 
-Persisting the successful optimize floor avoids a repeated optimize after reopening an index whose compacted layout exceeds the existing 256-file budget. In three rotated processes per arm, the predecessor and current main each completed one optimize; the candidate completed none. This establishes the upkeep cost in this workload. It does not establish a whole-search speedup.
+Persisting the successful optimize floor avoids a repeated optimize after reopening an index whose compacted layout exceeds the existing 256-file budget. In three rotated processes per arm, the predecessor and current main each completed one optimize; the candidate completed none. The retained rows count optimize jobs but do not record which upkeep predicate queued them (file floor, unindexed graph remainder or unmerged block waste); attributing the predecessor and main jobs to the file-floor trigger is inferred from the patch and the 271-file seed, not retained per-arm evidence. This establishes the upkeep cost in this workload. It does not establish a whole-search speedup.
 
 Accuracy has first priority: every one of the 24 fixed warm queries returned exactly the same ordered top ten across all three arms in each repetition (72/72 per reference). Known-topic recall was 21/24, not perfect, and MRR was 0.826389. All nine processes also retrieved the newly written `restart-proof` topic after upkeep. These near-duplicate synthetic identifier queries do not establish general multilingual retrieval accuracy.
 
