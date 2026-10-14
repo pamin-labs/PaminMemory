@@ -242,66 +242,89 @@ fn arm(settings: &[String]) -> String {
     format!("arm-{short}")
 }
 
-/// The commit checked out where the harness was built, as `git rev-parse
-/// HEAD` names it there -- the way the XQuAD-R baseline names its code --
-/// with `+dirty-` and [`patched`]'s hash of the tracked changes when there are
-/// any, so two different patches on one commit are two different sources.
+/// What a record can say about the code that ran.
 ///
-/// Read when the run starts, and checked against the commit the binary was
-/// compiled from (`PAMIN_ENGINE_COMMIT`, which `build.rs` sets): a binary
+/// The commit is the one the binary was compiled from (`PAMIN_ENGINE_COMMIT`,
+/// which `build.rs` sets), not whatever is checked out when it runs: a binary
 /// built at one commit and run after the checkout moved would otherwise name
-/// the later commit for code it does not contain. Such a run is refused.
-fn source() -> String {
+/// code it does not contain. Only a run that can vouch for that commit writes
+/// the canonical record; see [`provenance`].
+#[derive(Debug, PartialEq)]
+struct Source {
+    /// The compiled commit, or `unknown` for a build outside a git checkout.
+    commit: String,
+    /// Why this run cannot vouch for `commit`, if it cannot: its record is
+    /// then written beside the canonical one, never over it.
+    noncanonical: Option<String>,
+}
+
+/// [`provenance`] of this binary and the checkout it runs in, asking `git`
+/// without failing the run when there is no `git` or no checkout.
+fn source() -> Source {
     let git = |args: &[&str]| {
         std::process::Command::new("git")
             .args(["-C", env!("CARGO_MANIFEST_DIR")])
             .args(args)
             .output()
-            .unwrap_or_else(|error| panic!("running git to name the evaluated commit: {error}"))
+            .ok()
+            .filter(|output| output.status.success())
     };
-    let head = git(&["rev-parse", "HEAD"]);
-    assert!(
-        head.status.success(),
-        "git could not name the evaluated commit"
-    );
-    let commit = String::from_utf8(head.stdout).expect("git prints a UTF-8 commit hash");
-    built_from(env!("PAMIN_ENGINE_COMMIT"), commit.trim());
-    let diff = git(&["diff", "--binary", "HEAD"]);
-    assert!(
-        diff.status.success(),
-        "git could not list the tracked changes"
-    );
-    format!("{}{}", commit.trim(), patched(&diff.stdout))
+    let head = git(&["rev-parse", "HEAD"])
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|head| head.trim().to_string());
+    let changed = git(&["diff", "--quiet", "HEAD"])
+        .map(|_| false)
+        .or_else(|| {
+            // `--quiet` exits 1 for changes, which `git` above reads as a
+            // failure; ask again for the list to tell the two apart.
+            git(&["diff", "--name-only", "HEAD"]).map(|output| !output.stdout.is_empty())
+        });
+    provenance(env!("PAMIN_ENGINE_COMMIT"), head.as_deref(), changed)
 }
 
-/// Refuses a run whose checkout is not at the commit its harness was
-/// compiled from.
-fn built_from(built: &str, checked_out: &str) {
-    assert_eq!(
-        built, checked_out,
-        "this harness was compiled at {built} but the checkout is at {checked_out}; \
-         rebuild it before running, so its record names the code it ran"
-    );
-}
-
-/// What a source adds to its commit for `diff`, the tracked changes as `git
-/// diff --binary HEAD` prints them: nothing for none, and otherwise `+dirty-`
-/// and the first 8 hex digits of their SHA-256.
-fn patched(diff: &[u8]) -> String {
-    if diff.is_empty() {
-        return String::new();
+/// Whether a run compiled at `built` may write the canonical record, given
+/// the checkout's `head` and whether it has tracked `changed`s (`None` where
+/// `git` could not say).
+///
+/// Only a clean checkout at the compiled commit can: tracked changes may or
+/// may not be what was compiled, and a build with no commit, or a checkout
+/// `git` cannot read, names nothing a reader could rebuild.
+fn provenance(built: &str, head: Option<&str>, changed: Option<bool>) -> Source {
+    let noncanonical = if built == "unknown" {
+        Some("compiled outside a git checkout, so no commit names it".to_string())
+    } else if head.is_none() {
+        Some("git could not read the checkout it runs in".to_string())
+    } else if head != Some(built) {
+        Some(format!(
+            "the checkout is at {}, not the compiled commit",
+            head.unwrap_or_default()
+        ))
+    } else {
+        match changed {
+            Some(false) => None,
+            Some(true) => Some(
+                "the checkout has tracked changes, which may not be the compiled ones".to_string(),
+            ),
+            None => Some("git could not list the checkout's tracked changes".to_string()),
+        }
+    };
+    Source {
+        commit: built.to_string(),
+        noncanonical,
     }
-    let hash = Sha256::digest(diff);
-    let short: String = hash[..4].iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("+dirty-{short}")
 }
 
-/// A [`source`] in a record's name: the commit's first 12 characters, and
-/// what [`patched`] added to it.
-fn short(source: &str) -> String {
-    let (commit, patch) = source.split_once('+').unwrap_or((source, ""));
-    let plus = if patch.is_empty() { "" } else { "+" };
-    format!("{}{plus}{patch}", &commit[..commit.len().min(12)])
+/// A commit in a record's name: its first 12 characters.
+fn short(commit: &str) -> &str {
+    &commit[..commit.len().min(12)]
+}
+
+/// Prints `line` to stdout, ignoring a failure: `println!` panics on a
+/// closed stdout, which a record must not be lost to, nor an unwind turned
+/// into an abort by.
+fn report(line: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stdout(), "{line}");
 }
 
 /// A path beside `path` that no other writer uses: named by this process and
@@ -397,8 +420,9 @@ pub struct Shape {
     progress: PathBuf,
     /// Which test, profile and arm the run was, as `publish` was told.
     run: [String; 3],
-    /// The evaluated commit, from [`source`], once published.
-    commit: String,
+    /// The compiled commit, and whether this run may write the canonical
+    /// record, from [`source`], once published.
+    source: Source,
     /// What set the arm apart, from [`settings`].
     settings: Vec<String>,
 }
@@ -446,7 +470,10 @@ impl Shape {
             record: None,
             progress: PathBuf::new(),
             run: Default::default(),
-            commit: String::new(),
+            source: Source {
+                commit: String::new(),
+                noncanonical: None,
+            },
             settings: Vec::new(),
         }
     }
@@ -553,9 +580,12 @@ impl Shape {
         let arm = arm(&self.settings);
         self.run = [test.to_string(), profile.to_string(), arm.clone()];
         let name = &self.name;
-        self.commit = source();
+        self.source = source();
         println!("  shape {name}: {test}, profile {profile}, arm {arm}");
-        println!("  shape {name}: commit {}", self.commit);
+        println!("  shape {name}: commit {}", self.source.commit);
+        if let Some(reason) = &self.source.noncanonical {
+            println!("  shape {name}: not canonical: {reason}");
+        }
         for setting in &self.settings {
             println!("  shape {name}: arm {arm} sets {setting}");
         }
@@ -595,13 +625,19 @@ impl Shape {
             test,
             profile,
             &arm,
-            &short(&self.commit),
+            short(&self.source.commit),
             &digest[..16],
             &sequence[..8],
         ]
         .map(file_part)
         .join("-");
-        let record = dir.join(format!("{file}.json"));
+        let canonical = dir.join(format!("{file}.json"));
+        // Beside the canonical record and never over it, nor over another
+        // such run's.
+        let record = match self.source.noncanonical {
+            None => canonical,
+            Some(_) => unique(&canonical, "noncanonical.json"),
+        };
         self.progress = in_progress(&record);
         self.write(&self.progress);
         println!(
@@ -754,18 +790,40 @@ impl Shape {
     /// its in-progress file and the last completed record as it was.
     fn finish(&mut self, tally: &Tally) -> Vec<String> {
         let (lines, failures, recorded) = self.coverage(tally);
-        println!("  coverage {}: {}", self.name, lines.join("; "));
         self.coverage = Some(recorded);
         let Some(record) = self.record.clone() else {
+            report(&format!("  coverage {}: {}", self.name, lines.join("; ")));
             return failures;
         };
-        if failures.is_empty() {
-            self.write(&record);
-            let _ = std::fs::remove_file(&self.progress);
+        let path = if failures.is_empty() {
+            record
         } else {
-            self.write(&self.progress);
+            self.progress.clone()
+        };
+        if let Err(error) = self.persist(&path, "", &lines) {
+            panic!("{error}");
+        }
+        if failures.is_empty() {
+            let _ = std::fs::remove_file(&self.progress);
         }
         failures
+    }
+
+    /// Writes the record to `path`, and only then reports `lines` and any
+    /// write failure, through [`report`]: on every path, a broken stdout can
+    /// neither stop the record being written nor start a second panic.
+    fn persist(&self, path: &Path, label: &str, lines: &[String]) -> Result<(), String> {
+        let written = self.try_write(path);
+        report(&format!(
+            "  coverage {}{label}: {}",
+            self.name,
+            lines.join("; ")
+        ));
+        if let Err(error) = &written {
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr(), "  shape {}: {error}", self.name);
+        }
+        written
     }
 
     fn write(&self, path: &Path) {
@@ -788,7 +846,9 @@ impl Shape {
             "test": test,
             "profile": profile,
             "arm": arm,
-            "source_commit": self.commit,
+            "source_commit": self.source.commit,
+            "canonical": self.source.noncanonical.is_none(),
+            "noncanonical_reason": self.source.noncanonical,
             "settings": self.settings,
             "corpus_sha256": self.digest(),
             "sequence_sha256": self.sequence(),
@@ -831,26 +891,15 @@ impl Drop for Shape {
             // query was scored. Stop counting, record what was scored in the
             // in-progress file only, so a failed floor still says what its
             // numbers were over, and leave the failure as the one reported:
-            // a second panic here would abort the process. So the record is
-            // written first, and reported through writes whose errors are
-            // ignored: `println!` panics on a closed stdout, which may be
-            // what started this unwind.
+            // a second panic here would abort the process, so the write's
+            // failure is reported, not raised (see `persist`).
             let Some(tally) = tallied(Option::take) else {
                 return;
             };
             let (lines, _, recorded) = self.coverage(&tally);
             self.coverage = Some(recorded);
-            let written = self.try_write(&self.progress);
-            use std::io::Write;
-            let _ = writeln!(
-                std::io::stdout(),
-                "  coverage {} (failed run): {}",
-                self.name,
-                lines.join("; ")
-            );
-            if let Err(error) = written {
-                let _ = writeln!(std::io::stderr(), "  shape {}: {error}", self.name);
-            }
+            let progress = self.progress.clone();
+            let _ = self.persist(&progress, " (failed run)", &lines);
             return;
         }
         self.close();
@@ -975,38 +1024,53 @@ mod tests {
         assert_eq!(forward, build(&["q1", "q2"]));
     }
 
-    /// A binary compiled at one commit and run after the checkout moved.
+    /// Only a clean checkout at the compiled commit writes the canonical
+    /// record; everything else says why it cannot.
     #[test]
-    #[should_panic(expected = "rebuild it before running")]
-    fn a_harness_built_at_another_commit_is_refused() {
-        built_from(&"a".repeat(40), &"b".repeat(40));
+    fn only_a_clean_checkout_at_the_compiled_commit_is_canonical() {
+        let (a, b) = ("a".repeat(40), "b".repeat(40));
+        assert_eq!(
+            provenance(&a, Some(&a), Some(false)),
+            Source {
+                commit: a.clone(),
+                noncanonical: None
+            }
+        );
+        let reason = |source: Source| {
+            assert_eq!(source.commit.len(), 40);
+            source.noncanonical.expect("not canonical")
+        };
+        // A binary built at one commit and run after the checkout moved
+        // names the commit it was built at.
+        assert!(reason(provenance(&a, Some(&b), Some(false))).contains(&b));
+        // A dirty checkout may or may not be what was compiled.
+        assert!(reason(provenance(&a, Some(&a), Some(true))).contains("tracked changes"));
+        assert!(reason(provenance(&a, Some(&a), None)).contains("could not list"));
+        assert!(reason(provenance(&a, None, None)).contains("could not read"));
+        // A source archive: no commit at build time, and no git at run time.
+        let archive = provenance("unknown", None, None);
+        assert_eq!(archive.commit, "unknown");
+        assert!(
+            archive
+                .noncanonical
+                .expect("not canonical")
+                .contains("outside a git")
+        );
+    }
+
+    /// Reading the provenance never fails a run, with or without git.
+    #[test]
+    fn the_record_names_the_compiled_commit() {
+        let source = source();
+        assert_eq!(source.commit, env!("PAMIN_ENGINE_COMMIT"));
+        if source.commit != "unknown" {
+            assert_eq!(source.commit.len(), 40, "{source:?}");
+            assert_eq!(short(&source.commit), &source.commit[..12]);
+        }
+        assert_eq!(short("unknown"), "unknown");
     }
 
     /// Two queries asked, one excluded, in one group.
-    #[test]
-    fn the_record_names_the_evaluated_commit() {
-        let commit = source();
-        let (hash, patch) = commit.split_once('+').unwrap_or((&commit, ""));
-        assert_eq!(hash.len(), 40, "{commit}");
-        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()), "{commit}");
-        let named = short(&commit);
-        assert!(named.starts_with(&hash[..12]), "{named}");
-        assert!(named.ends_with(patch), "{named}");
-
-        // Two different patches on one commit are two different sources.
-        assert_eq!(patched(b""), "");
-        let one = patched(b"diff --git a/x b/x\n+1\n");
-        let two = patched(b"diff --git a/x b/x\n+2\n");
-        assert_ne!(one, two);
-        assert!(
-            one.starts_with("+dirty-") && one.len() == "+dirty-".len() + 8,
-            "{one}"
-        );
-        let source = format!("{}{one}", "a".repeat(40));
-        assert_eq!(short(&source), format!("{}{one}", "a".repeat(12)));
-        assert_eq!(short(&"b".repeat(40)), "b".repeat(12));
-    }
-
     fn asked() -> Shape {
         let mut shape = Shape::new("test", String::new(), None);
         shape.query(&["g"], "q1", &[]);
