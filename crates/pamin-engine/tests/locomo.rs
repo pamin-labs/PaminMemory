@@ -18,10 +18,18 @@
 //! comparison of the same search with and without the graph having anything
 //! to walk -- the graph channel's worth on this corpus, not a guess at it.
 //!
-//! **Scored by category.** LOCOMO's five categories are reported separately
-//! and never summed. Adversarial questions ask about something only the other
-//! speaker said; their evidence is still the turn that says it, so they grade
-//! retrieval the same way and are kept.
+//! **Scored by category.** LOCOMO's categories are reported separately and
+//! never summed. Adversarial questions (category 5) are left out: their
+//! `evidence` names the tempting wrong-speaker turn, not a turn holding the
+//! answer, because abstaining is the correct answer to them (see
+//! `benchmarks/datasets/locomo.py`). Rewarding retrieval of that turn would
+//! score the trap as the key.
+//!
+//! **Significance is tested per conversation.** Every question of one
+//! conversation shares its corpus, index and graph, so the questions are not
+//! independent units. The paired test runs over each conversation's mean
+//! nDCG per category, which on a few conversations cannot reach a small p;
+//! that is the honest reading, not a defect of the test.
 //!
 //! **Licence.** LOCOMO is CC BY-NC 4.0 (Maharana et al., ACL 2024). It is
 //! fetched at run time from the authors' repository, not vendored.
@@ -37,6 +45,9 @@
 //! | `LOCOMO_DIR` | where `locomo10.json` is cached, instead of fetching it |
 //! | `LOCOMO_CONVERSATIONS` | read only the first this many conversations |
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
+//!
+//! Projects are named after a digest of the records and links they hold, so a
+//! reused `PAMIN_EVAL_HOME` never scores a corpus built by older code or data.
 
 mod channels;
 mod harness;
@@ -54,15 +65,24 @@ use pamin_index::{Access, Rerank, VectorIndex};
 use pamin_store::Workspace;
 use pamin_store::graph::{self, EdgeClaim};
 use scoring::{NDCG_AT, RECALL_AT, Scores};
+use sha2::{Digest, Sha256};
 
-/// The upstream release, pinned to its file in the authors' repository.
-const DATA: &str = "https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json";
+/// The upstream release, pinned to a commit of the authors' repository.
+const DATA: &str = "https://raw.githubusercontent.com/snap-research/locomo/3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376/data/locomo10.json";
 
-/// What the product's `pamin search` asks for by default.
+/// SHA-256 of `locomo10.json` at that commit; a cached copy must match it too.
+const DATA_SHA256: &str = "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4";
+
+/// What the product's `pamin search` asks for by default. A constant because
+/// the rule replay sizes a constant from it; the test asserts it still equals
+/// [`Depths::default`].
 const DEPTHS: Depths = Depths {
     channel: 50,
     graph: 2,
 };
+
+/// LOCOMO's adversarial category, whose evidence is the trap.
+const ADVERSARIAL: usize = 5;
 
 const CATEGORY: [&str; 5] = [
     "multi-hop",
@@ -99,6 +119,32 @@ fn topic_of(dia_id: &str) -> String {
         .collect()
 }
 
+/// The dialogue ids an upstream evidence string names, canonicalised.
+///
+/// Upstream sometimes packs several ids into one string (`D8:6; D9:17`,
+/// `D9:1 D4:4 D4:6`) or zero-pads a turn (`D30:05`). Those are split and
+/// written as `D{session}:{turn}`; a piece that is not `D<n>:<n>`, such as
+/// `D:11:26`, is returned as is and fails the existence check.
+fn evidence_ids(evidence: &str) -> Vec<String> {
+    evidence
+        .split(|c: char| c == ';' || c == ',' || c.is_whitespace())
+        .filter(|piece| !piece.is_empty())
+        .map(|piece| {
+            piece
+                .strip_prefix('D')
+                .and_then(|rest| rest.split_once(':'))
+                .and_then(|(session, turn)| {
+                    Some(format!(
+                        "D{}:{}",
+                        session.parse::<u32>().ok()?,
+                        turn.parse::<u32>().ok()?
+                    ))
+                })
+                .unwrap_or_else(|| piece.to_string())
+        })
+        .collect()
+}
+
 fn load() -> Vec<Conversation> {
     let dir = harness::dataset_dir("LOCOMO_DIR", "locomo");
     std::fs::create_dir_all(&dir)
@@ -130,7 +176,10 @@ fn load() -> Vec<Conversation> {
             sessions.sort_unstable();
 
             // The date goes into the text, as `benchmarks/datasets/locomo.py`
-            // puts it, because two of the five categories ask when.
+            // puts it, because two of the five categories ask when. A shared
+            // image's caption goes in too, the way LOCOMO's own textual
+            // evaluation renders it, because some answers are only in it.
+            // The Python arms do not add it yet.
             let mut turns = Vec::new();
             for (_, key) in sessions {
                 let when = conversation
@@ -146,10 +195,18 @@ fn load() -> Vec<Conversation> {
                         continue;
                     }
                     let speaker = turn["speaker"].as_str().unwrap_or("");
+                    let mut record = format!("[{when}] {speaker}: {text}");
+                    if let Some(caption) = turn["blip_caption"]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|caption| !caption.is_empty())
+                    {
+                        record.push_str(&format!(" [shared an image: {caption}]"));
+                    }
                     turns.push(Turn {
                         topic: topic_of(dia_id),
                         session: key.to_string(),
-                        record: format!("[{when}] {speaker}: {text}"),
+                        record,
                     });
                 }
             }
@@ -161,14 +218,18 @@ fn load() -> Vec<Conversation> {
                 .iter()
                 .filter_map(|qa| {
                     let category = qa["category"].as_u64()? as usize;
-                    // Evidence ids are sometimes written with a typo upstream
-                    // (`D:11:26`, `D30:05`); a question none of whose evidence
-                    // names a turn that exists cannot be graded and is left out.
+                    if category == ADVERSARIAL {
+                        return None;
+                    }
+                    // A question none of whose evidence names a turn that
+                    // exists, even after `evidence_ids` recovers what it can,
+                    // cannot be graded and is left out.
                     let evidence: HashSet<String> = qa["evidence"]
                         .as_array()?
                         .iter()
                         .filter_map(|id| id.as_str())
-                        .map(topic_of)
+                        .flat_map(evidence_ids)
+                        .map(|id| topic_of(&id))
                         .filter(|topic| known.contains(topic.as_str()))
                         .collect();
                     if evidence.is_empty() {
@@ -190,12 +251,42 @@ fn load() -> Vec<Conversation> {
         .collect()
 }
 
-/// Fetches the file if it is not already cached, through `curl` for the reason
-/// the other harnesses give, under a partial name renamed on success.
-fn download(path: &Path) {
-    if path.exists() {
-        return;
+/// What a conversation's projects hold: every topic, record and session, in
+/// order, which also fixes the links `link` derives from them.
+fn corpus_digest(conversation: &Conversation) -> String {
+    let mut hash = Sha256::new();
+    for turn in &conversation.turns {
+        for field in [&turn.topic, &turn.session, &turn.record] {
+            hash.update(field.len().to_le_bytes());
+            hash.update(field.as_bytes());
+        }
     }
+    format!("{:x}", hash.finalize())[..12].to_string()
+}
+
+/// Fetches the file if it is not already cached, through `curl` for the reason
+/// the other harnesses give, under a partial name renamed on success, and
+/// checks it is the pinned release either way.
+fn download(path: &Path) {
+    if !path.exists() {
+        fetch(path);
+    }
+    let actual = format!(
+        "{:x}",
+        Sha256::digest(
+            std::fs::read(path)
+                .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()))
+        )
+    );
+    assert_eq!(
+        actual,
+        DATA_SHA256,
+        "{} is not the pinned LOCOMO release; remove it to fetch {DATA}",
+        path.display()
+    );
+}
+
+fn fetch(path: &Path) {
     let partial = path.with_extension("part");
     let status = Command::new("curl")
         .args(["-sSLf", "--max-time", "300", "-o"])
@@ -260,6 +351,12 @@ async fn link(engine: &Engine, conversation: &Conversation) -> usize {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "provisions postgres, downloads the dataset and model weights, and embeds the corpus"]
 async fn locomo_evidence_with_and_without_links() {
+    let shipped = Depths::default();
+    assert_eq!(
+        (DEPTHS.channel, DEPTHS.graph),
+        (shipped.channel, shipped.graph),
+        "DEPTHS must be what `pamin search` ships"
+    );
     let conversations = load();
     let (named, profile) = harness::profile();
     let home = std::env::var("PAMIN_EVAL_HOME").ok();
@@ -274,6 +371,9 @@ async fn locomo_evidence_with_and_without_links() {
 
     // [flat, linked], by category; each question in the same order on both.
     let mut scores: [BTreeMap<String, Scores>; 2] = Default::default();
+    // [flat, linked], by category: each conversation's mean nDCG, the unit the
+    // paired test is run over.
+    let mut by_conversation: [BTreeMap<String, Vec<f64>>; 2] = Default::default();
     // `RERANK_RULES`: the linked project's shipped searches replayed under
     // every rule for using the reranker's scores. See `reranking`.
     let mut rules = std::env::var("RERANK_RULES")
@@ -282,11 +382,15 @@ async fn locomo_evidence_with_and_without_links() {
     let mut questions = 0usize;
     let mut linked_edges = 0usize;
     for conversation in &conversations {
+        let digest = corpus_digest(conversation);
         let mut engines = Vec::new();
         for side in ["flat", "linked"] {
             let engine = Engine::open(
                 &workspace,
-                &format!("locomo-{named}-{}-{side}", conversation.id.to_lowercase()),
+                &format!(
+                    "locomo-{named}-{}-{side}-{digest}",
+                    conversation.id.to_lowercase()
+                ),
                 profile,
                 VectorIndex::default(),
                 Access::ReadWrite,
@@ -298,6 +402,12 @@ async fn locomo_evidence_with_and_without_links() {
         }
         linked_edges += link(&engines[1], conversation).await;
 
+        let before: [BTreeMap<String, usize>; 2] = std::array::from_fn(|side| {
+            scores[side]
+                .iter()
+                .map(|(category, scored)| (category.clone(), scored.per_query.len()))
+                .collect()
+        });
         for question in &conversation.questions {
             questions += 1;
             if let Some(rules) = &mut rules {
@@ -338,6 +448,18 @@ async fn locomo_evidence_with_and_without_links() {
                     });
             }
         }
+        for (side, scored_side) in scores.iter().enumerate() {
+            for (category, scored) in scored_side {
+                let from = before[side].get(category).copied().unwrap_or(0);
+                let this = &scored.per_query[from..];
+                if !this.is_empty() {
+                    by_conversation[side]
+                        .entry(category.clone())
+                        .or_default()
+                        .push(this.iter().sum::<f64>() / this.len() as f64);
+                }
+            }
+        }
         println!(
             "  {}: {} turns, {} questions",
             conversation.id,
@@ -364,7 +486,7 @@ async fn locomo_evidence_with_and_without_links() {
         conversations.len()
     );
     println!(
-        "  category        queries   flat nDCG@{NDCG_AT}  recall@{RECALL_AT}   linked nDCG@{NDCG_AT}  recall@{RECALL_AT}   paired nDCG@{NDCG_AT}"
+        "  category        queries   flat nDCG@{NDCG_AT}  recall@{RECALL_AT}   linked nDCG@{NDCG_AT}  recall@{RECALL_AT}   paired nDCG@{NDCG_AT} by conversation"
     );
     for (category, flat) in &scores[0] {
         let linked = &scores[1][category];
@@ -375,7 +497,10 @@ async fn locomo_evidence_with_and_without_links() {
             flat.mean_recall(),
             linked.mean_ndcg(),
             linked.mean_recall(),
-            statistics::compare(&flat.per_query, &linked.per_query)
+            statistics::compare(
+                &by_conversation[0][category],
+                &by_conversation[1][category]
+            )
         );
     }
 }
