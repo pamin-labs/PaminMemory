@@ -815,19 +815,25 @@ impl Drop for Shape {
             // query was scored. Stop counting, record what was scored in the
             // in-progress file only, so a failed floor still says what its
             // numbers were over, and leave the failure as the one reported:
-            // a second panic here would abort the process.
+            // a second panic here would abort the process. So the record is
+            // written first, and reported through writes whose errors are
+            // ignored: `println!` panics on a closed stdout, which may be
+            // what started this unwind.
             let Some(tally) = tallied(Option::take) else {
                 return;
             };
             let (lines, _, recorded) = self.coverage(&tally);
-            println!(
+            self.coverage = Some(recorded);
+            let written = self.try_write(&self.progress);
+            use std::io::Write;
+            let _ = writeln!(
+                std::io::stdout(),
                 "  coverage {} (failed run): {}",
                 self.name,
                 lines.join("; ")
             );
-            self.coverage = Some(recorded);
-            if let Err(error) = self.try_write(&self.progress) {
-                eprintln!("  shape {}: {error}", self.name);
+            if let Err(error) = written {
+                let _ = writeln!(std::io::stderr(), "  shape {}: {error}", self.name);
             }
             return;
         }
