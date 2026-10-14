@@ -1,4 +1,4 @@
-"""Resealed negatives for Disk hardware, asset identity and seed cardinality bindings."""
+"""Resealed negatives for Disk hardware, asset identity, seed cardinality and post-trial status, plus HNSW provenance and README-claim bindings."""
 import json,shutil,subprocess,sys,tempfile
 sys.dont_write_bytecode=True
 from pathlib import Path
@@ -30,13 +30,39 @@ def hnsw_seed(repo):
 def unbound_cross_archive(repo):
     path=repo/archive.HNSW/'manifest.json';manifest=json.loads(path.read_text())
     manifest['files'].pop(str(archive.DISK/'provider-bindings.json'));path.write_text(json.dumps(manifest,indent=2)+'\n')
+def truthy_post_status(repo):archive.update(repo/archive.DISK/'post-trial-assets.json',lambda x:x.update(all_recorded_source_graphs_and_prepared_external_weights_unchanged=1))
+def truthy_asset_status(repo):archive.update(repo/archive.DISK/'post-trial-assets.json',lambda x:x['assets'][0].update(unchanged='yes'))
+def hnsw_runtime(repo):archive.update(repo/archive.HNSW/'provenance.json',lambda x:x.update(runtime_commit='0'*40))
+def hnsw_toolchain(repo):archive.update(repo/archive.HNSW/'provenance.json',lambda x:x.update(cargo='cargo 0.0.0'))
+def hnsw_library(repo):archive.update(repo/archive.HNSW/'provenance.json',lambda x:x['native_zvec_library'].update(sha256='0'*64))
+def hnsw_library_path(repo):archive.update(repo/archive.HNSW/'provenance.json',lambda x:x['runtime_library'].update(path='${ORT_DIST}/lib/libonnxruntime.so'))
+def hnsw_model_identity(field,value):
+    # Change the HNSW and consumed Disk tokenizer entries consistently, so only
+    # the identity-value check (not cross-archive equality) can reject them.
+    def change(repo):
+        for rel,key in [(archive.HNSW,'model_assets'),(archive.DISK,'source_assets')]:
+            archive.update(repo/rel/'provenance.json',lambda x,key=key:next(e for e in x[key] if e['path'].endswith('bge-m3-onnx-int8/snapshots/2b34e84df040034d4b9eabb62383a87c18955822/tokenizer.json')).update({field:value}))
+    change.__name__=f'hnsw_model_{field}_{value!r}';return change
+def hnsw_cpu_sentence(repo):
+    p=repo/archive.HNSW/'README.md';p.write_text(p.read_text().replace('0.44 s for main','0.40 s for main'))
+def hnsw_trigger_qualifier(repo):
+    p=repo/archive.HNSW/'README.md';p.write_text(p.read_text().replace(' not retained per-arm evidence.',' confirmed per arm.'))
 
 CASES=[(hardware,archive.DISK,'retained Disk hardware provenance differs'),
        (asset,archive.DISK,'model asset identity must have nonnegative integer bytes and canonical SHA256'),
        (seed,archive.DISK,'retained complete seed inventory size differs'),
        (library_scope,archive.DISK,'post-trial library rehash scope differs'),
        (hnsw_seed,archive.HNSW,'HNSW stopped seed inventory digest differs'),
-       (unbound_cross_archive,archive.HNSW,'HNSW manifest must bind cross-archive input')]
+       (unbound_cross_archive,archive.HNSW,'HNSW manifest must bind cross-archive input'),
+       (truthy_post_status,archive.DISK,'post-trial asset status must be exact true'),
+       (truthy_asset_status,archive.DISK,'post-trial asset status must be exact true'),
+       (hnsw_runtime,archive.HNSW,'HNSW runtime provenance differs from retained Disk record: runtime_commit'),
+       (hnsw_toolchain,archive.HNSW,'HNSW runtime provenance differs from retained Disk record: cargo'),
+       (hnsw_library,archive.HNSW,'HNSW runtime provenance differs from retained Disk record: native_zvec_library'),
+       (hnsw_library_path,archive.HNSW,'HNSW runtime provenance differs from retained Disk record: runtime_library'),
+       *[(hnsw_model_identity(field,value),archive.HNSW,'HNSW model identity must have nonnegative integer bytes and canonical SHA256') for field,value in [('bytes',-1),('bytes',True),('bytes',1.0),('sha256','A'*64),('sha256','a'*63)]],
+       (hnsw_cpu_sentence,archive.HNSW,'HNSW published upkeep CPU sentence differs from recomputed summary'),
+       (hnsw_trigger_qualifier,archive.HNSW,'HNSW optimize-trigger qualification missing from README')]
 
 if __name__=='__main__':
     names=set()
@@ -49,4 +75,4 @@ if __name__=='__main__':
                 dst=repo/name;dst.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(archive.REPO/name,dst)
             change(repo);archive.manifests(repo);result=archive.execute(repo,rel)
             assert result.returncode!=0 and reason in result.stderr,(change.__name__,result.stderr[-2000:])
-    print(f'PASS: {len(CASES)} resealed hardware, asset, seed-inventory, library-scope and manifest-binding negatives')
+    print(f'PASS: {len(CASES)} resealed hardware, asset, seed-inventory, library-scope, manifest-binding, post-trial status, HNSW runtime/model-identity and README-claim negatives')
