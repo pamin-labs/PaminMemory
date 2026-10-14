@@ -38,6 +38,11 @@ pub use inference::{CUDA_SELECTION, Device, cuda_devices};
 /// and rustc's version. Execution plans are keyed by it, and an evaluation
 /// record names its build by it.
 pub const BUILD_FINGERPRINT: &str = env!("PAMIN_INFERENCE_BUILD");
+
+/// Part of the same build, readable: each Cargo profile override set and
+/// each `cfg` the target resolved to (`CARGO_CFG_*`, the target features
+/// among them), as `NAME=value` lines separated by 0x1f.
+pub const BUILD_CARGO: &str = env!("PAMIN_INFERENCE_CARGO");
 pub use projection::{
     Access, Passage, Previous, Projection, ProjectionIndex, Segmentation, Stored, VectorDocument,
     VectorIndex, is_fragmented, segment_documents, vector_index_lags, wastes_disk,

@@ -821,7 +821,7 @@ impl Build {
         };
         Self {
             inference: pamin_index::BUILD_FINGERPRINT.to_string(),
-            cargo: lines(env!("PAMIN_ENGINE_CARGO")),
+            cargo: lines(pamin_index::BUILD_CARGO),
             environment: lines(env!("PAMIN_ENGINE_BUILD_ENVIRONMENT")),
         }
     }
