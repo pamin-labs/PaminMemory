@@ -31,7 +31,7 @@ pub use descriptors::raise_open_file_limit;
 pub use embedding::{Embedder, Encoded, Profile};
 pub use error::{IndexError, Result};
 pub use half::as_stored;
-pub use inference::Device;
+pub use inference::{CUDA_SELECTION, Device, cuda_devices};
 pub use projection::{
     Access, Passage, Previous, Projection, ProjectionIndex, Segmentation, Stored, VectorDocument,
     VectorIndex, is_fragmented, segment_documents, vector_index_lags, wastes_disk,
