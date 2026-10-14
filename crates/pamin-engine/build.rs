@@ -74,6 +74,17 @@ fn main() {
     let dirty = tracked || untracked;
     println!("cargo:rustc-env=PAMIN_ENGINE_DIRTY={dirty}");
     println!("cargo:rustc-env=PAMIN_ENGINE_SOURCES={}", SOURCES.join(":"));
+    // What the code was compiled as, for a record to be named by: the same
+    // commit built for debug and for release runs at different speeds and,
+    // with a different opt-level, may not round floats the same way.
+    for (var, name) in [
+        ("PROFILE", "PAMIN_ENGINE_BUILD_PROFILE"),
+        ("OPT_LEVEL", "PAMIN_ENGINE_OPT_LEVEL"),
+        ("TARGET", "PAMIN_ENGINE_TARGET"),
+    ] {
+        let value = std::env::var(var).unwrap_or_else(|_| "unknown".into());
+        println!("cargo:rustc-env={name}={value}");
+    }
 
     // Watched only if they exist: Cargo reruns on every build for a path
     // that does not.
