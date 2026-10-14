@@ -689,7 +689,12 @@ impl Hardware {
     }
 
     /// The accelerators behind `providers` (`engine/role=provider` lines).
-    fn accelerators_for(providers: &[String]) -> Vec<String> {
+    ///
+    /// With `probe` false -- on a failed run's unwind, which must not wait
+    /// on `nvidia-smi` before its coverage is on disk -- the CUDA inventory
+    /// is taken only from an earlier probe in this process, else the line
+    /// says it was not probed.
+    fn accelerators_for(providers: &[String], probe: bool) -> Vec<String> {
         let ran = |name: &str| {
             providers.iter().any(|line| {
                 line.rsplit_once('=').is_some_and(|(_, on)| {
@@ -702,12 +707,23 @@ impl Hardware {
         };
         let mut accelerators = Vec::new();
         if ran("cuda") {
-            let read = |name: &str| std::env::var(name).ok();
-            accelerators.extend(visible_cuda(
-                pamin_index::cuda_devices().as_deref(),
-                read("CUDA_VISIBLE_DEVICES").as_deref(),
-                read("CUDA_DEVICE_ORDER").as_deref(),
-            ));
+            static INVENTORY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+            let inventory = if probe {
+                Some(INVENTORY.get_or_init(pamin_index::cuda_devices))
+            } else {
+                INVENTORY.get()
+            };
+            match inventory {
+                Some(inventory) => {
+                    let read = |name: &str| std::env::var(name).ok();
+                    accelerators.extend(visible_cuda(
+                        inventory.as_deref(),
+                        read("CUDA_VISIBLE_DEVICES").as_deref(),
+                        read("CUDA_DEVICE_ORDER").as_deref(),
+                    ));
+                }
+                None => accelerators.push("cuda: not probed (failed run)".to_string()),
+            }
         }
         for other in ["coreml", "directml", "npu"] {
             if ran(other) {
@@ -950,7 +966,10 @@ impl Shape {
     /// as `engine/role=provider` lines; whether there was a probe to ask.
     /// The probe never panics (see [`engines`]), so a failing run asks it
     /// too.
-    fn resolve_providers(&mut self) -> bool {
+    ///
+    /// `probe` says whether the hardware behind them may be probed now (see
+    /// [`Hardware::accelerators_for`]); a failed run's unwind passes false.
+    fn resolve_providers(&mut self, probe: bool) -> bool {
         let Some(probe) = &self.probe else {
             return false;
         };
@@ -962,7 +981,7 @@ impl Shape {
             .into_iter()
             .map(|(role, provider)| format!("{role}={provider}"))
             .collect();
-        self.hardware.accelerators = Hardware::accelerators_for(&self.providers);
+        self.hardware.accelerators = Hardware::accelerators_for(&self.providers, probe);
         true
     }
 
@@ -1286,7 +1305,7 @@ impl Shape {
             report(&format!("  coverage {}: {}", self.name, lines.join("; ")));
             return failures;
         };
-        if !self.resolve_providers() {
+        if !self.resolve_providers(true) {
             failures.push(
                 "the run never said which execution providers it ran on (Shape::ran_on)".into(),
             );
@@ -1439,8 +1458,10 @@ impl Drop for Shape {
             };
             let (lines, _, recorded) = self.coverage(&tally);
             self.coverage = Some(recorded);
-            // What it ran on, too: the probe neither panics nor waits.
-            self.resolve_providers();
+            // What it ran on, too: the probe neither panics nor waits, and no
+            // hardware is probed here -- only what this process already
+            // read -- so nothing stands between the failure and the file.
+            self.resolve_providers(false);
             let progress = self.progress.clone();
             let _ = self.persist(&progress, " (failed run)", &lines);
             return;
@@ -1983,9 +2004,20 @@ mod tests {
             "primary/embedding=cpu".to_string(),
             "second/reranking accurate=coreml".to_string(),
         ];
-        assert_eq!(Hardware::accelerators_for(&providers), ["coreml"]);
-        assert!(Hardware::accelerators_for(&providers[..1]).is_empty());
+        assert_eq!(Hardware::accelerators_for(&providers, true), ["coreml"]);
+        assert!(Hardware::accelerators_for(&providers[..1], true).is_empty());
         assert!(Hardware::detect().logical_cores > 0);
+    }
+
+    /// A failed run's unwind never probes the GPUs: what a CUDA run ran on
+    /// is said to be unprobed unless this process already read it.
+    #[test]
+    fn the_unwind_does_not_probe_the_gpus() {
+        let providers = ["primary/embedding=cuda".to_string()];
+        assert_eq!(
+            Hardware::accelerators_for(&providers, false),
+            ["cuda: not probed (failed run)"]
+        );
     }
 
     /// A provider is recorded as the execution target its plans are keyed
@@ -2008,7 +2040,7 @@ mod tests {
         .collect();
         assert_eq!(names.len(), 4, "{names:?}");
         let providers = ["primary/embedding=npu:qnn:1".to_string()];
-        assert_eq!(Hardware::accelerators_for(&providers), ["npu"]);
+        assert_eq!(Hardware::accelerators_for(&providers, true), ["npu"]);
     }
 
     /// The build a record names is pamin-index's own fingerprint, so a field
