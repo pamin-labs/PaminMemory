@@ -22,7 +22,7 @@ The examples below are real output from a workspace built by the writes in
 | | `PAMIN_POSTGRES_DIR` | unset | Use a PostgreSQL already on this machine instead of installing one |
 | | `PAMIN_JIT` | `off` | Let PostgreSQL compile query expressions with LLVM |
 | | `PAMIN_MODEL_IDLE` | `1800` | Seconds a resident server holds a model nothing is asking for |
-| | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use |
+| | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use, or on the CPU, for stored texts of the `accuracy` and `dual_accuracy` (BGE-M3) profiles, how many single-threaded passes run at once |
 | | `PAMIN_DEVICE` | automatic shared model route | `cpu` forces optimized CPU; Apple `fast` already selects it by default |
 | | `PAMIN_EP_LIBRARIES` | none | Platform-separated absolute paths to installed, ABI-compatible NPU plugin EP libraries; only discovered NPU devices participate in automatic plugin routing. Unavailable/incompatible libraries retain ordinary GPU/CPU fallback |
 | | `PAMIN_PREPARED` | on | `off` loads a model from its download rather than from a mapped copy, fetching the download again if it was removed |
@@ -81,7 +81,9 @@ to 54 at eight, because the second caller finds the first caller's threads
 rather than an idle core. Splitting the cores between callers instead of
 between the layers of one pass is the other way to divide them, and which wins
 is a property of the machine rather than of this program -- so it is a setting
-whose default is what the library already did.
+whose default is what the library already did. Stored texts of BGE-M3 divide
+them the other way on the CPU: each pass has one thread, and this many passes
+run at once. A BGE-M3 query still gets one pass of this many threads.
 
 On the CPU, the first load of a model writes a copy of it into
 `models/prepared/`, and every load after that reads the copy. The copy is the

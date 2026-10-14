@@ -474,9 +474,7 @@ fn profile_vectors(
     texts: &[String],
 ) -> Result<Vec<Vec<f32>>> {
     match profile {
-        Profile::Accuracy | Profile::DualAccuracy => {
-            texts.iter().map(|text| dense(model, text)).collect()
-        }
+        Profile::Accuracy | Profile::DualAccuracy => model.run_each(alone(model, texts)?, dense),
         _ => e5_vectors(
             model,
             texts,
@@ -487,6 +485,16 @@ fn profile_vectors(
             },
         ),
     }
+}
+
+/// Each of `texts` tokenized as a batch of its own, for the profiles that run
+/// one text per pass -- see [`Embedder::run`].
+fn alone(model: &Encoder, texts: &[String]) -> Result<Vec<Vec<tokenizers::Encoding>>> {
+    Ok(model
+        .encode(texts.iter().map(String::as_str).collect())?
+        .into_iter()
+        .map(|encoding| vec![encoding])
+        .collect())
 }
 
 /// Where BGE-M3's int8 export is published, and which of its files it is.
@@ -679,6 +687,13 @@ fn e5_vectors(model: &mut Encoder, texts: &[String], batch_size: usize) -> Resul
 /// -- see `crate::prepared`, which writes a copy the runtime maps instead, and
 /// falls back to the file itself when it cannot. Once the copy has loaded the
 /// download is removed, since nothing reads it again.
+///
+/// On the CPU loaded [`side_by_side`](Encoder::side_by_side): a query keeps a
+/// pass of the whole budget, its fastest, and stored texts run several
+/// one-threaded passes at once. Measured through `Embedder` on four cores
+/// (ONNX Runtime 1.28, Xeon with AMX), a query's median was 37.7 ms at four
+/// threads and 52.4 at one; and no vector changes: 500 texts as passages and
+/// 100 as queries came out bit-identical at one thread and at four.
 fn joint_session(
     repository: &Repository,
     weights: &impl crate::prepared::Download,
@@ -686,11 +701,14 @@ fn joint_session(
     device: crate::inference::Device,
     providers: impl Into<crate::inference::Target>,
 ) -> Result<Encoder> {
+    if device == crate::inference::Device::Cpu {
+        let copy = crate::prepared::load_path(weights, cache_dir)?;
+        let tokenizer = crate::tokenizer::load(repository, JOINT_MAX_TOKENS)?;
+        return Encoder::side_by_side(copy, crate::inference::budget()?, tokenizer)
+            .map_err(|error| error.context("loading embedding model"));
+    }
     let encoder = Encoder::load(
-        || match device {
-            crate::inference::Device::Cpu => crate::prepared::load_path(weights, cache_dir),
-            _ => repository.get(JOINT_FILE),
-        },
+        || repository.get(JOINT_FILE),
         repository,
         JOINT_MAX_TOKENS,
         providers,
@@ -700,15 +718,15 @@ fn joint_session(
     Ok(encoder)
 }
 
-/// One text's dense BGE-M3 vector, in one forward pass of its own.
+/// One text's dense BGE-M3 vector, from the outputs of a forward pass of its
+/// own.
 ///
 /// The export's first output, as `fastembed` read it: the graph pools and
 /// normalizes the vector itself, so it is used as it comes. The sparse and
 /// ColBERT representations come back from the same pass and are dropped. They
 /// are not free -- the pass computes them -- but neither is wanted, and no
 /// cheaper export of this model's int8 weights exists.
-fn dense(model: &mut Encoder, text: &str) -> Result<Vec<f32>> {
-    let outputs = model.run(vec![text])?;
+fn dense(outputs: ort::session::SessionOutputs<'_>) -> Result<Vec<f32>> {
     let first = outputs
         .values()
         .next()
@@ -1229,6 +1247,59 @@ mod tests {
         for (index, text) in inputs.iter().enumerate() {
             assert_eq!(accepted.embed_passage(text).unwrap(), cpu[index]);
         }
+    }
+
+    /// BGE-M3's stored texts, run side by side, are the vectors each gets
+    /// alone on the query's session, bit for bit and in order: its query
+    /// session has every core, and its vectors do not change with the thread
+    /// count.
+    ///
+    /// Alone is one pass after another; side by side is as many passes at once
+    /// as there are cores, each on a session of its own, taking texts in
+    /// whatever order they finish. Lengths from a few tokens to the 512-token
+    /// cap, more texts than cores, so every session runs several.
+    /// The model is read from, or downloaded into, `PAMIN_TEST_MODEL_CACHE`.
+    #[test]
+    #[ignore = "downloads BGE-M3's int8 export; set PAMIN_TEST_MODEL_CACHE"]
+    fn bge_side_by_side_is_each_text_alone() {
+        let cache = std::path::PathBuf::from(
+            std::env::var_os("PAMIN_TEST_MODEL_CACHE").expect("set PAMIN_TEST_MODEL_CACHE"),
+        );
+        let mut embedder = Embedder::load(Profile::Accuracy, &cache).expect("load the model");
+        assert_eq!(embedder.device(), crate::inference::Device::Cpu);
+        let long = "migration rollback ".repeat(300);
+        let texts = [
+            "deployment rollback",
+            "数据库迁移失败后如何回滚？",
+            "the office coffee machine needs descaling",
+            long.as_str(),
+            "Roll back a failed deployment to the previous application version.",
+            "部署流水线运行在持续集成上",
+            "Bake a chocolate cake and serve it with fresh strawberries.",
+            "Die Datenbankmigration ist fehlgeschlagen.",
+            "ok",
+            "La migración de la base de datos falló y hubo que restaurar la copia de seguridad.",
+        ];
+        let alone: Vec<Vec<u32>> = texts
+            .iter()
+            .map(|text| bits(&embedder.embed_passage(text).unwrap()))
+            .collect();
+        assert_eq!(embedder.model.side_by_side_sessions(), 0);
+        let together: Vec<Vec<u32>> = embedder
+            .embed_passages(&texts)
+            .unwrap()
+            .iter()
+            .map(|vector| bits(vector))
+            .collect();
+        assert!(
+            embedder.model.side_by_side_sessions() > 1,
+            "nothing ran side by side; this needs more than one core"
+        );
+        assert!(alone == together, "a vector changed side by side");
+    }
+
+    fn bits(vector: &[f32]) -> Vec<u32> {
+        vector.iter().map(|value| value.to_bits()).collect()
     }
 
     #[test]
