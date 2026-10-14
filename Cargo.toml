@@ -47,6 +47,7 @@ futures = "0.3"
 # Already compiled -- it is under tokio and sqlx both -- so declaring it adds
 # nothing to the tree.
 libc = "0.2"
+half = "2.7.1"
 # image-models is on by default and pulls a full image codec stack, including
 # an AVIF encoder, for models we do not use.
 fastembed = { version = "6", default-features = false, features = [
