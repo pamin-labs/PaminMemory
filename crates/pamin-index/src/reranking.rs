@@ -379,7 +379,10 @@ fn batch_tokens() -> usize {
     tuned("PAMIN_RERANK_BATCH_TOKENS", BATCH_TOKENS)
 }
 
-fn batch() -> usize {
+/// How many pairs go through the model at once, at most: [`BATCH`], or
+/// `PAMIN_RERANK_BATCH`. Public so an evaluation replaying the reranker's
+/// batches reads the size this process runs with.
+pub fn batch() -> usize {
     tuned("PAMIN_RERANK_BATCH", BATCH)
 }
 
