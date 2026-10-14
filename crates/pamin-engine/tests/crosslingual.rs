@@ -2069,7 +2069,7 @@ async fn search_reaches_across_languages() {
     // -- blending them with fusion's rather than substituting -- from one
     // shipped run. See `reranking`.
     if std::env::var("RERANK_RULES").is_ok() {
-        rerank_rules(&engine, &queries, &named).await;
+        rerank_rules(&engine, &queries, &named, &workspace.root().join("models")).await;
         return;
     }
 
@@ -3383,10 +3383,15 @@ async fn run<'a>(engine: &Engine, queries: &[Query<'a>], route: Route) -> BTreeM
 }
 
 /// Every rule in `reranking::rules` over the shipped tier's own scores.
-async fn rerank_rules(engine: &Engine, queries: &[Query<'_>], named: &str) {
+async fn rerank_rules(
+    engine: &Engine,
+    queries: &[Query<'_>],
+    named: &str,
+    models: &std::path::Path,
+) {
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
-    let mut priced = reranking::Priced::new();
+    let mut priced = reranking::Priced::new(models);
     for query in queries {
         let hits = engine
             .search_reranked(query.text(), WIDE, DEPTHS, tier)

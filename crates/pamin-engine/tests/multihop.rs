@@ -709,7 +709,7 @@ async fn search_answers_questions_that_take_several_steps() {
     // against the shipped one from a single shipped run. See `reranking`.
     if std::env::var("RERANK_RULES").is_ok() {
         let tier = Rerank::default();
-        let mut priced = reranking::Priced::new();
+        let mut priced = reranking::Priced::new(&workspace.root().join("models"));
         for query in &corpus.queries {
             let hits = engine
                 .search_reranked(&query.text, WIDE, DEPTHS, tier)
