@@ -725,6 +725,7 @@ async fn rerank_rules(engine: &Engine, queries: &[Query], models: &std::path::Pa
                 );
             },
         );
+        priced.planned_like(engine);
     }
 
     priced.report(&format!(
