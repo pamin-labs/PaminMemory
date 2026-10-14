@@ -1062,7 +1062,7 @@ async fn run(engine: &Engine, corpus: &Corpus, route: Route) -> Scores {
 async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
-    let mut priced = reranking::Priced::new(false);
+    let mut priced = reranking::Priced::new();
     for query in &corpus.queries {
         let hits = engine
             .search_reranked(&query.text, WIDE, DEPTHS, tier)
@@ -1070,13 +1070,20 @@ async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
             .expect("search");
         channels::enough_room(&hits, WIDE);
         let replayed = reranking::replay(&hits, tier);
-        priced.observe(GROUP, &query.text, &hits, &replayed, |into, ranking| {
-            into.entry(GROUP.to_string()).or_default().add(
-                ranking,
-                query.relevant.len(),
-                |topic| query.relevant.contains(topic),
-            );
-        });
+        priced.observe(
+            GROUP,
+            &query.text,
+            &hits,
+            &replayed,
+            None,
+            |into, ranking| {
+                into.entry(GROUP.to_string()).or_default().add(
+                    ranking,
+                    query.relevant.len(),
+                    |topic| query.relevant.contains(topic),
+                );
+            },
+        );
     }
     priced.report(&format!(
         "rules for the {} reranker's scores, MIRACL, {named}",
@@ -1123,7 +1130,7 @@ async fn context(engine: &Engine, workspace: &Workspace, corpus: &Corpus, named:
         &labels,
         reranking::shipped_context(),
         &measured,
-        false,
+        channels::Units::Questions,
     );
 }
 
@@ -1259,7 +1266,7 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
         &variants,
         channels::shipped_row(&variants),
         &offline.iter().map(keyed).collect::<Vec<_>>(),
-        false,
+        channels::Units::Questions,
     );
 
     println!(
