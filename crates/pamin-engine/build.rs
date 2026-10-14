@@ -24,11 +24,11 @@
 //! keeps its own `HEAD`, reflog and index in its own git dir, and shares the
 //! refs in the common one.
 //!
-//! It also names how the code was compiled -- profile, opt-level, target,
-//! debug information, the target features enabled, the flags rustc was
-//! given, rustc's version, and the build variables that choose the native
-//! libraries linked in -- as `PAMIN_ENGINE_*` variables a record's identity
-//! holds as its build.
+//! It also names how the code was compiled, beyond pamin-index's build
+//! fingerprint, which a record holds as well: the Cargo profile overrides
+//! and target `cfg`s, readable, and the build variables that choose the
+//! native libraries linked in, as `PAMIN_ENGINE_CARGO` and
+//! `PAMIN_ENGINE_BUILD_ENVIRONMENT`.
 //!
 //! The flag errs one way only. A flag left at "dirty" by a rerun that did not
 //! happen marks a clean run noncanonical, which costs a rerun of the
@@ -41,6 +41,9 @@ use std::process::Command;
 
 #[path = "tests/harness/compiled.rs"]
 mod compiled;
+
+#[path = "../pamin-index/src/build_profile.rs"]
+mod build_profile;
 
 /// What the workspace compiles, relative to its root.
 const SOURCES: [&str; 4] = [
@@ -111,35 +114,31 @@ fn main() {
     let dirty = tracked || untracked;
     println!("cargo:rustc-env=PAMIN_ENGINE_DIRTY={dirty}");
     println!("cargo:rustc-env=PAMIN_ENGINE_SOURCES={}", SOURCES.join(":"));
-    // What the code was compiled as, for a record to be named by: the same
-    // commit built for debug and for release runs at different speeds and,
-    // with a different opt-level, may not round floats the same way.
-    for (var, name) in [
-        ("PROFILE", "PAMIN_ENGINE_BUILD_PROFILE"),
-        ("OPT_LEVEL", "PAMIN_ENGINE_OPT_LEVEL"),
-        ("TARGET", "PAMIN_ENGINE_TARGET"),
-        ("DEBUG", "PAMIN_ENGINE_DEBUG"),
-        // Which instructions the code was allowed to use: the features
-        // `-C target-cpu`/`-C target-feature` enabled, as rustc resolved them.
-        ("CARGO_CFG_TARGET_FEATURE", "PAMIN_ENGINE_TARGET_FEATURES"),
-    ] {
-        println!("cargo:rerun-if-env-changed={var}");
-        let value = std::env::var(var).unwrap_or_else(|_| "unknown".into());
-        println!("cargo:rustc-env={name}={value}");
+    // How the code was compiled beyond what pamin-index's build fingerprint
+    // already holds (`pamin_index::BUILD_FINGERPRINT`: its sources, the
+    // workspace manifests and Cargo config, profile, opt-level, target,
+    // rustflags, target features, rustc's version and every Cargo profile
+    // override), readable: each Cargo profile override and each `cfg` the
+    // target resolved to, as `NAME=value` separated by 0x1f. The overrides
+    // are pamin-index's own list, absent ones included, so setting one
+    // reruns this script.
+    let profile = std::env::var("PROFILE").unwrap_or_default();
+    let environment: Vec<(String, String)> = std::env::vars().collect();
+    let mut cargo: Vec<String> = Vec::new();
+    for (name, value) in build_profile::settings(&profile, environment.iter().cloned()) {
+        println!("cargo:rerun-if-env-changed={name}");
+        if !value.is_empty() {
+            cargo.push(format!("{name}={value}"));
+        }
     }
-    // The flags rustc was given (`RUSTFLAGS` and the config's, as Cargo
-    // passes them, separated by 0x1f), with spaces between them here.
-    println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
-    let rustflags = std::env::var("CARGO_ENCODED_RUSTFLAGS")
-        .unwrap_or_default()
-        .replace('\x1f', " ");
-    println!("cargo:rustc-env=PAMIN_ENGINE_RUSTFLAGS={rustflags}");
-    let rustc = std::env::var_os("RUSTC")
-        .and_then(|rustc| Command::new(rustc).arg("-V").output().ok())
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-        .unwrap_or_else(|| "unknown".into());
-    println!("cargo:rustc-env=PAMIN_ENGINE_RUSTC={rustc}");
+    for (name, value) in &environment {
+        if name.starts_with("CARGO_CFG_") {
+            println!("cargo:rerun-if-env-changed={name}");
+            cargo.push(format!("{name}={value}"));
+        }
+    }
+    cargo.sort();
+    println!("cargo:rustc-env=PAMIN_ENGINE_CARGO={}", cargo.join("\x1f"));
     // The build environment that chooses the native libraries linked in and
     // how rustc is wrapped, as the restart-floor harness records it:
     // `NAME=value` for each one set, separated by 0x1f.
