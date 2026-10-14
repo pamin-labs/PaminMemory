@@ -22,7 +22,7 @@ The examples below are real output from a workspace built by the writes in
 | | `PAMIN_POSTGRES_DIR` | unset | Use a PostgreSQL already on this machine instead of installing one |
 | | `PAMIN_JIT` | `off` | Let PostgreSQL compile query expressions with LLVM |
 | | `PAMIN_MODEL_IDLE` | `1800` | Seconds a resident server holds a model nothing is asking for |
-| | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use, or on the CPU, for stored texts of the `accuracy`, `dual_accuracy` (BGE-M3) and `gemma` profiles, how many single-threaded passes run at once |
+| | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use, or on the CPU, for the batches of a rerank and stored texts of the `accuracy`, `dual_accuracy` (BGE-M3) and `gemma` profiles, how many single-threaded passes run at once |
 | | `PAMIN_DEVICE` | automatic shared model route | `cpu` forces optimized CPU; Apple `fast` already selects it by default |
 | | `PAMIN_EP_LIBRARIES` | none | Platform-separated absolute paths to installed, ABI-compatible NPU plugin EP libraries; only discovered NPU devices participate in automatic plugin routing. Unavailable/incompatible libraries retain ordinary GPU/CPU fallback |
 | | `PAMIN_PREPARED` | on | `off` loads a model from its download rather than from a mapped copy, fetching the download again if it was removed |
@@ -83,8 +83,9 @@ between the layers of one pass is the other way to divide them, and which wins
 is a property of the machine rather than of this program -- so it is a setting
 whose default is what the library already did. Stored texts of BGE-M3 and
 of the `gemma` profile divide them the other way on the CPU: each pass has
-one thread, and this many passes run at once. A BGE-M3 query still gets one
-pass of this many threads; a `gemma` query gets one thread.
+one thread, and this many passes run at once, as do the batches of one
+rerank. A BGE-M3 query, and a rerank of one batch, still get one pass of
+this many threads; a `gemma` query gets one thread.
 
 On the CPU, the first load of a model writes a copy of it into
 `models/prepared/`, and every load after that reads the copy. The copy is the
