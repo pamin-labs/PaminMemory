@@ -1,16 +1,27 @@
-//! Names the commit this crate is compiled from, as `PAMIN_ENGINE_COMMIT`.
+//! Names the commit this crate is compiled from, as `PAMIN_ENGINE_COMMIT`,
+//! and whether its checkout had tracked changes then, as
+//! `PAMIN_ENGINE_DIRTY`.
 //!
 //! Only the evaluation harnesses read it (`tests/harness/shape.rs`): a shape
 //! record names the evaluated commit, and a test binary built at one commit
 //! and run after a checkout moved would otherwise name the later one. Only
-//! a run whose clean checkout is at this commit writes the canonical record.
+//! a run compiled from a clean checkout, and run from a clean checkout at
+//! the same commit, writes the canonical record: edits compiled in and
+//! restored before the run leave no trace a run could see.
 //!
-//! The script reruns only when `HEAD` or the ref it points at moves, so an
-//! ordinary edit does not rebuild the crate. `HEAD`'s reflog is watched as
-//! well: a commit on a branch whose ref was packed creates a loose ref that
-//! did not exist to be watched, and leaves `HEAD` and `packed-refs` alone,
-//! but it appends to the reflog. A worktree keeps its own `HEAD` and reflog
-//! in its own git dir, and shares the refs in the common one. Outside a git checkout, as from
+//! The script reruns when `HEAD` or the ref it points at moves, when the
+//! index changes (a stage, or a restore), and when the workspace's sources or
+//! manifests change, so the flag follows an edit made after a clean build.
+//! `HEAD`'s reflog is watched as well: a commit on a branch whose ref was
+//! packed creates a loose ref that did not exist to be watched, and leaves
+//! `HEAD` and `packed-refs` alone, but it appends to the reflog. A worktree
+//! keeps its own `HEAD`, reflog and index in its own git dir, and shares the
+//! refs in the common one.
+//!
+//! The flag errs one way only. A flag left at "dirty" by a rerun that did not
+//! happen marks a clean run noncanonical, which costs a rerun of the
+//! evaluation; it never makes a dirty build canonical, and `git` failing to
+//! say counts as dirty for the same reason. Outside a git checkout, as from
 //! a source archive, the value is `unknown` and nothing changes.
 
 use std::path::PathBuf;
@@ -28,6 +39,16 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let commit = git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into());
     println!("cargo:rustc-env=PAMIN_ENGINE_COMMIT={commit}");
+    // Without the optional lock, `status` does not refresh the index it
+    // would otherwise rewrite, which is watched below.
+    let dirty = git(&[
+        "--no-optional-locks",
+        "status",
+        "--porcelain",
+        "--untracked-files=no",
+    ])
+    .is_none_or(|changes| !changes.is_empty());
+    println!("cargo:rustc-env=PAMIN_ENGINE_DIRTY={dirty}");
 
     // Watched only if they exist: Cargo reruns on every build for a path
     // that does not.
@@ -36,6 +57,7 @@ fn main() {
         let git_dir = PathBuf::from(git_dir);
         watched.push(git_dir.join("HEAD"));
         watched.push(git_dir.join("logs").join("HEAD"));
+        watched.push(git_dir.join("index"));
     }
     if let Some(common) = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]) {
         let common = PathBuf::from(common);
@@ -43,6 +65,12 @@ fn main() {
         if let Some(reference) = git(&["symbolic-ref", "-q", "HEAD"]) {
             watched.push(common.join(reference));
         }
+    }
+    if let Some(root) = git(&["rev-parse", "--show-toplevel"]) {
+        let root = PathBuf::from(root);
+        // Every crate in the workspace, not only this one: the harnesses
+        // compile its dependencies too. The build output is outside them.
+        watched.extend(["crates", "Cargo.toml", "Cargo.lock"].map(|path| root.join(path)));
     }
     for path in watched.into_iter().filter(|path| path.exists()) {
         println!("cargo:rerun-if-changed={}", path.display());
