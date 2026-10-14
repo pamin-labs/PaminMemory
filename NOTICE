@@ -40,6 +40,13 @@ Embedding models
     2c4d510dd4a732063c31a0f70193e35067b51fd8. The model card at that revision
     declares MIT. Both primary and complementary dense fields are FP16.
 
+  pamin-labs/embeddinggemma-2-text-int8-onnx           Apache-2.0
+    Experimental profile `gemma`, pinned to
+    39c3eaaf07991c73bfe0e489b55b1b3e6aaa9ac5. An int8 ONNX export of the
+    text encoder of google/embeddinggemma-2, itself Apache-2.0, whose card
+    asks users to follow the Gemma Prohibited Use Policy
+    (https://ai.google.dev/gemma/prohibited_use_policy).
+
 Reranker models
 ---------------
 

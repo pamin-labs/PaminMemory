@@ -186,10 +186,11 @@ pub(crate) fn load(repository: &Repository, max_length: usize) -> Result<Tokeniz
     )
 }
 
-/// A tokenizer from a local directory's files, as [`load`] reads a
-/// repository's.
+/// A tokenizer from a directory's files, as [`load`] reads a repository's.
 ///
-/// For a model no hub serves (see `crate::gemma`). A directory without
+/// For a repository that publishes no `special_tokens_map.json`, read from
+/// its snapshot directory once its files are fetched (see `crate::gemma`):
+/// asking the hub for the missing file would fail every load. A directory without
 /// `special_tokens_map.json` registers no special tokens beyond those
 /// `tokenizer.json` already declares, which is what the Hugging Face loader
 /// does with such a directory.

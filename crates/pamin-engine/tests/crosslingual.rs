@@ -1592,16 +1592,12 @@ async fn search_reaches_across_languages() {
     // The profile is part of the workspace identity: an index records the
     // profile it was built with and refuses to open under another. The shipped
     // profile's model is pinned by the manifest; the experimental `gemma` one
-    // is read from a local directory, and its identity is already a digest of
-    // the files it reads and the width it stores.
+    // is pinned by the product, and its identity is already a digest of the
+    // pinned files and the width it stores.
     let embedding_id = match profile {
         pamin_index::Profile::Accuracy => pinned_embedding_id(&workspace.root().join("models")),
         pamin_index::Profile::Gemma => {
             let identity = profile.model_id();
-            assert!(
-                !identity.ends_with(":unconfigured"),
-                "set PAMIN_EG2_DIR to the local EmbeddingGemma 2 export"
-            );
             println!("  gemma embedding model: {identity}");
             format!("{:x}", Sha256::digest(identity.as_bytes()))
         }

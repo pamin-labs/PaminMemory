@@ -34,7 +34,7 @@ struct Cli {
     project: String,
 
     /// Which embedding profile to use: speed, balanced, accuracy, dual_accuracy (experimental), or
-    /// gemma (experimental; reads a local model from PAMIN_EG2_DIR).
+    /// gemma (experimental; EmbeddingGemma 2, downloaded from a pinned revision).
     ///
     /// The index records the profile it was built with, so changing this
     /// requires `pamin reindex` rather than silently mixing vector spaces.
