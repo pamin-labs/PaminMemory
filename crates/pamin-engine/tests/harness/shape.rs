@@ -579,44 +579,13 @@ impl Shape {
         self.settings = settings(vars, set);
         let arm = arm(&self.settings);
         self.run = [test.to_string(), profile.to_string(), arm.clone()];
-        let name = &self.name;
+        let name = self.name.clone();
+        let name = &name;
         self.source = source();
-        println!("  shape {name}: {test}, profile {profile}, arm {arm}");
-        println!("  shape {name}: commit {}", self.source.commit);
-        if let Some(reason) = &self.source.noncanonical {
-            println!("  shape {name}: not canonical: {reason}");
-        }
-        for setting in &self.settings {
-            println!("  shape {name}: arm {arm} sets {setting}");
-        }
-        println!(
-            "  shape {name}: corpus sha256 {digest} over {} questions and {} documents",
-            self.queries.len(),
-            self.documents.len()
-        );
         let sequence = self.sequence();
-        println!("  shape {name}: asked in the order sha256 {sequence}");
-        match self.seed {
-            Some(seed) => println!("  shape {name}: {}, seed {seed}", self.selection),
-            None => println!("  shape {name}: {}, no seed", self.selection),
-        }
-        let asked: Vec<String> = self
-            .asked
-            .iter()
-            .map(|(group, ids)| format!("{group} {}", ids.len()))
-            .collect();
-        println!(
-            "  shape {name}: asked {}; excluded {}",
-            asked.join(", "),
-            self.excluded.len()
-        );
-        for excluded in &self.excluded {
-            println!(
-                "  excluded {name} {} [{}]: {}",
-                excluded.id, excluded.group, excluded.reason
-            );
-        }
 
+        // The in-progress record is on disk before anything is reported, so a
+        // run whose output fails still leaves the snapshot it was asked for.
         let dir = super::eval_home().join("shape");
         std::fs::create_dir_all(&dir)
             .unwrap_or_else(|error| panic!("creating {}: {error}", dir.display()));
@@ -640,11 +609,50 @@ impl Shape {
         };
         self.progress = in_progress(&record);
         self.write(&self.progress);
-        println!(
+
+        report(&format!(
+            "  shape {name}: {test}, profile {profile}, arm {arm}"
+        ));
+        report(&format!("  shape {name}: commit {}", self.source.commit));
+        if let Some(reason) = &self.source.noncanonical {
+            report(&format!("  shape {name}: not canonical: {reason}"));
+        }
+        for setting in &self.settings {
+            report(&format!("  shape {name}: arm {arm} sets {setting}"));
+        }
+        report(&format!(
+            "  shape {name}: corpus sha256 {digest} over {} questions and {} documents",
+            self.queries.len(),
+            self.documents.len()
+        ));
+        report(&format!(
+            "  shape {name}: asked in the order sha256 {sequence}"
+        ));
+        match self.seed {
+            Some(seed) => report(&format!("  shape {name}: {}, seed {seed}", self.selection)),
+            None => report(&format!("  shape {name}: {}, no seed", self.selection)),
+        }
+        let asked: Vec<String> = self
+            .asked
+            .iter()
+            .map(|(group, ids)| format!("{group} {}", ids.len()))
+            .collect();
+        report(&format!(
+            "  shape {name}: asked {}; excluded {}",
+            asked.join(", "),
+            self.excluded.len()
+        ));
+        for excluded in &self.excluded {
+            report(&format!(
+                "  excluded {name} {} [{}]: {}",
+                excluded.id, excluded.group, excluded.reason
+            ));
+        }
+        report(&format!(
             "  shape {name}: recording in {}, and in {} once its coverage holds",
             self.progress.display(),
             record.display()
-        );
+        ));
         self.record = Some(record);
         open_tally();
     }
@@ -1024,6 +1032,15 @@ mod tests {
         assert_eq!(forward, build(&["q1", "q2"]));
     }
 
+    /// A git object id: 40 lowercase hex digits under SHA-1, 64 under
+    /// SHA-256.
+    fn object_id(commit: &str) -> bool {
+        matches!(commit.len(), 40 | 64)
+            && commit
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
+
     /// Only a clean checkout at the compiled commit writes the canonical
     /// record; everything else says why it cannot.
     #[test]
@@ -1037,7 +1054,7 @@ mod tests {
             }
         );
         let reason = |source: Source| {
-            assert_eq!(source.commit.len(), 40);
+            assert!(object_id(&source.commit), "{source:?}");
             source.noncanonical.expect("not canonical")
         };
         // A binary built at one commit and run after the checkout moved
@@ -1064,7 +1081,7 @@ mod tests {
         let source = source();
         assert_eq!(source.commit, env!("PAMIN_ENGINE_COMMIT"));
         if source.commit != "unknown" {
-            assert_eq!(source.commit.len(), 40, "{source:?}");
+            assert!(object_id(&source.commit), "{source:?}");
             assert_eq!(short(&source.commit), &source.commit[..12]);
         }
         assert_eq!(short("unknown"), "unknown");
