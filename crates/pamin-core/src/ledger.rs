@@ -68,7 +68,10 @@ pub struct SourceVersion {
     /// Stored verbatim, in whatever language it arrived in. Never translated,
     /// never rewritten.
     pub content: String,
-    /// Content hash, used to skip re-ingesting unchanged sources.
+    /// A hash of `content`, as the writer computed it (the engine's
+    /// `remember` uses SHA-256). Stored with every version and read by
+    /// nothing yet: writing an unchanged source again still records a new
+    /// version.
     pub content_hash: String,
     pub filter_decision: FilterDecision,
     /// Why the filter decided as it did, in the same explainability spirit as a

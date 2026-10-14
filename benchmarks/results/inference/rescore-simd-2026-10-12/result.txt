@@ -1,0 +1,21 @@
+== pass 1 load average: 5.63, 5.35, 3.71
+premise     main: max |cos - f64 oracle| = 7.749e-8, top-10 overlap with oracle 10/10
+premise      dot: max |cos - f64 oracle| = 1.544e-8, top-10 overlap with oracle 10/10
+premise  convert: max |cos - f64 oracle| = 1.544e-8, top-10 overlap with oracle 10/10
+    main: p50   241.72 us  p95   630.51 us  (n=1600, per 100x1024 rescore)
+     dot: p50   131.32 us  p95   363.21 us  (n=1600, per 100x1024 rescore)
+ convert: p50    36.67 us  p95    81.90 us  (n=1600, per 100x1024 rescore)
+== pass 2 load average: 5.63, 5.35, 3.71
+premise     main: max |cos - f64 oracle| = 7.749e-8, top-10 overlap with oracle 10/10
+premise      dot: max |cos - f64 oracle| = 1.544e-8, top-10 overlap with oracle 10/10
+premise  convert: max |cos - f64 oracle| = 1.544e-8, top-10 overlap with oracle 10/10
+    main: p50   228.91 us  p95   247.47 us  (n=1600, per 100x1024 rescore)
+     dot: p50   125.99 us  p95   146.42 us  (n=1600, per 100x1024 rescore)
+ convert: p50    33.26 us  p95    42.63 us  (n=1600, per 100x1024 rescore)
+== pass 3 load average: 5.63, 5.35, 3.71
+premise     main: max |cos - f64 oracle| = 7.749e-8, top-10 overlap with oracle 10/10
+premise      dot: max |cos - f64 oracle| = 1.544e-8, top-10 overlap with oracle 10/10
+premise  convert: max |cos - f64 oracle| = 1.544e-8, top-10 overlap with oracle 10/10
+    main: p50   249.16 us  p95   631.46 us  (n=1600, per 100x1024 rescore)
+     dot: p50   142.88 us  p95   366.51 us  (n=1600, per 100x1024 rescore)
+ convert: p50    48.45 us  p95    86.59 us  (n=1600, per 100x1024 rescore)

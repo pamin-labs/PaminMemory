@@ -23,6 +23,7 @@ pub mod reranking;
 mod reshape;
 pub mod segmentation;
 mod tokenizer;
+mod vector_math;
 #[cfg(target_os = "windows")]
 mod winml;
 
