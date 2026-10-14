@@ -63,8 +63,9 @@ const CHANNELS: [Channel; 5] = [
 
 /// One question as a harness asks it, and how it is judged in one group.
 pub struct Asked<'a> {
-    /// The group this row is scored in. A corpus that scores one query in two
-    /// groups -- XQuAD-R -- observes it twice.
+    /// The group this row is scored in. A corpus that scores one query in
+    /// several groups observes it once per group: XQuAD-R, three times, once
+    /// in each of its `GROUPS`.
     pub group: &'a str,
     /// Stable across runs and unique within the corpus, so a question can be
     /// paired across arms and every asking of it kept in one fold.
@@ -123,7 +124,8 @@ impl Features {
     /// `judge` is a candidate's gain in this group -- zero when it is not
     /// relevant -- or `None` for a candidate the group takes out of the
     /// ranking before scoring it. That is XQuAD-R's cross-lingual group, which
-    /// removes the answer in the query's own language; the row is written
+    /// removes the answer in the query's own language, and its single-target
+    /// group, which removes every answer but the one target; the row is written
     /// anyway, marked `excluded`, because it was in the channels' lists and
     /// rebuilding their fusion needs every candidate they returned.
     pub fn observe(
@@ -250,8 +252,11 @@ impl Features {
 
     /// Closes the dump, asserting it holds every question the harness asked.
     ///
-    /// `expected` counts question-group pairs: XQuAD-R's 1,190 questions in
-    /// two groups are 2,380.
+    /// `expected` counts question-group pairs, so a harness passes its
+    /// questions times its groups: XQuAD-R's 1,190 questions in its three
+    /// `GROUPS` are 3,570 for a full run, each query observed three times.
+    /// Derive it from the group list (`GROUPS.len()`), never a written
+    /// count.
     pub fn finish(mut self, expected: usize) {
         self.out
             .flush()
