@@ -12,6 +12,7 @@
 
 pub mod compiled;
 pub mod shape;
+pub mod vectors;
 
 use std::path::PathBuf;
 

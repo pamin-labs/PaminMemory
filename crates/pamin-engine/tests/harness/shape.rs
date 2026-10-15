@@ -254,8 +254,110 @@ const NOT_IDENTITY: [(&str, &str); 6] = [
     ("HOSTNAME", "who holds a cascade claim in a shared store"),
 ];
 
+/// Variables outside `PAMIN_` the evaluation tests read that choose what a
+/// run measures: an arm's knobs, a sample's size, a replay's input. Every one
+/// that is set names the record, whichever harness reads it, so no harness
+/// keeps a list of its own that can miss one.
+/// `every_evaluation_read_is_classified` holds the tests to this.
+const EVAL_SETTINGS: [&str; 30] = [
+    "AT_LIMIT",
+    "CALIBRATE",
+    "CHANNELS",
+    "COLD",
+    "COLD_ROUNDS",
+    "CONTEXT",
+    "DEPTH_VARIANTS",
+    "EFFORTS",
+    "ENTITIES",
+    "FEATURES_OUT",
+    "GATE",
+    "GRAPHS",
+    "LABELS",
+    "LOCOMO_CONVERSATIONS",
+    "MEMORY",
+    "MIRACL_MAX_DOCS",
+    "MUSIQUE_QUESTIONS",
+    "MUSIQUE_SAMPLE",
+    "PAIRS",
+    "PASSAGES",
+    "REACH",
+    "RERANK_RULES",
+    "RESCORE_IN",
+    "RESHAPE",
+    "ROUTES",
+    "SUFFICIENCY_OUT",
+    "SWEEP",
+    "SWEEP_AGAINST",
+    "TIERS",
+    "XQUAD_ALL_QUERIES",
+];
+
+/// Variables the evaluation tests read that change nothing a record is
+/// named by, with why.
+const EVAL_NOT_IDENTITY: [(&str, &str); 7] = [
+    ("CHANNELS_OUT", "where a table is written"),
+    (
+        "SHORTLIST_OUT",
+        "where the shortlists a reranker saw are written",
+    ),
+    (
+        "ESCI_DIR",
+        "where a dataset is; what it holds is the corpus digest",
+    ),
+    (
+        "LAREQA_DIR",
+        "where a dataset is; what it holds is the corpus digest",
+    ),
+    (
+        "LOCOMO_DIR",
+        "where a dataset is; what it holds is the corpus digest",
+    ),
+    (
+        "MIRACL_DIR",
+        "where a dataset is; what it holds is the corpus digest",
+    ),
+    (
+        "MUSIQUE_DIR",
+        "where a dataset is; what it holds is the corpus digest",
+    ),
+];
+
+/// Environment reads in the evaluation tests whose name is not a literal at
+/// the read, with where the names come from.
+const EVAL_INDIRECT: [(&str, &str); 7] = [
+    (
+        "pamin-engine/tests/harness/mod.rs: std::env::var(var)",
+        "dataset_dir's variable, a literal at every dataset_dir call",
+    ),
+    (
+        "pamin-index/tests/prepared.rs: std::env::var(ARM)",
+        "PAMIN_PREPARED_ARM, a measuring child's arm",
+    ),
+    (
+        "pamin-index/tests/prepared.rs: std::env::var(CACHE)",
+        "PAMIN_PREPARED_CACHE, a measuring child's cache",
+    ),
+    (
+        "pamin-index/tests/shared_vocabulary.rs: std::env::var(ARM)",
+        "PAMIN_SHARED_ARM, a measuring child's arm",
+    ),
+    (
+        "pamin-index/tests/shared_vocabulary.rs: std::env::var(CACHE)",
+        "PAMIN_SHARED_CACHE, a measuring child's cache",
+    ),
+    (
+        "pamin-index/tests/shared_vocabulary.rs: std::env::var(name)",
+        "PAMIN_SHARED_*_COPY, the prepared copies a child loads",
+    ),
+    (
+        "pamin-index/tests/shared_vocabulary.rs: std::env::var_os(tuned)",
+        "PAMIN_RERANK_* batch limits, asserted unset",
+    ),
+];
+
 fn identity_variable(name: &str) -> bool {
     ALWAYS_SETTINGS.contains(&name)
+        || EVAL_SETTINGS.contains(&name)
         || pamin_index::CUDA_SELECTION.contains(&name)
         || ALWAYS_PREFIXES
             .iter()
@@ -263,20 +365,21 @@ fn identity_variable(name: &str) -> bool {
 }
 
 /// What makes this run an arm other than the shipped one, as sorted
-/// `NAME=value` lines: each of the harness's own `vars` that is set, each
-/// one [`ALWAYS_SETTINGS`] covers, and every set `PAMIN_` variable but
+/// `NAME=value` lines: each set variable [`ALWAYS_SETTINGS`] or
+/// [`EVAL_SETTINGS`] covers, and every set `PAMIN_` variable but
 /// [`NOT_SETTINGS`].
 ///
 /// The `PAMIN_` variables are found rather than listed. A list was kept per
 /// harness, and the product's runtime knobs -- `PAMIN_RERANK_DEPTH`,
 /// `PAMIN_SEARCH_EFFORT` -- were never on it, so a run with one set was
-/// recorded as the shipped run, over the shipped run's record.
-fn settings(vars: &[&str], set: impl IntoIterator<Item = (String, String)>) -> Vec<String> {
+/// recorded as the shipped run, over the shipped run's record. The
+/// harnesses' own knobs were listed per harness as well, and MuSiQue's list
+/// left out `RERANK_RULES`, so they are one shared list now.
+fn settings(set: impl IntoIterator<Item = (String, String)>) -> Vec<String> {
     let mut settings: Vec<String> = set
         .into_iter()
         .filter(|(name, _)| {
-            vars.contains(&name.as_str())
-                || identity_variable(name)
+            identity_variable(name)
                 || (name.starts_with("PAMIN_") && !NOT_SETTINGS.contains(&name.as_str()))
         })
         .map(|(name, value)| format!("{name}={value}"))
@@ -530,10 +633,14 @@ pub struct Shape {
     /// to, as `role=provider` lines; see [`ran_on`](Self::ran_on).
     probe: Option<Probe>,
     /// Models the harness loaded itself, beside the engine's, from
-    /// [`also_ran`](Self::also_ran).
-    loaded: Vec<(String, String)>,
+    /// [`also_ran`](Self::also_ran): each asked for its plans when the
+    /// providers are resolved, as `probe` is.
+    loaded: Vec<Probe>,
     /// What `probe` answered, with `loaded`, once the coverage is checked.
     providers: Vec<String>,
+    /// Vectors the run read from a cache rather than embedding, from
+    /// [`cached`](Self::cached).
+    caches: Vec<String>,
     /// The machine, read at `publish`; accelerators once `providers` are.
     hardware: Hardware,
 }
@@ -565,6 +672,11 @@ struct Identity {
     seed: Option<u64>,
     /// `engine/role=provider`: which engine, which model, where it ran.
     providers: Vec<String>,
+    /// `file: reused/total from producer`: vectors a run read from a cache
+    /// rather than embedding, and the digest of who embedded them (see
+    /// `harness::vectors`). A run that embedded everything itself says so
+    /// too, with nothing reused.
+    caches: Vec<String>,
     build: Build,
     hardware: Hardware,
 }
@@ -597,20 +709,42 @@ impl Hardware {
     }
 
     /// The accelerators behind `providers` (`engine/role=provider` lines).
-    fn accelerators_for(providers: &[String]) -> Vec<String> {
+    ///
+    /// With `probe` false -- on a failed run's unwind, which must not wait
+    /// on `nvidia-smi` before its coverage is on disk -- the CUDA inventory
+    /// is taken only from an earlier probe in this process, else the line
+    /// says it was not probed.
+    fn accelerators_for(providers: &[String], probe: bool) -> Vec<String> {
         let ran = |name: &str| {
-            providers
-                .iter()
-                .any(|line| line.rsplit_once('=').is_some_and(|(_, on)| on == name))
+            providers.iter().any(|line| {
+                line.rsplit_once('=').is_some_and(|(_, on)| {
+                    let on = on.split('@').next().unwrap_or(on);
+                    on == name
+                        || on
+                            .strip_prefix(name)
+                            .is_some_and(|key| key.starts_with(':'))
+                })
+            })
         };
         let mut accelerators = Vec::new();
         if ran("cuda") {
-            let read = |name: &str| std::env::var(name).ok();
-            accelerators.extend(visible_cuda(
-                pamin_index::cuda_devices().as_deref(),
-                read("CUDA_VISIBLE_DEVICES").as_deref(),
-                read("CUDA_DEVICE_ORDER").as_deref(),
-            ));
+            static INVENTORY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+            let inventory = if probe {
+                Some(INVENTORY.get_or_init(pamin_index::cuda_devices))
+            } else {
+                INVENTORY.get()
+            };
+            match inventory {
+                Some(inventory) => {
+                    let read = |name: &str| std::env::var(name).ok();
+                    accelerators.extend(visible_cuda(
+                        inventory.as_deref(),
+                        read("CUDA_VISIBLE_DEVICES").as_deref(),
+                        read("CUDA_DEVICE_ORDER").as_deref(),
+                    ));
+                }
+                None => accelerators.push("cuda: not probed (failed run)".to_string()),
+            }
         }
         for other in ["coreml", "directml", "npu"] {
             if ran(other) {
@@ -694,41 +828,47 @@ fn cpu_model() -> Option<String> {
     std::env::var("PROCESSOR_IDENTIFIER").ok()
 }
 
-/// What the harness binary was compiled as, from the build script.
+/// What the harness binary was compiled as.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 struct Build {
-    /// Cargo's `PROFILE`: `debug` or `release`.
-    profile: String,
-    opt_level: String,
-    target: String,
-    /// Cargo's `DEBUG`: whether debug information was compiled in.
-    debug: String,
-    /// The target features enabled, `CARGO_CFG_TARGET_FEATURE`.
-    target_features: String,
-    /// The flags rustc was given, `CARGO_ENCODED_RUSTFLAGS`.
-    rustflags: String,
-    /// `rustc -V` of the compiler that built it.
-    rustc: String,
+    /// pamin-index's build fingerprint, verbatim
+    /// ([`pamin_index::BUILD_FINGERPRINT`]): its sources, the workspace
+    /// manifests and Cargo config, target, profile, opt-level, debug
+    /// setting, rustflags, target features, Cargo profile overrides and
+    /// rustc's version. Whatever pamin-index adds to it names records too.
+    inference: String,
+    /// The same build, readable: each Cargo profile override set and each
+    /// target `cfg` (`CARGO_CFG_*`, the target features among them), as
+    /// `NAME=value`.
+    cargo: Vec<String>,
     /// The `ORT_*`, `ZVEC_*` and rustc-wrapper build variables that were
-    /// set, as `NAME=value`.
+    /// set, as `NAME=value`: what chooses the native libraries linked in,
+    /// which the fingerprint does not hold.
     environment: Vec<String>,
+}
+
+/// The SHA-256 of the build a record names ([`Build`]), for a cache to name
+/// the build that wrote it.
+pub fn build_digest() -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&Build::compiled()).expect("serialise the build"))
+    )
 }
 
 impl Build {
     fn compiled() -> Self {
-        Self {
-            profile: env!("PAMIN_ENGINE_BUILD_PROFILE").to_string(),
-            opt_level: env!("PAMIN_ENGINE_OPT_LEVEL").to_string(),
-            target: env!("PAMIN_ENGINE_TARGET").to_string(),
-            debug: env!("PAMIN_ENGINE_DEBUG").to_string(),
-            target_features: env!("PAMIN_ENGINE_TARGET_FEATURES").to_string(),
-            rustflags: env!("PAMIN_ENGINE_RUSTFLAGS").to_string(),
-            rustc: env!("PAMIN_ENGINE_RUSTC").to_string(),
-            environment: env!("PAMIN_ENGINE_BUILD_ENVIRONMENT")
+        let lines = |joined: &str| -> Vec<String> {
+            joined
                 .split('\x1f')
                 .filter(|line| !line.is_empty())
                 .map(str::to_string)
-                .collect(),
+                .collect()
+        };
+        Self {
+            inference: pamin_index::BUILD_FINGERPRINT.to_string(),
+            cargo: lines(pamin_index::BUILD_CARGO),
+            environment: lines(env!("PAMIN_ENGINE_BUILD_ENVIRONMENT")),
         }
     }
 }
@@ -764,9 +904,10 @@ pub fn engines(
         let mut providers: Vec<(String, String)> = engines
             .iter()
             .flat_map(|(label, engine)| {
-                engine.providers().into_iter().map(move |(role, device)| {
-                    (format!("{label}/{role}"), device.name().to_string())
-                })
+                engine
+                    .providers()
+                    .into_iter()
+                    .map(move |(role, plan)| (format!("{label}/{role}"), provider(&plan)))
             })
             .collect();
         providers.sort();
@@ -774,8 +915,68 @@ pub fn engines(
     }
 }
 
+/// One plan a model ran on, as a record names it: its target, the first
+/// sixteen hex digits of its plan key's hash, and `!unstable` for a plan
+/// that does not name its hardware stably across processes.
+pub fn provider(plan: &pamin_index::PlanUse) -> String {
+    format!(
+        "{}@{}{}",
+        plan.target,
+        plan.plan.get(..16).unwrap_or(&plan.plan),
+        if plan.stable { "" } else { UNSTABLE }
+    )
+}
+
+const UNSTABLE: &str = "!unstable";
+
+/// Why a run's plans keep its record from being canonical, if they do: a
+/// plan whose hardware is not named stably across processes (a DirectML
+/// adapter ordinal, an NPU id -- the plans pamin-index will not persist),
+/// or a model whose plan changed during the run, as a fallback does.
+fn plan_reasons(providers: &[(String, String)]) -> Vec<String> {
+    let mut reasons = Vec::new();
+    let unstable: BTreeSet<&str> = providers
+        .iter()
+        .filter_map(|(_, provider)| provider.strip_suffix(UNSTABLE))
+        .map(|provider| provider.split(['@', ':']).next().unwrap_or(provider))
+        .collect();
+    if !unstable.is_empty() {
+        let names: Vec<&str> = unstable.into_iter().collect();
+        reasons.push(format!(
+            "unstable accelerator identity ({})",
+            names.join(", ")
+        ));
+    }
+    let mut roles: BTreeMap<&str, usize> = BTreeMap::new();
+    for (role, _) in providers {
+        *roles.entry(role.as_str()).or_default() += 1;
+    }
+    if roles.values().any(|plans| *plans > 1) {
+        reasons.push("fallback during run".to_string());
+    }
+    reasons
+}
+
 /// How a shape asks its run which execution providers it ran on.
 type Probe = Box<dyn Fn() -> Vec<(String, String)> + Send>;
+
+/// A model the harness loaded and uses itself, shared with the record so
+/// that [`Shape::also_ran`] can read its plans once the run is over.
+pub type Owned<M> = std::sync::Arc<std::sync::Mutex<M>>;
+
+/// `model`, held so that a record can read its plans later.
+pub fn owned<M>(model: M) -> Owned<M> {
+    std::sync::Arc::new(std::sync::Mutex::new(model))
+}
+
+/// The model, for the harness to use. A run that panicked while holding it
+/// left nothing half-written that a plan list depends on, so a poisoned
+/// lock is taken as it is.
+pub fn lock<M>(model: &Owned<M>) -> std::sync::MutexGuard<'_, M> {
+    model
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// One record's digest: its fields, separated so that no two field lists
 /// share a byte string.
@@ -828,6 +1029,7 @@ impl Shape {
             probe: None,
             loaded: Vec::new(),
             providers: Vec::new(),
+            caches: Vec::new(),
             hardware: Hardware::default(),
         }
     }
@@ -845,30 +1047,79 @@ impl Shape {
     }
 
     /// A model the harness loaded itself rather than through an engine --
-    /// a second reranker an arm prices against the shipped one -- as `role`
-    /// on `device`, recorded with what [`ran_on`](Self::ran_on)'s probe says.
-    pub fn also_ran(&mut self, role: &str, device: pamin_index::Device) {
-        self.loaded
-            .push((format!("harness/{role}"), device.name().to_string()));
+    /// a second reranker an arm prices against the shipped one -- as `role`,
+    /// recorded with what [`ran_on`](Self::ran_on)'s probe says.
+    ///
+    /// `plans` is read when the providers are resolved, after the workload,
+    /// as an engine's are: read at load, it missed a fallback the model took
+    /// later, and the run was taken as canonical. It never waits: while the
+    /// model is in use -- which only a run unwinding past a held guard
+    /// could see -- the plans it had at load stand in.
+    pub fn also_ran<M: Send + 'static>(
+        &mut self,
+        role: &str,
+        model: &Owned<M>,
+        plans: fn(&M) -> Vec<pamin_index::PlanUse>,
+    ) {
+        let role = format!("harness/{role}");
+        let model = std::sync::Arc::clone(model);
+        let loaded = plans(&lock(&model));
+        self.loaded.push(Box::new(move || {
+            let now = match model.try_lock() {
+                Ok(model) => plans(&model),
+                Err(std::sync::TryLockError::Poisoned(model)) => plans(&model.into_inner()),
+                Err(std::sync::TryLockError::WouldBlock) => loaded.clone(),
+            };
+            now.iter()
+                .map(|plan| (role.clone(), provider(plan)))
+                .collect()
+        }));
+    }
+
+    /// That `reused` of the `total` vectors in the cache `file` were read
+    /// from it rather than embedded, by `producer` (see
+    /// `harness::vectors::producer`). It names the record: a run scored on
+    /// cached vectors is not taken for one that embedded them.
+    pub fn cached(&mut self, file: &str, producer: &str, reused: usize, total: usize) {
+        let producer: String = Sha256::digest(producer.as_bytes())[..8]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        self.caches
+            .push(format!("{file}: {reused}/{total} from {producer}"));
     }
 
     /// Asks the probe, if there is one, and keeps its answer with `loaded`
     /// as `engine/role=provider` lines; whether there was a probe to ask.
     /// The probe never panics (see [`engines`]), so a failing run asks it
     /// too.
-    fn resolve_providers(&mut self) -> bool {
+    ///
+    /// `probe_hardware` says whether the hardware behind them may be probed now (see
+    /// [`Hardware::accelerators_for`]); a failed run's unwind passes false.
+    fn resolve_providers(&mut self, probe_hardware: bool) -> bool {
         let Some(probe) = &self.probe else {
             return false;
         };
         let mut providers = probe();
-        providers.extend(self.loaded.iter().cloned());
+        for loaded in &self.loaded {
+            providers.extend(loaded());
+        }
         providers.sort();
         providers.dedup();
+        for reason in plan_reasons(&providers) {
+            let noncanonical = self.source.noncanonical.get_or_insert_with(String::new);
+            if !noncanonical.split("; ").any(|known| known == reason) {
+                if !noncanonical.is_empty() {
+                    noncanonical.push_str("; ");
+                }
+                noncanonical.push_str(&reason);
+            }
+        }
         self.providers = providers
             .into_iter()
             .map(|(role, provider)| format!("{role}={provider}"))
             .collect();
-        self.hardware.accelerators = Hardware::accelerators_for(&self.providers);
+        self.hardware.accelerators = Hardware::accelerators_for(&self.providers, probe_hardware);
         true
     }
 
@@ -956,13 +1207,13 @@ impl Shape {
     /// still said what it was running.
     ///
     /// The record is named by `test`, `profile` and arm as well as the
-    /// digest, the arm being the harness's `vars` and the `PAMIN_` settings
-    /// that are set (see [`settings`]). It was named by the digest alone, and
+    /// digest, the arm being every setting that is set (see [`settings`]).
+    /// It was named by the digest alone, and
     /// every arm over one corpus wrote the same file, so the last run's
     /// coverage replaced the others'. It is named by the evaluated commit
     /// too, so a run of another revision keeps its own record rather than
     /// replacing this one's.
-    pub fn publish(&mut self, test: &str, profile: &str, vars: &[&str]) {
+    pub fn publish(&mut self, test: &str, profile: &str) {
         let digest = self.digest();
         let set = std::env::vars_os().map(|(name, value)| {
             (
@@ -970,7 +1221,7 @@ impl Shape {
                 value.to_string_lossy().into_owned(),
             )
         });
-        self.settings = settings(vars, set);
+        self.settings = settings(set);
         let arm = arm(&self.settings);
         self.run = [test.to_string(), profile.to_string(), arm.clone()];
         let name = self.name.clone();
@@ -1192,7 +1443,7 @@ impl Shape {
             report(&format!("  coverage {}: {}", self.name, lines.join("; ")));
             return failures;
         };
-        if !self.resolve_providers() {
+        if !self.resolve_providers(true) {
             failures.push(
                 "the run never said which execution providers it ran on (Shape::ran_on)".into(),
             );
@@ -1248,6 +1499,7 @@ impl Shape {
             selection: self.selection.clone(),
             seed: self.seed,
             providers: self.providers.clone(),
+            caches: self.caches.clone(),
             build: Build::compiled(),
             hardware: self.hardware.clone(),
         }
@@ -1345,8 +1597,10 @@ impl Drop for Shape {
             };
             let (lines, _, recorded) = self.coverage(&tally);
             self.coverage = Some(recorded);
-            // What it ran on, too: the probe neither panics nor waits.
-            self.resolve_providers();
+            // What it ran on, too: the probe neither panics nor waits, and no
+            // hardware is probed here -- only what this process already
+            // read -- so nothing stands between the failure and the file.
+            self.resolve_providers(false);
             let progress = self.progress.clone();
             let _ = self.persist(&progress, " (failed run)", &lines);
             return;
@@ -1783,14 +2037,10 @@ mod tests {
             selection: "all".into(),
             seed: None,
             providers: vec!["embedding=cpu".into(), "reranking accurate=coreml".into()],
+            caches: Vec::new(),
             build: Build {
-                profile: "release".into(),
-                opt_level: "3".into(),
-                target: "x86_64-unknown-linux-gnu".into(),
-                debug: "false".into(),
-                target_features: "fxsr,sse,sse2".into(),
-                rustflags: String::new(),
-                rustc: "rustc 1.98.1".into(),
+                inference: "f".repeat(64),
+                cargo: vec!["CARGO_CFG_TARGET_FEATURE=fxsr,sse,sse2".into()],
                 environment: Vec::new(),
             },
             hardware: Hardware {
@@ -1812,8 +2062,7 @@ mod tests {
         };
         let debug = Identity {
             build: Build {
-                profile: "debug".into(),
-                opt_level: "0".into(),
+                inference: "d".repeat(64),
                 ..base.build.clone()
             },
             ..base.clone()
@@ -1846,8 +2095,10 @@ mod tests {
             ("selection", |id| id.selection.push('x')),
             ("seed", |id| id.seed = Some(1)),
             ("providers", |id| id.providers.reverse()),
-            ("build.profile", |id| id.build.profile = "debug".into()),
-            ("build.opt_level", |id| id.build.opt_level = "0".into()),
+            ("caches", |id| {
+                id.caches
+                    .push("xquad.f32: 0/10 from 0123456789abcdef".into())
+            }),
             ("hardware.cpu", |id| id.hardware.cpu.push('x')),
             ("hardware.logical_cores", |id| {
                 id.hardware.logical_cores += 1
@@ -1855,17 +2106,10 @@ mod tests {
             ("hardware.accelerators", |id| {
                 id.hardware.accelerators.clear()
             }),
-            ("build.target", |id| {
-                id.build.target = "aarch64-apple-darwin".into()
+            ("build.inference", |id| id.build.inference = "d".repeat(64)),
+            ("build.cargo", |id| {
+                id.build.cargo.push("CARGO_PROFILE_RELEASE_LTO=fat".into())
             }),
-            ("build.debug", |id| id.build.debug = "true".into()),
-            ("build.target_features", |id| {
-                id.build.target_features.push_str(",avx2")
-            }),
-            ("build.rustflags", |id| {
-                id.build.rustflags = "-C target-cpu=native".into()
-            }),
-            ("build.rustc", |id| id.build.rustc.push('x')),
             ("build.environment", |id| {
                 id.build.environment.push("ORT_LIB_LOCATION=/ort".into())
             }),
@@ -1904,9 +2148,156 @@ mod tests {
             "primary/embedding=cpu".to_string(),
             "second/reranking accurate=coreml".to_string(),
         ];
-        assert_eq!(Hardware::accelerators_for(&providers), ["coreml"]);
-        assert!(Hardware::accelerators_for(&providers[..1]).is_empty());
+        assert_eq!(Hardware::accelerators_for(&providers, true), ["coreml"]);
+        assert!(Hardware::accelerators_for(&providers[..1], true).is_empty());
         assert!(Hardware::detect().logical_cores > 0);
+    }
+
+    /// A failed run's unwind never probes the GPUs: what a CUDA run ran on
+    /// is said to be unprobed unless this process already read it.
+    #[test]
+    fn the_unwind_does_not_probe_the_gpus() {
+        let providers = ["primary/embedding=cuda".to_string()];
+        assert_eq!(
+            Hardware::accelerators_for(&providers, false),
+            ["cuda: not probed (failed run)"]
+        );
+    }
+
+    /// A provider is recorded as the execution target its plans are keyed
+    /// by, so two NPUs that differ in provider or in id are two records, and
+    /// either is still an NPU among the accelerators.
+    #[test]
+    fn npu_targets_name_the_record() {
+        let on = |target: &str| Identity {
+            providers: vec![format!("primary/embedding={target}")],
+            ..identity()
+        };
+        let names: BTreeSet<String> = [
+            on("npu:qnn:0"),
+            on("npu:qnn:1"),
+            on("npu:openvino:0"),
+            on("npu"),
+        ]
+        .iter()
+        .map(Identity::short)
+        .collect();
+        assert_eq!(names.len(), 4, "{names:?}");
+        let providers = ["primary/embedding=npu:qnn:1".to_string()];
+        assert_eq!(Hardware::accelerators_for(&providers, true), ["npu"]);
+    }
+
+    /// The build a record names is pamin-index's own fingerprint, so a field
+    /// pamin-index adds to it reaches the record, and the readable part says
+    /// what the target resolved to.
+    #[test]
+    fn the_build_is_pamin_index_s_fingerprint() {
+        let build = Build::compiled();
+        assert_eq!(build.inference, pamin_index::BUILD_FINGERPRINT);
+        assert_eq!(build.inference.len(), 64, "{}", build.inference);
+        assert!(
+            build
+                .cargo
+                .iter()
+                .any(|line| line.starts_with("CARGO_CFG_TARGET_ARCH=")),
+            "{:?}",
+            build.cargo
+        );
+    }
+
+    /// A model the harness owns is asked for its plans when the record
+    /// resolves its providers, so a fallback it took after it was
+    /// registered makes the run non-canonical, as an engine's does.
+    #[test]
+    fn a_harness_model_s_later_fallback_is_recorded() {
+        let plan = |target: &str, digit: &str| pamin_index::PlanUse {
+            target: target.into(),
+            plan: digit.repeat(64),
+            stable: true,
+        };
+        let model = owned(vec![plan("cuda:0", "a")]);
+        let mut shape = asked();
+        shape.ran_on(Vec::new);
+        shape.also_ran("context reranker", &model, |plans| plans.clone());
+        // The workload: the model falls back to the CPU after it was
+        // registered.
+        lock(&model).push(plan("cpu", "b"));
+        assert!(shape.resolve_providers(false));
+        assert_eq!(
+            shape.providers,
+            [
+                format!("harness/context reranker=cpu@{}", "b".repeat(16)),
+                format!("harness/context reranker=cuda:0@{}", "a".repeat(16)),
+            ]
+        );
+        assert!(
+            shape
+                .source
+                .noncanonical
+                .as_deref()
+                .is_some_and(|reason| reason.contains("fallback during run")),
+            "{:?}",
+            shape.source.noncanonical
+        );
+    }
+
+    /// A run whose model fell back names both plans, so it is a different
+    /// record from a run that only ever ran on the CPU, and neither it nor a
+    /// run on a plan without a stable hardware identity is canonical.
+    #[test]
+    fn a_fallback_or_an_unstable_plan_is_not_canonical() {
+        let fell_back = vec![
+            ("primary/embedding".to_string(), "cuda@aaaa".to_string()),
+            ("primary/embedding".to_string(), "cpu@bbbb".to_string()),
+        ];
+        let cpu = vec![("primary/embedding".to_string(), "cpu@bbbb".to_string())];
+        let lines = |providers: &[(String, String)]| -> Vec<String> {
+            providers
+                .iter()
+                .map(|(role, provider)| format!("{role}={provider}"))
+                .collect()
+        };
+        let named = |providers: &[(String, String)]| {
+            Identity {
+                providers: lines(providers),
+                ..identity()
+            }
+            .short()
+        };
+        assert_ne!(named(&fell_back), named(&cpu));
+        assert_eq!(plan_reasons(&fell_back), ["fallback during run"]);
+        assert!(plan_reasons(&cpu).is_empty());
+        let unstable = vec![(
+            "primary/embedding".to_string(),
+            format!("directml@cccc{UNSTABLE}"),
+        )];
+        assert_eq!(
+            plan_reasons(&unstable),
+            ["unstable accelerator identity (directml)"]
+        );
+        let plan = pamin_index::PlanUse {
+            target: "npu:qnn:0".into(),
+            plan: "d".repeat(64),
+            stable: false,
+        };
+        assert_eq!(
+            provider(&plan),
+            format!("npu:qnn:0@{}{UNSTABLE}", "d".repeat(16))
+        );
+
+        // And the record says so, as it does for an ungated run.
+        let mut shape = asked();
+        shape.ran_on(move || unstable.clone());
+        assert!(shape.resolve_providers(false));
+        assert!(
+            shape
+                .source
+                .noncanonical
+                .as_deref()
+                .is_some_and(|reason| reason.contains("unstable accelerator identity")),
+            "{:?}",
+            shape.source.noncanonical
+        );
     }
 
     /// The GPUs a CUDA run could see are the ones `CUDA_VISIBLE_DEVICES`
@@ -1976,6 +2367,109 @@ mod tests {
             gone.is_empty(),
             "in NOT_IDENTITY but no longer read: {gone:?}"
         );
+    }
+
+    /// Every environment variable the evaluation tests read outside `PAMIN_`
+    /// -- each `var("...")`, `var_os("...")` and `dataset_dir("...")` under a
+    /// crate's `tests/` -- names the record or is excluded with a reason, and
+    /// a read whose name is not a literal is listed with where its names
+    /// come from: reading a new one without deciding fails here.
+    #[test]
+    fn every_evaluation_read_is_classified() {
+        let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crates directory");
+        let mut found = BTreeSet::new();
+        let mut indirect = BTreeSet::new();
+        for entry in std::fs::read_dir(crates).expect("read the crates") {
+            let tests = entry.expect("a crate").path().join("tests");
+            if tests.is_dir() {
+                evaluation_reads(crates, &tests, &mut found, &mut indirect);
+            }
+        }
+        assert!(
+            found.contains("RERANK_RULES") && found.contains("MUSIQUE_DIR"),
+            "this test is not reading the tests: {found:?}"
+        );
+        let excluded = |name: &str| {
+            NOT_IDENTITY
+                .iter()
+                .chain(&EVAL_NOT_IDENTITY)
+                .any(|(excluded, _)| *excluded == name)
+        };
+        let unclassified: Vec<&String> = found
+            .iter()
+            .filter(|name| !name.starts_with("PAMIN_"))
+            .filter(|name| !identity_variable(name) && !excluded(name))
+            .collect();
+        assert!(
+            unclassified.is_empty(),
+            "read by an evaluation test, and neither naming the record (EVAL_SETTINGS) nor \
+             in EVAL_NOT_IDENTITY: {unclassified:?}"
+        );
+        let listed: BTreeSet<String> = EVAL_INDIRECT
+            .iter()
+            .map(|(read, _)| read.to_string())
+            .collect();
+        assert_eq!(
+            indirect, listed,
+            "a read with a computed name is not in EVAL_INDIRECT, or is gone"
+        );
+        let gone: Vec<&str> = EVAL_SETTINGS
+            .iter()
+            .copied()
+            .chain(EVAL_NOT_IDENTITY.iter().map(|(name, _)| *name))
+            .filter(|name| !found.contains(*name))
+            .collect();
+        assert!(gone.is_empty(), "listed but no test reads them: {gone:?}");
+    }
+
+    /// The names of the environment reads in every `.rs` file under `dir`,
+    /// and, as `path: expression`, the reads whose name is not a literal --
+    /// leaving out the ones in this file, whose names are its own lists'.
+    fn evaluation_reads(
+        root: &Path,
+        dir: &Path,
+        found: &mut BTreeSet<String>,
+        indirect: &mut BTreeSet<String>,
+    ) {
+        for entry in std::fs::read_dir(dir).expect("read a test directory") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                evaluation_reads(root, &path, found, indirect);
+                continue;
+            }
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let relative = path.strip_prefix(root).expect("under the crates");
+            if relative.ends_with("harness/shape.rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("read a test file");
+            for call in ["env::var(", "env::var_os(", "dataset_dir("] {
+                for (at, _) in source.match_indices(call) {
+                    let argument = source[at + call.len()..].trim_start();
+                    let name = argument
+                        .strip_prefix('"')
+                        .and_then(|rest| rest.split_once('"'))
+                        .map(|(name, _)| name);
+                    match name {
+                        Some(name) => {
+                            found.insert(name.to_string());
+                        }
+                        None if call != "dataset_dir(" => {
+                            let expression = argument.split(')').next().unwrap_or_default();
+                            indirect.insert(format!(
+                                "{}: std::{call}{expression})",
+                                relative.display()
+                            ));
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
     }
 
     /// The upper-case, non-`PAMIN_` string literals of every source file
@@ -2051,7 +2545,7 @@ mod tests {
             let set = set
                 .iter()
                 .map(|(name, value)| (name.to_string(), value.to_string()));
-            arm(&settings(&["SWEEP"], set))
+            arm(&settings(set))
         };
         let shipped = named(&[
             ("PAMIN_EVAL_HOME", "/data"),
@@ -2071,7 +2565,7 @@ mod tests {
             named(&[("PAMIN_RERANK_DEPTH", "20"), ("PAMIN_SEARCH_EFFORT", "low")])
         );
         assert_eq!(
-            settings(&[], [("PAMIN_DEVICE".to_string(), "cpu".to_string())]),
+            settings([("PAMIN_DEVICE".to_string(), "cpu".to_string())]),
             ["PAMIN_DEVICE=cpu"]
         );
         // Named by every harness, though no harness lists it.
