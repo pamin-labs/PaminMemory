@@ -943,6 +943,18 @@ impl Reranker {
         self.device
     }
 
+    /// The execution target its passes run on, as its execution plans are
+    /// keyed: `npu:<provider>:<id>` for an NPU, the device's name otherwise.
+    pub fn target(&self) -> String {
+        crate::inference::target_key(&self.model, self.device)
+    }
+
+    /// Every execution plan this reranker has run on in this process,
+    /// oldest first, the current one last. See [`crate::PlanUse`].
+    pub fn plans(&self) -> Vec<crate::PlanUse> {
+        crate::inference::plans_of(&self.model, self.device)
+    }
+
     pub fn tier(&self) -> Rerank {
         self.tier
     }
