@@ -996,13 +996,21 @@ impl ProjectionIndex {
     /// guess is not an option -- a wrong guess is refused, and a guess at a
     /// directory with no index creates one.
     ///
-    /// `None` for no index, and for one recorded with another embedding model
-    /// or a vector index no build makes any more, which only a rebuild can
-    /// open.
+    /// `None` for no index, and for one recorded with a vector index no build
+    /// makes any more, which only a rebuild can open. An index recorded with
+    /// another embedding model is [`IndexError::ModelMismatch`], so that a
+    /// caller can say which and that `pamin reindex` rebuilds it, rather than
+    /// passing over it as if there were nothing there.
     pub fn built_for(dir: &Path) -> Result<Option<VectorIndex>> {
-        Ok(Marker::read(dir)?
-            .filter(|recorded| recorded.model == MODEL_ID)
-            .and_then(|recorded| VectorIndex::parse(&recorded.storage)))
+        let Some(recorded) = Marker::read(dir)? else {
+            return Ok(None);
+        };
+        if recorded.model != MODEL_ID {
+            return Err(IndexError::ModelMismatch {
+                indexed: recorded.model,
+            });
+        }
+        Ok(VectorIndex::parse(&recorded.storage))
     }
 
     /// Opens the index at `dir`, creating it with segments of `segment`
@@ -1021,9 +1029,8 @@ impl ProjectionIndex {
         let (passage, keys) = match Marker::read(dir)? {
             Some(recorded) => {
                 if recorded.model != MODEL_ID {
-                    return Err(IndexError::ProfileMismatch {
+                    return Err(IndexError::ModelMismatch {
                         indexed: recorded.model,
-                        requested: MODEL_ID.to_string(),
                     });
                 }
                 if recorded.grain != DOCUMENT_GRAIN {
@@ -2181,7 +2188,7 @@ mod keys {
 
 #[cfg(test)]
 mod marker {
-    use super::{Marker, ProjectionIndex, VectorIndex};
+    use super::{IndexError, Marker, ProjectionIndex, VectorIndex};
 
     /// What an index was built with reads back as the vector index that built
     /// it.
@@ -2214,6 +2221,20 @@ mod marker {
             ProjectionIndex::built_for(legacy.path()).expect("reading"),
             None
         );
+
+        // An index from a retired profile is not passed over as if it were
+        // not there: it is named, so a caller can say `pamin reindex`.
+        let retired = tempfile::tempdir().expect("a directory");
+        Marker {
+            model: "intfloat/multilingual-e5-small+p1".to_string(),
+            ..Marker::current(VectorIndex::default())
+        }
+        .write(retired.path())
+        .expect("marking");
+        assert!(matches!(
+            ProjectionIndex::built_for(retired.path()),
+            Err(IndexError::ModelMismatch { indexed }) if indexed == "intfloat/multilingual-e5-small+p1"
+        ));
 
         let empty = tempfile::tempdir().expect("a directory");
         assert_eq!(
