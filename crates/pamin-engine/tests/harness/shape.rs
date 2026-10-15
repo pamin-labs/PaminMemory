@@ -622,8 +622,9 @@ pub struct Shape {
     /// to, as `role=provider` lines; see [`ran_on`](Self::ran_on).
     probe: Option<Probe>,
     /// Models the harness loaded itself, beside the engine's, from
-    /// [`also_ran`](Self::also_ran).
-    loaded: Vec<(String, String)>,
+    /// [`also_ran`](Self::also_ran): each asked for its plans when the
+    /// providers are resolved, as `probe` is.
+    loaded: Vec<Probe>,
     /// What `probe` answered, with `loaded`, once the coverage is checked.
     providers: Vec<String>,
     /// The machine, read at `publish`; accelerators once `providers` are.
@@ -931,6 +932,24 @@ fn plan_reasons(providers: &[(String, String)]) -> Vec<String> {
 /// How a shape asks its run which execution providers it ran on.
 type Probe = Box<dyn Fn() -> Vec<(String, String)> + Send>;
 
+/// A model the harness loaded and uses itself, shared with the record so
+/// that [`Shape::also_ran`] can read its plans once the run is over.
+pub type Owned<M> = std::sync::Arc<std::sync::Mutex<M>>;
+
+/// `model`, held so that a record can read its plans later.
+pub fn owned<M>(model: M) -> Owned<M> {
+    std::sync::Arc::new(std::sync::Mutex::new(model))
+}
+
+/// The model, for the harness to use. A run that panicked while holding it
+/// left nothing half-written that a plan list depends on, so a poisoned
+/// lock is taken as it is.
+pub fn lock<M>(model: &Owned<M>) -> std::sync::MutexGuard<'_, M> {
+    model
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// One record's digest: its fields, separated so that no two field lists
 /// share a byte string.
 fn record(kind: &str, fields: &[&str]) -> [u8; 32] {
@@ -999,13 +1018,33 @@ impl Shape {
     }
 
     /// A model the harness loaded itself rather than through an engine --
-    /// a second reranker an arm prices against the shipped one -- as `role`
-    /// on `device`, recorded with what [`ran_on`](Self::ran_on)'s probe says.
-    pub fn also_ran(&mut self, role: &str, plans: Vec<pamin_index::PlanUse>) {
-        for plan in plans {
-            self.loaded
-                .push((format!("harness/{role}"), provider(&plan)));
-        }
+    /// a second reranker an arm prices against the shipped one -- as `role`,
+    /// recorded with what [`ran_on`](Self::ran_on)'s probe says.
+    ///
+    /// `plans` is read when the providers are resolved, after the workload,
+    /// as an engine's are: read at load, it missed a fallback the model took
+    /// later, and the run was taken as canonical. It never waits: while the
+    /// model is in use -- which only a run unwinding past a held guard
+    /// could see -- the plans it had at load stand in.
+    pub fn also_ran<M: Send + 'static>(
+        &mut self,
+        role: &str,
+        model: &Owned<M>,
+        plans: fn(&M) -> Vec<pamin_index::PlanUse>,
+    ) {
+        let role = format!("harness/{role}");
+        let model = std::sync::Arc::clone(model);
+        let loaded = plans(&lock(&model));
+        self.loaded.push(Box::new(move || {
+            let now = match model.try_lock() {
+                Ok(model) => plans(&model),
+                Err(std::sync::TryLockError::Poisoned(model)) => plans(&model.into_inner()),
+                Err(std::sync::TryLockError::WouldBlock) => loaded.clone(),
+            };
+            now.iter()
+                .map(|plan| (role.clone(), provider(plan)))
+                .collect()
+        }));
     }
 
     /// Asks the probe, if there is one, and keeps its answer with `loaded`
@@ -1020,7 +1059,9 @@ impl Shape {
             return false;
         };
         let mut providers = probe();
-        providers.extend(self.loaded.iter().cloned());
+        for loaded in &self.loaded {
+            providers.extend(loaded());
+        }
         providers.sort();
         providers.dedup();
         for reason in plan_reasons(&providers) {
@@ -2113,6 +2154,42 @@ mod tests {
                 .any(|line| line.starts_with("CARGO_CFG_TARGET_ARCH=")),
             "{:?}",
             build.cargo
+        );
+    }
+
+    /// A model the harness owns is asked for its plans when the record
+    /// resolves its providers, so a fallback it took after it was
+    /// registered makes the run non-canonical, as an engine's does.
+    #[test]
+    fn a_harness_model_s_later_fallback_is_recorded() {
+        let plan = |target: &str, digit: &str| pamin_index::PlanUse {
+            target: target.into(),
+            plan: digit.repeat(64),
+            stable: true,
+        };
+        let model = owned(vec![plan("cuda:0", "a")]);
+        let mut shape = asked();
+        shape.ran_on(Vec::new);
+        shape.also_ran("context reranker", &model, |plans| plans.clone());
+        // The workload: the model falls back to the CPU after it was
+        // registered.
+        lock(&model).push(plan("cpu", "b"));
+        assert!(shape.resolve_providers(false));
+        assert_eq!(
+            shape.providers,
+            [
+                format!("harness/context reranker=cpu@{}", "b".repeat(16)),
+                format!("harness/context reranker=cuda:0@{}", "a".repeat(16)),
+            ]
+        );
+        assert!(
+            shape
+                .source
+                .noncanonical
+                .as_deref()
+                .is_some_and(|reason| reason.contains("fallback during run")),
+            "{:?}",
+            shape.source.noncanonical
         );
     }
 

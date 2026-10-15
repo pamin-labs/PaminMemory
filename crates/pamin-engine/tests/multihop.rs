@@ -666,9 +666,15 @@ async fn search_answers_questions_that_take_several_steps() {
     if std::env::var("ROUTES").is_ok() {
         const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
         let tier = Rerank::default();
-        let mut small = pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
-            .expect("load the small reranker");
-        shape.also_ran("routes small reranker", small.plans());
+        let small = harness::shape::owned(
+            pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
+                .expect("load the small reranker"),
+        );
+        shape.also_ran(
+            "routes small reranker",
+            &small,
+            pamin_index::Reranker::plans,
+        );
         let mut routes = reranking::Routes::default();
         for query in &corpus.queries {
             let hits = engine
@@ -682,7 +688,7 @@ async fn search_answers_questions_that_take_several_steps() {
                 &query.text,
                 &hits,
                 &replayed,
-                &mut small,
+                &mut harness::shape::lock(&small),
                 &query.text,
                 |into, ranking| score(into, query, ranking),
             );
@@ -789,9 +795,11 @@ async fn search_answers_questions_that_take_several_steps() {
 
     if std::env::var("CONTEXT").is_ok() {
         let tier = Rerank::default();
-        let mut model = pamin_index::Reranker::load(tier, &workspace.root().join("models"))
-            .expect("load the reranker");
-        shape.also_ran("context reranker", model.plans());
+        let model = harness::shape::owned(
+            pamin_index::Reranker::load(tier, &workspace.root().join("models"))
+                .expect("load the reranker"),
+        );
+        shape.also_ran("context reranker", &model, pamin_index::Reranker::plans);
         let labels = reranking::context_labels();
         let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
         harness::shape::tables(labels.iter().map(|(label, _)| label));
@@ -803,7 +811,12 @@ async fn search_answers_questions_that_take_several_steps() {
                 .expect("search");
             channels::enough_room(&hits, WIDE);
             let replayed = reranking::replay(&hits, tier);
-            let (orders, shown) = reranking::in_context(&hits, &replayed, &mut model, &query.text);
+            let (orders, shown) = reranking::in_context(
+                &hits,
+                &replayed,
+                &mut harness::shape::lock(&model),
+                &query.text,
+            );
             seeded += shown;
             for ((order, into), (label, _)) in orders.iter().zip(&mut measured).zip(&labels) {
                 harness::shape::table(label);

@@ -1647,25 +1647,17 @@ fn the_model_reaches_across_languages() {
     );
 
     let home = eval_home();
-    let mut embedder =
-        Embedder::load(profile, &home.join("models")).expect("load the embedding model");
-    let mut providers: Vec<(String, String)> = embedder
-        .plans()
-        .iter()
-        .map(|plan| {
-            (
-                "harness/embedding".to_string(),
-                harness::shape::provider(plan),
-            )
-        })
-        .collect();
-    for plan in embedder.secondary_plans().into_iter().flatten() {
-        providers.push((
-            "harness/embedding secondary".to_string(),
-            harness::shape::provider(&plan),
-        ));
-    }
-    shape.ran_on(move || providers.clone());
+    let embedder = harness::shape::owned(
+        Embedder::load(profile, &home.join("models")).expect("load the embedding model"),
+    );
+    // No engine: the record's providers are the harness's own models,
+    // read once the run is over.
+    shape.ran_on(Vec::new);
+    shape.also_ran("embedding", &embedder, Embedder::plans);
+    shape.also_ran("embedding secondary", &embedder, |embedder| {
+        embedder.secondary_plans().unwrap_or_default()
+    });
+    let mut embedder = harness::shape::lock(&embedder);
 
     let width = profile.dimensions() as usize;
     let vectors = embed_corpus(&mut embedder, &corpus, &home, width);
@@ -2079,9 +2071,15 @@ async fn search_reaches_across_languages() {
     if std::env::var("ROUTES").is_ok() {
         const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
         let tier = Rerank::default();
-        let mut small = pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
-            .expect("load the small reranker");
-        shape.also_ran("routes small reranker", small.plans());
+        let small = harness::shape::owned(
+            pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
+                .expect("load the small reranker"),
+        );
+        shape.also_ran(
+            "routes small reranker",
+            &small,
+            pamin_index::Reranker::plans,
+        );
         let mut routes = reranking::Routes::default();
         for query in &queries {
             let hits = engine
@@ -2096,7 +2094,7 @@ async fn search_reaches_across_languages() {
                     &query.question.answers["en"],
                     &hits,
                     &replayed,
-                    &mut small,
+                    &mut harness::shape::lock(&small),
                     query.text(),
                     |into, ranking| score_group(into, query, group, ranking),
                 );
@@ -3430,9 +3428,11 @@ async fn context(
 ) {
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
-    let mut model = pamin_index::Reranker::load(tier, &workspace.root().join("models"))
-        .expect("load the reranker");
-    shape.also_ran("context reranker", model.plans());
+    let model = harness::shape::owned(
+        pamin_index::Reranker::load(tier, &workspace.root().join("models"))
+            .expect("load the reranker"),
+    );
+    shape.also_ran("context reranker", &model, pamin_index::Reranker::plans);
     let labels = reranking::context_labels();
     let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
     harness::shape::tables(labels.iter().map(|(label, _)| label));
@@ -3443,7 +3443,12 @@ async fn context(
             .expect("search");
         channels::enough_room(&hits, WIDE);
         let replayed = reranking::replay(&hits, tier);
-        let (orders, _) = reranking::in_context(&hits, &replayed, &mut model, query.text());
+        let (orders, _) = reranking::in_context(
+            &hits,
+            &replayed,
+            &mut harness::shape::lock(&model),
+            query.text(),
+        );
         for ((order, into), (label, _)) in orders.iter().zip(&mut measured).zip(&labels) {
             harness::shape::table(label);
             score(into, query, order);
