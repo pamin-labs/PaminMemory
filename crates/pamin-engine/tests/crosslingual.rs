@@ -1660,14 +1660,15 @@ fn the_model_reaches_across_languages() {
     let mut embedder = harness::shape::lock(&embedder);
 
     let width = profile.dimensions() as usize;
-    let vectors = embed_corpus(&mut embedder, &corpus, &home, width);
+    let vectors = embed_corpus(&mut embedder, &corpus, &home, width, &mut shape);
 
     let mut groups = BTreeMap::new();
     harness::shape::tables(["embedding space"]);
     harness::shape::table("embedding space");
     let started = std::time::Instant::now();
     for query in &queries {
-        let vector = unit(embedder.embed_query(query.text()).expect("embed the query"));
+        let vector =
+            harness::vectors::unit(embedder.embed_query(query.text()).expect("embed the query"));
 
         // Exhaustive rather than through the index: this test asks what the
         // embedding space contains, and an approximate index answers a
@@ -1699,100 +1700,32 @@ fn the_model_reaches_across_languages() {
     assert_floors(&named, &groups, MODEL_FLOORS);
 }
 
-/// Embeds every sentence, reusing and resuming a cache on disk.
-///
-/// Resumable rather than merely cached: this is twenty minutes of forward
-/// passes, and a machine that loses the process halfway -- a container that
-/// restarts, a laptop that sleeps -- would otherwise start again from nothing.
-/// Vectors are appended in batches, so the length of the file is how many are
-/// done.
-fn embed_corpus(embedder: &mut Embedder, corpus: &Corpus, home: &Path, width: usize) -> Vec<f32> {
+/// Embeds every sentence through the shared vector cache (see
+/// `harness::vectors`), and says in the record how many came from it and
+/// from which producer.
+fn embed_corpus(
+    embedder: &mut Embedder,
+    corpus: &Corpus,
+    home: &Path,
+    width: usize,
+    shape: &mut Shape,
+) -> Vec<f32> {
     /// How many sentences go through one forward pass.
     const BATCH: usize = 32;
 
-    let path = home.join(format!(
+    let file = format!(
         "xquad-{}-{}.f32",
         embedder.profile().model_id().replace('/', "-"),
         corpus.fingerprint()
-    ));
-    std::fs::create_dir_all(home).expect("the evaluation directory");
-
-    let bytes = std::fs::metadata(&path)
-        .map(|file| file.len() as usize)
-        .unwrap_or(0);
-    let mut done = bytes / 4 / width;
-    if done > corpus.sentences.len() {
-        // A cache from a wider profile under the same name cannot happen -- the
-        // name carries the model -- but a truncated write can leave a partial
-        // vector, and half a vector is worse than none.
-        done = 0;
-    }
-    let mut vectors: Vec<f32> = std::fs::read(&path)
-        .map(|raw| {
-            raw[..done * width * 4]
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|bytes| f32::from_le_bytes(*bytes))
-                .collect()
-        })
-        .unwrap_or_default();
-    if done > 0 {
-        println!("  reusing {done} embedded sentences");
-    }
-
-    let resumed = done;
-    let started = std::time::Instant::now();
-    while done < corpus.sentences.len() {
-        let batch: Vec<&str> = corpus.sentences[done..]
-            .iter()
-            .take(BATCH)
-            .map(|sentence| sentence.text.as_str())
-            .collect();
-        let embedded = embedder.embed_passages(&batch).expect("embed the corpus");
-
-        let mut appended = Vec::with_capacity(batch.len() * width * 4);
-        for vector in embedded {
-            let vector = unit(vector);
-            for value in &vector {
-                appended.extend_from_slice(&value.to_le_bytes());
-            }
-            vectors.extend_from_slice(&vector);
-        }
-        append(&path, &appended);
-
-        done += batch.len();
-        if done.is_multiple_of(BATCH * 50) {
-            println!(
-                "  embedded {done}/{} at {:.0}/s",
-                corpus.sentences.len(),
-                (done - resumed) as f64 / started.elapsed().as_secs_f64()
-            );
-        }
-    }
-
-    vectors
-}
-
-fn append(path: &Path, bytes: &[u8]) {
-    use std::io::Write as _;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .unwrap_or_else(|error| panic!("opening {}: {error}", path.display()));
-    file.write_all(bytes).expect("write the vector cache");
-}
-
-/// Scales a vector to unit length, so a dot product is a cosine.
-fn unit(mut vector: Vec<f32>) -> Vec<f32> {
-    let norm: f32 = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        for value in &mut vector {
-            *value /= norm;
-        }
-    }
-    vector
+    );
+    let texts: Vec<&str> = corpus
+        .sentences
+        .iter()
+        .map(|sentence| sentence.text.as_str())
+        .collect();
+    let embedded = harness::vectors::embed(embedder, &home.join(&file), &texts, width, BATCH);
+    shape.cached(&file, &embedded.producer, embedded.reused, texts.len());
+    embedded.vectors
 }
 
 // ---------------------------------------------------------------------------

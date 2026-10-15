@@ -627,6 +627,9 @@ pub struct Shape {
     loaded: Vec<Probe>,
     /// What `probe` answered, with `loaded`, once the coverage is checked.
     providers: Vec<String>,
+    /// Vectors the run read from a cache rather than embedding, from
+    /// [`cached`](Self::cached).
+    caches: Vec<String>,
     /// The machine, read at `publish`; accelerators once `providers` are.
     hardware: Hardware,
 }
@@ -658,6 +661,11 @@ struct Identity {
     seed: Option<u64>,
     /// `engine/role=provider`: which engine, which model, where it ran.
     providers: Vec<String>,
+    /// `file: reused/total from producer`: vectors a run read from a cache
+    /// rather than embedding, and the digest of who embedded them (see
+    /// `harness::vectors`). A run that embedded everything itself says so
+    /// too, with nothing reused.
+    caches: Vec<String>,
     build: Build,
     hardware: Hardware,
 }
@@ -826,6 +834,15 @@ struct Build {
     /// set, as `NAME=value`: what chooses the native libraries linked in,
     /// which the fingerprint does not hold.
     environment: Vec<String>,
+}
+
+/// The SHA-256 of the build a record names ([`Build`]), for a cache to name
+/// the build that wrote it.
+pub fn build_digest() -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&Build::compiled()).expect("serialise the build"))
+    )
 }
 
 impl Build {
@@ -1001,6 +1018,7 @@ impl Shape {
             probe: None,
             loaded: Vec::new(),
             providers: Vec::new(),
+            caches: Vec::new(),
             hardware: Hardware::default(),
         }
     }
@@ -1045,6 +1063,19 @@ impl Shape {
                 .map(|plan| (role.clone(), provider(plan)))
                 .collect()
         }));
+    }
+
+    /// That `reused` of the `total` vectors in the cache `file` were read
+    /// from it rather than embedded, by `producer` (see
+    /// `harness::vectors::producer`). It names the record: a run scored on
+    /// cached vectors is not taken for one that embedded them.
+    pub fn cached(&mut self, file: &str, producer: &str, reused: usize, total: usize) {
+        let producer: String = Sha256::digest(producer.as_bytes())[..8]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        self.caches
+            .push(format!("{file}: {reused}/{total} from {producer}"));
     }
 
     /// Asks the probe, if there is one, and keeps its answer with `loaded`
@@ -1457,6 +1488,7 @@ impl Shape {
             selection: self.selection.clone(),
             seed: self.seed,
             providers: self.providers.clone(),
+            caches: self.caches.clone(),
             build: Build::compiled(),
             hardware: self.hardware.clone(),
         }
@@ -1994,6 +2026,7 @@ mod tests {
             selection: "all".into(),
             seed: None,
             providers: vec!["embedding=cpu".into(), "reranking accurate=coreml".into()],
+            caches: Vec::new(),
             build: Build {
                 inference: "f".repeat(64),
                 cargo: vec!["CARGO_CFG_TARGET_FEATURE=fxsr,sse,sse2".into()],
@@ -2051,6 +2084,10 @@ mod tests {
             ("selection", |id| id.selection.push('x')),
             ("seed", |id| id.seed = Some(1)),
             ("providers", |id| id.providers.reverse()),
+            ("caches", |id| {
+                id.caches
+                    .push("xquad.f32: 0/10 from 0123456789abcdef".into())
+            }),
             ("hardware.cpu", |id| id.hardware.cpu.push('x')),
             ("hardware.logical_cores", |id| {
                 id.hardware.logical_cores += 1
