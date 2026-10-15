@@ -350,9 +350,6 @@ mod tests {
         // Compile-time source/compiler fingerprint, not a runtime user setting.
         "PAMIN_INFERENCE_BUILD",
         "PAMIN_INFERENCE_CARGO",
-        // Compile-time harness provenance from pamin-engine's build.rs: how the
-        // evaluation binary was compiled, recorded in its shape records.
-        "PAMIN_ENGINE_BUILD_ENVIRONMENT",
         "PAMIN_CATCH_UP_BATCH",
         "PAMIN_EVAL_HOME",
         // Cached-export inputs used only by the native preparation regression.
@@ -393,8 +390,9 @@ mod tests {
         let documented =
             std::fs::read_to_string(root.join("docs/cli.md")).expect("read docs/cli.md");
 
-        let mut found: Vec<String> = Vec::new();
-        collect_settings(&root.join("crates"), &mut found);
+        let mut read: Vec<String> = Vec::new();
+        collect_settings(&root.join("crates"), &mut read);
+        let mut found = read.clone();
         found.sort();
         found.dedup();
         assert!(
@@ -413,9 +411,13 @@ mod tests {
             "read by the product and in neither docs/cli.md nor UNDOCUMENTED: {missing:?}"
         );
 
+        // The scan reads this file too, so every name in [`UNDOCUMENTED`] is
+        // found once in the list itself. Read by the product means found
+        // somewhere else as well; asking only whether it was found at all
+        // could never fail.
         let gone: Vec<&&str> = UNDOCUMENTED
             .iter()
-            .filter(|name| !found.contains(&(*name).to_string()))
+            .filter(|name| read.iter().filter(|found| found == *name).count() < 2)
             .collect();
         assert!(
             gone.is_empty(),
