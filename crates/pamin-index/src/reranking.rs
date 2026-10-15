@@ -1353,9 +1353,10 @@ fn forward(model: &mut Encoder, batches: Vec<Vec<Encoding>>) -> Scored {
 }
 
 /// The first column of a pass's `logits`, one score a pair.
-fn first_column(outputs: ort::session::SessionOutputs<'_>) -> Result<Vec<f32>> {
+fn first_column(outputs: crate::encoder::Outputs) -> Result<Vec<f32>> {
     let logits = outputs
-        .get("logits")
+        .iter()
+        .find_map(|(name, value)| (name == "logits").then_some(value))
         .ok_or_else(|| IndexError::Engine("the reranker returned no logits".into()))?;
     let (shape, values) = logits
         .try_extract_tensor::<f32>()
@@ -2504,7 +2505,7 @@ mod tests {
     ///
     /// Alone is the product's sequential path, one pass of every core at a
     /// time; side by side is as many one-threaded passes at once as there are
-    /// cores, longest first. A fixed list of pairs from a few tokens to the
+    /// cores, all on one shared session, longest first. A fixed list of pairs from a few tokens to the
     /// truncation limit, in more batches than cores. The models are read
     /// from, or downloaded into, `PAMIN_TEST_MODEL_CACHE`.
     #[test]
@@ -2555,9 +2556,11 @@ mod tests {
             .iter()
             .map(|scores| bits(scores))
             .collect();
+        let (sessions, at_once) = model.side_by_side_passes();
+        assert_eq!(sessions, 1, "the passes did not run on one shared session");
         assert!(
-            model.side_by_side_sessions() > 1,
-            "nothing ran side by side; this needs more than one core"
+            at_once > 1,
+            "no two passes ran on it at once; this needs more than one core"
         );
         assert!(alone == together, "logits changed side by side");
     }
