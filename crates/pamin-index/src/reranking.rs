@@ -102,8 +102,8 @@
 //! 303M -- fourteen times smaller, and its pass costs 211 ms against 948, so
 //! 4.5x. For that it gives up 0.0067 cross-lingual and the 0.0070
 //! same-language that `accurate` gains. Whether six sevenths of the gain is
-//! worth a quarter of the latency is a workspace's call and `--rerank
-//! accurate` is how to make it.
+//! worth a quarter of the latency was a workspace's call while there were
+//! tiers to choose between; there is one reranker now, and it is `accurate`.
 //! That is the finding of [Shallow Cross-Encoders for Low-Latency
 //! Retrieval](https://arxiv.org/abs/2403.20222) arrived at independently: under
 //! a latency budget a shallow model beats a full-scale one, because the budget
@@ -233,7 +233,6 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokenizers::Encoding;
 
@@ -242,28 +241,24 @@ use crate::error::{IndexError, Result};
 use crate::hub::Repository;
 use crate::inference::Device;
 
-/// How much to spend reordering the shortlist.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Rerank {
-    /// Return what fusion ordered.
-    ///
-    /// Keeps fusion's order without loading a cross-encoder.
-    Off,
-    /// XLM-RoBERTa-large, 570 MB. Worth more the less the corpus looks like
-    /// a parallel sentence benchmark.
-    ///
-    /// On XQuAD-R it was 2.8x the latency of the retired MiniLM `fast` tier
-    /// for 22% more gain, and better than it on *both* groups. On MIRACL's
-    /// Swahili passages it is worth **two and a half times** what `fast` was,
-    /// +0.0496 against +0.0201, because a twenty-one-million parameter model
-    /// runs out of capacity on long real text where a three-hundred-million
-    /// one does not. The module note has the paired numbers.
-    #[default]
-    Accurate,
-}
+/// The reranker: bge-reranker-v2-m3 (XLM-RoBERTa-large), 570 MB. Worth more
+/// the less the corpus looks like a parallel sentence benchmark.
+///
+/// On XQuAD-R it was 2.8x the latency of the retired MiniLM `fast` tier for
+/// 22% more gain, and better than it on *both* groups. On MIRACL's Swahili
+/// passages it is worth **two and a half times** what `fast` was, +0.0496
+/// against +0.0201, because a twenty-one-million parameter model runs out of
+/// capacity on long real text where a three-hundred-million one does not. The
+/// module note has the paired numbers.
+const REPOSITORY: &str = "onnx-community/bge-reranker-v2-m3-ONNX";
 
-/// How many of the fused results a tier looks at.
+/// The name this reranker had when it was one tier of several. It is part of
+/// every execution plan's key and of the provider label evaluations record
+/// (`reranking accurate`), so plans measured and records written under the
+/// tier keep matching.
+pub const TIER: &str = "accurate";
+
+/// How many of the fused results the reranker looks at.
 ///
 /// Thirty, and it was twenty until the default tier was measured at it. The
 /// twenty was settled on the `fast` model, where thirty bought +0.0009 of
@@ -425,50 +420,28 @@ fn max_tokens() -> usize {
 /// significantly on exactly the corpus where it truncates.
 const MAX_TOKENS: usize = 256;
 
-impl Rerank {
-    pub fn parse(name: &str) -> Option<Self> {
-        match name {
-            "off" => Some(Self::Off),
-            "accurate" => Some(Self::Accurate),
-            _ => None,
-        }
-    }
+/// How deep into the fused list the reranker reaches.
+pub fn depth() -> usize {
+    tuned("PAMIN_RERANK_DEPTH", DEPTH)
+}
 
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Accurate => "accurate",
-        }
+/// Which export of the model to fetch, for the device it will run on.
+///
+/// On an accelerator, the half-precision export: an int8 graph of
+/// `MatMulInteger` and `DynamicQuantizeLinear` is a CPU format that GPU
+/// providers run poorly or partly on the CPU anyway. On the CPU, the one int8
+/// export.
+fn onnx(device: Device) -> &'static str {
+    if device != Device::Cpu {
+        "onnx/model_fp16.onnx"
+    } else {
+        "onnx/model_int8.onnx"
     }
+}
 
-    /// How deep into the fused list this tier reaches.
-    pub fn depth(self) -> usize {
-        match self {
-            Self::Off => 0,
-            Self::Accurate => tuned("PAMIN_RERANK_DEPTH", DEPTH),
-        }
-    }
-
-    fn repository(self) -> &'static str {
-        match self {
-            Self::Off => unreachable!("nothing is loaded for the off tier"),
-            Self::Accurate => "onnx-community/bge-reranker-v2-m3-ONNX",
-        }
-    }
-
-    /// Which export of the model to fetch, for the device it will run on.
-    ///
-    /// On an accelerator, the half-precision export: an int8 graph of
-    /// `MatMulInteger` and `DynamicQuantizeLinear` is a CPU format that GPU
-    /// providers run poorly or partly on the CPU anyway. On the CPU, the one
-    /// int8 export.
-    fn onnx(self, device: Device) -> &'static str {
-        match self {
-            Self::Off => unreachable!("nothing is loaded for the off tier"),
-            Self::Accurate if device != Device::Cpu => "onnx/model_fp16.onnx",
-            Self::Accurate => "onnx/model_int8.onnx",
-        }
-    }
+/// The key the reranker's execution plans are measured and cached under.
+fn plan_key(repository: &str, maximum_tokens: usize, batch: usize, batch_tokens: usize) -> String {
+    format!("reranker-v3:{TIER}:{repository}:{maximum_tokens}:{batch}:{batch_tokens}")
 }
 
 /// How many logical pair scores are remembered across complete batches.
@@ -790,7 +763,6 @@ pub struct Ranked {
 pub struct Reranker {
     cache_dir: PathBuf,
     model: Encoder,
-    tier: Rerank,
     device: Device,
     scores: Scores,
     lengths: Lengths,
@@ -838,7 +810,7 @@ struct Lengths {
 
 /// What a reranker has been asked to do since it was loaded.
 ///
-/// Per process and per tier, like the reranker itself, and never reset -- so
+/// Per process, like the reranker itself, and never reset -- so
 /// on a resident server these are lifetime totals and in a harness they are
 /// the run.
 #[derive(Clone, Copy, Debug, Default)]
@@ -871,18 +843,16 @@ pub struct Reranked {
 }
 
 impl Reranker {
-    /// Loads the tier's model, downloading it on first use.
+    /// Loads the model, downloading it on first use.
     ///
     /// Through the same cache as the embedding model, so a workspace holds one
     /// directory of weights rather than two.
-    pub fn load(tier: Rerank, cache_dir: &Path) -> Result<Self> {
-        debug_assert!(tier != Rerank::Off, "the off tier loads nothing");
-        let (model, device) = load_model(tier, cache_dir)?;
+    pub fn load(cache_dir: &Path) -> Result<Self> {
+        let (model, device) = load_model(cache_dir)?;
 
         Ok(Self {
             cache_dir: cache_dir.to_path_buf(),
             model,
-            tier,
             device,
             scores: Scores::default(),
             lengths: Lengths::default(),
@@ -890,20 +860,17 @@ impl Reranker {
         })
     }
 
-    /// Whether the tier's weights for the CPU are on disk already, so that
-    /// loading it reads a file rather than fetching half a gigabyte: the
-    /// download, or the mapped copy that replaced it (see `crate::prepared`).
+    /// Whether the weights for the CPU are on disk already, so that loading
+    /// reads a file rather than fetching half a gigabyte: the download, or
+    /// the mapped copy that replaced it (see `crate::prepared`).
     ///
-    /// For a caller loading a tier nobody has asked for yet -- a resident
-    /// server warming a project -- which should not be what downloads it.
-    pub fn is_downloaded(tier: Rerank, cache_dir: &Path) -> bool {
-        tier != Rerank::Off
-            && Repository::open(cache_dir, tier.repository()).is_ok_and(|repository| {
-                crate::prepared::is_ready(
-                    &repository.file(cache_dir, tier.onnx(Device::Cpu)),
-                    cache_dir,
-                )
-            })
+    /// For a caller loading the reranker before anybody has asked for it -- a
+    /// resident server warming a project -- which should not be what
+    /// downloads it.
+    pub fn is_downloaded(cache_dir: &Path) -> bool {
+        Repository::open(cache_dir, REPOSITORY).is_ok_and(|repository| {
+            crate::prepared::is_ready(&repository.file(cache_dir, onnx(Device::Cpu)), cache_dir)
+        })
     }
 
     /// Where this reranker's passes run. See [`Device`].
@@ -921,10 +888,6 @@ impl Reranker {
     /// oldest first, the current one last. See [`crate::PlanUse`].
     pub fn plans(&self) -> Vec<crate::PlanUse> {
         crate::inference::plans_of(&self.model, self.device)
-    }
-
-    pub fn tier(&self) -> Rerank {
-        self.tier
     }
 
     /// Each (query, document) pair's encoded length in tokens, as
@@ -979,7 +942,6 @@ impl Reranker {
                 break attempt.commit(&mut self.scores, &mut self.work, &mut self.lengths, 0);
             }
             let reranking = |error: IndexError| IndexError::Engine(format!("reranking: {error}"));
-            let tier = self.tier;
             let cache_dir = &self.cache_dir;
             let cached = &self.scores;
             let ((attempt, encode_us), replaced) = crate::inference::retry_model(
@@ -1008,7 +970,7 @@ impl Reranker {
                     )?;
                     Ok((attempt, encode_us))
                 },
-                || load_model(tier, cache_dir),
+                || load_model(cache_dir),
             )
             .map_err(reranking)?;
             if replaced && self.scores.replaced(attempt.hits) {
@@ -1074,13 +1036,13 @@ impl Reranker {
 
 /// Keep the ordering proof first. Accurate also times long candidates, so
 /// maximum-length execution affects selection rather than only compatibility.
-fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
+fn load_model(cache_dir: &Path) -> Result<(Encoder, Device)> {
     std::fs::create_dir_all(cache_dir)?;
 
-    let repository = Repository::open(cache_dir, tier.repository())?;
+    let repository = Repository::open(cache_dir, REPOSITORY)?;
 
     let session = |device: Device, providers, _validated: bool| -> Result<Encoder> {
-        let weights = repository.file(cache_dir, tier.onnx(device));
+        let weights = repository.file(cache_dir, onnx(device));
         if device == Device::Cpu {
             // The file the hub serves is copied onto the heap whole; on the
             // CPU, the prepared copy is mapped instead -- see
@@ -1096,14 +1058,14 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
         }
         let model = || match device {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            Device::CoreMl if tier == Rerank::Accurate => {
-                let source = repository.get(tier.onnx(device))?;
+            Device::CoreMl => {
+                let source = repository.get(onnx(device))?;
                 crate::native::prepare(&source, cache_dir)
             }
-            _ => repository.get(tier.onnx(device)),
+            _ => repository.get(onnx(device)),
         };
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        let loaded = if device == Device::CoreMl && tier == Rerank::Accurate {
+        let loaded = if device == Device::CoreMl {
             Encoder::load_fixed_coreml(model, &repository, max_tokens())
         } else {
             Encoder::load(model, &repository, max_tokens(), providers)
@@ -1121,13 +1083,11 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
     let (model, device) = {
         let references = std::cell::RefCell::new(crate::inference::References::default());
         crate::inference::measured(
-            &format!(
-                "reranker-v3:{}:{}:{}:{}:{}",
-                tier.name(),
-                repository.identity(cache_dir),
+            &plan_key(
+                &repository.identity(cache_dir),
                 max_tokens(),
                 batch(),
-                batch_tokens()
+                batch_tokens(),
             ),
             cache_dir,
             &references,
@@ -1174,7 +1134,7 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
         )?
     };
     tracing::info!(
-        tier = tier.name(),
+        tier = TIER,
         device = device.name(),
         maximum_tokens = model.maximum_tokens(),
         "reranker loaded"
@@ -2565,8 +2525,7 @@ mod tests {
                 _ => long.clone(),
             })
             .collect();
-        let tier = Rerank::Accurate;
-        let (mut model, device) = load_model(tier, &cache).expect("load the reranker");
+        let (mut model, device) = load_model(&cache).expect("load the reranker");
         assert_eq!(device, Device::Cpu);
         let encodings = model
             .encode(
@@ -2600,28 +2559,19 @@ mod tests {
             model.side_by_side_sessions() > 1,
             "nothing ran side by side; this needs more than one core"
         );
-        assert!(
-            alone == together,
-            "{} logits changed side by side",
-            tier.name()
-        );
+        assert!(alone == together, "logits changed side by side");
     }
 
-    /// Whatever a tier parses from, it round-trips through its own name.
+    /// The reranker keeps the key it had as the `accurate` tier.
     ///
-    /// Guards the pair of matches that a new tier has to touch together. The
-    /// wire protocol is this string, so a name that parses to a different tier
-    /// than it prints would route a caller to a model they did not ask for.
+    /// Execution plans are measured once and cached under this key, so a new
+    /// spelling would throw every host's measured plan away and measure again.
     #[test]
-    fn a_tier_parses_from_the_name_it_prints() {
-        for tier in [Rerank::Off, Rerank::Accurate] {
-            assert_eq!(
-                Rerank::parse(tier.name()),
-                Some(tier),
-                "{} does not round-trip",
-                tier.name()
-            );
-        }
+    fn the_plan_key_is_the_one_the_accurate_tier_had() {
+        assert_eq!(
+            plan_key("onnx-community/bge-reranker-v2-m3-ONNX@abc", 256, 8, 512),
+            "reranker-v3:accurate:onnx-community/bge-reranker-v2-m3-ONNX@abc:256:8:512"
+        );
     }
 
     /// Every pair lands in exactly one batch, in order, and no batch pads

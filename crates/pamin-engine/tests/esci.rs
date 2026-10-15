@@ -60,7 +60,7 @@ use std::process::Command;
 
 use pamin_core::{Channel, Fusion};
 use pamin_engine::{Depths, Engine};
-use pamin_index::{Access, Rerank, VectorIndex};
+use pamin_index::{Access, VectorIndex};
 use pamin_store::Workspace;
 
 use harness::profile;
@@ -374,7 +374,7 @@ async fn search_ranks_product_listings() {
     let started = std::time::Instant::now();
     for query in &corpus.queries {
         let hits = engine
-            .search_reranked(&query.text, DEPTH as u32, DEPTHS, Rerank::default())
+            .search_reranked(&query.text, DEPTH as u32, DEPTHS)
             .await
             .expect("search");
         let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();

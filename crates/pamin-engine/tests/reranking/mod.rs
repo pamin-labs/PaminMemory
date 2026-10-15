@@ -26,7 +26,6 @@ use std::collections::{BTreeMap, HashMap};
 
 use pamin_core::{Channel, Fusion, Why};
 use pamin_engine::SearchHit;
-use pamin_index::Rerank;
 
 mod router;
 pub use router::Router;
@@ -133,18 +132,14 @@ pub fn rules() -> Vec<(String, Rule)> {
 
 /// Which row of [`rules`] ships.
 pub fn shipped(rules: &[(String, Rule)]) -> Option<usize> {
-    rules
-        .iter()
-        .position(|(_, rule)| *rule == shipped_rule(Rerank::default()))
+    rules.iter().position(|(_, rule)| *rule == shipped_rule())
 }
 
-fn shipped_rule(tier: Rerank) -> Rule {
-    match tier {
-        Rerank::Accurate => Rule::Blend {
-            fusion: pamin_engine::RERANK_FUSION,
-            scale: Scale::Score,
-        },
-        Rerank::Off => Rule::Substitute,
+/// The rule `search_reranked` uses on the reranker's scores.
+fn shipped_rule() -> Rule {
+    Rule::Blend {
+        fusion: pamin_engine::RERANK_FUSION,
+        scale: Scale::Score,
     }
 }
 
@@ -266,7 +261,7 @@ impl Routes {
         ];
 
         let fused = replayed.fused.clone();
-        let shipped = replayed.order(shipped_rule(Rerank::default()));
+        let shipped = replayed.order(shipped_rule());
         let mut orders: Vec<(Vec<String>, u64)> =
             vec![(fused.clone(), 0), (shipped.clone(), shown)];
 
@@ -367,7 +362,7 @@ fn rescored_rules(model: &str) -> Vec<(String, Rule)> {
     vec![
         (
             format!("rescored by {model}: shipped blend"),
-            shipped_rule(Rerank::default()),
+            shipped_rule(),
         ),
         (format!("rescored by {model}: substitute"), Rule::Substitute),
     ]
@@ -377,8 +372,8 @@ impl Priced {
     /// `models` is the workspace's model cache, where the shipped tier's
     /// reranker is loaded from.
     pub fn new(models: &std::path::Path) -> Self {
-        let reranker = pamin_index::Reranker::load(Rerank::default(), models)
-            .expect("load the shipped reranker for its planner");
+        let reranker =
+            pamin_index::Reranker::load(models).expect("load the shipped reranker for its planner");
         let mut rules = rules();
         let shortlist = std::env::var("SHORTLIST_OUT").ok().map(|path| {
             std::io::BufWriter::new(
@@ -517,7 +512,7 @@ impl Priced {
         }
         if let Some(file) = &mut self.sufficiency {
             use std::io::Write;
-            let shipped = replayed.order(shipped_rule(Rerank::default()));
+            let shipped = replayed.order(shipped_rule());
             // A one-result list scores above zero exactly when that result is
             // relevant, whatever the corpus's own judgements are.
             let mut first = BTreeMap::new();
@@ -554,7 +549,7 @@ impl Priced {
         if self.unlike.is_some() {
             return;
         }
-        let role = format!("reranking {}", self.reranker.tier().name());
+        let role = format!("reranking {}", pamin_index::reranking::TIER);
         let replay = self.reranker.target();
         // Every plan the engine's reranker ran on so far: one, unless it fell
         // back mid-run, and then its passes were planned two ways.
@@ -790,11 +785,7 @@ pub fn in_context(
                 );
             }
         }
-        rendered[rendering] = Some(
-            replayed
-                .rescored(scores)
-                .order(shipped_rule(Rerank::default())),
-        );
+        rendered[rendering] = Some(replayed.rescored(scores).order(shipped_rule()));
     }
     orders.extend(
         rendered
@@ -832,11 +823,11 @@ pub struct Replayed {
     passes: Option<Vec<Vec<usize>>>,
 }
 
-/// Rebuilds one shipped search at `tier` and checks the rebuild.
+/// Rebuilds one shipped search and checks the rebuild.
 ///
 /// **Panics unless replaying the shipped rule reproduces `hits`' order**, which
 /// is the premise every other rule's figure rests on.
-pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
+pub fn replay(hits: &[SearchHit]) -> Replayed {
     let named: HashMap<_, &str> = hits
         .iter()
         .map(|hit| (hit.result.topic, hit.topic.as_str()))
@@ -857,7 +848,7 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
     let results = fusion.fuse(&crate::channels::replay(hits));
     // The engine's own rule for what the model is shown, not a copy of it.
     let traces: Vec<&[Why]> = results.iter().map(|result| result.why.as_slice()).collect();
-    let movable = pamin_engine::rerankable(&traces, tier);
+    let movable = pamin_engine::rerankable(&traces);
     let fused: Vec<String> = results
         .iter()
         .map(|result| named[&result.topic].to_string())
@@ -892,7 +883,7 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
             fusion: Vec::new(),
             model: Vec::new(),
             graph: Vec::new(),
-            head: tier.depth(),
+            head: pamin_index::reranking::depth(),
             lead,
             agree,
             passes: None,
@@ -931,7 +922,7 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
                         .unwrap_or(0.0)
                 })
                 .collect(),
-            head: tier.depth(),
+            head: pamin_index::reranking::depth(),
             lead,
             agree,
             passes: None,
@@ -942,7 +933,7 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
 
     let engine: Vec<&str> = hits.iter().map(|hit| hit.topic.as_str()).collect();
     assert_eq!(
-        replayed.order(shipped_rule(tier)),
+        replayed.order(shipped_rule()),
         engine,
         "replaying the shipped rule did not reproduce the engine's order, so every other \
          rule's figure would be a reconstruction error"
@@ -1194,16 +1185,13 @@ mod tests {
     #[test]
     fn shipped_accurate_replay_blends_when_the_model_order_differs() {
         let scores = replayed(&[1.0, 0.0, 0.0], &[0.9, 1.0, 0.0]);
-        assert_eq!(
-            scores.order(shipped_rule(Rerank::Accurate)),
-            ["lexical", "a", "b", "c"]
-        );
+        assert_eq!(scores.order(shipped_rule()), ["lexical", "a", "b", "c"]);
     }
 
     #[test]
     fn scoring_every_candidate_first_is_the_shipped_pass() {
         let scores = replayed(&[1.0, 0.5, 0.0], &[0.0, 1.0, 2.0]);
-        let shipped = scores.order(shipped_rule(Rerank::Accurate));
+        let shipped = scores.order(shipped_rule());
         assert_eq!(scores.order(Rule::Prefix { n: 3 }), shipped);
         assert_eq!(scores.pairs(Rule::Prefix { n: 3 }), 3);
         // Unsettled: the fused first leads by nothing and nothing agrees.

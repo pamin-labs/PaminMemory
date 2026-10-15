@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use pamin_core::{Channel, Derivation, EdgeKind, Why};
-use pamin_index::{Profile, Rerank, VectorIndex};
+use pamin_index::{Profile, VectorIndex};
 
 use serde::{Deserialize, Serialize};
 
@@ -36,18 +36,6 @@ pub struct Args {
         value_parser = clap::value_parser!(u8).range(0..=pamin_store::graph::MAX_DEPTH as i64)
     )]
     pub graph_depth: u8,
-
-    /// How much to spend reordering the results: off, or accurate.
-    ///
-    /// A cross-encoder reads the query and a memory together, which is what
-    /// lets it correct an order the channels got wrong and what makes it cost
-    /// a forward pass per candidate. `accurate` scores the whole fused head,
-    /// including lexical hits, and blends model and fusion scores.
-    ///
-    /// The default is `accurate`; `off` buys back search time at a measured
-    /// accuracy price. See `docs/cli.md`.
-    #[arg(long, env = "PAMIN_RERANK", default_value = "accurate")]
-    pub rerank: String,
 }
 
 /// One entry of the trace, as a caller sees it.
@@ -174,16 +162,13 @@ pub async fn execute(
     vector_index: VectorIndex,
     args: Args,
 ) -> Result<Results> {
-    let rerank = Rerank::parse(&args.rerank)
-        .ok_or_else(|| anyhow::anyhow!("unknown rerank tier {:?}", args.rerank))?;
-
     let engine = session.engine(project, profile, vector_index).await?;
     let depths = Depths {
         channel: args.channel_depth,
         graph: args.graph_depth,
     };
     let hits = engine
-        .search_reranked(&args.query, args.limit, depths, rerank)
+        .search_reranked(&args.query, args.limit, depths)
         .await?;
 
     let results = Results {

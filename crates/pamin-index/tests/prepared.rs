@@ -23,7 +23,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use pamin_index::{Device, Embedder, Profile, Rerank, Reranker};
+use pamin_index::{Device, Embedder, Profile, Reranker};
 
 /// Which load a child process runs, and where its models are.
 const ARM: &str = "PAMIN_PREPARED_ARM";
@@ -222,8 +222,7 @@ fn child(model: &str, cache: &Path) {
     // last of them would measure a process that no longer holds a model.
     let mut score: Box<dyn FnMut() -> Vec<f32>> = match model {
         "accurate" => {
-            let tier = Rerank::parse(model).expect("a tier");
-            let mut reranker = Reranker::load(tier, cache).expect("load the reranker");
+            let mut reranker = Reranker::load(cache).expect("load the reranker");
             assert_eq!(reranker.device(), Device::Cpu, "the copy is for the CPU");
             Box::new(move || {
                 let mut scores = vec![f32::NAN; TEXTS.len()];

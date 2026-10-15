@@ -61,7 +61,7 @@ use std::process::Command;
 
 use pamin_core::EdgeKind;
 use pamin_engine::{Depths, Engine};
-use pamin_index::{Access, Rerank, VectorIndex};
+use pamin_index::{Access, VectorIndex};
 use pamin_store::Workspace;
 use pamin_store::graph::{self, EdgeClaim};
 use scoring::{NDCG_AT, RECALL_AT, Scores};
@@ -412,13 +412,12 @@ async fn locomo_evidence_with_and_without_links() {
             questions += 1;
             if let Some(rules) = &mut rules {
                 const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
-                let tier = Rerank::default();
                 let hits = engines[1]
-                    .search_reranked(&question.text, WIDE, DEPTHS, tier)
+                    .search_reranked(&question.text, WIDE, DEPTHS)
                     .await
                     .expect("search");
                 channels::enough_room(&hits, WIDE);
-                let replayed = reranking::replay(&hits, tier);
+                let replayed = reranking::replay(&hits);
                 rules.observe(
                     &question.category,
                     &question.text,
@@ -440,7 +439,7 @@ async fn locomo_evidence_with_and_without_links() {
             }
             for (side, engine) in engines.iter().enumerate() {
                 let hits = engine
-                    .search_reranked(&question.text, RECALL_AT as u32, DEPTHS, Rerank::default())
+                    .search_reranked(&question.text, RECALL_AT as u32, DEPTHS)
                     .await
                     .expect("search");
                 let ranked: Vec<String> = hits.into_iter().map(|hit| hit.topic).collect();

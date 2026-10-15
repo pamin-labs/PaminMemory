@@ -642,8 +642,6 @@ fn a_named_topic_seeds_the_walk_when_no_channel_found_it() {
         "8",
         "--channel-depth",
         "1",
-        "--rerank",
-        "off",
     ]);
 
     // The premise: no index channel returned the named topic, so only its
@@ -1156,6 +1154,8 @@ fn a_profile_change_is_refused_rather_than_silently_wrong(cli: &Cli) {
 /// when every command came to go through the server, and for a release it was
 /// simply no longer read -- so whoever set it, to debug the server or to get
 /// one process to reason about, got the server anyway and nothing said so.
+/// `PAMIN_RERANK` chose a reranking tier until there was one reranker; set to
+/// `off`, ignoring it would charge a reranker to somebody who turned it off.
 ///
 /// Not ignored, and it needs no workspace: the refusal comes before anything
 /// is provisioned, which is also asserted, and before a server is started.
@@ -1163,23 +1163,25 @@ fn a_profile_change_is_refused_rather_than_silently_wrong(cli: &Cli) {
 fn a_removed_setting_is_refused_rather_than_ignored() {
     let home = tempfile::tempdir().expect("temp home");
 
-    for value in ["1", "0"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
-            .args(["read", "deploy"])
-            .env("PAMIN_HOME", home.path())
-            .env("PAMIN_NO_SERVER", value)
-            .output()
-            .expect("running pamin");
+    for (name, values) in [
+        ("PAMIN_NO_SERVER", ["1", "0"]),
+        ("PAMIN_RERANK", ["off", "accurate"]),
+    ] {
+        for value in values {
+            let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
+                .args(["read", "deploy"])
+                .env("PAMIN_HOME", home.path())
+                .env(name, value)
+                .output()
+                .expect("running pamin");
 
-        assert!(
-            !output.status.success(),
-            "PAMIN_NO_SERVER={value} should be refused"
-        );
-        let error = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            error.contains("PAMIN_NO_SERVER") && error.contains("removed"),
-            "PAMIN_NO_SERVER={value} refused without saying why: {error:?}"
-        );
+            assert!(!output.status.success(), "{name}={value} should be refused");
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                error.contains(name) && error.contains("removed"),
+                "{name}={value} refused without saying why: {error:?}"
+            );
+        }
     }
 
     assert!(

@@ -13,8 +13,8 @@ use pamin_core::{
     Scored, SourceKind, TopicId, TopicState, TopicStateId, Validity, Why,
 };
 use pamin_index::{
-    Access, Embedder, Previous, Profile, Projection, ProjectionIndex, Rerank, Reranker,
-    VectorDocument, VectorIndex,
+    Access, Embedder, Previous, Profile, Projection, ProjectionIndex, Reranker, VectorDocument,
+    VectorIndex,
 };
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
 use pamin_store::{Connections, Database, PgConnection, Workspace, graph, jobs, repository};
@@ -307,14 +307,12 @@ struct Rebuilding {
 pub struct Models {
     dir: std::path::PathBuf,
     loaded: Arc<Mutex<std::collections::HashMap<Profile, Held<Embedder>>>>,
-    /// The same arrangement for rerankers, keyed by tier for the same reason:
-    /// the tier is what decides which weights these are.
+    /// The same arrangement for the one reranker, while it is loaded.
     ///
-    /// Each carries when it was last handed out, because unlike an embedder a
-    /// reranker can stop being wanted. Every search needs a query vector; a
-    /// reranker is a tier a caller chose once, and a workspace in one language
-    /// is told by `docs/cli.md` to choose `off`.
-    rerankers: Arc<Mutex<std::collections::HashMap<Rerank, Held<Reranker>>>>,
+    /// It carries when it was last handed out, because unlike an embedder a
+    /// reranker can stop being wanted: every write needs an embedding, and
+    /// only a search reranks.
+    reranker: Arc<Mutex<Option<Held<Reranker>>>>,
 }
 
 /// A loaded model and when it was last handed out.
@@ -369,7 +367,7 @@ impl Models {
         Self {
             dir: workspace.root().join("models"),
             loaded: Arc::default(),
-            rerankers: Arc::default(),
+            reranker: Arc::default(),
         }
     }
 
@@ -395,28 +393,28 @@ impl Models {
         Ok(embedder)
     }
 
-    /// The reranker for a tier, loading it the first time it is asked for.
+    /// The reranker, loading it the first time it is asked for.
     ///
-    /// Lazily rather than with the project: a workspace that never reranks
-    /// never downloads one, and the tier is chosen per search.
-    fn reranker(&self, tier: Rerank) -> Result<Arc<Mutex<Reranker>>, pamin_index::IndexError> {
-        let mut rerankers = self
-            .rerankers
+    /// Lazily rather than with the project: a workspace that only writes
+    /// never downloads one.
+    fn reranker(&self) -> Result<Arc<Mutex<Reranker>>, pamin_index::IndexError> {
+        let mut held = self
+            .reranker
             .lock()
             .expect("the reranker registry lock is poisoned");
 
-        if let Some((last_used, reranker)) = rerankers.get_mut(&tier) {
+        if let Some((last_used, reranker)) = held.as_mut() {
             *last_used = Instant::now();
             return Ok(Arc::clone(reranker));
         }
 
-        let reranker = Arc::new(Mutex::new(Reranker::load(tier, &self.dir)?));
-        rerankers.insert(tier, (Instant::now(), Arc::clone(&reranker)));
+        let reranker = Arc::new(Mutex::new(Reranker::load(&self.dir)?));
+        *held = Some((Instant::now(), Arc::clone(&reranker)));
         Ok(reranker)
     }
 
-    /// Loads the embedder for `profile` and the reranker for `tier`, at once,
-    /// before anything has asked for either.
+    /// Loads the embedder for `profile` and the reranker, at once, before
+    /// anything has asked for either.
     ///
     /// For a resident server that has just been asked something about a
     /// project it holds nothing for: most of the first search after an idle
@@ -429,21 +427,19 @@ impl Models {
     /// asks for it -- so warming a model nobody then uses costs it for one
     /// idle window and no longer.
     ///
-    /// The reranker only if its weights are on disk already. A tier this
-    /// workspace has never searched at may be one it never will -- `off` is
-    /// what `docs/cli.md` tells a one-language workspace to choose -- and a
-    /// warm-up that fetched half a gigabyte for it would be the opposite of
-    /// the point. The embedder is loaded either way: every write and every
-    /// search needs it.
+    /// The reranker only if its weights are on disk already. A workspace that
+    /// has never searched may be one that only writes, and a warm-up that
+    /// fetched half a gigabyte for it would be the opposite of the point. The
+    /// embedder is loaded either way: every write and every search needs it.
     ///
     /// Blocking, and both loads hold their registry's lock, so a search that
     /// arrives meanwhile waits for the load in flight instead of starting a
     /// second. Two threads because the two loads are independent: the `COLD`
     /// arm measured them at 1,300 ms together, against 1,089 and 977 alone.
-    pub fn warm(&self, profile: Profile, tier: Rerank) -> Result<(), pamin_index::IndexError> {
+    pub fn warm(&self, profile: Profile) -> Result<(), pamin_index::IndexError> {
         std::thread::scope(|scope| {
-            let reranker = Reranker::is_downloaded(tier, &self.dir)
-                .then(|| scope.spawn(|| self.reranker(tier)));
+            let reranker =
+                Reranker::is_downloaded(&self.dir).then(|| scope.spawn(|| self.reranker()));
             let embedder = self.get(profile);
             let reranker =
                 reranker.map(|loading| loading.join().expect("a reranker load panicked"));
@@ -453,20 +449,19 @@ impl Models {
         })
     }
 
-    /// What a loaded reranker has been asked to do, or `None` if this process
-    /// never loaded that tier.
+    /// What the reranker has been asked to do, or `None` if it is not
+    /// loaded.
     ///
     /// The handle is cloned out from under the registry lock before the
     /// reranker's own lock is taken, so asking this while a search is in the
-    /// middle of a forward pass waits for that pass rather than for every
-    /// other tier as well.
-    fn counted(&self, tier: Rerank) -> Option<pamin_index::Reranked> {
+    /// middle of a forward pass waits for that pass and not for a load.
+    fn counted(&self) -> Option<pamin_index::Reranked> {
         let held = {
-            let rerankers = self
-                .rerankers
+            let held = self
+                .reranker
                 .lock()
                 .expect("the reranker registry lock is poisoned");
-            let (_, reranker) = rerankers.get(&tier)?;
+            let (_, reranker) = held.as_ref()?;
             Arc::clone(reranker)
         };
         Some(
@@ -476,29 +471,19 @@ impl Models {
         )
     }
 
-    /// The execution plans of every reranker this process has loaded, as
-    /// `reranking <tier>`, in tier-name order. Handles are cloned out from
-    /// under the registry lock first, as in [`counted`](Self::counted).
+    /// The execution plans of the reranker if this process has loaded it,
+    /// as [`reranker_role`]. The handle is cloned out from under the registry
+    /// lock first, as in [`counted`](Self::counted).
     fn reranker_plans(&self) -> Vec<(String, pamin_index::PlanUse)> {
-        let Some(registry) = held_now(self.rerankers.as_ref()) else {
-            return Vec::new();
-        };
-        let held: Vec<(Rerank, Arc<Mutex<Reranker>>)> = registry
-            .iter()
-            .map(|(tier, (_, reranker))| (*tier, Arc::clone(reranker)))
-            .collect();
-        drop(registry);
-        let mut plans: Vec<(String, pamin_index::PlanUse)> = held
-            .into_iter()
-            .filter_map(|(tier, reranker)| {
-                let plans = held_now(reranker.as_ref())?.plans();
-                let role = format!("reranking {}", tier.name());
-                Some(plans.into_iter().map(move |plan| (role.clone(), plan)))
-            })
-            .flatten()
-            .collect();
-        plans.sort_by(|left, right| left.0.cmp(&right.0));
+        let reranker = held_now(self.reranker.as_ref())
+            .and_then(|held| held.as_ref().map(|(_, reranker)| Arc::clone(reranker)));
+        let plans = reranker
+            .and_then(|reranker| held_now(reranker.as_ref()).map(|reranker| reranker.plans()))
+            .unwrap_or_default();
         plans
+            .into_iter()
+            .map(|plan| (reranker_role(), plan))
+            .collect()
     }
 
     /// Gives back the embedders no open engine is holding any more.
@@ -549,39 +534,40 @@ impl Models {
         idle
     }
 
-    /// Gives back the rerankers nothing has asked for lately.
+    /// Gives back the reranker if nothing has asked for it lately.
     ///
     /// For a resident process to call on a schedule; a command that exits
-    /// after one search has nothing to give back. Returns what it released, so
-    /// the caller can say so in a log rather than guess.
+    /// after one search has nothing to give back. Returns whether it released
+    /// it, so the caller can say so in a log rather than guess.
     ///
-    /// A tier a search is *using* is never released, even if the last hand-out
+    /// A reranker a search is *using* is never released, even if the last hand-out
     /// was long enough ago -- a long rerank over a large shortlist is exactly
     /// that case. Dropping the registry's handle while a search holds its own
     /// would not free anything, it would only make the next search load a
     /// second copy alongside the first, which is the opposite of the point.
     /// A model still loading is not idle; the next upkeep tick can retry.
-    pub fn release_idle_rerankers(&self) -> Vec<Rerank> {
-        let mut rerankers = match self.rerankers.try_lock() {
-            Ok(rerankers) => rerankers,
-            Err(TryLockError::WouldBlock) => return Vec::new(),
+    pub fn release_idle_reranker(&self) -> bool {
+        let mut held = match self.reranker.try_lock() {
+            Ok(held) => held,
+            Err(TryLockError::WouldBlock) => return false,
             Err(TryLockError::Poisoned(_)) => panic!("the reranker registry lock is poisoned"),
         };
 
-        let now = Instant::now();
-        let idle: Vec<Rerank> = rerankers
-            .iter()
-            .filter(|(_, (last_used, reranker))| {
-                is_idle(*last_used, now, model_idle()) && Arc::strong_count(reranker) == 1
-            })
-            .map(|(tier, _)| *tier)
-            .collect();
-
-        for tier in &idle {
-            rerankers.remove(tier);
+        let idle = held.as_ref().is_some_and(|(last_used, reranker)| {
+            is_idle(*last_used, Instant::now(), model_idle()) && Arc::strong_count(reranker) == 1
+        });
+        if idle {
+            *held = None;
         }
         idle
     }
+}
+
+/// The provider label the reranker's plans are reported under:
+/// `reranking accurate`, the name it had as a tier, so evaluation records
+/// written before and after it was the only one compare.
+fn reranker_role() -> String {
+    format!("reranking {}", pamin_index::reranking::TIER)
 }
 
 /// `lock` if it is free now, read through a poison: for a caller that must
@@ -1531,21 +1517,22 @@ impl Engine {
             .count())
     }
 
-    /// What the reranker at `tier` has done in this process, or `None` if it
-    /// was never loaded.
+    /// What the reranker has done in this process, or `None` if it is not
+    /// loaded.
     ///
     /// Reports offered pairs, actual model work and complete identical-batch
     /// reuse -- see [`pamin_index::Reranked`]. Reuse does not measure document
     /// recurrence or establish hot-set/precomputation viability; those need
     /// separate recurrence and storage/cost measurements. These are lifetime
-    /// totals for the loaded model and are lost when an idle tier is released.
-    pub fn reranked(&self, tier: Rerank) -> Option<pamin_index::Reranked> {
-        self.models.counted(tier)
+    /// totals for the loaded model and are lost when an idle reranker is
+    /// released.
+    pub fn reranked(&self) -> Option<pamin_index::Reranked> {
+        self.models.counted()
     }
 
     /// Every execution plan each model this engine has used ran on, by role:
     /// `embedding`, `embedding secondary` for a profile with a second vector
-    /// model, and `reranking <tier>` for each tier this process has loaded --
+    /// model, and `reranking accurate` if this process has loaded the reranker --
     /// oldest first, so a model that fell back to the CPU during a run lists
     /// the plan it left and then the CPU's. Each plan is its target as plans
     /// are keyed, the hash of its full plan key, and whether it is stable
@@ -1575,7 +1562,7 @@ impl Engine {
     /// Search, then reorder the head of the result with a cross-encoder.
     ///
     /// Fused deeper than it returns, because a reranker that only sees what the
-    /// caller asked for has nothing to work with: the tier's depth was measured
+    /// caller asked for has nothing to work with: the reranker's depth was measured
     /// over a list of fifty and the default `--limit` is five, so cutting first
     /// left it reordering five candidates and usually declining to reorder at
     /// all.
@@ -1597,9 +1584,8 @@ impl Engine {
         query: &str,
         limit: u32,
         depths: Depths,
-        rerank: Rerank,
     ) -> Result<Vec<SearchHit>> {
-        self.search_reranked_with(query, limit, depths, rerank, Fusion::default())
+        self.search_reranked_with(query, limit, depths, Fusion::default())
             .await
     }
 
@@ -1612,7 +1598,6 @@ impl Engine {
         query: &str,
         limit: u32,
         depths: Depths,
-        rerank: Rerank,
         fusion: Fusion,
     ) -> Result<Vec<SearchHit>> {
         // The reranker is needed after retrieval and was loaded only then, so
@@ -1634,20 +1619,18 @@ impl Engine {
         // never loaded twice. Nothing about the ranking changes; a failure
         // here is the same failure the call below reports, so it is left to
         // that one.
-        if rerank != Rerank::Off {
-            let models = self.models.clone();
-            drop(tokio::task::spawn_blocking(move || models.reranker(rerank)));
-        }
+        let models = self.models.clone();
+        drop(tokio::task::spawn_blocking(move || models.reranker()));
 
-        // The whole fused list rather than the caller's limit or the tier's
-        // head: the reranker is also shown the strongest candidates only the
+        // The whole fused list rather than the caller's limit or the
+        // reranker's head: the reranker is also shown the strongest candidates only the
         // graph found, wherever fusion put them (see [`GRAPH_SHOWN_FROM`]).
         // Every one of them is already resolved against the ledger. What is
         // not made for all of them is the hit -- the state, the topic's name
         // and the seed's content, copied -- which is made only for what the
         // caller is given; the reranker reads the few it is shown in place.
         let mut fused = self.fused(query, depths, fusion).await?;
-        if rerank == Rerank::Off || fused.results.is_empty() {
+        if fused.results.is_empty() {
             return Ok(fused.hits(limit));
         }
 
@@ -1656,7 +1639,7 @@ impl Engine {
             .iter()
             .map(|result| result.why.as_slice())
             .collect();
-        let unlexical = rerankable(&traces, rerank);
+        let unlexical = rerankable(&traces);
         if !can_be_seen(&unlexical, limit) {
             return Ok(fused.hits(limit));
         }
@@ -1667,7 +1650,7 @@ impl Engine {
             .collect();
         let documents: Vec<&str> = shown.iter().map(String::as_str).collect();
         // Finding the reranker is inside this too, not just using it. The
-        // first search of a tier downloads its weights, holding the registry
+        // first search downloads the weights, holding the registry
         // lock so that twenty concurrent searches fetch one model rather than
         // twenty -- and a lock held across a download is a lock held for a long
         // time. Taken on a runtime thread, that blocks the thread rather than
@@ -1677,7 +1660,7 @@ impl Engine {
         // readers against a cold cache wedged it indefinitely.
         let ordered = off_the_runtime(|| {
             self.models
-                .reranker(rerank)?
+                .reranker()?
                 .lock()
                 .expect("the reranker lock is poisoned")
                 .rank(query, &documents)
@@ -1707,7 +1690,7 @@ impl Engine {
         fused.results = place(
             std::mem::take(&mut fused.results),
             &unlexical,
-            rerank.depth(),
+            pamin_index::reranking::depth(),
             &best_first,
         );
         Ok(fused.hits(limit))
@@ -2525,8 +2508,8 @@ const GRAPH_SHOWN_AT_MOST: usize = 30;
 /// One rule, public so the harnesses that replay a search from its trace use
 /// this rather than a copy that could drift from it. `traces` is each fused
 /// result's `why`, in fused order.
-pub fn rerankable(traces: &[&[Why]], rerank: Rerank) -> Vec<usize> {
-    let head = rerank.depth().min(traces.len());
+pub fn rerankable(traces: &[&[Why]]) -> Vec<usize> {
+    let head = pamin_index::reranking::depth().min(traces.len());
     let graph_only = |why: &[Why]| -> Option<f32> {
         let mut graph = None;
         for entry in why {
@@ -2724,7 +2707,6 @@ mod tests {
         path_strength, place, rerankable, runs_of_tokens, score_blend_order, seed_relevance, shown,
     };
     use pamin_core::{Channel, ChannelResults, TopicId};
-    use pamin_index::Rerank;
 
     #[test]
     fn idle_sweep_skips_registries_while_a_model_load_holds_them() {
@@ -2733,7 +2715,7 @@ mod tests {
         let models = super::Models {
             dir: std::path::PathBuf::new(),
             loaded: std::sync::Arc::default(),
-            rerankers: std::sync::Arc::default(),
+            reranker: std::sync::Arc::default(),
         };
 
         let embedder_load = models.loaded.lock().unwrap();
@@ -2745,14 +2727,21 @@ mod tests {
         worker.join().unwrap().unwrap();
         assert_eq!(embedder_result.unwrap(), Vec::<pamin_index::Profile>::new());
 
-        let reranker_load = models.rerankers.lock().unwrap();
+        let reranker_load = models.reranker.lock().unwrap();
         let (sent, received) = mpsc::channel();
         let sweeping = models.clone();
-        let worker = std::thread::spawn(move || sent.send(sweeping.release_idle_rerankers()));
+        let worker = std::thread::spawn(move || sent.send(sweeping.release_idle_reranker()));
         let reranker_result = received.recv_timeout(Duration::from_secs(1));
         drop(reranker_load);
         worker.join().unwrap().unwrap();
-        assert_eq!(reranker_result.unwrap(), Vec::<Rerank>::new());
+        assert!(!reranker_result.unwrap());
+    }
+
+    /// The reranker's plans are reported under the label they had as the
+    /// `accurate` tier, which evaluation records are matched on.
+    #[test]
+    fn the_reranker_is_reported_as_reranking_accurate() {
+        assert_eq!(super::reranker_role(), "reranking accurate");
     }
 
     /// The reranker reads a candidate under its name, and a graph arrival with
@@ -2964,7 +2953,7 @@ mod tests {
             weight: 1.0,
             contribution: 0.0,
         };
-        let head = Rerank::Accurate.depth();
+        let head = pamin_index::reranking::depth();
         let mut traces: Vec<Vec<Why>> = Vec::new();
         for at in 0..head {
             // Every other head position has lexical evidence.
@@ -2994,7 +2983,7 @@ mod tests {
         }
         let borrowed: Vec<&[Why]> = traces.iter().map(Vec::as_slice).collect();
 
-        let shown = rerankable(&borrowed, Rerank::Accurate);
+        let shown = rerankable(&borrowed);
         let head_shown: Vec<usize> = shown.iter().copied().filter(|at| *at < head).collect();
         assert_eq!(head_shown, (0..head).collect::<Vec<_>>());
         let below: Vec<usize> = shown.iter().copied().filter(|at| *at >= head).collect();
@@ -3007,7 +2996,7 @@ mod tests {
         // With fewer finds at the threshold than the cap, every one of them is
         // shown, the one exactly at it included, and none under it.
         let few: Vec<&[Why]> = borrowed[..first_strong + 2].to_vec();
-        let shown = rerankable(&few, Rerank::Accurate);
+        let shown = rerankable(&few);
         let below: Vec<usize> = shown.iter().copied().filter(|at| *at >= head).collect();
         assert_eq!(below, vec![first_strong, first_strong + 1]);
     }

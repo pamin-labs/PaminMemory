@@ -64,7 +64,7 @@
 //! | `MIRACL_DIR` | where the three dataset files are, instead of fetching them |
 //! | `MIRACL_MAX_DOCS` | cap the corpus, for checking the harness runs. **Not the benchmark**: the floors are not asserted and the number is not comparable with anyone's |
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy`. The floors are asserted for that one only |
-//! | `TIERS` | run all three rerank tiers instead of the default |
+//! | `TIERS` | run fusion alone (`off`) and the shipped reranker side by side, paired |
 //! | `PASSAGES` | a second project whose vectors embed the topic name, paired against this one |
 //! | `ROUTES` | a cascade and gates that spend less on the reranker, against the shipped pass |
 //! | `CONTEXT` | price showing the reranker each candidate's name, from one run |
@@ -87,9 +87,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
 
+use harness::Rerank;
 use pamin_core::{Channel, Fusion};
 use pamin_engine::{Depths, Engine};
-use pamin_index::{Access, Embedder, Rerank, VectorIndex};
+use pamin_index::{Access, Embedder, VectorIndex};
 use pamin_store::Workspace;
 
 // ---------------------------------------------------------------------------
@@ -359,7 +360,7 @@ fn report(title: &str, scores: &Scores, per_query_ms: f64) {
 /// a rounding error -- which was written down as an expectation long before
 /// anything counted a character.
 fn report_reranking(engine: &Engine, tier: Rerank, queries: usize) {
-    let Some(counted) = engine.reranked(tier) else {
+    let Some(counted) = engine.reranked() else {
         println!("  the {} tier was never loaded\n", tier.name());
         return;
     };
@@ -805,12 +806,12 @@ async fn search() {
         let tier = Rerank::default();
         let mut routes = reranking::Routes::default();
         for query in &corpus.queries {
-            let hits = engine
-                .search_reranked(&query.text, WIDE, DEPTHS, tier)
+            let hits = tier
+                .search(&engine, &query.text, WIDE, DEPTHS)
                 .await
                 .expect("search");
             channels::enough_room(&hits, WIDE);
-            let replayed = reranking::replay(&hits, tier);
+            let replayed = reranking::replay(&hits);
             routes.observe(
                 GROUP,
                 &query.text,
@@ -961,8 +962,8 @@ async fn run(engine: &Engine, corpus: &Corpus, route: Route) -> Scores {
     for query in &corpus.queries {
         let hits = match &route {
             Route::Shipped(rerank) => {
-                engine
-                    .search_reranked(&query.text, DEPTH as u32, DEPTHS, *rerank)
+                rerank
+                    .search(engine, &query.text, DEPTH as u32, DEPTHS)
                     .await
             }
             Route::Fused(fusion) => {
@@ -986,12 +987,12 @@ async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str, models: &st
     let tier = Rerank::default();
     let mut priced = reranking::Priced::new(models);
     for query in &corpus.queries {
-        let hits = engine
-            .search_reranked(&query.text, WIDE, DEPTHS, tier)
+        let hits = tier
+            .search(engine, &query.text, WIDE, DEPTHS)
             .await
             .expect("search");
         channels::enough_room(&hits, WIDE);
-        let replayed = reranking::replay(&hits, tier);
+        let replayed = reranking::replay(&hits);
         priced.observe(
             GROUP,
             &query.text,
@@ -1025,17 +1026,17 @@ async fn context(engine: &Engine, workspace: &Workspace, corpus: &Corpus, named:
 
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
-    let mut model = pamin_index::Reranker::load(tier, &workspace.root().join("models"))
-        .expect("load the reranker");
+    let mut model =
+        pamin_index::Reranker::load(&workspace.root().join("models")).expect("load the reranker");
     let labels = reranking::context_labels();
     let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
     for query in &corpus.queries {
-        let hits = engine
-            .search_reranked(&query.text, WIDE, DEPTHS, tier)
+        let hits = tier
+            .search(engine, &query.text, WIDE, DEPTHS)
             .await
             .expect("search");
         channels::enough_room(&hits, WIDE);
-        let replayed = reranking::replay(&hits, tier);
+        let replayed = reranking::replay(&hits);
         let (orders, _) = reranking::in_context(&hits, &replayed, &mut model, &query.text);
         for (order, into) in orders.iter().zip(&mut measured) {
             into.entry(GROUP.to_string())
@@ -1221,14 +1222,12 @@ async fn attribute_memory(engine: &Engine, corpus: &Corpus) {
         .map(|query| query.text.as_str())
         .collect();
     for tier in [Rerank::Off, Rerank::Accurate] {
-        engine
-            .search_reranked(queries[0], DEPTH as u32, DEPTHS, tier)
+        tier.search(engine, queries[0], DEPTH as u32, DEPTHS)
             .await
             .expect("search");
         memory::Resident::now().print(&format!("one search, {}", tier.name()));
         for query in &queries {
-            engine
-                .search_reranked(query, DEPTH as u32, DEPTHS, tier)
+            tier.search(engine, query, DEPTH as u32, DEPTHS)
                 .await
                 .expect("search");
         }

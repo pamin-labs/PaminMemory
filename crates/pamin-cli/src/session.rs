@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::Result;
 use pamin_core::ProjectId;
 use pamin_engine::{Engine, Models};
-use pamin_index::{Access, IndexError, Profile, Rerank, VectorIndex};
+use pamin_index::{Access, IndexError, Profile, VectorIndex};
 use pamin_store::{Connections, Database, Workspace, repository};
 
 use crate::registry::Registry;
@@ -43,9 +43,6 @@ pub struct Session {
     /// cold project starts one warm-up rather than one each. See
     /// [`Session::warm`].
     warming: std::sync::Mutex<std::collections::HashSet<(String, Profile)>>,
-    /// The reranking tier a warm-up loads: the one the last search asked for,
-    /// or before any has, what `pamin search` would pass by default.
-    tier: std::sync::Mutex<Rerank>,
     /// How many requests are being answered right now.
     ///
     /// What the server's upkeep asks before it spends a model on work nobody
@@ -110,16 +107,6 @@ const OPEN_INDEXES: usize = 16;
 /// to start over a typo in an environment variable is the worse failure.
 const OPEN_INDEXES_VAR: &str = "PAMIN_OPEN_INDEXES";
 
-/// The tier `pamin search` passes when a caller names none: `PAMIN_RERANK`
-/// where the server was started with it, as a client started from the same
-/// environment reads it, and the shipped default otherwise.
-fn default_tier() -> Rerank {
-    std::env::var("PAMIN_RERANK")
-        .ok()
-        .and_then(|name| Rerank::parse(&name))
-        .unwrap_or_default()
-}
-
 fn open_indexes() -> usize {
     pamin_core::env::positive(OPEN_INDEXES_VAR).unwrap_or(OPEN_INDEXES)
 }
@@ -137,7 +124,6 @@ impl Session {
             projects: Mutex::default(),
             engines: Registry::with_capacity(open_indexes()),
             warming: std::sync::Mutex::default(),
-            tier: std::sync::Mutex::new(default_tier()),
             serving: AtomicUsize::new(0),
         })
     }
@@ -191,16 +177,15 @@ impl Session {
         {
             return;
         }
-        let tier = *self.tier.lock().expect("the tier lock is poisoned");
         let session = Arc::clone(self);
         tokio::spawn(async move {
             let models = session.models.clone();
-            let loading = tokio::task::spawn_blocking(move || models.warm(profile, tier));
+            let loading = tokio::task::spawn_blocking(move || models.warm(profile));
             if let Err(error) = session.engine(&key.0, profile, vector_index).await {
                 tracing::debug!(project = %key.0, %error, "warming: opening the project failed");
             }
             match loading.await {
-                Ok(Ok(())) => tracing::debug!(project = %key.0, tier = tier.name(), "warmed"),
+                Ok(Ok(())) => tracing::debug!(project = %key.0, "warmed"),
                 Ok(Err(error)) => {
                     tracing::debug!(project = %key.0, %error, "warming: loading a model failed");
                 }
@@ -214,11 +199,6 @@ impl Session {
         });
     }
 
-    /// Records the tier a search asked for, as the one to warm next.
-    pub fn searched_at(&self, tier: Rerank) {
-        *self.tier.lock().expect("the tier lock is poisoned") = tier;
-    }
-
     pub fn database(&self) -> &Database {
         &self.database
     }
@@ -230,8 +210,8 @@ impl Session {
     /// Gives back what this process has held open without being asked.
     ///
     /// Returns what it closed: the project-and-profile keys, then the model
-    /// profiles and reranker tiers, so a caller can say so in a log rather
-    /// than guess.
+    /// profiles and whether the reranker went, so a caller can say so in a
+    /// log rather than guess.
     ///
     /// **The order is the whole of it and cannot be swapped.** An engine holds
     /// its profile's embedder for as long as it is open, so releasing models
@@ -248,12 +228,12 @@ impl Session {
     /// Only the server calls this. A command that exits after one search gives
     /// everything back by exiting, and closing an index it is about to use
     /// again would be the opposite of the point.
-    pub fn close_what_is_idle(&self) -> (Vec<(String, Profile)>, Vec<Profile>, Vec<Rerank>) {
+    pub fn close_what_is_idle(&self) -> (Vec<(String, Profile)>, Vec<Profile>, bool) {
         let idle = pamin_engine::model_idle();
         let engines = self.engines.close_idle(idle);
         let embedders = self.models.release_idle_embedders();
-        let rerankers = self.models.release_idle_rerankers();
-        (engines, embedders, rerankers)
+        let reranker = self.models.release_idle_reranker();
+        (engines, embedders, reranker)
     }
 
     /// How many indexes the open-index bound has closed since the last call.
