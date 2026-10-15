@@ -96,6 +96,20 @@ fn build_identity() {
                 .as_bytes(),
         );
     }
+    // The same build, readable, for a record to show beside the
+    // fingerprint: each Cargo profile override set and each `cfg` the target
+    // resolved to, `NAME=value`, separated by 0x1f.
+    let mut readable = Vec::new();
+    // `vars_os`: `vars` panics on any variable in the environment that is
+    // not UTF-8, which need not be one of these. Lossy, so a non-UTF-8 value
+    // is still read the same way every time.
+    for (key, value) in std::env::vars_os() {
+        let key = key.to_string_lossy();
+        if key.starts_with("CARGO_CFG_") {
+            println!("cargo:rerun-if-env-changed={key}");
+            readable.push(format!("{key}={}", value.to_string_lossy()));
+        }
+    }
     for (key, value) in build_profile::settings(
         &std::env::var("PROFILE").unwrap_or_default(),
         std::env::vars_os().map(|(key, value)| {
@@ -106,6 +120,9 @@ fn build_identity() {
         }),
     ) {
         println!("cargo:rerun-if-env-changed={key}");
+        if !value.is_empty() {
+            readable.push(format!("{key}={value}"));
+        }
         hash.update((key.len() as u64).to_le_bytes());
         hash.update(key.as_bytes());
         hash.update((value.len() as u64).to_le_bytes());
@@ -120,6 +137,11 @@ fn build_identity() {
     println!(
         "cargo:rustc-env=PAMIN_INFERENCE_BUILD={:x}",
         hash.finalize()
+    );
+    readable.sort();
+    println!(
+        "cargo:rustc-env=PAMIN_INFERENCE_CARGO={}",
+        readable.join("\x1f")
     );
 }
 

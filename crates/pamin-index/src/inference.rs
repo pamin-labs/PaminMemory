@@ -569,6 +569,54 @@ pub(crate) struct RuntimePlan {
     target: String,
     retry_at: Option<std::time::Instant>,
     restore_target: Option<String>,
+    /// The sha256 of the full plan key this model was selected under -- the
+    /// key holds paths, so only its hash leaves this module.
+    identity: String,
+    /// Whether that plan names its hardware stably across processes, as
+    /// [`persistence_supported`] decides for persisting it.
+    stable: bool,
+    /// Every plan this model's place has run on, oldest first: a model a
+    /// failure or a revalidation replaced hands its history on.
+    history: Vec<PlanUse>,
+}
+
+/// One execution plan a model ran on: its target as plans are keyed
+/// (`npu:<provider>:<id>`, or the device's name), the sha256 of the full plan
+/// key it was selected under -- model, build, settings, threads, cores,
+/// runtime, host, CPU features, provider libraries and CUDA inventory and
+/// selection -- and whether that plan is stable across processes (a
+/// DirectML adapter ordinal or an NPU id is not, so such plans are never
+/// persisted either).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PlanUse {
+    pub target: String,
+    pub plan: String,
+    pub stable: bool,
+}
+
+/// The plans `model` has run on, oldest first; the last is the one it runs
+/// on now. A model loaded without a plan is reported on its device.
+pub(crate) fn plans_of(model: &impl RuntimeModel, device: Device) -> Vec<PlanUse> {
+    let plan = model.runtime_plan();
+    let mut history = plan.history.clone();
+    let now = current_use(model, device);
+    if history.last() != Some(&now) {
+        history.push(now);
+    }
+    history
+}
+
+fn current_use(model: &impl RuntimeModel, device: Device) -> PlanUse {
+    let plan = model.runtime_plan();
+    PlanUse {
+        target: target_key(model, device),
+        plan: if plan.identity.is_empty() {
+            "unplanned".to_string()
+        } else {
+            plan.identity.clone()
+        },
+        stable: plan.identity.is_empty() || plan.stable,
+    }
 }
 
 pub(crate) trait RuntimeModel {
@@ -761,7 +809,16 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
                 if revalidating && !replaced {
                     model.runtime_plan_mut().retry_at = Some(clock() + RUNTIME_RETRY);
                 }
-                if let Some((active, selected)) = replacement {
+                if let Some((mut active, selected)) = replacement {
+                    // The place keeps every plan it ran on, so a run that
+                    // fell back says so.
+                    let history = plans_of(model, *device);
+                    let now = current_use(&active, selected);
+                    let plan = active.runtime_plan_mut();
+                    plan.history = history;
+                    if plan.history.last() != Some(&now) {
+                        plan.history.push(now);
+                    }
                     *model = active;
                     *device = selected;
                 }
@@ -954,6 +1011,7 @@ pub(crate) fn measured<T: RuntimeModel>(
             target: target_id,
             retry_at: blocked.as_ref().map(|(at, _)| *at),
             restore_target: blocked.as_ref().map(|(_, target)| target.clone()),
+            ..RuntimePlan::default()
         };
         Ok(model)
     };
@@ -972,7 +1030,12 @@ pub(crate) fn measured<T: RuntimeModel>(
             let _ = prune_plans(&directory, None);
         }
         let mut load = load;
-        return load(Device::Cpu, vec![cpu()].into(), false).map(|model| (model, Device::Cpu));
+        return load(Device::Cpu, vec![cpu()].into(), false).map(|mut model| {
+            let plan = model.runtime_plan_mut();
+            plan.identity = fingerprint(&format!("cpu-only|{}", plan.namespace));
+            plan.stable = true;
+            (model, Device::Cpu)
+        });
     }
     let signature: Vec<_> = plans
         .iter()
@@ -1000,12 +1063,7 @@ pub(crate) fn measured<T: RuntimeModel>(
         .collect();
     let cuda = plans.iter().any(|(device, _)| *device == Device::Cuda);
     let cuda_inventory = cuda.then(cuda_identity).flatten();
-    let cuda_settings = [
-        "CUDA_VISIBLE_DEVICES",
-        "CUDA_DEVICE_ORDER",
-        "NVIDIA_VISIBLE_DEVICES",
-    ]
-    .map(|name| (name, std::env::var_os(name)));
+    let cuda_settings = CUDA_SELECTION.map(|name| (name, std::env::var_os(name)));
     let key = format!(
         "persistent-plan-v6|executable:{executable:?}|build:{}|{identity}|{signature:?}|{settings:?}|threads:{:?}|cores:{:?}|runtime:{}|host:{}|features:{:?}|libraries:{libraries:?}|cuda:{cuda_inventory:?}|cuda-settings:{cuda_settings:?}",
         env!("PAMIN_INFERENCE_BUILD"),
@@ -1057,6 +1115,9 @@ pub(crate) fn measured<T: RuntimeModel>(
         evaluate,
     )?;
     finish_runtime_selection(model.runtime_plan_mut(), blocked, deadline);
+    let plan = model.runtime_plan_mut();
+    plan.identity = fingerprint(&key);
+    plan.stable = device_persists(device, cuda_inventory.is_some());
     Ok((model, device))
 }
 
@@ -1086,6 +1147,18 @@ struct DiskPlan {
     target: String,
     expires: u64,
     references: References,
+}
+
+/// The execution target `model` runs on, as its execution plans are keyed
+/// ([`target_identity`]): `npu:<provider>:<id>` for an NPU, the device's name
+/// otherwise. A model loaded without a plan names its device.
+pub(crate) fn target_key(model: &impl RuntimeModel, device: Device) -> String {
+    let target = &model.runtime_plan().target;
+    if target.is_empty() {
+        device.name().to_string()
+    } else {
+        target.clone()
+    }
 }
 
 fn target_identity(device: Device, target: &Target) -> String {
@@ -1359,11 +1432,37 @@ fn file_lock(path: &Path) -> Option<std::fs::File> {
 }
 
 fn persistence_supported(plans: &[(Device, Target)], cuda_identified: bool) -> bool {
-    plans.iter().all(|(device, _)| match device {
+    plans
+        .iter()
+        .all(|(device, _)| device_persists(*device, cuda_identified))
+}
+
+/// Whether a plan on `device` names its hardware stably across processes:
+/// a CUDA plan only with its GPU inventory read, and never a DirectML adapter
+/// ordinal or an NPU id.
+fn device_persists(device: Device, cuda_identified: bool) -> bool {
+    match device {
         Device::Cpu | Device::CoreMl => true,
         Device::Cuda => cuda_identified,
         Device::DirectMl | Device::Npu => false,
-    })
+    }
+}
+
+/// The variables that choose which CUDA devices a session sees, and in
+/// what order: part of every persistent plan's identity, and of any record
+/// that has to say which GPU a CUDA run used.
+pub const CUDA_SELECTION: [&str; 3] = [
+    "CUDA_VISIBLE_DEVICES",
+    "CUDA_DEVICE_ORDER",
+    "NVIDIA_VISIBLE_DEVICES",
+];
+
+/// The machine's NVIDIA GPUs -- index, UUID, PCI bus, name and driver, as
+/// `nvidia-smi` lists them -- the inventory a CUDA plan's identity holds;
+/// `None` where it cannot be read. With [`CUDA_SELECTION`], it says which
+/// physical GPU a CUDA session ran on.
+pub fn cuda_devices() -> Option<String> {
+    cuda_identity()
 }
 
 fn cuda_identity() -> Option<String> {
@@ -1916,6 +2015,7 @@ mod tests {
                     target: target.into(),
                     retry_at: None,
                     restore_target: None,
+                    ..RuntimePlan::default()
                 },
             }
         }
@@ -2105,6 +2205,47 @@ mod tests {
         assert!(replaced);
         assert_eq!(device, Device::Npu);
         assert!(!needs_revalidation_at(&model, now + RUNTIME_RETRY * 2));
+    }
+
+    /// A model that fell back keeps the plan it failed on in its history,
+    /// so a record of the run names both.
+    #[test]
+    fn a_fallback_keeps_the_plan_it_left() {
+        let root = tempfile::tempdir().unwrap();
+        let now = std::time::Instant::now();
+        let mut model = RuntimeFixture::new(1, "cuda");
+        model.plan.identity = "a".repeat(64);
+        model.plan.stable = true;
+        let mut device = Device::Cuda;
+        let (answer, replaced) = retry_model_at(
+            &mut model,
+            &mut device,
+            root.path(),
+            now,
+            |candidate, selected| {
+                if selected == Device::Cpu {
+                    Ok(candidate.value)
+                } else {
+                    Err(IndexError::Engine("the accelerator failed".into()))
+                }
+            },
+            || {
+                let mut cpu = RuntimeFixture::new(2, "cpu");
+                cpu.plan.identity = "b".repeat(64);
+                cpu.plan.stable = true;
+                Ok((cpu, Device::Cpu))
+            },
+        )
+        .unwrap();
+        assert_eq!((answer, replaced, device), (2, true, Device::Cpu));
+        let plans = plans_of(&model, device);
+        let targets: Vec<&str> = plans.iter().map(|plan| plan.target.as_str()).collect();
+        assert_eq!(targets, ["cuda", "cpu"]);
+        assert_eq!(plans[0].plan, "a".repeat(64));
+        assert_eq!(plans[1].plan, "b".repeat(64));
+        assert!(!device_persists(Device::DirectMl, true));
+        assert!(!device_persists(Device::Npu, true));
+        assert!(!device_persists(Device::Cuda, false));
     }
 
     #[test]

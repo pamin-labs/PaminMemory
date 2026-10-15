@@ -587,7 +587,7 @@ impl Priced {
 
     /// Checks, after a search `engine` ran, that the replay plans passes as
     /// the engine's reranker does: the same tier on the same execution
-    /// provider. The planner is the same code; what can differ is the
+    /// target (an NPU's provider and id included). The planner is the same code; what can differ is the
     /// model's batch limits, and those follow from the tier and the provider
     /// (a compiled CoreML session has its own) under this process's
     /// settings. A reranker that fell back mid-run -- CoreML to the CPU, say
@@ -599,17 +599,24 @@ impl Priced {
             return;
         }
         let role = format!("reranking {}", self.reranker.tier().name());
-        let replay = self.reranker.device();
-        let ran = engine
+        let replay = self.reranker.target();
+        // Every plan the engine's reranker ran on so far: one, unless it fell
+        // back mid-run, and then its passes were planned two ways.
+        let mut ran: Vec<String> = engine
             .providers()
             .into_iter()
-            .find(|(name, _)| *name == role)
-            .map(|(_, device)| device);
-        if ran != Some(replay) {
+            .filter(|(name, _)| *name == role)
+            .map(|(_, plan)| plan.target)
+            .collect();
+        ran.dedup();
+        if ran != [replay.clone()] {
             self.unlike = Some(format!(
-                "the engine's {role} ran on {}, and the replay plans for {}",
-                ran.map_or("nothing", |device| device.name()),
-                replay.name()
+                "the engine's {role} ran on {}, and the replay plans for {replay}",
+                if ran.is_empty() {
+                    "nothing".to_string()
+                } else {
+                    ran.join(" then ")
+                },
             ));
         }
     }
