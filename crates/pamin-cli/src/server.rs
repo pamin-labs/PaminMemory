@@ -187,7 +187,7 @@ async fn maintain(session: Arc<Session>) {
         // The engines above are dropped by now, so a project that has gone
         // quiet can be closed and the weights it was pinning given back.
         let sweep = Instant::now();
-        let (engines, embedders, rerankers) = session.close_what_is_idle();
+        let (engines, embedders, reranker) = session.close_what_is_idle();
         tracing::debug!(
             seconds = sweep.elapsed().as_secs_f64(),
             "idle sweep finished"
@@ -195,11 +195,11 @@ async fn maintain(session: Arc<Session>) {
         // And an index the open-index bound closed since the last tick. It was
         // closed inside a request, which is no place to wait on the allocator.
         let evicted = session.take_evicted();
-        if !engines.is_empty() || !embedders.is_empty() || !rerankers.is_empty() || evicted > 0 {
+        if !engines.is_empty() || !embedders.is_empty() || reranker || evicted > 0 {
             tracing::debug!(
                 ?engines,
                 ?embedders,
-                ?rerankers,
+                reranker,
                 evicted,
                 "gave back what nothing had asked for"
             );
@@ -660,11 +660,6 @@ async fn answer(session: &Arc<Session>, request: Request) -> Result<Payload> {
     // would wait for, and this request is the earliest sign one is coming.
     // Not for `stop`, which is about to end the process, nor for `reindex`,
     // which discards the index a warm-up would be holding open.
-    if let Call::Search(args) = &call
-        && let Some(tier) = pamin_index::Rerank::parse(&args.rerank)
-    {
-        session.searched_at(tier);
-    }
     if !matches!(call, Call::Stop | Call::Reindex(_)) {
         session.warm(&project, profile, vector_index);
     }

@@ -187,15 +187,6 @@ async fn main() -> Result<()> {
     // reference.
     let call = fill_from_stdin(call)?;
 
-    // Before a server is started or a database provisioned. A misspelled tier
-    // is an error the caller can act on at once, and one that arrived after a
-    // PostgreSQL install -- leaving a workspace behind for a command that never
-    // ran -- would be a worse answer to the same question.
-    if let protocol::Call::Search(args) = &call {
-        pamin_index::Rerank::parse(&args.rerank)
-            .ok_or_else(|| anyhow::anyhow!("unknown rerank tier {:?}", args.rerank))?;
-    }
-
     let request = protocol::Request {
         version: protocol::version(),
         project,
@@ -225,18 +216,33 @@ async fn main() -> Result<()> {
 /// the one they asked for. Whatever it is set to, including a value that
 /// used to mean "use the server": it cannot be honoured either way, and
 /// the fix is the same.
+///
+/// `PAMIN_RERANK` chose a reranking tier, and there is one reranker now.
+/// Somebody who set it to `off` to buy back search time would otherwise be
+/// paying for a reranker they believe is off.
 fn refuse_removed_settings() -> Result<()> {
-    if std::env::var_os(NO_SERVER).is_some() {
-        anyhow::bail!(
-            "{NO_SERVER} was removed: every command now goes through the workspace's \
-             server, and none can run in the calling process. Unset it to continue."
-        );
+    for (name, why) in REMOVED {
+        if std::env::var_os(name).is_some() {
+            anyhow::bail!("{name} was removed: {why} Unset it to continue.");
+        }
     }
     Ok(())
 }
 
-/// The removed setting [`refuse_removed_settings`] turns away.
-const NO_SERVER: &str = "PAMIN_NO_SERVER";
+/// The removed settings [`refuse_removed_settings`] turns away, and why each
+/// cannot be honoured.
+const REMOVED: &[(&str, &str)] = &[
+    (
+        "PAMIN_NO_SERVER",
+        "every command now goes through the workspace's server, and none can run in \
+         the calling process.",
+    ),
+    (
+        "PAMIN_RERANK",
+        "`pamin search` always reranks with its one reranker, so there is no tier to \
+         choose.",
+    ),
+];
 
 /// Reads standard input into the one argument that takes it.
 fn fill_from_stdin(call: protocol::Call) -> Result<protocol::Call> {

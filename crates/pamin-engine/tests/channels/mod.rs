@@ -1110,7 +1110,6 @@ pub async fn compare_reranked(
     variants: &[(String, Setting)],
     score: impl Fn(usize, &mut crate::scoring::Scores, &[SearchHit]),
 ) {
-    let rerank = pamin_index::Rerank::default();
     let settings: Vec<Setting> = std::iter::once(Setting::default())
         .chain(variants.iter().map(|(_, setting)| setting.clone()))
         .collect();
@@ -1131,7 +1130,7 @@ pub async fn compare_reranked(
                 None => unsafe { std::env::remove_var("PAMIN_RERANK_DEPTH") },
             }
             let hits = engine
-                .search_reranked_with(text, limit, depths, rerank, setting.fusion.clone())
+                .search_reranked_with(text, limit, depths, setting.fusion.clone())
                 .await
                 .expect("search");
             crate::harness::shape::table(table);

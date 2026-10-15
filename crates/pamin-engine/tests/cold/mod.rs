@@ -60,8 +60,9 @@
 
 use std::time::{Duration, Instant};
 
+use crate::harness::Rerank;
 use pamin_engine::{Depths, Engine, Models};
-use pamin_index::{Access, Embedder, Profile, Rerank, Reranker, VectorIndex};
+use pamin_index::{Access, Embedder, Profile, Reranker, VectorIndex};
 use pamin_store::{Database, Workspace};
 
 /// What `pamin search` passes when a caller says nothing.
@@ -181,7 +182,7 @@ pub async fn report(
         samples.record("touched: then search", then);
         paired.push((cold_total.as_secs_f64() - first.as_secs_f64()) * 1e3);
 
-        for (name, took) in parts(&models, profile, tier, queries) {
+        for (name, took) in parts(&models, profile, queries) {
             samples.record(name, took);
         }
     }
@@ -227,12 +228,11 @@ async fn reranked<'q>(
     let (engine, _) = open(database, workspace, project, profile).await;
     let mut found = Vec::new();
     for query in queries {
-        let before = scored(&engine, tier);
-        engine
-            .search_reranked(query, LIMIT, Depths::default(), tier)
+        let before = scored(&engine);
+        tier.search(&engine, query, LIMIT, Depths::default())
             .await
             .expect("search");
-        if scored(&engine, tier) > before {
+        if scored(&engine) > before {
             found.push(*query);
             if let [first, second] = found[..] {
                 return [first, second];
@@ -271,14 +271,14 @@ async fn open(
 /// rerank and cost nothing like one.
 async fn search(engine: &Engine, query: &str, tier: Rerank, after: u64) -> Duration {
     let started = Instant::now();
-    let hits = engine
-        .search_reranked(query, LIMIT, Depths::default(), tier)
+    let hits = tier
+        .search(engine, query, LIMIT, Depths::default())
         .await
         .expect("search");
     let took = started.elapsed();
     assert!(!hits.is_empty(), "{query:?} found nothing");
     if tier != Rerank::Off {
-        let scored = engine.reranked(tier).map_or(0, |counted| counted.scored);
+        let scored = engine.reranked().map_or(0, |counted| counted.scored);
         assert!(
             scored > after,
             "{query:?} was not reranked at {}, so it cannot stand for a search that is",
@@ -288,8 +288,8 @@ async fn search(engine: &Engine, query: &str, tier: Rerank, after: u64) -> Durat
     took
 }
 
-fn scored(engine: &Engine, tier: Rerank) -> u64 {
-    engine.reranked(tier).map_or(0, |counted| counted.scored)
+fn scored(engine: &Engine) -> u64 {
+    engine.reranked().map_or(0, |counted| counted.scored)
 }
 
 /// The product's cold path: open, then one search at the shipped tier, then a
@@ -304,11 +304,11 @@ async fn cold(
 ) -> (Duration, Duration, Duration) {
     let (engine, open) = open(database, workspace, project, profile).await;
     assert!(
-        engine.reranked(tier).is_none(),
+        engine.reranked().is_none(),
         "the reranker was resident before the cold search"
     );
     let search_cold = search(&engine, query, tier, 0).await;
-    let warm = search(&engine, other, tier, scored(&engine, tier)).await;
+    let warm = search(&engine, other, tier, scored(&engine)).await;
     (open, search_cold, warm)
 }
 
@@ -339,7 +339,7 @@ async fn warmed(
         let started = Instant::now();
         let warming = {
             let models = models.clone();
-            tokio::task::spawn_blocking(move || models.warm(profile, tier))
+            tokio::task::spawn_blocking(move || models.warm(profile))
         };
         let engine = attached(database, &models, workspace, project, profile).await;
         search(&engine, query, tier, 0).await;
@@ -352,13 +352,13 @@ async fn warmed(
     let started = Instant::now();
     let warming = {
         let models = models.clone();
-        tokio::task::spawn_blocking(move || models.warm(profile, tier))
+        tokio::task::spawn_blocking(move || models.warm(profile))
     };
     let engine = attached(database, &models, workspace, project, profile).await;
     warming.await.expect("the warm-up panicked").expect("warm");
     let until = started.elapsed();
     assert!(
-        engine.reranked(tier).is_some(),
+        engine.reranked().is_some(),
         "the warm-up finished without the reranker resident"
     );
     let then = search(&engine, other, tier, 0).await;
@@ -400,7 +400,7 @@ async fn serial(
     let (engine, open) = open(database, workspace, project, profile).await;
     let off = search(&engine, query, Rerank::Off, 0).await;
     assert!(
-        engine.reranked(tier).is_none(),
+        engine.reranked().is_none(),
         "an `off` search loaded the reranker"
     );
     let then = search(&engine, query, tier, 0).await;
@@ -411,7 +411,6 @@ async fn serial(
 fn parts(
     models: &std::path::Path,
     profile: Profile,
-    tier: Rerank,
     [query, other]: [&str; 2],
 ) -> Vec<(&'static str, Duration)> {
     let mut took = Vec::new();
@@ -434,14 +433,14 @@ fn parts(
     });
     drop(embedder);
 
-    // What a cold search hands it: up to the tier's depth of candidates.
-    let documents: Vec<String> = (0..tier.depth())
+    // What a cold search hands it: up to the reranker's depth of candidates.
+    let documents: Vec<String> = (0..pamin_index::reranking::depth())
         .map(|n| format!("{other} {n}: a memory the lexical channels did not find"))
         .collect();
     let documents: Vec<&str> = documents.iter().map(String::as_str).collect();
     let mut reranker = None;
     time("parts: load the reranker", &mut || {
-        reranker = Some(Reranker::load(tier, models).expect("load the reranker"));
+        reranker = Some(Reranker::load(models).expect("load the reranker"));
     });
     let mut reranker = reranker.expect("loaded");
     time("parts: first rerank pass", &mut || {
@@ -457,7 +456,7 @@ fn parts(
     time("parts: load both at once", &mut || {
         both = Some(std::thread::scope(|scope| {
             let embedder = scope.spawn(|| Embedder::load(profile, models).expect("embedder"));
-            let reranker = scope.spawn(|| Reranker::load(tier, models).expect("reranker"));
+            let reranker = scope.spawn(|| Reranker::load(models).expect("reranker"));
             (
                 embedder.join().expect("the embedder's load panicked"),
                 reranker.join().expect("the reranker's load panicked"),

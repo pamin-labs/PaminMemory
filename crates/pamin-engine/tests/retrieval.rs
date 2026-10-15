@@ -141,9 +141,10 @@ mod statistics;
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
+use harness::Rerank;
 use pamin_core::{Channel, Fusion};
 use pamin_engine::{Depths, Engine};
-use pamin_index::{Access, Profile, Rerank, VectorIndex};
+use pamin_index::{Access, Profile, VectorIndex};
 use pamin_store::Workspace;
 
 use scoring::{NDCG_AT, RECALL_AT, Scores};
@@ -355,12 +356,12 @@ async fn retrieval_quality_by_group() {
         let tier = Rerank::default();
         let mut routes = reranking::Routes::default();
         for query in &queries {
-            let hits = engine
-                .search_reranked(&query.query, WIDE, DEPTHS, tier)
+            let hits = tier
+                .search(&engine, &query.query, WIDE, DEPTHS)
                 .await
                 .expect("search");
             channels::enough_room(&hits, WIDE);
-            let replayed = reranking::replay(&hits, tier);
+            let replayed = reranking::replay(&hits);
             let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
             routes.observe(
                 &query.group,
@@ -548,8 +549,8 @@ async fn shipped(
         // the finding that sent reranking to the external benchmark in the
         // first place -- but expected-not-to-move is still measured, because
         // otherwise nothing guards it.
-        let hits = engine
-            .search_reranked(&query.query, SEARCH_LIMIT, DEPTHS, tier)
+        let hits = tier
+            .search(engine, &query.query, SEARCH_LIMIT, DEPTHS)
             .await
             .expect("search");
 
@@ -650,19 +651,19 @@ async fn report_tiers(engine: &Engine, queries: &[Query]) {
 async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query]) {
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
-    let mut model = pamin_index::Reranker::load(tier, &workspace.root().join("models"))
-        .expect("load the reranker");
+    let mut model =
+        pamin_index::Reranker::load(&workspace.root().join("models")).expect("load the reranker");
 
     let labels = reranking::context_labels();
     let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
     let mut seeded = 0usize;
     for query in queries {
-        let hits = engine
-            .search_reranked(&query.query, WIDE, DEPTHS, tier)
+        let hits = tier
+            .search(engine, &query.query, WIDE, DEPTHS)
             .await
             .expect("search");
         channels::enough_room(&hits, WIDE);
-        let replayed = reranking::replay(&hits, tier);
+        let replayed = reranking::replay(&hits);
         let (orders, shown) = reranking::in_context(&hits, &replayed, &mut model, &query.query);
         seeded += shown;
 
@@ -701,12 +702,12 @@ async fn rerank_rules(engine: &Engine, queries: &[Query], models: &std::path::Pa
     let tier = Rerank::default();
     let mut priced = reranking::Priced::new(models);
     for query in queries {
-        let hits = engine
-            .search_reranked(&query.query, WIDE, DEPTHS, tier)
+        let hits = tier
+            .search(engine, &query.query, WIDE, DEPTHS)
             .await
             .expect("search");
         channels::enough_room(&hits, WIDE);
-        let replayed = reranking::replay(&hits, tier);
+        let replayed = reranking::replay(&hits);
 
         let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
         priced.observe(

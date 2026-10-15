@@ -2,7 +2,7 @@
 mod harness;
 use pamin_core::{Channel, Why};
 use pamin_engine::{Depths, Engine};
-use pamin_index::{Access, Profile, Rerank, VectorIndex};
+use pamin_index::{Access, Profile, VectorIndex};
 use pamin_store::Workspace;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -39,7 +39,7 @@ async fn dual_profile_survives_real_write_search_and_reindex() {
     assert_eq!(engine.indexed_documents().unwrap(), 3);
     let query = "How does a failed migration roll back?";
     let before = engine
-        .search_reranked(query, 10, Depths::default(), Rerank::Accurate)
+        .search_reranked(query, 10, Depths::default())
         .await
         .unwrap();
     assert!(!before.is_empty());
@@ -58,7 +58,7 @@ async fn dual_profile_survives_real_write_search_and_reindex() {
     let topics: Vec<_> = before.iter().map(|hit| hit.topic.clone()).collect();
     engine.reindex().await.unwrap();
     let after = engine
-        .search_reranked(query, 10, Depths::default(), Rerank::Accurate)
+        .search_reranked(query, 10, Depths::default())
         .await
         .unwrap();
     assert_eq!(

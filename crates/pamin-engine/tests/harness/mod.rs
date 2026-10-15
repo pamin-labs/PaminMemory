@@ -16,7 +16,8 @@ pub mod vectors;
 
 use std::path::PathBuf;
 
-use pamin_engine::{Drained, Engine, Owed, Write};
+use pamin_core::Fusion;
+use pamin_engine::{Depths, Drained, Engine, Owed, SearchHit, Write};
 use pamin_index::Profile;
 
 /// The profile the floors were measured against, and the product default.
@@ -44,6 +45,55 @@ pub fn profile() -> (String, Profile) {
     let named = std::env::var("PAMIN_PROFILE").unwrap_or_else(|_| DEFAULT_PROFILE.into());
     let profile = Profile::parse(&named).unwrap_or_else(|| panic!("unknown profile {named}"));
     (named, profile)
+}
+
+/// Whether a measured search reranks: the shipped search, or fusion alone.
+///
+/// The product has one search, and it reranks. What an arm compares it with
+/// is fusion alone, [`Engine::search_fused`] -- the list the reranker is
+/// handed, cut at the caller's limit. Named as the reranking tiers were, `off`
+/// and `accurate`, so records written while there were tiers compare with
+/// the ones written since.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Rerank {
+    Off,
+    #[default]
+    Accurate,
+}
+
+impl Rerank {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Accurate => "accurate",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "off" => Some(Self::Off),
+            "accurate" => Some(Self::Accurate),
+            _ => None,
+        }
+    }
+
+    /// The search this arm runs.
+    pub async fn search(
+        self,
+        engine: &Engine,
+        query: &str,
+        limit: u32,
+        depths: Depths,
+    ) -> anyhow::Result<Vec<SearchHit>> {
+        match self {
+            Self::Off => {
+                engine
+                    .search_fused(query, limit, depths, Fusion::default())
+                    .await
+            }
+            Self::Accurate => engine.search_reranked(query, limit, depths).await,
+        }
+    }
 }
 
 /// Writes one memory, promoted, unless its topic is already in the project.
