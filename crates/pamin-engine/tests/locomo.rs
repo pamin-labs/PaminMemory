@@ -44,7 +44,6 @@
 //! |---|---|
 //! | `LOCOMO_DIR` | where `locomo10.json` is cached, instead of fetching it |
 //! | `LOCOMO_CONVERSATIONS` | read only the first this many conversations |
-//! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
 //!
 //! Projects are named after a digest of the records and links they hold, so a
 //! reused `PAMIN_EVAL_HOME` never scores a corpus built by older code or data.
@@ -358,7 +357,7 @@ async fn locomo_evidence_with_and_without_links() {
         "DEPTHS must be what `pamin search` ships"
     );
     let conversations = load();
-    let (named, profile) = harness::profile();
+    let named = harness::profile();
     let home = std::env::var("PAMIN_EVAL_HOME").ok();
     let scratch = home
         .is_none()
@@ -391,7 +390,6 @@ async fn locomo_evidence_with_and_without_links() {
                     "locomo-{named}-{}-{side}-{digest}",
                     conversation.id.to_lowercase()
                 ),
-                profile,
                 VectorIndex::default(),
                 Access::ReadWrite,
             )

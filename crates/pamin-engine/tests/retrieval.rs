@@ -144,7 +144,7 @@ use std::path::PathBuf;
 use harness::Rerank;
 use pamin_core::{Channel, Fusion};
 use pamin_engine::{Depths, Engine};
-use pamin_index::{Access, Profile, VectorIndex};
+use pamin_index::{Access, VectorIndex};
 use pamin_store::Workspace;
 
 use scoring::{NDCG_AT, RECALL_AT, Scores};
@@ -206,19 +206,14 @@ async fn retrieval_quality_by_group() {
         (None, None) => unreachable!("one of the two is always set"),
     };
 
-    // The default the product ships, so the floors below describe what a user
-    // gets rather than what is quickest to measure.
-    let named = std::env::var("PAMIN_PROFILE").unwrap_or_else(|_| DEFAULT_PROFILE.into());
-    let profile = Profile::parse(&named).expect("a known profile");
-    // The profile is part of the workspace identity, not just the corpus: an
-    // index records the profile it was built with and refuses to open under
-    // another, so two profiles measured against one corpus need two indexes.
+    // Named as the shipped profile was, so a reused workspace finds the
+    // project it built then.
+    let named = harness::profile();
     let project = format!("eval-{named}-{}", fingerprint(&corpus));
 
     let mut engine = Engine::open(
         &workspace,
         &project,
-        profile,
         VectorIndex::default(),
         Access::ReadWrite,
     )
@@ -309,7 +304,6 @@ async fn retrieval_quality_by_group() {
         let mut other = Engine::open(
             &workspace,
             &format!("{project}-named"),
-            profile,
             VectorIndex::default(),
             Access::ReadWrite,
         )
@@ -392,7 +386,7 @@ async fn retrieval_quality_by_group() {
             .filter(|query| query.group == "cross_lingual")
             .map(|query| query.query.as_str())
             .collect();
-        cold::report(&database, &workspace, &project, profile, &cross).await;
+        cold::report(&database, &workspace, &project, &cross).await;
         return;
     }
 
@@ -466,15 +460,6 @@ async fn retrieval_quality_by_group() {
     let (groups, mut worst) = shipped(&engine, &queries, Rerank::default()).await;
     report(&groups, &mut worst);
 
-    // The floors describe one configuration, so they are only asserted against
-    // it. Running another profile is an experiment, and an experiment that
-    // scores below the shipped default is a result rather than a failure --
-    // `speed` is genuinely worse cross-lingually and saying so is the point.
-    if named != DEFAULT_PROFILE {
-        println!("  {named} is not the default profile, so the floors are not asserted\n");
-        return;
-    }
-
     // Floors, not targets. Each is set below what this engine measured when the
     // harness was written, so it catches a regression rather than pinning a
     // number nobody chose. Raising one is a claim that the improvement is real
@@ -496,10 +481,7 @@ async fn retrieval_quality_by_group() {
     }
 }
 
-/// The profile the floors below were measured against, and the product default.
-const DEFAULT_PROFILE: &str = "accuracy";
-
-/// Per group: nDCG@10 and recall@50 floors, for the default profile.
+/// Per group: nDCG@10 and recall@50 floors.
 ///
 /// Roughly a tenth below what `balanced` measured when this was written, which
 /// is wide enough that ordinary variation does not trip it and narrow enough

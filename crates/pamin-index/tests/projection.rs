@@ -3,14 +3,12 @@
 use std::collections::HashMap;
 
 use pamin_core::{Scored, TopicId};
-use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
-
-const PROFILE: Profile = Profile::Accuracy;
+use pamin_index::{Access, Projection, ProjectionIndex, VectorIndex};
 
 /// A stand-in embedding. These tests exercise the lexical channels, so the
 /// vector only has to be the right width.
 fn stub() -> Vec<f32> {
-    vec![0.1; PROFILE.dimensions() as usize]
+    vec![0.1; pamin_index::DIMENSIONS as usize]
 }
 
 fn id(byte: u8) -> TopicId {
@@ -41,7 +39,6 @@ fn every_channel_scores_what_it_returns_and_ranks_by_it() {
     let index = ProjectionIndex::open(
         dir.path(),
         &dir.path().join("legacy"),
-        PROFILE,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -55,7 +52,7 @@ fn every_channel_scores_what_it_returns_and_ranks_by_it() {
     // first shipped, and it left the one channel whose metric could have been
     // a distance rather than a similarity unchecked.
     let leaning = |towards: usize| {
-        let mut vector = vec![0.1; PROFILE.dimensions() as usize];
+        let mut vector = vec![0.1; pamin_index::DIMENSIONS as usize];
         vector[towards] = 1.0;
         vector
     };
@@ -123,7 +120,6 @@ fn lexical_recall_works_across_languages_and_on_exact_strings() {
     let index = ProjectionIndex::open(
         dir.path(),
         &dir.path().join("legacy"),
-        PROFILE,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -199,7 +195,6 @@ fn discarding_the_directory_leaves_an_empty_index() {
     let index = ProjectionIndex::open(
         dir.path(),
         &dir.path().join("legacy"),
-        PROFILE,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -217,7 +212,6 @@ fn discarding_the_directory_leaves_an_empty_index() {
     let rebuilt = ProjectionIndex::open(
         dir.path(),
         &dir.path().join("legacy"),
-        PROFILE,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -245,7 +239,6 @@ fn a_pre_split_workspace_is_reported_rather_than_searched() {
     let opened = ProjectionIndex::open(
         &dir.path().join("project"),
         &legacy,
-        PROFILE,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -273,7 +266,6 @@ fn two_readers_hold_the_index_at_once() {
     let first = ProjectionIndex::open(
         dir.path(),
         &legacy,
-        PROFILE,
         VectorIndex::default(),
         Access::ReadOnly,
         0,
@@ -282,7 +274,6 @@ fn two_readers_hold_the_index_at_once() {
     let second = ProjectionIndex::open(
         dir.path(),
         &legacy,
-        PROFILE,
         VectorIndex::default(),
         Access::ReadOnly,
         0,
@@ -319,7 +310,6 @@ fn a_second_opener_waits_for_the_index_rather_than_failing() {
     let held = ProjectionIndex::open(
         dir.path(),
         &legacy,
-        PROFILE,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -331,15 +321,9 @@ fn a_second_opener_waits_for_the_index_rather_than_failing() {
         let legacy = legacy.clone();
         std::thread::spawn(move || {
             let started = std::time::Instant::now();
-            let opened = ProjectionIndex::open(
-                &dir,
-                &legacy,
-                PROFILE,
-                VectorIndex::default(),
-                Access::ReadWrite,
-                0,
-            )
-            .is_ok();
+            let opened =
+                ProjectionIndex::open(&dir, &legacy, VectorIndex::default(), Access::ReadWrite, 0)
+                    .is_ok();
             (opened, started.elapsed())
         })
     };
@@ -383,7 +367,6 @@ fn building_the_vector_index_loses_nothing() {
     let index = ProjectionIndex::open(
         dir.path(),
         &dir.path().join("legacy"),
-        PROFILE,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -453,8 +436,8 @@ fn separated(seed: u128) -> Vec<f32> {
     let mut state = (seed as u64)
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)
         .wrapping_add(1);
-    let mut vector = Vec::with_capacity(PROFILE.dimensions() as usize);
-    for _ in 0..PROFILE.dimensions() {
+    let mut vector = Vec::with_capacity(pamin_index::DIMENSIONS as usize);
+    for _ in 0..pamin_index::DIMENSIONS {
         state ^= state << 13;
         state ^= state >> 7;
         state ^= state << 17;
@@ -486,7 +469,6 @@ fn asking_for_a_name_requires_every_word_of_it() {
     let index = ProjectionIndex::open(
         dir.path(),
         &dir.path().join("legacy"),
-        PROFILE,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -579,7 +561,7 @@ fn asking_for_a_name_requires_every_word_of_it() {
 /// keyed by topic state are read as topic identifiers, match nothing, and every
 /// channel comes back empty -- so `search` returns no results, reports no error,
 /// and looks exactly like a workspace nobody has written to. The embedding model
-/// check does not catch it: a profile whose model did not change opens happily
+/// check does not catch it: an index whose model did not change opens happily
 /// and answers nothing.
 #[test]
 fn an_index_keyed_the_old_way_says_so_rather_than_answering_nothing() {
@@ -589,7 +571,6 @@ fn an_index_keyed_the_old_way_says_so_rather_than_answering_nothing() {
     ProjectionIndex::open(
         dir.path(),
         &legacy,
-        PROFILE,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -598,12 +579,11 @@ fn an_index_keyed_the_old_way_says_so_rather_than_answering_nothing() {
 
     // What the marker held before there was a grain to record: the model, and
     // nothing else.
-    std::fs::write(dir.path().join("profile"), PROFILE.model_id()).expect("age the marker");
+    std::fs::write(dir.path().join("profile"), pamin_index::MODEL_ID).expect("age the marker");
 
     let message = match ProjectionIndex::open(
         dir.path(),
         &legacy,
-        PROFILE,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -636,7 +616,6 @@ fn an_index_built_before_names_keeps_its_encoding() {
     let fresh = ProjectionIndex::open(
         dir.path(),
         &legacy,
-        PROFILE,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -650,7 +629,7 @@ fn an_index_built_before_names_keeps_its_encoding() {
         dir.path().join("profile"),
         format!(
             "{}\ntopic\n{}",
-            PROFILE.model_id(),
+            pamin_index::MODEL_ID,
             VectorIndex::default().label()
         ),
     )
@@ -658,7 +637,6 @@ fn an_index_built_before_names_keeps_its_encoding() {
     let aged = ProjectionIndex::open(
         dir.path(),
         &legacy,
-        PROFILE,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -709,7 +687,6 @@ fn rewriting_the_same_memories_leaves_a_bounded_number_of_files() {
     let index = ProjectionIndex::open(
         dir.path(),
         &dir.path().join("legacy"),
-        PROFILE,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -759,7 +736,6 @@ fn optimize_records_how_many_files_it_left() {
     let index = ProjectionIndex::open(
         dir.path(),
         &dir.path().join("legacy"),
-        PROFILE,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -797,7 +773,6 @@ fn optimize_records_how_many_files_it_left() {
     let reopened = ProjectionIndex::open(
         dir.path(),
         &dir.path().join("legacy"),
-        PROFILE,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -827,7 +802,6 @@ fn optimize_records_how_many_files_it_left() {
     let invalid = ProjectionIndex::open(
         dir.path(),
         &dir.path().join("legacy"),
-        PROFILE,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -862,7 +836,6 @@ fn tokenizing_does_not_wait_for_the_index() {
     let index = ProjectionIndex::open(
         dir.path(),
         &dir.path().join("legacy"),
-        PROFILE,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -908,15 +881,8 @@ fn a_rebuild_reuses_only_the_vectors_of_unchanged_text() {
     let mut vector = stub();
     vector[1] = 0.5;
 
-    let index = ProjectionIndex::open(
-        &dir,
-        &legacy,
-        PROFILE,
-        VectorIndex::default(),
-        Access::ReadWrite,
-        0,
-    )
-    .expect("open");
+    let index = ProjectionIndex::open(&dir, &legacy, VectorIndex::default(), Access::ReadWrite, 0)
+        .expect("open");
     index
         .upsert_batch(&[
             (
@@ -930,7 +896,7 @@ fn a_rebuild_reuses_only_the_vectors_of_unchanged_text() {
     index.flush().expect("flush");
     drop(index);
 
-    let previous = Previous::set_aside(&dir, PROFILE)
+    let previous = Previous::set_aside(&dir)
         .expect("set aside")
         .expect("an index built now lends its vectors");
     assert!(!dir.exists(), "the rebuild starts from an empty directory");
@@ -957,29 +923,20 @@ fn a_rebuild_reuses_only_the_vectors_of_unchanged_text() {
 
     // Built from content alone: its vectors are not what an index built now
     // computes, so it lends nothing and is discarded.
-    let index = ProjectionIndex::open(
-        &dir,
-        &legacy,
-        PROFILE,
-        VectorIndex::default(),
-        Access::ReadWrite,
-        0,
-    )
-    .expect("open");
+    let index = ProjectionIndex::open(&dir, &legacy, VectorIndex::default(), Access::ReadWrite, 0)
+        .expect("open");
     drop(index);
     std::fs::write(
         dir.join("profile"),
         format!(
             "{}\ntopic\n{}\ncontent",
-            PROFILE.model_id(),
+            pamin_index::MODEL_ID,
             VectorIndex::default().label()
         ),
     )
     .expect("age the marker");
     assert!(
-        Previous::set_aside(&dir, PROFILE)
-            .expect("set aside")
-            .is_none(),
+        Previous::set_aside(&dir).expect("set aside").is_none(),
         "vectors from another encoding were lent"
     );
     assert!(!dir.exists() && !dir.with_extension("previous").exists());
@@ -1026,15 +983,8 @@ fn a_rebuild_lends_through_the_iterator_what_keyed_reads_return() {
     let legacy = root.path().join("legacy");
     let text = |n: u128| format!("memory number {n} is about kiln{n}");
 
-    let index = ProjectionIndex::open(
-        &dir,
-        &legacy,
-        PROFILE,
-        VectorIndex::default(),
-        Access::ReadWrite,
-        0,
-    )
-    .expect("open");
+    let index = ProjectionIndex::open(&dir, &legacy, VectorIndex::default(), Access::ReadWrite, 0)
+        .expect("open");
     let texts: Vec<String> = (1..=HELD).map(text).collect();
     let vectors: Vec<Vec<f32>> = (1..=HELD).map(separated).collect();
     index
@@ -1099,7 +1049,7 @@ fn a_rebuild_lends_through_the_iterator_what_keyed_reads_return() {
         "the fixture does not hold what it means to"
     );
 
-    let previous = Previous::set_aside(&dir, PROFILE)
+    let previous = Previous::set_aside(&dir)
         .expect("set aside")
         .expect("an index built now lends its vectors");
     assert_eq!(previous.lends(&wanted).expect("count"), expected.len());
@@ -1129,7 +1079,6 @@ fn a_document_reads_back_as_it_was_written() {
     let index = ProjectionIndex::open(
         dir.path(),
         &dir.path().join("legacy"),
-        PROFILE,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -1185,7 +1134,7 @@ fn keyed_as_written(dir: &std::path::Path) {
         dir.join("profile"),
         format!(
             "{}\ntopic\n{}\nnamed",
-            PROFILE.model_id(),
+            pamin_index::MODEL_ID,
             VectorIndex::default().label()
         ),
     )
@@ -1230,15 +1179,8 @@ fn an_index_keyed_by_the_identifier_as_written_keeps_answering() {
     ];
 
     keyed_as_written(&dir);
-    let index = ProjectionIndex::open(
-        &dir,
-        &legacy,
-        PROFILE,
-        VectorIndex::default(),
-        Access::ReadWrite,
-        0,
-    )
-    .expect("open");
+    let index = ProjectionIndex::open(&dir, &legacy, VectorIndex::default(), Access::ReadWrite, 0)
+        .expect("open");
     let documents: Vec<Vec<f32>> = (0..3).map(|n| separated(n + 40)).collect();
     index
         .upsert_batch(
@@ -1252,15 +1194,8 @@ fn an_index_keyed_by_the_identifier_as_written_keeps_answering() {
     index.flush().expect("flush");
     drop(index);
 
-    let index = ProjectionIndex::open(
-        &dir,
-        &legacy,
-        PROFILE,
-        VectorIndex::default(),
-        Access::ReadWrite,
-        0,
-    )
-    .expect("reopen");
+    let index = ProjectionIndex::open(&dir, &legacy, VectorIndex::default(), Access::ReadWrite, 0)
+        .expect("reopen");
     assert!(holds(
         &index.recall_segmented("release train", 10).expect("recall"),
         topics[0]
@@ -1295,7 +1230,7 @@ fn an_index_keyed_by_the_identifier_as_written_keeps_answering() {
     );
 
     // The rebuild's side: it lends from this index and writes a new one.
-    let previous = Previous::set_aside(&dir, PROFILE)
+    let previous = Previous::set_aside(&dir)
         .expect("set aside")
         .expect("an index whose vectors are current lends them");
     let wanted = HashMap::from([(topics[0], texts[0]), (topics[1], texts[1])]);
@@ -1304,15 +1239,9 @@ fn an_index_keyed_by_the_identifier_as_written_keeps_answering() {
         2,
         "the set-aside index was read with a spelling it was not written in"
     );
-    let rebuilt = ProjectionIndex::open(
-        &dir,
-        &legacy,
-        PROFILE,
-        VectorIndex::default(),
-        Access::ReadWrite,
-        0,
-    )
-    .expect("rebuild");
+    let rebuilt =
+        ProjectionIndex::open(&dir, &legacy, VectorIndex::default(), Access::ReadWrite, 0)
+            .expect("rebuild");
     let lent = previous
         .lend(&wanted, 256, |documents| rebuilt.upsert_batch(documents))
         .expect("lend");
@@ -1338,20 +1267,13 @@ fn an_index_keyed_by_the_identifier_as_written_keeps_answering() {
         dir.join("profile"),
         format!(
             "{}\ntopic\n{}\nnamed\ntopic-keys",
-            PROFILE.model_id(),
+            pamin_index::MODEL_ID,
             VectorIndex::default().label()
         ),
     )
     .expect("mislabel the marker");
-    let misread = ProjectionIndex::open(
-        &dir,
-        &legacy,
-        PROFILE,
-        VectorIndex::default(),
-        Access::ReadOnly,
-        0,
-    )
-    .expect("open");
+    let misread = ProjectionIndex::open(&dir, &legacy, VectorIndex::default(), Access::ReadOnly, 0)
+        .expect("open");
     let found = misread
         .recall_segmented("release train", 10)
         .expect("recall");
@@ -1396,15 +1318,9 @@ fn every_channel_answers_the_same_whichever_way_keys_are_spelled() {
     let root = tempfile::tempdir().expect("temp dir");
     let legacy = root.path().join("legacy");
     let build = |dir: &std::path::Path| {
-        let index = ProjectionIndex::open(
-            dir,
-            &legacy,
-            PROFILE,
-            VectorIndex::default(),
-            Access::ReadWrite,
-            0,
-        )
-        .expect("open");
+        let index =
+            ProjectionIndex::open(dir, &legacy, VectorIndex::default(), Access::ReadWrite, 0)
+                .expect("open");
         // Sixty-four to a flush, as the cascade writes, with every eighth
         // batch rewriting a document written before.
         for (batch, chunk) in (0..DOCUMENTS).collect::<Vec<_>>().chunks(64).enumerate() {
@@ -1492,15 +1408,9 @@ fn topics_written_in_order_leave_a_bounded_key_map() {
     let root = tempfile::tempdir().expect("temp dir");
     let legacy = root.path().join("legacy");
     let files = |dir: &std::path::Path| {
-        let index = ProjectionIndex::open(
-            dir,
-            &legacy,
-            PROFILE,
-            VectorIndex::default(),
-            Access::ReadWrite,
-            0,
-        )
-        .expect("open");
+        let index =
+            ProjectionIndex::open(dir, &legacy, VectorIndex::default(), Access::ReadWrite, 0)
+                .expect("open");
         for flush in 0..FLUSHES {
             let documents: Vec<(TopicId, String)> = (0..4)
                 .map(|n| (TopicId::new(), format!("flush {flush} memory {n}")))
@@ -1552,8 +1462,8 @@ fn each_vector_index_reads_back_what_it_stored_and_is_opened_only_as_itself() {
         let root = tempfile::tempdir().expect("temp dir");
         let dir = root.path().join("index");
         let legacy = root.path().join("legacy");
-        let built = ProjectionIndex::open(&dir, &legacy, PROFILE, index, Access::ReadWrite, 0)
-            .expect("open");
+        let built =
+            ProjectionIndex::open(&dir, &legacy, index, Access::ReadWrite, 0).expect("open");
         let topics: Vec<TopicId> = (1..=DOCUMENTS).map(numbered).collect();
         let texts: Vec<String> = (1..=DOCUMENTS)
             .map(|n| format!("memory number {n}"))
@@ -1596,17 +1506,16 @@ fn each_vector_index_reads_back_what_it_stored_and_is_opened_only_as_itself() {
             .into_iter()
             .find(|other| *other != index)
             .expect("two of them");
-        let refused =
-            match ProjectionIndex::open(&dir, &legacy, PROFILE, other, Access::ReadWrite, 0) {
-                Ok(_) => panic!("{index:?} opened as {other:?}"),
-                Err(error) => error.to_string(),
-            };
+        let refused = match ProjectionIndex::open(&dir, &legacy, other, Access::ReadWrite, 0) {
+            Ok(_) => panic!("{index:?} opened as {other:?}"),
+            Err(error) => error.to_string(),
+        };
         assert!(
             refused.contains(index.label()) && refused.contains("reindex"),
             "the refusal has to name what the index is and what to run: {refused}"
         );
 
-        let reopened = ProjectionIndex::open(&dir, &legacy, PROFILE, index, Access::ReadWrite, 0)
+        let reopened = ProjectionIndex::open(&dir, &legacy, index, Access::ReadWrite, 0)
             .expect("reopen as itself");
         for at in (0..DOCUMENTS as usize).step_by(10) {
             assert!(
@@ -1620,7 +1529,7 @@ fn each_vector_index_reads_back_what_it_stored_and_is_opened_only_as_itself() {
     }
 }
 
-/// Clustered vectors and queries drawn from the same clusters, at the profile's
+/// Clustered vectors and queries drawn from the same clusters, at the model's
 /// width, so near neighbours are near for a reason and recall means something.
 fn clustered(documents: usize, queries: usize) -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
     const CLUSTERS: usize = 40;
@@ -1635,7 +1544,7 @@ fn clustered(documents: usize, queries: usize) -> (Vec<Vec<f32>>, Vec<Vec<f32>>)
         let norm: f32 = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
         vector.into_iter().map(|x| x / norm).collect::<Vec<f32>>()
     };
-    let dimensions = PROFILE.dimensions() as usize;
+    let dimensions = pamin_index::DIMENSIONS as usize;
     let centroids: Vec<Vec<f32>> = (0..CLUSTERS)
         .map(|_| unit((0..dimensions).map(|_| next()).collect()))
         .collect();
@@ -1690,7 +1599,6 @@ fn each_vector_index_returns_the_nearest_documents() {
         let built = ProjectionIndex::open(
             &dir.path().join("index"),
             &dir.path().join("legacy"),
-            PROFILE,
             index,
             Access::ReadWrite,
             0,
@@ -1767,7 +1675,7 @@ fn an_fp32_index_from_before_is_refused_and_lends_to_its_rebuild() {
         .add_vector_field(
             "embedding",
             DataType::VectorFp32,
-            PROFILE.dimensions(),
+            pamin_index::DIMENSIONS,
             IndexParams::hnsw(zvec_rust::MetricType::Cosine, 32, 500).expect("hnsw"),
         )
         .build()
@@ -1803,36 +1711,29 @@ fn an_fp32_index_from_before_is_refused_and_lends_to_its_rebuild() {
     }
     std::fs::write(
         dir.join("profile"),
-        format!("{}\ntopic\nfp32\nnamed", PROFILE.model_id()),
+        format!("{}\ntopic\nfp32\nnamed", pamin_index::MODEL_ID),
     )
     .expect("marker");
 
     for index in VectorIndex::ALL {
-        let refused =
-            match ProjectionIndex::open(&dir, &legacy, PROFILE, index, Access::ReadWrite, 0) {
-                Ok(_) => panic!("an fp32 index opened as {index:?}"),
-                Err(error) => error.to_string(),
-            };
+        let refused = match ProjectionIndex::open(&dir, &legacy, index, Access::ReadWrite, 0) {
+            Ok(_) => panic!("an fp32 index opened as {index:?}"),
+            Err(error) => error.to_string(),
+        };
         assert!(
             refused.contains("fp32") && refused.contains("reindex"),
             "the refusal has to name what the index is and what to run: {refused}"
         );
     }
 
-    let previous = Previous::set_aside(&dir, PROFILE)
+    let previous = Previous::set_aside(&dir)
         .expect("set aside")
         .expect("an fp32 index of the same model and encoding lends its vectors");
     let wanted = HashMap::from([(id(1), texts[0]), (id(2), texts[1])]);
     assert_eq!(previous.lends(&wanted).expect("count"), 2);
-    let rebuilt = ProjectionIndex::open(
-        &dir,
-        &legacy,
-        PROFILE,
-        VectorIndex::default(),
-        Access::ReadWrite,
-        0,
-    )
-    .expect("rebuild");
+    let rebuilt =
+        ProjectionIndex::open(&dir, &legacy, VectorIndex::default(), Access::ReadWrite, 0)
+            .expect("rebuild");
     previous
         .lend(&wanted, 256, |documents| rebuilt.upsert_batch(documents))
         .expect("lend");

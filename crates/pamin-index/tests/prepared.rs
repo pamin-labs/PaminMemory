@@ -23,7 +23,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use pamin_index::{Device, Embedder, Profile, Reranker};
+use pamin_index::{Device, Embedder, Reranker};
 
 /// Which load a child process runs, and where its models are.
 const ARM: &str = "PAMIN_PREPARED_ARM";
@@ -233,7 +233,7 @@ fn child(model: &str, cache: &Path) {
             })
         }
         "embedder" => {
-            let mut embedder = Embedder::load(Profile::Accuracy, cache).expect("load the embedder");
+            let mut embedder = Embedder::load(cache).expect("load the embedder");
             Box::new(move || {
                 let vectors = embedder.embed_passages(TEXTS).expect("embed");
                 vectors.into_iter().flatten().collect()

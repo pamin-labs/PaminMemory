@@ -16,9 +16,6 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-/// The one embedding profile.
-const PROFILE: &str = "accuracy";
-
 struct Cli {
     home: tempfile::TempDir,
 }
@@ -38,7 +35,6 @@ impl Cli {
         let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
             .args(args)
             .env("PAMIN_HOME", self.home())
-            .env("PAMIN_PROFILE", PROFILE)
             .output()
             .expect("running pamin");
 
@@ -82,7 +78,6 @@ impl Cli {
         let child = Command::new(env!("CARGO_BIN_EXE_pamin"))
             .args(["serve"])
             .env("PAMIN_HOME", self.home())
-            .env("PAMIN_PROFILE", PROFILE)
             .env("PAMIN_LOG", filter)
             .envs(env.iter().copied())
             .stdout(log.try_clone().expect("a second handle on the log"))
@@ -109,7 +104,6 @@ impl Cli {
         let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
             .args(args)
             .env("PAMIN_HOME", self.home())
-            .env("PAMIN_PROFILE", PROFILE)
             .output()
             .expect("running pamin");
         assert!(!output.status.success(), "expected {args:?} to fail");
@@ -1148,6 +1142,7 @@ fn a_removed_setting_is_refused_rather_than_ignored() {
 
     for (name, values) in [
         ("PAMIN_NO_SERVER", ["1", "0"]),
+        ("PAMIN_PROFILE", ["accuracy", "speed"]),
         ("PAMIN_RERANK", ["off", "accurate"]),
     ] {
         for value in values {
@@ -1216,14 +1211,6 @@ fn a_walk_deeper_than_the_graph_channel_goes_is_refused() {
             .is_none(),
         "a refused argument should not have provisioned a workspace"
     );
-}
-
-#[test]
-#[ignore = "provisions postgres and downloads model weights"]
-fn an_unknown_profile_is_rejected_before_anything_is_provisioned() {
-    let cli = Cli::new();
-    let error = cli.fails(&["--profile", "enormous", "init"]);
-    assert!(error.contains("enormous"), "got {error:?}");
 }
 
 #[test]
@@ -1636,7 +1623,7 @@ fn a_deferred_write_is_found_without_anything_else_being_run() {
 ///
 /// Catching up runs a model nobody asked for, and the searches it is doing the
 /// work for share that model: a forward pass holds it, and a search on any
-/// project on the same profile queues behind the pass. So the server only
+/// project queues behind the pass. So the server only
 /// starts a round when nothing is being answered, stops between rounds when a
 /// request arrives, and keeps a round small -- and what a search can pay is
 /// what is left of the round it arrived during.
@@ -2231,7 +2218,6 @@ fn an_import_records_the_whole_file_or_none_of_it() {
         .args(["import", "--from"])
         .arg(&broken)
         .env("PAMIN_HOME", cli.home())
-        .env("PAMIN_PROFILE", PROFILE)
         .output()
         .expect("running import");
     assert!(
@@ -2333,7 +2319,7 @@ fn recorded_vector_indexes(cli: &Cli) -> Vec<String> {
 /// rebuilding it -- which reuses every vector rather than embedding again.
 ///
 /// Asking an index built one way to answer as the other is refused and names
-/// `pamin reindex`, as a profile change is: searched with the other index's
+/// `pamin reindex`: searched with the other index's
 /// parameters it would answer, plausibly and wrongly.
 #[test]
 #[ignore = "provisions postgres and downloads model weights"]

@@ -62,7 +62,7 @@ use std::time::{Duration, Instant};
 
 use crate::harness::Rerank;
 use pamin_engine::{Depths, Engine, Models};
-use pamin_index::{Access, Embedder, Profile, Reranker, VectorIndex};
+use pamin_index::{Access, Embedder, Reranker, VectorIndex};
 use pamin_store::{Database, Workspace};
 
 /// What `pamin search` passes when a caller says nothing.
@@ -131,19 +131,13 @@ impl Samples {
 /// not reranked at all -- the pass declines when no candidate it may move
 /// would reach the caller's page -- and a round timed over one of those would
 /// report a cold search without its most expensive step.
-pub async fn report(
-    database: &Database,
-    workspace: &Workspace,
-    project: &str,
-    profile: Profile,
-    queries: &[&str],
-) {
+pub async fn report(database: &Database, workspace: &Workspace, project: &str, queries: &[&str]) {
     let tier = Rerank::default();
     let models = workspace.root().join("models");
 
     // Untimed: the first load on a machine writes each model's prepared copy,
     // which is a one-off and not what a released server pays.
-    let queries = reranked(database, workspace, project, profile, tier, queries).await;
+    let queries = reranked(database, workspace, project, tier, queries).await;
     println!(
         "\n  cold query {:?}, warm query {:?}",
         queries[0], queries[1]
@@ -155,19 +149,19 @@ pub async fn report(
         // The warmed round goes first every other time, so the two it is
         // paired with do not always run in the same order.
         let early = if round % 2 == 1 {
-            Some(warmed(database, workspace, project, profile, tier, queries).await)
+            Some(warmed(database, workspace, project, tier, queries).await)
         } else {
             None
         };
 
-        let (open, search, warm) = cold(database, workspace, project, profile, tier, queries).await;
+        let (open, search, warm) = cold(database, workspace, project, tier, queries).await;
         let cold_total = open + search;
         samples.record("cold: open the index", open);
         samples.record("cold: search, shipped tier", search);
         samples.record("cold: open + search", open + search);
         samples.record("warm: search, shipped tier", warm);
 
-        let (open, off, then) = serial(database, workspace, project, profile, tier, queries).await;
+        let (open, off, then) = serial(database, workspace, project, tier, queries).await;
         samples.record("serial: open the index", open);
         samples.record("serial: search, off", off);
         samples.record("serial: then the shipped tier", then);
@@ -175,21 +169,20 @@ pub async fn report(
 
         let (first, until, then) = match early {
             Some(early) => early,
-            None => warmed(database, workspace, project, profile, tier, queries).await,
+            None => warmed(database, workspace, project, tier, queries).await,
         };
         samples.record("warmed: open + search", first);
         samples.record("touched: until warm", until);
         samples.record("touched: then search", then);
         paired.push((cold_total.as_secs_f64() - first.as_secs_f64()) * 1e3);
 
-        for (name, took) in parts(&models, profile, queries) {
+        for (name, took) in parts(&models, queries) {
             samples.record(name, took);
         }
     }
 
     println!(
-        "\n  cold search, own corpus, {} profile, {} tier, limit {LIMIT}, {} rounds",
-        profile_name(profile),
+        "\n  cold search, own corpus, accuracy profile, {} tier, limit {LIMIT}, {} rounds",
         tier.name(),
         rounds()
     );
@@ -206,23 +199,16 @@ pub async fn report(
     );
 }
 
-fn profile_name(profile: Profile) -> &'static str {
-    match profile {
-        Profile::Accuracy => "accuracy",
-    }
-}
-
 /// The first two of `queries` that `tier` reranks, asked through the shipped
 /// path at the default limit.
 async fn reranked<'q>(
     database: &Database,
     workspace: &Workspace,
     project: &str,
-    profile: Profile,
     tier: Rerank,
     queries: &[&'q str],
 ) -> [&'q str; 2] {
-    let (engine, _) = open(database, workspace, project, profile).await;
+    let (engine, _) = open(database, workspace, project).await;
     let mut found = Vec::new();
     for query in queries {
         let before = scored(&engine);
@@ -241,19 +227,13 @@ async fn reranked<'q>(
 
 /// Opens the project against a registry holding nothing, the way a server
 /// that has released everything reopens it.
-async fn open(
-    database: &Database,
-    workspace: &Workspace,
-    project: &str,
-    profile: Profile,
-) -> (Engine, Duration) {
+async fn open(database: &Database, workspace: &Workspace, project: &str) -> (Engine, Duration) {
     let started = Instant::now();
     let engine = Engine::attached(
         database.clone(),
         &Models::in_workspace(workspace),
         workspace,
         project,
-        profile,
         VectorIndex::default(),
         Access::ReadWrite,
     )
@@ -295,11 +275,10 @@ async fn cold(
     database: &Database,
     workspace: &Workspace,
     project: &str,
-    profile: Profile,
     tier: Rerank,
     [query, other]: [&str; 2],
 ) -> (Duration, Duration, Duration) {
-    let (engine, open) = open(database, workspace, project, profile).await;
+    let (engine, open) = open(database, workspace, project).await;
     assert!(
         engine.reranked().is_none(),
         "the reranker was resident before the cold search"
@@ -327,7 +306,6 @@ async fn warmed(
     database: &Database,
     workspace: &Workspace,
     project: &str,
-    profile: Profile,
     tier: Rerank,
     [query, other]: [&str; 2],
 ) -> (Duration, Duration, Duration) {
@@ -336,9 +314,9 @@ async fn warmed(
         let started = Instant::now();
         let warming = {
             let models = models.clone();
-            tokio::task::spawn_blocking(move || models.warm(profile))
+            tokio::task::spawn_blocking(move || models.warm())
         };
-        let engine = attached(database, &models, workspace, project, profile).await;
+        let engine = attached(database, &models, workspace, project).await;
         search(&engine, query, tier, 0).await;
         let took = started.elapsed();
         warming.await.expect("the warm-up panicked").expect("warm");
@@ -349,9 +327,9 @@ async fn warmed(
     let started = Instant::now();
     let warming = {
         let models = models.clone();
-        tokio::task::spawn_blocking(move || models.warm(profile))
+        tokio::task::spawn_blocking(move || models.warm())
     };
-    let engine = attached(database, &models, workspace, project, profile).await;
+    let engine = attached(database, &models, workspace, project).await;
     warming.await.expect("the warm-up panicked").expect("warm");
     let until = started.elapsed();
     assert!(
@@ -368,14 +346,12 @@ async fn attached(
     models: &Models,
     workspace: &Workspace,
     project: &str,
-    profile: Profile,
 ) -> Engine {
     Engine::attached(
         database.clone(),
         models,
         workspace,
         project,
-        profile,
         VectorIndex::default(),
         Access::ReadWrite,
     )
@@ -390,11 +366,10 @@ async fn serial(
     database: &Database,
     workspace: &Workspace,
     project: &str,
-    profile: Profile,
     tier: Rerank,
     [query, _]: [&str; 2],
 ) -> (Duration, Duration, Duration) {
-    let (engine, open) = open(database, workspace, project, profile).await;
+    let (engine, open) = open(database, workspace, project).await;
     let off = search(&engine, query, Rerank::Off, 0).await;
     assert!(
         engine.reranked().is_none(),
@@ -405,11 +380,7 @@ async fn serial(
 }
 
 /// Each model's load and first passes, outside the engine.
-fn parts(
-    models: &std::path::Path,
-    profile: Profile,
-    [query, other]: [&str; 2],
-) -> Vec<(&'static str, Duration)> {
+fn parts(models: &std::path::Path, [query, other]: [&str; 2]) -> Vec<(&'static str, Duration)> {
     let mut took = Vec::new();
     let mut time = |name, work: &mut dyn FnMut()| {
         let started = Instant::now();
@@ -419,7 +390,7 @@ fn parts(
 
     let mut embedder = None;
     time("parts: load the embedder", &mut || {
-        embedder = Some(Embedder::load(profile, models).expect("load the embedder"));
+        embedder = Some(Embedder::load(models).expect("load the embedder"));
     });
     let mut embedder = embedder.expect("loaded");
     time("parts: first query embedding", &mut || {
@@ -452,7 +423,7 @@ fn parts(
     let mut both = None;
     time("parts: load both at once", &mut || {
         both = Some(std::thread::scope(|scope| {
-            let embedder = scope.spawn(|| Embedder::load(profile, models).expect("embedder"));
+            let embedder = scope.spawn(|| Embedder::load(models).expect("embedder"));
             let reranker = scope.spawn(|| Reranker::load(models).expect("reranker"));
             (
                 embedder.join().expect("the embedder's load panicked"),

@@ -31,7 +31,7 @@ use fastembed::{
     Bgem3Embedding, InitOptionsUserDefined, OnnxSource, RerankInitOptionsUserDefined, TextRerank,
     TokenizerFiles, UserDefinedRerankingModel,
 };
-use pamin_index::{Device, Embedder, Profile, Reranker};
+use pamin_index::{Device, Embedder, Reranker};
 
 /// Which arm a child runs, and where its models are.
 const ARM: &str = "PAMIN_SHARED_ARM";
@@ -255,7 +255,7 @@ fn child(arm: &str, cache: &Path) {
 
     match arm {
         "write-embedder" => {
-            Embedder::load(Profile::Accuracy, cache).expect("load the embedder");
+            Embedder::load(cache).expect("load the embedder");
         }
         "write-accurate" => {
             Reranker::load(cache).expect("load the reranker");
@@ -264,8 +264,7 @@ fn child(arm: &str, cache: &Path) {
             let before = anonymous();
             let started = Instant::now();
             let (mut embed, mut rank): (Embed, Rank) = if arm == "new" {
-                let mut embedder =
-                    Embedder::load(Profile::Accuracy, cache).expect("load the embedder");
+                let mut embedder = Embedder::load(cache).expect("load the embedder");
                 let mut reranker = Reranker::load(cache).expect("load the reranker");
                 assert_eq!(reranker.device(), Device::Cpu, "the copy is for the CPU");
                 (

@@ -192,9 +192,8 @@ fn open_tally() {
 }
 
 /// `PAMIN_` variables that say only where something is, or what to log, and
-/// change no result -- plus `PAMIN_PROFILE`, which the record names already.
-/// Every other `PAMIN_` variable is taken to change what is measured.
-const NOT_SETTINGS: [&str; 12] = [
+/// change no result. Every other `PAMIN_` variable is taken to change what is measured.
+const NOT_SETTINGS: [&str; 11] = [
     "PAMIN_EMBEDDING_TEST_OUTPUT",
     "PAMIN_EVAL_HOME",
     "PAMIN_HOME",
@@ -203,7 +202,6 @@ const NOT_SETTINGS: [&str; 12] = [
     "PAMIN_NATIVE_TEST_CACHE",
     "PAMIN_POSTGRES_DIR",
     "PAMIN_PREPARED_CACHE",
-    "PAMIN_PROFILE",
     "PAMIN_RERANK_TEST_OUTPUT",
     "PAMIN_SHARED_CACHE",
     "PAMIN_TEST_MODEL_CACHE",
@@ -2547,11 +2545,7 @@ mod tests {
                 .map(|(name, value)| (name.to_string(), value.to_string()));
             arm(&settings(set))
         };
-        let shipped = named(&[
-            ("PAMIN_EVAL_HOME", "/data"),
-            ("PAMIN_PROFILE", "fast"),
-            ("HOME", "/root"),
-        ]);
+        let shipped = named(&[("PAMIN_EVAL_HOME", "/data"), ("HOME", "/root")]);
         assert_eq!(shipped, "shipped");
         let depth = named(&[("PAMIN_RERANK_DEPTH", "20")]);
         let effort = named(&[("PAMIN_SEARCH_EFFORT", "low")]);

@@ -63,7 +63,6 @@
 //! |---|---|
 //! | `MIRACL_DIR` | where the three dataset files are, instead of fetching them |
 //! | `MIRACL_MAX_DOCS` | cap the corpus, for checking the harness runs. **Not the benchmark**: the floors are not asserted and the number is not comparable with anyone's |
-//! | `PAMIN_PROFILE` | which embedding profile, default `accuracy`. The floors are asserted for that one only |
 //! | `TIERS` | run fusion alone (`off`) and the shipped reranker side by side, paired |
 //! | `PASSAGES` | a second project whose vectors embed the topic name, paired against this one |
 //! | `ROUTES` | a cascade and gates that spend less on the reranker, against the shipped pass |
@@ -108,7 +107,7 @@ const QRELS: &str = "https://huggingface.co/datasets/miracl/miracl/resolve/main/
 const CORPUS: &str = "https://huggingface.co/datasets/miracl/miracl-corpus/resolve/main/\
                       miracl-corpus-v1.0-sw/docs-0.jsonl.gz";
 
-use harness::{DEFAULT_PROFILE, eval_home, profile};
+use harness::{eval_home, profile};
 use scoring::{NDCG_AT, RECALL_AT, Scores};
 
 /// How deep a ranking is taken before scoring, so recall@50 can be reached.
@@ -395,11 +394,7 @@ fn report_reranking(engine: &Engine, tier: Rerank, queries: usize) {
 }
 
 /// Asserts the floors, unless this run is disqualified from carrying them.
-fn assert_floors(named: &str, corpus: &Corpus, scores: &Scores, floors: (f64, f64)) {
-    if named != DEFAULT_PROFILE {
-        println!("  {named} is not the default profile, so the floors are not asserted\n");
-        return;
-    }
+fn assert_floors(corpus: &Corpus, scores: &Scores, floors: (f64, f64)) {
     if corpus.capped {
         println!("  the corpus was capped, so the floors are not asserted\n");
         return;
@@ -435,14 +430,13 @@ const MODEL_FLOORS: (f64, f64) = (0.0, 0.0);
 #[ignore = "downloads a corpus and embeds a hundred and thirty-two thousand passages"]
 fn the_model_ranks_real_passages() {
     let corpus = Corpus::load();
-    let (named, profile) = profile();
+    let named = profile();
     corpus.describe(&named);
 
     let home = eval_home();
-    let mut embedder =
-        Embedder::load(profile, &home.join("models")).expect("load the embedding model");
+    let mut embedder = Embedder::load(&home.join("models")).expect("load the embedding model");
 
-    let width = profile.dimensions() as usize;
+    let width = pamin_index::DIMENSIONS as usize;
     let vectors = embed_corpus(&mut embedder, &corpus, &home, width);
 
     let mut scores = Scores::default();
@@ -476,7 +470,7 @@ fn the_model_ranks_real_passages() {
         &scores,
         started.elapsed().as_secs_f64() * 1000.0 / corpus.queries.len() as f64,
     );
-    assert_floors(&named, &corpus, &scores, MODEL_FLOORS);
+    assert_floors(&corpus, &scores, MODEL_FLOORS);
 }
 
 /// Embeds every passage through the shared vector cache (see
@@ -484,7 +478,7 @@ fn the_model_ranks_real_passages() {
 fn embed_corpus(embedder: &mut Embedder, corpus: &Corpus, home: &Path, width: usize) -> Vec<f32> {
     /// How many passages go into one call.
     ///
-    /// A call and not a forward pass on the default profile: the joint export
+    /// A call and not a forward pass on this model: the joint export
     /// runs its texts one at a time, because a batched vector there depends on
     /// which texts it shared a batch with. This still bounds how much is lost
     /// when the process dies.
@@ -492,7 +486,7 @@ fn embed_corpus(embedder: &mut Embedder, corpus: &Corpus, home: &Path, width: us
 
     let path = home.join(format!(
         "miracl-sw-{}-{}.f32",
-        embedder.profile().model_id().replace('/', "-"),
+        pamin_index::MODEL_ID.replace('/', "-"),
         corpus.fingerprint()
     ));
     let texts: Vec<&str> = corpus
@@ -544,7 +538,7 @@ async fn search() {
     println!("  open files: {before} raised to {after}");
 
     let corpus = Corpus::load();
-    let (named, profile) = profile();
+    let named = profile();
     corpus.describe(&named);
 
     let home = eval_home();
@@ -555,13 +549,10 @@ async fn search() {
         None => Workspace::at(&home),
     };
 
-    // The profile is part of the workspace identity: an index records the
-    // profile it was built with and refuses to open under another.
     let project = format!("miracl-sw-{named}-{}", corpus.fingerprint());
     let engine = Engine::open(
         &workspace,
         &project,
-        profile,
         VectorIndex::default(),
         Access::ReadWrite,
     )
@@ -751,7 +742,6 @@ async fn search() {
         let other = Engine::open(
             &workspace,
             &format!("{project}-named"),
-            profile,
             VectorIndex::default(),
             Access::ReadWrite,
         )
@@ -886,7 +876,7 @@ async fn search() {
         started.elapsed().as_secs_f64() * 1000.0 / corpus.queries.len() as f64,
     );
     report_reranking(&engine, Rerank::default(), corpus.queries.len());
-    assert_floors(&named, &corpus, &shipped, SEARCH_FLOORS);
+    assert_floors(&corpus, &shipped, SEARCH_FLOORS);
 
     // Fusion alone, to price the reranker on this corpus rather than assume
     // the other corpus's answer carries over. It does not: reranking touches
@@ -902,12 +892,12 @@ async fn search() {
     // Query by query, not mean against mean. This corpus is where the
     // reranker was measured *losing* 0.0152, and a loss that size is exactly
     // what a paired count can dissolve or confirm -- until now nothing here
-    // could tell which. Printed on every profile, because the number is worth
+    // could tell which. Printed on every run, because the number is worth
     // having even when the floors are not asserted; see `statistics`.
     let paired = statistics::compare(&fused.per_query, &shipped.per_query);
     println!("  reranking is worth {paired} nDCG@{NDCG_AT} here\n");
 
-    if named == DEFAULT_PROFILE && !corpus.capped {
+    if !corpus.capped {
         let gain = shipped.mean_ndcg() - fused.mean_ndcg();
         assert!(
             gain >= RERANK_IS_WORTH,

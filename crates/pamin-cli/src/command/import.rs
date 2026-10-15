@@ -18,7 +18,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use pamin_engine::Owed;
-use pamin_index::{Profile, VectorIndex};
+use pamin_index::VectorIndex;
 use serde::{Deserialize, Serialize};
 
 use crate::command::validity;
@@ -101,7 +101,6 @@ fn by_topic(memories: &[Memory]) -> Vec<Vec<&Memory>> {
 pub async fn execute(
     session: &Session,
     project: &str,
-    profile: Profile,
     vector_index: VectorIndex,
     args: Args,
 ) -> Result<Imported> {
@@ -126,7 +125,7 @@ pub async fn execute(
         })
         .collect::<Result<_>>()?;
 
-    let engine = session.engine(project, profile, vector_index).await?;
+    let engine = session.engine(project, vector_index).await?;
 
     // Grouped by topic, and **the grouping is what makes concurrency correct
     // rather than faster**. `Engine::remember` reads the topic's current

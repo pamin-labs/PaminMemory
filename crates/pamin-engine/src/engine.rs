@@ -13,8 +13,7 @@ use pamin_core::{
     Scored, SourceKind, TopicId, TopicState, TopicStateId, Validity, Why,
 };
 use pamin_index::{
-    Access, Embedder, Previous, Profile, Projection, ProjectionIndex, Reranker, VectorDocument,
-    VectorIndex,
+    Access, Embedder, Previous, Projection, ProjectionIndex, Reranker, VectorDocument, VectorIndex,
 };
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
 use pamin_store::{Connections, Database, PgConnection, Workspace, graph, jobs, repository};
@@ -264,17 +263,13 @@ pub struct Engine {
     /// `docs/architecture.md` says only this crate holds. A command that never
     /// embeds now never loads: a server serving those alone stays at 29 MB.
     ///
-    /// Shared with every other engine on the same profile, which is why it
-    /// comes from [`Models`] rather than being built here -- two projects are
-    /// two indexes and one model, and the registry is where two callers
-    /// arriving at a cold profile queue rather than both loading it. This cell
+    /// Shared with every other engine, which is why it comes from [`Models`]
+    /// rather than being built here -- two projects are two indexes and one
+    /// model, and the registry is where two callers arriving at a cold model
+    /// queue rather than both loading it. This cell
     /// is a per-engine cache of that lookup, so a search does not take the
     /// registry's lock to find what it already has.
     embedder: std::sync::OnceLock<Arc<Mutex<Embedder>>>,
-    /// Which model this engine's index was built with, and therefore the only
-    /// one it may embed with. Held because the load is deferred and the
-    /// deferred load has to ask for the same profile the index recorded.
-    pub(crate) profile: Profile,
     /// Which vector index this engine's index was built with, which is also
     /// the one it was asked for: opening under another is refused.
     pub(crate) vector_index: VectorIndex,
@@ -296,17 +291,16 @@ struct Rebuilding {
     _exclusive: tokio::sync::OwnedMutexGuard<()>,
 }
 
-/// The embedding models this process has loaded, one per profile.
+/// The models this process has loaded.
 ///
 /// Shared between projects rather than held by each. The weights are the same
 /// hundreds of megabytes whichever project asks for an embedding, so a process
-/// serving a hundred projects on one profile holds one model, not a hundred.
-/// Keyed by profile because that is what decides which weights these are; the
-/// project decides nothing about them.
+/// serving a hundred projects holds one model, not a hundred: the project
+/// decides nothing about them.
 #[derive(Clone)]
 pub struct Models {
     dir: std::path::PathBuf,
-    loaded: Arc<Mutex<std::collections::HashMap<Profile, Held<Embedder>>>>,
+    loaded: Arc<Mutex<Option<Held<Embedder>>>>,
     /// The same arrangement for the one reranker, while it is loaded.
     ///
     /// It carries when it was last handed out, because unlike an embedder a
@@ -371,25 +365,25 @@ impl Models {
         }
     }
 
-    /// The model for a profile, loading it the first time it is asked for.
+    /// The embedding model, loading it the first time it is asked for.
     ///
     /// Blocking, and the registry lock is held across the load. That makes a
-    /// second caller for the same profile wait out the first one's download
-    /// instead of starting its own, which is the whole point; the wait it pays
-    /// is the wait it would have paid loading its own copy.
-    fn get(&self, profile: Profile) -> Result<Arc<Mutex<Embedder>>, pamin_index::IndexError> {
+    /// second caller wait out the first one's download instead of starting
+    /// its own, which is the whole point; the wait it pays is the wait it
+    /// would have paid loading its own copy.
+    fn embedder(&self) -> Result<Arc<Mutex<Embedder>>, pamin_index::IndexError> {
         let mut loaded = self
             .loaded
             .lock()
             .expect("the model registry lock is poisoned");
 
-        if let Some((last_used, embedder)) = loaded.get_mut(&profile) {
+        if let Some((last_used, embedder)) = loaded.as_mut() {
             *last_used = Instant::now();
             return Ok(Arc::clone(embedder));
         }
 
-        let embedder = Arc::new(Mutex::new(Embedder::load(profile, &self.dir)?));
-        loaded.insert(profile, (Instant::now(), Arc::clone(&embedder)));
+        let embedder = Arc::new(Mutex::new(Embedder::load(&self.dir)?));
+        *loaded = Some((Instant::now(), Arc::clone(&embedder)));
         Ok(embedder)
     }
 
@@ -413,8 +407,8 @@ impl Models {
         Ok(reranker)
     }
 
-    /// Loads the embedder for `profile` and the reranker, at once, before
-    /// anything has asked for either.
+    /// Loads the embedder and the reranker, at once, before anything has
+    /// asked for either.
     ///
     /// For a resident server that has just been asked something about a
     /// project it holds nothing for: most of the first search after an idle
@@ -436,11 +430,11 @@ impl Models {
     /// arrives meanwhile waits for the load in flight instead of starting a
     /// second. Two threads because the two loads are independent: the `COLD`
     /// arm measured them at 1,300 ms together, against 1,089 and 977 alone.
-    pub fn warm(&self, profile: Profile) -> Result<(), pamin_index::IndexError> {
+    pub fn warm(&self) -> Result<(), pamin_index::IndexError> {
         std::thread::scope(|scope| {
             let reranker =
                 Reranker::is_downloaded(&self.dir).then(|| scope.spawn(|| self.reranker()));
-            let embedder = self.get(profile);
+            let embedder = self.embedder();
             let reranker =
                 reranker.map(|loading| loading.join().expect("a reranker load panicked"));
             embedder?;
@@ -486,7 +480,7 @@ impl Models {
             .collect()
     }
 
-    /// Gives back the embedders no open engine is holding any more.
+    /// Gives back the embedder if no open engine is holding it any more.
     ///
     /// **Costs 1.6 GB to hold and 29 MB not to.** Measured on a server over
     /// the 13,014-document project, four cores: it is 29 MB resident having
@@ -512,24 +506,18 @@ impl Models {
     /// releases nothing.
     /// A model still loading is not idle; skip this tick rather than block
     /// the server's upkeep on its registry lock.
-    pub fn release_idle_embedders(&self) -> Vec<Profile> {
+    pub fn release_idle_embedder(&self) -> bool {
         let mut loaded = match self.loaded.try_lock() {
             Ok(loaded) => loaded,
-            Err(TryLockError::WouldBlock) => return Vec::new(),
+            Err(TryLockError::WouldBlock) => return false,
             Err(TryLockError::Poisoned(_)) => panic!("the model registry lock is poisoned"),
         };
 
-        let now = Instant::now();
-        let idle: Vec<Profile> = loaded
-            .iter()
-            .filter(|(_, (last_used, embedder))| {
-                is_idle(*last_used, now, model_idle()) && Arc::strong_count(embedder) == 1
-            })
-            .map(|(profile, _)| *profile)
-            .collect();
-
-        for profile in &idle {
-            loaded.remove(profile);
+        let idle = loaded.as_ref().is_some_and(|(last_used, embedder)| {
+            is_idle(*last_used, Instant::now(), model_idle()) && Arc::strong_count(embedder) == 1
+        });
+        if idle {
+            *loaded = None;
         }
         idle
     }
@@ -625,7 +613,6 @@ impl Engine {
     pub async fn open(
         workspace: &Workspace,
         project: &str,
-        profile: Profile,
         vector_index: VectorIndex,
         access: Access,
     ) -> Result<Self> {
@@ -636,7 +623,6 @@ impl Engine {
             &models,
             workspace,
             project,
-            profile,
             vector_index,
             access,
             false,
@@ -654,7 +640,6 @@ impl Engine {
         models: &Models,
         workspace: &Workspace,
         project: &str,
-        profile: Profile,
         vector_index: VectorIndex,
         access: Access,
     ) -> Result<Self> {
@@ -663,7 +648,6 @@ impl Engine {
             models,
             workspace,
             project,
-            profile,
             vector_index,
             access,
             false,
@@ -681,7 +665,6 @@ impl Engine {
         models: &Models,
         workspace: &Workspace,
         project: &str,
-        profile: Profile,
         vector_index: VectorIndex,
     ) -> Result<Self> {
         Self::assemble(
@@ -689,7 +672,6 @@ impl Engine {
             models,
             workspace,
             project,
-            profile,
             vector_index,
             Access::ReadWrite,
             true,
@@ -697,13 +679,11 @@ impl Engine {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn assemble(
         database: Database,
         models: &Models,
         workspace: &Workspace,
         project: &str,
-        profile: Profile,
         vector_index: VectorIndex,
         access: Access,
         discard: bool,
@@ -742,7 +722,7 @@ impl Engine {
             // Set aside rather than deleted, so the rebuild can take the
             // vectors it still holds instead of embedding every memory again.
             let previous = if discard {
-                let previous = Previous::set_aside(&dir, profile)?;
+                let previous = Previous::set_aside(&dir)?;
                 // A rebuild is also the migration off the shared layout, which
                 // is what the error about it tells the caller to run.
                 ProjectionIndex::discard(&legacy)?;
@@ -751,11 +731,10 @@ impl Engine {
                 None
             };
 
-            let index =
-                ProjectionIndex::open(&dir, &legacy, profile, vector_index, access, documents)?;
+            let index = ProjectionIndex::open(&dir, &legacy, vector_index, access, documents)?;
             // The model is not loaded here. It was, and that made opening an
             // engine cost the weights -- see the `embedder` field. What is lost
-            // is that a cold profile's download used to surface at open rather
+            // is that a cold model's download used to surface at open rather
             // than at the first embedding; what is gained is every command
             // that does not embed.
             Ok::<_, pamin_index::IndexError>((
@@ -782,7 +761,6 @@ impl Engine {
                 _exclusive: exclusive,
             }))),
             embedder: std::sync::OnceLock::new(),
-            profile,
             vector_index,
             models: models.clone(),
             project: project.id,
@@ -957,7 +935,7 @@ impl Engine {
                 // fail. Two callers racing here both ask the registry, which
                 // hands out the same model to both -- so the loser discards an
                 // `Arc` clone rather than a second copy of the weights.
-                let loaded = self.models.get(self.profile)?;
+                let loaded = self.models.embedder()?;
                 self.embedder.get_or_init(|| loaded)
             }
         };
@@ -2667,11 +2645,11 @@ mod tests {
         let embedder_load = models.loaded.lock().unwrap();
         let (sent, received) = mpsc::channel();
         let sweeping = models.clone();
-        let worker = std::thread::spawn(move || sent.send(sweeping.release_idle_embedders()));
+        let worker = std::thread::spawn(move || sent.send(sweeping.release_idle_embedder()));
         let embedder_result = received.recv_timeout(Duration::from_secs(1));
         drop(embedder_load);
         worker.join().unwrap().unwrap();
-        assert_eq!(embedder_result.unwrap(), Vec::<pamin_index::Profile>::new());
+        assert!(!embedder_result.unwrap());
 
         let reranker_load = models.reranker.lock().unwrap();
         let (sent, received) = mpsc::channel();
@@ -3098,14 +3076,12 @@ mod tests {
     /// skip rests on, and why the two indexes must end up identical.
     #[test]
     fn a_topic_back_where_the_index_left_it_is_not_embedded_again() {
-        use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
+        use pamin_index::{Access, Projection, ProjectionIndex, VectorIndex};
 
-        let profile = Profile::Accuracy;
         let open = |dir: &std::path::Path| {
             ProjectionIndex::open(
                 dir,
                 &dir.join("legacy"),
-                profile,
                 VectorIndex::default(),
                 Access::ReadWrite,
                 0,
@@ -3169,7 +3145,7 @@ mod tests {
             for (index, writes) in [(&every, &wanted), (&skipping, &needed)] {
                 let vectors: Vec<Vec<f32>> = writes
                     .iter()
-                    .map(|(_, text)| encode(text, profile.dimensions()))
+                    .map(|(_, text)| encode(text, pamin_index::DIMENSIONS))
                     .collect();
                 let documents: Vec<pamin_index::VectorDocument<'_>> = writes
                     .iter()
@@ -3188,21 +3164,19 @@ mod tests {
         // topics already current, round six a removed topic restored to
         // the text it had: that one has no document to keep, so it is
         // embedded again. A trailing space is a different text.
-        assert_eq!(encoded.0, [2, 1, 1, 2, 1, 1], "{profile:?}");
-        assert_eq!(encoded.1, [2, 0, 1, 0, 1, 1], "{profile:?}");
+        assert_eq!(encoded.0, [2, 1, 1, 2, 1, 1]);
+        assert_eq!(encoded.1, [2, 0, 1, 0, 1, 1]);
 
         let topics = [one, two];
         assert_eq!(
             every.stored(&topics).expect("read back"),
             skipping.stored(&topics).expect("read back"),
-            "{profile:?}"
         );
         for text in ["alpha", "alpha ", "ypsilon"] {
-            let query = encode(text, profile.dimensions());
+            let query = encode(text, pamin_index::DIMENSIONS);
             assert_eq!(
                 every.recall_vector(&query, 2).expect("recall"),
                 skipping.recall_vector(&query, 2).expect("recall"),
-                "{profile:?}"
             );
         }
     }
@@ -3210,20 +3184,19 @@ mod tests {
     /// A write the index has buffered and not yet flushed is already held.
     #[test]
     fn a_buffered_write_is_already_held() {
-        use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
+        use pamin_index::{Access, Projection, ProjectionIndex, VectorIndex};
 
         let dir = tempfile::tempdir().expect("temp dir");
         let index = ProjectionIndex::open(
             dir.path(),
             &dir.path().join("legacy"),
-            Profile::Accuracy,
             VectorIndex::default(),
             Access::ReadWrite,
             0,
         )
         .expect("open index");
         let topic = TopicId::new();
-        let vector = vec![0.1; Profile::Accuracy.dimensions() as usize];
+        let vector = vec![0.1; pamin_index::DIMENSIONS as usize];
         index
             .upsert_batch(&[(topic, "alpha", vector.as_slice())])
             .expect("write");

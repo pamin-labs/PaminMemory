@@ -31,12 +31,8 @@
 
 use pamin_core::{FilterDecision, Validity};
 use pamin_engine::{Engine, Owed, Write};
-use pamin_index::{Access, Profile, VectorIndex};
+use pamin_index::{Access, VectorIndex};
 use pamin_store::{Connections, Database, Workspace, repository};
-
-/// The default, because a graph built for a narrower profile is not the one
-/// that ships.
-const PROFILE: &str = "accuracy";
 
 /// Enough to clear the lowered budget several times over, and few enough that
 /// the embedding cost is a handful of forward passes.
@@ -77,7 +73,6 @@ async fn a_drain_leaves_a_graph_over_what_it_wrote() {
         (None, Some(dir)) => Workspace::at(dir.path()),
         (None, None) => unreachable!("one of the two is always set"),
     };
-    let profile = Profile::parse(PROFILE).expect("a known profile");
     let database = Database::open(&workspace, Connections::PerCommand)
         .await
         .expect("open the database");
@@ -89,15 +84,9 @@ async fn a_drain_leaves_a_graph_over_what_it_wrote() {
         .await
         .expect("ensure project");
 
-    let engine = Engine::open(
-        &workspace,
-        &name,
-        profile,
-        VectorIndex::default(),
-        Access::ReadWrite,
-    )
-    .await
-    .expect("open the engine");
+    let engine = Engine::open(&workspace, &name, VectorIndex::default(), Access::ReadWrite)
+        .await
+        .expect("open the engine");
 
     for memory in 0..MEMORIES {
         let content = format!(

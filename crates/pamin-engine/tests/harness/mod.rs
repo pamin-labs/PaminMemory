@@ -18,10 +18,13 @@ use std::path::PathBuf;
 
 use pamin_core::Fusion;
 use pamin_engine::{Depths, Drained, Engine, Owed, SearchHit, Write};
-use pamin_index::Profile;
 
-/// The profile the floors were measured against, and the product default.
-pub const DEFAULT_PROFILE: &str = "accuracy";
+/// What records and projects call the one embedding model.
+///
+/// The name of the profile that shipped it, kept from when there were
+/// profiles so that records and cached corpora written then are the ones
+/// read and compared with now.
+pub const PROFILE: &str = "accuracy";
 
 /// Where the harnesses keep datasets, models and workspaces between runs:
 /// `PAMIN_EVAL_HOME`, or `pamin-eval` under the system's temporary directory.
@@ -40,11 +43,19 @@ pub fn dataset_dir(var: &str, name: &str) -> PathBuf {
     }
 }
 
-/// The profile to measure: `PAMIN_PROFILE`, or [`DEFAULT_PROFILE`].
-pub fn profile() -> (String, Profile) {
-    let named = std::env::var("PAMIN_PROFILE").unwrap_or_else(|_| DEFAULT_PROFILE.into());
-    let profile = Profile::parse(&named).unwrap_or_else(|| panic!("unknown profile {named}"));
-    (named, profile)
+/// [`PROFILE`], once nothing asks for another.
+///
+/// `PAMIN_PROFILE` chose the embedding model a harness measured. It chooses
+/// nothing now, and a run that set it would be recorded under the name of a
+/// model it did not use, so it is refused rather than ignored.
+pub fn profile() -> String {
+    if let Some(named) = std::env::var_os("PAMIN_PROFILE") {
+        panic!(
+            "PAMIN_PROFILE={} was removed: there is one embedding model. Unset it to continue.",
+            named.to_string_lossy()
+        );
+    }
+    PROFILE.to_string()
 }
 
 /// Whether a measured search reranks: the shipped search, or fusion alone.

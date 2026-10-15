@@ -14,7 +14,7 @@
 //! only one route cannot tell an absence from a miss.
 
 use anyhow::Result;
-use pamin_index::{Profile, VectorIndex};
+use pamin_index::VectorIndex;
 use serde::{Deserialize, Serialize};
 
 use crate::session::Session;
@@ -62,7 +62,6 @@ pub struct Topics {
 pub async fn execute(
     session: &Session,
     project: &str,
-    profile: Profile,
     vector_index: VectorIndex,
     args: Args,
 ) -> Result<Topics> {
@@ -85,7 +84,7 @@ pub async fn execute(
         });
     };
 
-    let engine = session.engine(project, profile, vector_index).await?;
+    let engine = session.engine(project, vector_index).await?;
     let named = engine.topics_named_like(&query, args.limit).await?;
 
     // The content route is the ordinary search without the reranker: this

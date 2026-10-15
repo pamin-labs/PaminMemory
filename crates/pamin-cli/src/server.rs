@@ -1,7 +1,7 @@
 //! `pamin serve` — the process that holds what every command used to rebuild.
 //!
 //! One [`Session`] for the process: one pool, migrated once, and one engine per
-//! project and profile, each holding its index open and its model loaded. A
+//! project, each holding its index open, with the models loaded once. A
 //! command arriving here finds them already there. Before, and still without a
 //! server, every command built all of it, used it once, and dropped it.
 //!
@@ -18,7 +18,7 @@ use anyhow::{Context, Result, bail};
 use futures::{SinkExt, StreamExt};
 use pamin_core::JobKind;
 use pamin_engine::{Engine, Owed};
-use pamin_index::{Profile, ProjectionIndex, VectorIndex};
+use pamin_index::{ProjectionIndex, VectorIndex};
 use pamin_store::Workspace;
 use tokio::net::{UnixListener, UnixStream};
 use tokio_util::codec::{Framed, LinesCodec};
@@ -187,7 +187,7 @@ async fn maintain(session: Arc<Session>) {
         // The engines above are dropped by now, so a project that has gone
         // quiet can be closed and the weights it was pinning given back.
         let sweep = Instant::now();
-        let (engines, embedders, reranker) = session.close_what_is_idle();
+        let (engines, embedder, reranker) = session.close_what_is_idle();
         tracing::debug!(
             seconds = sweep.elapsed().as_secs_f64(),
             "idle sweep finished"
@@ -195,10 +195,10 @@ async fn maintain(session: Arc<Session>) {
         // And an index the open-index bound closed since the last tick. It was
         // closed inside a request, which is no place to wait on the allocator.
         let evicted = session.take_evicted();
-        if !engines.is_empty() || !embedders.is_empty() || reranker || evicted > 0 {
+        if !engines.is_empty() || embedder || reranker || evicted > 0 {
             tracing::debug!(
                 ?engines,
-                ?embedders,
+                embedder,
                 reranker,
                 evicted,
                 "gave back what nothing had asked for"
@@ -216,7 +216,7 @@ async fn maintain(session: Arc<Session>) {
 ///
 /// The round is what a request that arrives during one waits for, so this is
 /// sized against that wait rather than against throughput: a round's forward
-/// pass holds the profile's model, and a search on any project sharing it
+/// pass holds the embedding model, and a search on any project
 /// queues behind the pass. Throughput gives up little for it. A write's own
 /// drain takes sixty-four jobs a round because a round is what one flush
 /// covers, and catching up does not flush per round -- it leaves the writes
@@ -296,7 +296,7 @@ const REOPEN_AFTER: std::time::Duration = std::time::Duration::from_secs(10 * 60
 /// records its jobs exactly as a write's does.
 struct CatchingUp {
     /// Projects that would not open, and when they last refused.
-    refused: HashMap<(String, Profile), Instant>,
+    refused: HashMap<String, Instant>,
     batch: i32,
 }
 
@@ -329,18 +329,18 @@ impl CatchingUp {
             if !within_budget() {
                 return;
             }
-            // Under the profile the index was built with: nothing else will
-            // open it, and no index means nothing to catch up.
+            // Under the vector index the index was built with: nothing else
+            // will open it, and no index means nothing to catch up.
             let dir = session.workspace().index_dir(owing.project);
-            let (profile, vector_index) = match ProjectionIndex::built_for(&dir) {
+            let vector_index = match ProjectionIndex::built_for(&dir) {
                 Ok(Some(built)) => built,
                 Ok(None) => continue,
                 Err(error) => {
-                    tracing::warn!(project = %owing.name, %error, "reading the index's profile failed");
+                    tracing::warn!(project = %owing.name, %error, "reading the index's marker failed");
                     continue;
                 }
             };
-            let key = (owing.name, profile);
+            let key = owing.name;
 
             let engine = if session.holds(&key) {
                 // Being opened, or rebuilt: the next tick.
@@ -353,10 +353,10 @@ impl CatchingUp {
                     continue;
                 }
                 opened_one = true;
-                match session.engine(&key.0, profile, vector_index).await {
+                match session.engine(&key, vector_index).await {
                     Ok(engine) => engine,
                     Err(error) => {
-                        tracing::warn!(project = %key.0, %error, "opening a project to catch up failed");
+                        tracing::warn!(project = %key, %error, "opening a project to catch up failed");
                         self.refused.insert(key, Instant::now());
                         continue;
                     }
@@ -380,7 +380,7 @@ impl CatchingUp {
                 {
                     Ok(drained) => caught_up.add(drained, draining.elapsed()),
                     Err(error) => {
-                        tracing::warn!(project = %key.0, %error, "catching up on owed work failed");
+                        tracing::warn!(project = %key, %error, "catching up on owed work failed");
                         break;
                     }
                 }
@@ -389,7 +389,7 @@ impl CatchingUp {
                     break;
                 }
             }
-            caught_up.log(&key.0, self.batch);
+            caught_up.log(&key, self.batch);
         }
     }
 }
@@ -458,7 +458,7 @@ const RESHAPE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 
 /// project to finish rather than being one.
 #[derive(Default)]
 struct Reshapes {
-    started: HashMap<(String, Profile), (Instant, tokio::task::JoinHandle<()>)>,
+    started: HashMap<String, (Instant, tokio::task::JoinHandle<()>)>,
 }
 
 impl Reshapes {
@@ -468,8 +468,8 @@ impl Reshapes {
     /// Never two at once for one project: one still running is never
     /// replaced, and the engine refuses a second on the same directory
     /// besides.
-    fn consider(&mut self, key: &(String, Profile), engine: Arc<Engine>) {
-        if let Some((at, running)) = self.started.get(key)
+    fn consider(&mut self, project: &str, engine: Arc<Engine>) {
+        if let Some((at, running)) = self.started.get(project)
             && (!running.is_finished() || at.elapsed() < RESHAPE_INTERVAL)
         {
             return;
@@ -485,7 +485,8 @@ impl Reshapes {
             return;
         }
 
-        let project = key.0.clone();
+        let project = project.to_string();
+        let key = project.clone();
         tracing::info!(
             %project,
             documents = shape.documents,
@@ -517,14 +518,14 @@ impl Reshapes {
                 ),
             }
         });
-        self.started.insert(key.clone(), (Instant::now(), running));
+        self.started.insert(key, (Instant::now(), running));
     }
 
     /// Forgets projects that are no longer open and have nothing running.
     ///
     /// A project closed and reopened is considered again at once, which is
     /// what opening a project that grew without a server should do.
-    fn forget_all_but(&mut self, opened: &[(String, Profile)]) {
+    fn forget_all_but(&mut self, opened: &[String]) {
         self.started
             .retain(|key, (_, running)| !running.is_finished() || opened.contains(key));
     }
@@ -645,14 +646,11 @@ const MAX_REQUEST: usize = 16 * 1024 * 1024;
 async fn answer(session: &Arc<Session>, request: Request) -> Result<Payload> {
     let Request {
         project,
-        profile,
         vector_index,
         call,
         ..
     } = request;
 
-    let profile =
-        Profile::parse(&profile).ok_or_else(|| anyhow::anyhow!("unknown profile {profile:?}"))?;
     let vector_index = VectorIndex::parse(&vector_index)
         .ok_or_else(|| anyhow::anyhow!("unknown vector index {vector_index:?}"))?;
 
@@ -661,33 +659,33 @@ async fn answer(session: &Arc<Session>, request: Request) -> Result<Payload> {
     // Not for `stop`, which is about to end the process, nor for `reindex`,
     // which discards the index a warm-up would be holding open.
     if !matches!(call, Call::Stop | Call::Reindex(_)) {
-        session.warm(&project, profile, vector_index);
+        session.warm(&project, vector_index);
     }
 
     let value = match call {
         Call::Init => json(command::init::execute(session, &project).await?)?,
         Call::Write(args) => {
-            json(command::write::execute(session, &project, profile, vector_index, args).await?)?
+            json(command::write::execute(session, &project, vector_index, args).await?)?
         }
         Call::Import(args) => {
-            json(command::import::execute(session, &project, profile, vector_index, args).await?)?
+            json(command::import::execute(session, &project, vector_index, args).await?)?
         }
         Call::Read(args) => json(command::read::execute(session, &project, args).await?)?,
         Call::Search(args) => {
-            json(command::search::execute(session, &project, profile, vector_index, args).await?)?
+            json(command::search::execute(session, &project, vector_index, args).await?)?
         }
         Call::Grep(args) => json(command::grep::execute(session, &project, args).await?)?,
         Call::Link(args) => json(command::link::execute(session, &project, args).await?)?,
         Call::Unlink(args) => json(command::unlink::execute(session, &project, args).await?)?,
         Call::Neighbors(args) => json(command::neighbors::execute(session, &project, args).await?)?,
         Call::Topics(args) => {
-            json(command::topics::execute(session, &project, profile, vector_index, args).await?)?
+            json(command::topics::execute(session, &project, vector_index, args).await?)?
         }
         Call::Reindex(args) => {
-            json(command::reindex::execute(session, &project, profile, vector_index, args).await?)?
+            json(command::reindex::execute(session, &project, vector_index, args).await?)?
         }
         Call::Cascade(args) => {
-            json(command::cascade::answer(session, &project, profile, vector_index, args).await?)?
+            json(command::cascade::answer(session, &project, vector_index, args).await?)?
         }
         Call::Stop => json(command::stop::execute(session.workspace()).await?)?,
     };

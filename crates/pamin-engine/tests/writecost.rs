@@ -45,7 +45,7 @@ use std::time::Instant;
 
 use pamin_core::{FilterDecision, Validity};
 use pamin_engine::{Engine, Owed, Write};
-use pamin_index::{Access, Profile, VectorIndex};
+use pamin_index::{Access, VectorIndex};
 use pamin_store::{Connections, Database, Workspace, repository};
 
 /// Ten times apart, because the defect is a factor and not an offset.
@@ -56,9 +56,6 @@ const SCALES: [usize; 2] = [2_000, 20_000];
 /// one deeper b-tree, a `MAX()` over ten times the rows -- and still fails
 /// long before linear.
 const AT_MOST: f64 = 3.0;
-
-/// The one profile. This measures a code path, not a model.
-const PROFILE: &str = "accuracy";
 
 /// How many derivations each scale is timed over.
 ///
@@ -196,7 +193,6 @@ async fn one_write_does_not_pay_for_the_whole_project() {
         (None, Some(dir)) => Workspace::at(dir.path()),
         (None, None) => unreachable!("one of the two is always set"),
     };
-    let profile = Profile::parse(PROFILE).expect("a known profile");
     let database = Database::open(&workspace, Connections::PerCommand)
         .await
         .expect("open the database");
@@ -214,15 +210,9 @@ async fn one_write_does_not_pay_for_the_whole_project() {
             .expect("ensure project");
         fill(&database, project.id, topics, 3).await;
 
-        let engine = Engine::open(
-            &workspace,
-            &name,
-            profile,
-            VectorIndex::default(),
-            Access::ReadWrite,
-        )
-        .await
-        .expect("open the engine");
+        let engine = Engine::open(&workspace, &name, VectorIndex::default(), Access::ReadWrite)
+            .await
+            .expect("open the engine");
 
         // Once before the clock starts. The first write of a process loads the
         // model and opens the index, and neither is what this is about.
@@ -355,7 +345,6 @@ async fn derivation_does_not_pay_for_the_widest_name_in_the_project() {
         (None, Some(dir)) => Workspace::at(dir.path()),
         (None, None) => unreachable!("one of the two is always set"),
     };
-    let profile = Profile::parse(PROFILE).expect("a known profile");
     let database = Database::open(&workspace, Connections::PerCommand)
         .await
         .expect("open the database");
@@ -383,15 +372,9 @@ async fn derivation_does_not_pay_for_the_widest_name_in_the_project() {
              every row below it would be measuring the wrong axis"
         );
 
-        let engine = Engine::open(
-            &workspace,
-            &name,
-            profile,
-            VectorIndex::default(),
-            Access::ReadWrite,
-        )
-        .await
-        .expect("open the engine");
+        let engine = Engine::open(&workspace, &name, VectorIndex::default(), Access::ReadWrite)
+            .await
+            .expect("open the engine");
         let recorded = engine
             .write(&request("incident review", PROSE, "incident-wide"))
             .await

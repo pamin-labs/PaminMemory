@@ -178,7 +178,7 @@
 //!
 //! ```text
 //! env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p pamin-engine --test crosslingual prepare_pinned_xquad_models -- --exact --ignored
-//! env -u HF_HOME -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_SEARCH_EFFORT -u PAMIN_PREPARED -u PAMIN_FUSED_ATTENTION PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_PROFILE=accuracy PAMIN_DEVICE=cpu cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
+//! env -u HF_HOME -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_SEARCH_EFFORT -u PAMIN_PREPARED -u PAMIN_FUSED_ATTENTION PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_DEVICE=cpu cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
 //! ```
 //!
 //! The dataset is fetched with `curl` into `$PAMIN_EVAL_HOME/xquad-r`, or into
@@ -230,7 +230,7 @@ const LANGUAGES: [&str; 11] = [
 const SOURCE: &str = "https://raw.githubusercontent.com/google-research-datasets/lareqa/9bc8c7fb6dd8d01d72a05a93c2cb96882b0d299c/xquad-r";
 
 use harness::shape::Shape;
-use harness::{DEFAULT_PROFILE, eval_home, profile};
+use harness::{eval_home, profile};
 use scoring::{NDCG_AT, RECALL_AT, Scores};
 /// How deep to retrieve.
 ///
@@ -1031,8 +1031,7 @@ fn pinned_model_loads_report_actual_graph_paths() {
     pinned_embedding_id(&models);
     pinned_model_id(&models, "reranker");
     report_loaded_graphs();
-    let _embedder = pamin_index::Embedder::load(pamin_index::Profile::Accuracy, &models)
-        .expect("load pinned embedding model");
+    let _embedder = pamin_index::Embedder::load(&models).expect("load pinned embedding model");
     let reranker = pamin_index::Reranker::load(&models).expect("load pinned reranking model");
     assert_eq!(reranker.device(), pamin_index::Device::Cpu);
 }
@@ -1418,13 +1417,8 @@ fn report_reranking(engine: &Engine, tier: Rerank, queries: usize) {
     );
 }
 
-/// Asserts the floors, unless this is a run of some other profile.
-fn assert_floors(named: &str, groups: &BTreeMap<String, Scores>, floors: &[(&str, f64, f64)]) {
-    if named != DEFAULT_PROFILE {
-        println!("  {named} is not the default profile, so the floors are not asserted\n");
-        return;
-    }
-
+/// Asserts the floors.
+fn assert_floors(groups: &BTreeMap<String, Scores>, floors: &[(&str, f64, f64)]) {
     for (group, floor_ndcg, floor_recall) in floors {
         let scores = groups
             .get(*group)
@@ -1500,7 +1494,7 @@ fn fusion(setting: Option<(f32, f32)>) -> Fusion {
 fn the_model_reaches_across_languages() {
     let corpus = Corpus::load();
     let queries = corpus.queries();
-    let (named, profile) = profile();
+    let named = profile();
     let mut shape = corpus.shape(&queries);
     shape.publish("the_model_reaches_across_languages", &named);
     println!(
@@ -1512,7 +1506,7 @@ fn the_model_reaches_across_languages() {
 
     let home = eval_home();
     let embedder = harness::shape::owned(
-        Embedder::load(profile, &home.join("models")).expect("load the embedding model"),
+        Embedder::load(&home.join("models")).expect("load the embedding model"),
     );
     // No engine: the record's providers are the harness's own models,
     // read once the run is over.
@@ -1520,7 +1514,7 @@ fn the_model_reaches_across_languages() {
     shape.also_ran("embedding", &embedder, Embedder::plans);
     let mut embedder = harness::shape::lock(&embedder);
 
-    let width = profile.dimensions() as usize;
+    let width = pamin_index::DIMENSIONS as usize;
     let vectors = embed_corpus(&mut embedder, &corpus, &home, width, &mut shape);
 
     let mut groups = BTreeMap::new();
@@ -1558,7 +1552,7 @@ fn the_model_reaches_across_languages() {
         &groups,
         started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64,
     );
-    assert_floors(&named, &groups, MODEL_FLOORS);
+    assert_floors(&groups, MODEL_FLOORS);
 }
 
 /// Embeds every sentence through the shared vector cache (see
@@ -1576,7 +1570,7 @@ fn embed_corpus(
 
     let file = format!(
         "xquad-{}-{}.f32",
-        embedder.profile().model_id().replace('/', "-"),
+        pamin_index::MODEL_ID.replace('/', "-"),
         corpus.fingerprint()
     );
     let texts: Vec<&str> = corpus
@@ -1643,21 +1637,20 @@ async fn search_reaches_across_languages() {
     let commit = String::from_utf8(git.stdout).expect("git prints a UTF-8 commit hash");
     let corpus = Corpus::load();
     let queries = corpus.queries();
-    let (named, profile) = profile();
+    let named = profile();
     let mut shape = corpus.shape(&queries);
     // Published before anything is printed, so a failed write to stdout
     // still leaves the in-progress record.
     shape.publish("search_reaches_across_languages", &named);
     println!("  benchmark code commit: {}", commit.trim());
     println!("  reranker device: cpu; export: onnx/model_int8.onnx");
-    // The default profile ends on a significance gate for what reranking is
-    // worth cross-lingually; a sample too small to ever pass it fails here,
-    // before the corpus is indexed.
-    let gated = named == DEFAULT_PROFILE
-        && statistics::gate(
-            "XQuAD-R cross-lingual, what reranking is worth",
-            queries.len(),
-        );
+    // The run ends on a significance gate for what reranking is worth
+    // cross-lingually; a sample too small to ever pass it fails here, before
+    // the corpus is indexed.
+    let gated = statistics::gate(
+        "XQuAD-R cross-lingual, what reranking is worth",
+        queries.len(),
+    );
 
     // A named workspace is reused; an unnamed one is thrown away. Indexing
     // thirteen thousand sentences is minutes, and a harness that pays that on
@@ -1675,13 +1668,6 @@ async fn search_reaches_across_languages() {
     let reranker_id = pinned_model_id(&workspace.root().join("models"), "reranker");
     println!("  pinned reranker identity: {reranker_id}");
 
-    // The profile is part of the workspace identity: an index records the
-    // profile it was built with and refuses to open under another.
-    assert_eq!(
-        profile,
-        pamin_index::Profile::Accuracy,
-        "the pinned XQuAD-R search benchmark uses the accuracy profile"
-    );
     let embedding_id = pinned_embedding_id(&workspace.root().join("models"));
     println!("  index embedding identity: {embedding_id}");
     let project = xquad_project_name(&named, &corpus.fingerprint(), &embedding_id);
@@ -1689,7 +1675,6 @@ async fn search_reaches_across_languages() {
     let engine = Engine::open(
         &workspace,
         &project,
-        profile,
         VectorIndex::default(),
         Access::ReadWrite,
     )
@@ -2052,9 +2037,8 @@ async fn search_reaches_across_languages() {
     }
 
     harness::shape::tables(["shipped"]);
-    if named == DEFAULT_PROFILE {
-        harness::shape::tables(["fusion alone"]);
-    }
+    harness::shape::tables(["fusion alone"]);
+
     harness::shape::table("shipped");
     let started = std::time::Instant::now();
     let groups = run(&engine, &queries, Route::Shipped(Rerank::default())).await;
@@ -2064,50 +2048,48 @@ async fn search_reaches_across_languages() {
         started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64,
     );
     report_reranking(&engine, Rerank::default(), queries.len());
-    assert_floors(&named, &groups, SEARCH_FLOORS);
+    assert_floors(&groups, SEARCH_FLOORS);
 
     // Fusion alone, to price the reranker. Forty seconds against the four
     // minutes above, and without it nothing here notices the reranker going
     // missing -- see `RERANK_IS_WORTH`.
-    if named == DEFAULT_PROFILE {
-        harness::shape::table("fusion alone");
-        let alone = run(&engine, &queries, Route::Shipped(Rerank::Off)).await;
-        let (with, without) = (
-            groups["cross_lingual"].mean_ndcg(),
-            alone["cross_lingual"].mean_ndcg(),
-        );
-        // Query by query as well as mean against mean. A mean cannot tell the
-        // two cases apart -- every query moving a little, and one query moving
-        // a lot -- and this project has been reading differences of this size
-        // as findings without ever checking which case it was in. See
-        // `statistics`.
-        let paired = statistics::compare(
-            &alone["cross_lingual"].per_query,
-            &groups["cross_lingual"].per_query,
-        );
-        println!("  reranking is worth, in nDCG@{NDCG_AT}:");
-        for group in GROUPS {
-            println!(
-                "    {group:<13} {}",
-                statistics::compare(&alone[group].per_query, &groups[group].per_query)
-            );
-        }
-        println!();
-
-        assert!(
-            !gated || paired.is_significant(),
-            "reranking moved cross-lingual nDCG@{NDCG_AT} by {paired} -- a \
-             difference of means with nothing under it. The tier is supposed to \
-             be worth something, not to be indistinguishable from leaving it off"
-        );
-        assert!(
-            with - without >= RERANK_IS_WORTH,
-            "reranking moved cross-lingual nDCG@{NDCG_AT} by {:+.4}, under the \
-             {RERANK_IS_WORTH:.4} it is supposed to be worth: {without:.4} without it, \
-             {with:.4} with",
-            with - without
+    harness::shape::table("fusion alone");
+    let alone = run(&engine, &queries, Route::Shipped(Rerank::Off)).await;
+    let (with, without) = (
+        groups["cross_lingual"].mean_ndcg(),
+        alone["cross_lingual"].mean_ndcg(),
+    );
+    // Query by query as well as mean against mean. A mean cannot tell the
+    // two cases apart -- every query moving a little, and one query moving
+    // a lot -- and this project has been reading differences of this size
+    // as findings without ever checking which case it was in. See
+    // `statistics`.
+    let paired = statistics::compare(
+        &alone["cross_lingual"].per_query,
+        &groups["cross_lingual"].per_query,
+    );
+    println!("  reranking is worth, in nDCG@{NDCG_AT}:");
+    for group in GROUPS {
+        println!(
+            "    {group:<13} {}",
+            statistics::compare(&alone[group].per_query, &groups[group].per_query)
         );
     }
+    println!();
+
+    assert!(
+        !gated || paired.is_significant(),
+        "reranking moved cross-lingual nDCG@{NDCG_AT} by {paired} -- a \
+         difference of means with nothing under it. The tier is supposed to \
+         be worth something, not to be indistinguishable from leaving it off"
+    );
+    assert!(
+        with - without >= RERANK_IS_WORTH,
+        "reranking moved cross-lingual nDCG@{NDCG_AT} by {:+.4}, under the \
+         {RERANK_IS_WORTH:.4} it is supposed to be worth: {without:.4} without it, \
+         {with:.4} with",
+        with - without
+    );
 }
 
 /// Which of the engine's two search entry points a scoring run drives.

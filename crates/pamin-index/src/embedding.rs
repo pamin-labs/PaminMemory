@@ -15,86 +15,48 @@
 //! (see `projection::VectorIndex`). Weights are quantized where a quantized export
 //! exists: BGE-M3 runs int8 weights.
 
-use serde::{Deserialize, Serialize};
-
 use crate::encoder::Encoder;
 use crate::error::{IndexError, Result};
 use crate::hub::Repository;
 
-/// Which embedding model to run.
+/// The identifier recorded alongside every stored vector, so a later read can
+/// tell which space a vector belongs to: BGE-M3's int8 export.
 ///
-/// One now. `speed` and `balanced` ran the multilingual E5 pair and are
-/// retired: the quantized BGE-M3 export beat both on retrieval by a distance
-/// and costs little more. It is permissively licensed. EmbeddingGemma scores
-/// well and would otherwise be a candidate, but it carries usage restrictions
-/// that must be passed on to downstream users, which is not a burden to attach
-/// to an open-source default.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Profile {
-    /// 1024 dimensions, int8 weights, and by a distance the best cross-lingual
-    /// recall of the profiles there were.
-    ///
-    /// Run through the joint BGE-M3 export, which produces dense, sparse and
-    /// ColBERT representations in one forward pass. Only the dense one is
-    /// kept. The sparse arm duplicates the two lexical channels already in
-    /// place and is worth 0.2 points of cross-lingual nDCG by its own authors'
-    /// ablation; the ColBERT arm is one 1024-wide vector per token, which for
-    /// a project of seven million documents is terabytes.
-    ///
-    /// It was the default before it was the only one, because it is not the
-    /// trade its name implies. Against the retired `balanced` it doubles cross-lingual nDCG@10, matches it monolingually,
-    /// occupies 560 MB against 1.1 GB, and costs 35 ms per query against 26.
-    /// The int8 export is what makes all of that true at once; the
-    /// full-precision one is 2.2 GB and was the reason this profile used to be
-    /// described as an order of magnitude more expensive.
-    #[default]
-    Accuracy,
-}
+/// The quantized export rather than the base model: int8 weights produce
+/// vectors close to the full-precision ones and not equal to them, and the
+/// recorded identity is what stops two encodings sharing one index.
+///
+/// The one embedding model. It was the `accuracy` profile while there were
+/// others: the multilingual E5 pair (`speed`, `balanced`) and a dual space
+/// with PPLX beside it (`dual_accuracy`), all retired. Against `balanced` it
+/// doubled cross-lingual nDCG@10, matched it monolingually, occupied 560 MB
+/// against 1.1 GB, and cost 35 ms per query against 26. It is permissively
+/// licensed. EmbeddingGemma scores well and would otherwise be a candidate,
+/// but it carries usage restrictions that must be passed on to downstream
+/// users, which is not a burden to attach to an open-source default.
+///
+/// Run through the joint BGE-M3 export, which produces dense, sparse and
+/// ColBERT representations in one forward pass. Only the dense one is kept.
+/// The sparse arm duplicates the two lexical channels already in place and is
+/// worth 0.2 points of cross-lingual nDCG by its own authors' ablation; the
+/// ColBERT arm is one 1024-wide vector per token, which for a project of seven
+/// million documents is terabytes.
+pub const MODEL_ID: &str = "gpahal/bge-m3-onnx-int8";
 
-impl Profile {
-    /// The vector width this profile produces.
-    ///
-    /// The index is built for one width. Mixing embedding spaces yields
-    /// distances that mean nothing, so changing profile reindexes.
-    pub fn dimensions(self) -> u32 {
-        match self {
-            Self::Accuracy => 1024,
-        }
-    }
-
-    /// The identifier recorded alongside every stored vector, so a later read
-    /// can tell which space a vector belongs to.
-    pub fn model_id(self) -> &'static str {
-        match self {
-            // The quantized export rather than the base model: int8 weights
-            // produce vectors close to the full-precision ones and not equal
-            // to them, and the recorded identity is what stops two encodings
-            // sharing one index.
-            Self::Accuracy => "gpahal/bge-m3-onnx-int8",
-        }
-    }
-
-    pub const ALL: [Self; 1] = [Self::Accuracy];
-
-    /// Parses a profile name.
-    pub fn parse(name: &str) -> Option<Self> {
-        match name {
-            "accuracy" => Some(Self::Accuracy),
-            _ => None,
-        }
-    }
-}
+/// The vector width the model produces.
+///
+/// The index is built for one width. Mixing embedding spaces yields distances
+/// that mean nothing, so a different model reindexes.
+pub const DIMENSIONS: u32 = 1024;
 
 /// Turns text into vectors.
 pub struct Embedder {
     cache_dir: std::path::PathBuf,
     model: Box<Encoder>,
-    profile: Profile,
     device: crate::inference::Device,
     /// Query vectors already computed.
     ///
-    /// Shared with every project on this profile, because the vector depends on
+    /// Shared with every project, because the vector depends on
     /// the model and the text and on nothing else.
     remembered: Queries,
 }
@@ -105,17 +67,12 @@ impl Embedder {
     /// The model is fetched lazily rather than bundled: it is larger than the
     /// binary by an order of magnitude, and a user who never searches should
     /// not pay for it.
-    pub fn load(profile: Profile, cache_dir: &std::path::Path) -> Result<Self> {
-        let (model, device) = primary_model(profile, cache_dir)?;
-        tracing::info!(
-            model = profile.model_id(),
-            device = device.name(),
-            "embedder loaded"
-        );
+    pub fn load(cache_dir: &std::path::Path) -> Result<Self> {
+        let (model, device) = primary_model(cache_dir)?;
+        tracing::info!(model = MODEL_ID, device = device.name(), "embedder loaded");
         Ok(Self {
             cache_dir: cache_dir.to_path_buf(),
             model: Box::new(model),
-            profile,
             device,
             remembered: Queries::default(),
         })
@@ -139,10 +96,6 @@ impl Embedder {
         crate::inference::plans_of(&self.model, self.device)
     }
 
-    pub fn profile(&self) -> Profile {
-        self.profile
-    }
-
     /// Embeds one passage for storage.
     pub fn embed_passage(&mut self, text: &str) -> Result<Vec<f32>> {
         self.embed_one(text)
@@ -151,7 +104,7 @@ impl Embedder {
     /// Embeds one query.
     ///
     /// Remembered, because the pass is the most expensive thing a search does
-    /// -- 16.9 ms of a search at the shipping profile -- and a query is a pure
+    /// -- 16.9 ms of a search -- and a query is a pure
     /// function of the model and the text. What makes it worth remembering is
     /// the same thing that makes the reranker remember its scores: an agent
     /// retries, widens a limit, and asks again after writing something. Only
@@ -172,7 +125,7 @@ impl Embedder {
         self.run(texts.iter().map(|text| (*text).to_string()).collect())
     }
 
-    /// How many queries this remembers, per profile.
+    /// How many queries this remembers.
     ///
     /// A vector is at most four kilobytes of float payload per query, so at
     /// 256 entries that is up to one MiB of vector payload. Per process,
@@ -188,7 +141,7 @@ impl Embedder {
             .ok_or_else(|| IndexError::Engine("embedding produced no vector".into()))
     }
 
-    /// One forward pass, whichever model this profile loaded.
+    /// One forward pass.
     ///
     /// The joint export runs one text at a time, and that is a correctness
     /// choice rather than an oversight. Measured on this export: a text's
@@ -208,7 +161,7 @@ impl Embedder {
     /// both return byte-identical vectors batched or alone -- which is why
     /// this is scoped to the joint model.
     ///
-    /// What it costs is the batching win on this profile: thirty-two texts
+    /// What it costs is the batching win: thirty-two texts
     /// together take 190 ms against 409 ms one at a time, so `reindex` is
     /// roughly twice the wall clock here. What it buys is that a document's
     /// vector does not depend on which other documents happened to be in
@@ -222,14 +175,13 @@ impl Embedder {
 
     fn run(&mut self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
         self.revalidate();
-        let profile = self.profile;
         let cache = &self.cache_dir;
         let (vectors, replaced) = crate::inference::retry_model(
             &mut self.model,
             &mut self.device,
             cache,
             |model, _| vectors_of(model, &texts),
-            || primary_model(profile, cache).map(|(model, device)| (Box::new(model), device)),
+            || primary_model(cache).map(|(model, device)| (Box::new(model), device)),
         )?;
         if replaced {
             self.remembered = Queries::default();
@@ -238,13 +190,10 @@ impl Embedder {
     }
 }
 
-fn primary_model(
-    profile: Profile,
-    cache_dir: &std::path::Path,
-) -> Result<(Encoder, crate::inference::Device)> {
+fn primary_model(cache_dir: &std::path::Path) -> Result<(Encoder, crate::inference::Device)> {
     std::fs::create_dir_all(cache_dir)?;
     let repository = Repository::open_at(cache_dir, JOINT_REPOSITORY, "main")?;
-    let identity = plan_key(profile.model_id(), &repository.identity(cache_dir));
+    let identity = plan_key(MODEL_ID, &repository.identity(cache_dir));
     let references = std::cell::RefCell::new(crate::inference::References::default());
     let long = "migration ".repeat(600);
     let fixtures: Vec<String> = vec![
@@ -257,8 +206,8 @@ fn primary_model(
         cache_dir,
         &references,
         crate::inference::ReferenceShape {
-            vectors: Some((fixtures.len(), profile.dimensions() as usize)),
-            queries: Some((2, profile.dimensions() as usize)),
+            vectors: Some((fixtures.len(), DIMENSIONS as usize)),
+            queries: Some((2, DIMENSIONS as usize)),
             scores: None,
         },
         |device, target, _validated| load_on(cache_dir, device, target),
@@ -271,18 +220,10 @@ fn primary_model(
                 for query in ["deployment rollback", "数据库迁移失败后如何回滚？"] {
                     vectors.extend(vectors_of(model, &[query.to_string()])?);
                 }
-                check_vectors(
-                    vectors,
-                    &mut reference.queries,
-                    profile.dimensions() as usize,
-                )
+                check_vectors(vectors, &mut reference.queries, DIMENSIONS as usize)
             })?;
             let vectors = vectors_of(model, &fixtures)?;
-            check_vectors(
-                vectors,
-                &mut reference.vectors,
-                profile.dimensions() as usize,
-            )?;
+            check_vectors(vectors, &mut reference.vectors, DIMENSIONS as usize)?;
             Ok(elapsed)
         },
     )?;
@@ -326,7 +267,7 @@ const JOINT_FILE: &str = "model_quantized.onnx";
 /// The longest text BGE-M3 reads, in tokens.
 ///
 /// What `fastembed` truncated it at when it loaded this model, and so what
-/// every vector stored under this profile was made with. A passage past it
+/// every vector stored under this model was made with. A passage past it
 /// embeds as its first 512 tokens; changing it would change the vectors of
 /// exactly those passages and nothing would say so, so it is kept.
 const JOINT_MAX_TOKENS: usize = 512;
@@ -562,7 +503,6 @@ mod tests {
             let mut embedder = Embedder {
                 cache_dir: cache.clone(),
                 model: Box::new(model),
-                profile: Profile::Accuracy,
                 device,
                 remembered: Queries::default(),
             };
@@ -585,7 +525,6 @@ mod tests {
         let mut control = Embedder {
             cache_dir: cache.clone(),
             model: Box::new(model),
-            profile: Profile::Accuracy,
             device: crate::inference::Device::Cpu,
             remembered: Queries::default(),
         };
@@ -651,7 +590,7 @@ mod tests {
             cosines.iter().any(|c| *c < 0.99999),
             "control must exercise the known incompatible CoreML graph"
         );
-        let mut accepted = Embedder::load(Profile::Accuracy, &cache).unwrap();
+        let mut accepted = Embedder::load(&cache).unwrap();
         assert_eq!(
             accepted.device(),
             crate::inference::Device::Cpu,
@@ -678,7 +617,7 @@ mod tests {
         let cache = std::path::PathBuf::from(
             std::env::var_os("PAMIN_TEST_MODEL_CACHE").expect("set PAMIN_TEST_MODEL_CACHE"),
         );
-        let mut embedder = Embedder::load(Profile::Accuracy, &cache).expect("load the model");
+        let mut embedder = Embedder::load(&cache).expect("load the model");
         assert_eq!(embedder.device(), crate::inference::Device::Cpu);
         let long = "migration rollback ".repeat(300);
         let texts = [
@@ -796,27 +735,17 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn profile_names_round_trip() {
-        assert_eq!(Profile::parse("accuracy"), Some(Profile::Accuracy));
-        assert_eq!(Profile::parse("enormous"), None);
-    }
-
-    /// The recorded identity and the plan key stay what they were when there
-    /// were several profiles: every existing index is tagged with the first,
+    /// The recorded identity and the plan key stay what they were when the
+    /// model was the `accuracy` profile: every existing index is tagged with
+    /// the first,
     /// and every host's measured execution plan is cached under the second.
     #[test]
     fn the_model_keeps_its_recorded_identity_and_plan_key() {
-        assert_eq!(Profile::Accuracy.model_id(), "gpahal/bge-m3-onnx-int8");
+        assert_eq!(MODEL_ID, "gpahal/bge-m3-onnx-int8");
         assert_eq!(
-            plan_key(Profile::Accuracy.model_id(), "gpahal/bge-m3-onnx-int8@abc"),
+            plan_key(MODEL_ID, "gpahal/bge-m3-onnx-int8@abc"),
             "embedding-query-v4:max512:joint-singleton:e5-cpu256-accelerator8:\
              gpahal/bge-m3-onnx-int8:gpahal/bge-m3-onnx-int8@abc"
         );
-    }
-
-    #[test]
-    fn the_default_profile_is_accuracy() {
-        assert_eq!(Profile::default(), Profile::Accuracy);
     }
 }
