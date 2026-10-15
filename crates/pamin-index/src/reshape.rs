@@ -338,14 +338,13 @@ impl Reshape {
                     *topic,
                     document.content.as_str(),
                     document.embedding.as_slice(),
-                    document.secondary.as_deref(),
                 )),
                 None => absent.push(*topic),
             }
         }
 
         let next = self.next();
-        next.upsert_vectors(&present)?;
+        next.upsert_batch(&present)?;
         if !absent.is_empty() {
             next.delete(&absent)?;
         }
@@ -440,9 +439,9 @@ impl Projection for Recording {
         self.inner.segmenter()
     }
 
-    fn upsert_vectors(&self, documents: &[VectorDocument<'_>]) -> Result<()> {
+    fn upsert_batch(&self, documents: &[VectorDocument<'_>]) -> Result<()> {
         self.touch(documents.iter().map(|(topic, ..)| *topic));
-        self.inner.upsert_vectors(documents)
+        self.inner.upsert_batch(documents)
     }
 
     fn recall_segmented(&self, query: &str, limit: u32) -> Result<Vec<Scored>> {
@@ -459,10 +458,6 @@ impl Projection for Recording {
 
     fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>> {
         self.inner.recall_vector(embedding, limit)
-    }
-
-    fn recall_secondary(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>> {
-        self.inner.recall_secondary(embedding, limit)
     }
 
     fn stored(&self, topics: &[TopicId]) -> Result<Vec<Option<Stored>>> {
@@ -545,7 +540,7 @@ impl Projection for Closed {
         Arc::clone(&self.segmenter)
     }
 
-    fn upsert_vectors(&self, _: &[VectorDocument<'_>]) -> Result<()> {
+    fn upsert_batch(&self, _: &[VectorDocument<'_>]) -> Result<()> {
         self.refuse()
     }
 
@@ -562,10 +557,6 @@ impl Projection for Closed {
     }
 
     fn recall_vector(&self, _: &[f32], _: u32) -> Result<Vec<Scored>> {
-        self.refuse()
-    }
-
-    fn recall_secondary(&self, _: &[f32], _: u32) -> Result<Vec<Scored>> {
         self.refuse()
     }
 
@@ -783,7 +774,6 @@ mod tests {
                     Some(Stored {
                         content: content(n),
                         embedding: crate::as_stored(&vector(n)),
-                        secondary: None,
                     }),
                 )
             })
@@ -791,7 +781,6 @@ mod tests {
         expected[4].1 = Some(Stored {
             content: "memory number 5 was edited".to_string(),
             embedding: crate::as_stored(&vector(1005)),
-            secondary: None,
         });
         expected[6].1 = None;
         let topics: Vec<TopicId> = expected.iter().map(|(topic, _)| *topic).collect();

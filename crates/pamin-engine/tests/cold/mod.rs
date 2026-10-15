@@ -211,7 +211,6 @@ fn profile_name(profile: Profile) -> &'static str {
         Profile::Speed => "speed",
         Profile::Balanced => "balanced",
         Profile::Accuracy => "accuracy",
-        Profile::DualAccuracy => "dual_accuracy",
     }
 }
 
