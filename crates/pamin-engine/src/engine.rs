@@ -985,13 +985,9 @@ impl Engine {
             .pop()
             .expect("one passage for one state");
         off_the_runtime(|| {
-            let embedding = self.embedding()?.encode_passage(&passage)?;
-            self.index().upsert_vectors(&[(
-                state.topic_id,
-                &state.content,
-                embedding.primary.as_slice(),
-                embedding.secondary.as_deref(),
-            )])
+            let embedding = self.embedding()?.embed_passage(&passage)?;
+            self.index()
+                .upsert_batch(&[(state.topic_id, &state.content, embedding.as_slice())])
         })?;
         Ok(())
     }
@@ -1069,20 +1065,15 @@ impl Engine {
         let passages = self.passages(states).await?;
         let contents: Vec<&str> = passages.iter().map(String::as_str).collect();
         off_the_runtime(|| {
-            let embeddings = self.embedding()?.encode_passages(&contents)?;
+            let embeddings = self.embedding()?.embed_passages(&contents)?;
             let documents: Vec<VectorDocument<'_>> = states
                 .iter()
                 .zip(&embeddings)
                 .map(|(state, embedding)| {
-                    (
-                        state.topic_id,
-                        state.content.as_str(),
-                        embedding.primary.as_slice(),
-                        embedding.secondary.as_deref(),
-                    )
+                    (state.topic_id, state.content.as_str(), embedding.as_slice())
                 })
                 .collect();
-            self.index().upsert_vectors(&documents)
+            self.index().upsert_batch(&documents)
         })?;
         Ok(())
     }
@@ -1531,8 +1522,7 @@ impl Engine {
     }
 
     /// Every execution plan each model this engine has used ran on, by role:
-    /// `embedding`, `embedding secondary` for a profile with a second vector
-    /// model, and `reranking accurate` if this process has loaded the reranker --
+    /// `embedding`, and `reranking accurate` if this process has loaded the reranker --
     /// oldest first, so a model that fell back to the CPU during a run lists
     /// the plan it left and then the CPU's. Each plan is its target as plans
     /// are keyed, the hash of its full plan key, and whether it is stable
@@ -1550,9 +1540,6 @@ impl Engine {
         if let Some(embedder) = self.embedder.get().and_then(|held| held_now(held.as_ref())) {
             for plan in embedder.plans() {
                 providers.push(("embedding".to_string(), plan));
-            }
-            for plan in embedder.secondary_plans().into_iter().flatten() {
-                providers.push(("embedding secondary".to_string(), plan));
             }
         }
         providers.extend(self.models.reranker_plans());
@@ -1725,14 +1712,9 @@ impl Engine {
             // Embedded before the index is read, and the model lock released
             // before the read lock is taken: holding both is what would turn
             // one slow inference into a queue for every reader.
-            let embedding = self.embedding()?.encode_query(query)?;
+            let embedding = self.embedding()?.embed_query(query)?;
             let index = self.index();
-            let primary_depth = if embedding.secondary.is_some() {
-                depths.channel.div_ceil(2)
-            } else {
-                depths.channel
-            };
-            let mut lists = vec![
+            let lists = vec![
                 ChannelResults::new(
                     Channel::LexicalSegmented,
                     index.recall_segmented(query, depths.channel)?,
@@ -1743,18 +1725,11 @@ impl Engine {
                 ),
                 ChannelResults::new(
                     Channel::Vector,
-                    index.recall_vector(&embedding.primary, primary_depth)?,
+                    index.recall_vector(&embedding, depths.channel)?,
                 ),
             ];
-            if let Some(secondary) = embedding.secondary {
-                lists.push(ChannelResults::new(
-                    Channel::VectorSecondary,
-                    index.recall_secondary(&secondary, depths.channel / 2)?,
-                ));
-            }
             Ok::<_, pamin_index::IndexError>(lists)
         })?;
-        let fusion = dense_fusion(self.profile, depths.channel, fusion);
 
         // Only the ledger knows what a topic stands for now, what it is worth,
         // and whether it still stands for anything -- so what the index
@@ -2064,7 +2039,7 @@ impl Engine {
             // whatever it could not supply.
             let lent = match &previous {
                 Some(previous) => previous.lend(&wanted, REINDEX_BATCH, |documents| {
-                    index.upsert_vectors(documents)
+                    index.upsert_batch(documents)
                 })?,
                 None => std::collections::HashSet::new(),
             };
@@ -2084,20 +2059,15 @@ impl Engine {
                 let embeddings = embedder
                     .as_mut()
                     .expect("the model is loaded whenever a vector is missing")
-                    .encode_passages(&texts)?;
+                    .embed_passages(&texts)?;
                 let documents: Vec<_> = batch
                     .iter()
                     .zip(&embeddings)
                     .map(|((state, _), embedding)| {
-                        (
-                            state.topic_id,
-                            state.content.as_str(),
-                            embedding.primary.as_slice(),
-                            embedding.secondary.as_deref(),
-                        )
+                        (state.topic_id, state.content.as_str(), embedding.as_slice())
                     })
                     .collect();
-                index.upsert_vectors(&documents)?;
+                index.upsert_batch(&documents)?;
             }
             index.flush()?;
             // A rebuild is the one point where building the vector graph is
@@ -2574,14 +2544,6 @@ pub fn score_blend_order(fused: &[f64], model: &[f64], fusion: f64) -> Vec<usize
     positions
 }
 
-fn dense_fusion(profile: Profile, depth: u32, fusion: Fusion) -> Fusion {
-    if profile == Profile::DualAccuracy && depth >= 2 {
-        fusion.with_secondary_vector()
-    } else {
-        fusion
-    }
-}
-
 /// Puts the candidates the reranker scored back into the list, best first.
 ///
 /// `shown` is what [`rerankable`] chose, ascending, and `best_first` indexes
@@ -2684,22 +2646,6 @@ fn can_be_seen(unlexical: &[usize], limit: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn dual_depth_one_preserves_the_single_stream_vote() {
-        let primary = pamin_core::ChannelResults::new(
-            pamin_core::Channel::Vector,
-            vec![pamin_core::Scored::new(pamin_core::TopicId::new(), 1.0)],
-        );
-        let expected = pamin_core::Fusion::default().fuse(std::slice::from_ref(&primary));
-        let actual = super::dense_fusion(
-            pamin_index::Profile::DualAccuracy,
-            1,
-            pamin_core::Fusion::default(),
-        )
-        .fuse(&[primary]);
-        assert_eq!(actual[0].score, expected[0].score);
-    }
-
     use std::time::{Duration, Instant};
 
     use super::{
@@ -3154,7 +3100,7 @@ mod tests {
     fn a_topic_back_where_the_index_left_it_is_not_embedded_again() {
         use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
 
-        for profile in [Profile::Speed, Profile::DualAccuracy] {
+        for profile in [Profile::Speed, Profile::Accuracy] {
             let open = |dir: &std::path::Path| {
                 ProjectionIndex::open(
                     dir,
@@ -3221,25 +3167,16 @@ mod tests {
                     .map(|(wanted, _)| *wanted)
                     .collect();
                 for (index, writes) in [(&every, &wanted), (&skipping, &needed)] {
-                    let vectors: Vec<(Vec<f32>, Option<Vec<f32>>)> = writes
+                    let vectors: Vec<Vec<f32>> = writes
                         .iter()
-                        .map(|(_, text)| {
-                            (
-                                encode(text, profile.dimensions()),
-                                profile
-                                    .secondary_dimensions()
-                                    .map(|dimensions| encode(text, dimensions)),
-                            )
-                        })
+                        .map(|(_, text)| encode(text, profile.dimensions()))
                         .collect();
                     let documents: Vec<pamin_index::VectorDocument<'_>> = writes
                         .iter()
                         .zip(&vectors)
-                        .map(|((topic, text), (primary, secondary))| {
-                            (*topic, *text, primary.as_slice(), secondary.as_deref())
-                        })
+                        .map(|((topic, text), vector)| (*topic, *text, vector.as_slice()))
                         .collect();
-                    index.upsert_vectors(&documents).expect("write");
+                    index.upsert_batch(&documents).expect("write");
                     index.delete(&absent).expect("delete");
                     index.flush().expect("flush");
                 }
@@ -3289,7 +3226,7 @@ mod tests {
         let topic = TopicId::new();
         let vector = vec![0.1; Profile::Speed.dimensions() as usize];
         index
-            .upsert_vectors(&[(topic, "alpha", vector.as_slice(), None)])
+            .upsert_batch(&[(topic, "alpha", vector.as_slice())])
             .expect("write");
         assert_eq!(super::unheld(&index, &[(topic, "alpha")]), [false]);
         assert_eq!(super::unheld(&index, &[(topic, "Alpha")]), [true]);

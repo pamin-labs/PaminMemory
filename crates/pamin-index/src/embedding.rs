@@ -34,8 +34,6 @@ use crate::hub::Repository;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
-    /// Opt-in complementary dense spaces; primary BGE-M3 plus pinned PPLX.
-    DualAccuracy,
     /// 384 dimensions. Bulk ingestion and low-spec machines.
     ///
     /// 384 dimensions is generally held to be enough only alongside a
@@ -78,7 +76,7 @@ impl Profile {
         match self {
             Self::Speed => EmbeddingModel::MultilingualE5Small,
             Self::Balanced => EmbeddingModel::MultilingualE5Base,
-            Self::Accuracy | Self::DualAccuracy => {
+            Self::Accuracy => {
                 unreachable!("the accuracy profile runs the joint BGE-M3 export")
             }
         }
@@ -94,7 +92,7 @@ impl Profile {
     fn prefixes(self) -> Option<(&'static str, &'static str)> {
         match self {
             Self::Speed | Self::Balanced => Some(("query: ", "passage: ")),
-            Self::Accuracy | Self::DualAccuracy => None,
+            Self::Accuracy => None,
         }
     }
 
@@ -106,7 +104,7 @@ impl Profile {
         match self {
             Self::Speed => 384,
             Self::Balanced => 768,
-            Self::Accuracy | Self::DualAccuracy => 1024,
+            Self::Accuracy => 1024,
         }
     }
 
@@ -125,22 +123,10 @@ impl Profile {
             // to them, and the recorded identity is what stops two encodings
             // sharing one index.
             Self::Accuracy => "gpahal/bge-m3-onnx-int8",
-            Self::DualAccuracy => {
-                "bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4"
-            }
         }
     }
 
-    pub fn secondary_dimensions(self) -> Option<u32> {
-        (self == Self::DualAccuracy).then_some(1024)
-    }
-
-    pub const ALL: [Self; 4] = [
-        Self::Speed,
-        Self::Balanced,
-        Self::Accuracy,
-        Self::DualAccuracy,
-    ];
+    pub const ALL: [Self; 3] = [Self::Speed, Self::Balanced, Self::Accuracy];
 
     /// Parses a profile name.
     pub fn parse(name: &str) -> Option<Self> {
@@ -148,17 +134,9 @@ impl Profile {
             "speed" => Some(Self::Speed),
             "balanced" => Some(Self::Balanced),
             "accuracy" => Some(Self::Accuracy),
-            "dual_accuracy" => Some(Self::DualAccuracy),
             _ => None,
         }
     }
-}
-
-/// All dense fields for one document/query; schema decides which are required.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Encoded {
-    pub primary: Vec<f32>,
-    pub secondary: Option<Vec<f32>>,
 }
 
 /// Turns text into vectors.
@@ -167,7 +145,6 @@ pub struct Embedder {
     model: Box<Encoder>,
     profile: Profile,
     device: crate::inference::Device,
-    secondary: Option<(Box<Encoder>, crate::inference::Device)>,
     /// Query vectors already computed.
     ///
     /// Shared with every project on this profile, because the vector depends on
@@ -183,12 +160,6 @@ impl Embedder {
     /// not pay for it.
     pub fn load(profile: Profile, cache_dir: &std::path::Path) -> Result<Self> {
         let (model, device) = primary_model(profile, cache_dir)?;
-        let secondary = if profile == Profile::DualAccuracy {
-            let (model, device) = complementary(cache_dir)?;
-            Some((Box::new(model), device))
-        } else {
-            None
-        };
         tracing::info!(
             model = profile.model_id(),
             device = device.name(),
@@ -199,7 +170,6 @@ impl Embedder {
             model: Box::new(model),
             profile,
             device,
-            secondary,
             remembered: Queries::default(),
         })
     }
@@ -220,13 +190,6 @@ impl Embedder {
     /// or a revalidation moved it. See [`crate::PlanUse`].
     pub fn plans(&self) -> Vec<crate::PlanUse> {
         crate::inference::plans_of(&self.model, self.device)
-    }
-
-    /// The second vector model's plans, as [`Embedder::plans`].
-    pub fn secondary_plans(&self) -> Option<Vec<crate::PlanUse>> {
-        self.secondary
-            .as_ref()
-            .map(|(model, device)| crate::inference::plans_of(model, *device))
     }
 
     pub fn profile(&self) -> Profile {
@@ -254,44 +217,16 @@ impl Embedder {
     /// queries. A passage is embedded once in its life, so a cache of those
     /// would hold the corpus and never be read.
     pub fn embed_query(&mut self, text: &str) -> Result<Vec<f32>> {
-        Ok(self.encode_query(text)?.primary)
-    }
-
-    pub fn encode_query(&mut self, text: &str) -> Result<Encoded> {
         self.revalidate();
         if let Some(known) = self.remembered.get(text) {
             return Ok(known);
         }
-        let primary = match self.profile.prefixes() {
+        let vector = match self.profile.prefixes() {
             Some((query, _)) => self.embed_one(&format!("{query}{text}")),
             None => self.embed_one(text),
         }?;
-        let secondary = self.secondary_vector(text)?;
-        let encoded = Encoded { primary, secondary };
-        self.remembered.put(text, &encoded);
-        Ok(encoded)
-    }
-
-    pub fn encode_passage(&mut self, text: &str) -> Result<Encoded> {
-        let primary = self.embed_passage(text)?;
-        let secondary = self.secondary_vector(text)?;
-        Ok(Encoded { primary, secondary })
-    }
-
-    pub fn encode_passages(&mut self, texts: &[&str]) -> Result<Vec<Encoded>> {
-        let primary = self.embed_passages(texts)?;
-        primary
-            .into_iter()
-            .zip(texts)
-            .map(|(primary, text)| {
-                let secondary = self.secondary_vector(text)?;
-                Ok(Encoded { primary, secondary })
-            })
-            .collect()
-    }
-
-    pub fn secondary_device(&self) -> Option<crate::inference::Device> {
-        self.secondary.as_ref().map(|(_, device)| *device)
+        self.remembered.put(text, &vector);
+        Ok(vector)
     }
 
     /// Embeds many passages in one forward pass.
@@ -305,9 +240,8 @@ impl Embedder {
 
     /// How many queries this remembers, per profile.
     ///
-    /// A single space is at most four kilobytes of float payload per query;
-    /// the dual profile keeps both 1024-dimensional vectors (eight kilobytes).
-    /// At 256 entries that is up to one/two MiB of vector payload. Per process,
+    /// A vector is at most four kilobytes of float payload per query, so at
+    /// 256 entries that is up to one MiB of vector payload. Per process,
     /// like the reranker's, so it is `pamin serve` that makes it worth
     /// anything.
     const REMEMBERED_QUERIES: usize = 256;
@@ -347,12 +281,7 @@ impl Embedder {
     /// flight beside it -- so `reindex` and the cascade agree, and the same
     /// corpus written twice indexes to the same thing.
     fn revalidate(&mut self) {
-        if crate::inference::needs_revalidation(&self.model)
-            || self
-                .secondary
-                .as_ref()
-                .is_some_and(|(model, _)| crate::inference::needs_revalidation(model))
-        {
+        if crate::inference::needs_revalidation(&self.model) {
             self.remembered = Queries::default();
         }
     }
@@ -373,24 +302,6 @@ impl Embedder {
         }
         Ok(vectors)
     }
-
-    fn secondary_vector(&mut self, text: &str) -> Result<Option<Vec<f32>>> {
-        let Some((model, device)) = &mut self.secondary else {
-            return Ok(None);
-        };
-        let cache = &self.cache_dir;
-        let (vector, replaced) = crate::inference::retry_model(
-            model,
-            device,
-            cache,
-            |model, _| complementary_vector(model, text),
-            || complementary(cache).map(|(model, device)| (Box::new(model), device)),
-        )?;
-        if replaced {
-            self.remembered = Queries::default();
-        }
-        Ok(Some(vector))
-    }
 }
 
 fn primary_model(
@@ -398,16 +309,8 @@ fn primary_model(
     cache_dir: &std::path::Path,
 ) -> Result<(Encoder, crate::inference::Device)> {
     std::fs::create_dir_all(cache_dir)?;
-    let repository = if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
-        Repository::open_at(
-            cache_dir,
-            JOINT_REPOSITORY,
-            if profile == Profile::DualAccuracy {
-                "2b34e84df040034d4b9eabb62383a87c18955822"
-            } else {
-                "main"
-            },
-        )?
+    let repository = if profile == Profile::Accuracy {
+        Repository::open_at(cache_dir, JOINT_REPOSITORY, "main")?
     } else {
         let model = profile.model();
         let info = TextEmbedding::get_model_info(&model)
@@ -421,7 +324,7 @@ fn primary_model(
     );
     let references = std::cell::RefCell::new(crate::inference::References::default());
     let long = "migration ".repeat(600);
-    let fixtures: Vec<String> = if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
+    let fixtures: Vec<String> = if profile == Profile::Accuracy {
         vec![
             "deployment rollback".into(),
             "数据库迁移失败后如何回滚？".into(),
@@ -479,9 +382,7 @@ fn primary_model(
         },
     )?;
 
-    if device == crate::inference::Device::Cpu
-        && matches!(profile, Profile::Accuracy | Profile::DualAccuracy)
-    {
+    if device == crate::inference::Device::Cpu && profile == Profile::Accuracy {
         crate::prepared::release(&repository.file(cache_dir, JOINT_FILE), cache_dir);
     }
     Ok((model, device))
@@ -494,7 +395,7 @@ fn profile_vectors(
     texts: &[String],
 ) -> Result<Vec<Vec<f32>>> {
     match profile {
-        Profile::Accuracy | Profile::DualAccuracy => model.run_each(alone(model, texts)?, dense),
+        Profile::Accuracy => model.run_each(alone(model, texts)?, dense),
         _ => e5_vectors(
             model,
             texts,
@@ -572,16 +473,8 @@ fn load_on(
     device: crate::inference::Device,
     target: crate::inference::Target,
 ) -> Result<Encoder> {
-    if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
-        let repository = if profile == Profile::DualAccuracy {
-            Repository::open_at(
-                cache_dir,
-                JOINT_REPOSITORY,
-                "2b34e84df040034d4b9eabb62383a87c18955822",
-            )?
-        } else {
-            Repository::open(cache_dir, JOINT_REPOSITORY)?
-        };
+    if profile == Profile::Accuracy {
+        let repository = Repository::open(cache_dir, JOINT_REPOSITORY)?;
         let weights = repository.file(cache_dir, JOINT_FILE);
         let encoder = joint_session(&repository, &weights, cache_dir, device, target)?;
         return Ok(encoder);
@@ -762,199 +655,6 @@ fn dense(outputs: ort::session::SessionOutputs<'_>) -> Result<Vec<f32>> {
     }
 }
 
-fn complementary(cache: &std::path::Path) -> Result<(Encoder, crate::inference::Device)> {
-    let repository = Repository::open_at(
-        cache,
-        "perplexity-ai/pplx-embed-v1-0.6b",
-        "2c4d510dd4a732063c31a0f70193e35067b51fd8",
-    )?;
-    let load = |device, target| -> Result<Encoder> {
-        let model = Encoder::load(
-            || {
-                repository.get("onnx/model_quantized.onnx_data")?;
-                crate::pplx::prepare(&repository.get("onnx/model_quantized.onnx")?, cache)
-            },
-            &repository,
-            JOINT_MAX_TOKENS,
-            target,
-        )?;
-        model.require_accelerator(device)?;
-        Ok(model)
-    };
-    let references = std::cell::RefCell::new(crate::inference::References::default());
-    crate::inference::measured(
-        &format!(
-            "complementary-query-v4:max512:singleton:2c4d510dd4a732063c31a0f70193e35067b51fd8:{}",
-            repository.identity(cache)
-        ),
-        cache,
-        &references,
-        crate::inference::ReferenceShape {
-            vectors: Some((6, 1024)),
-            ..Default::default()
-        },
-        |device, target, _validated| load(device, target),
-        |model, _device| {
-            let mut reference = references.borrow_mut();
-            let elapsed = crate::inference::time_calls(|| {
-                for query in ["deployment rollback", "数据库迁移失败后如何回滚？"] {
-                    let vector = complementary_vector(model, query)?;
-                    valid_complementary_vectors(&[vector])?;
-                }
-                Ok(())
-            })?;
-            let vectors = [
-                "deployment rollback".to_string(),
-                "数据库迁移失败后如何回滚？".to_string(),
-                "Roll back a failed deployment to the previous application version.".to_string(),
-                "数据库迁移失败后，回滚事务并恢复之前的数据库版本。".to_string(),
-                "Bake a chocolate cake and serve it with fresh strawberries.".to_string(),
-                "migration ".repeat(600),
-            ]
-            .iter()
-            .map(|text| complementary_vector(model, text))
-            .collect::<Result<Vec<_>>>()?;
-            check_complementary_retrieval(vectors, &mut reference.vectors)?;
-            Ok(elapsed)
-        },
-    )
-}
-
-fn valid_complementary_vectors(vectors: &[Vec<f32>]) -> Result<()> {
-    if vectors.iter().any(|vector| {
-        vector.len() != 1024
-            || !vector.iter().all(|value| value.is_finite())
-            || !vector.iter().any(|value| *value != 0.0)
-    }) {
-        return Err(IndexError::Numerical(
-            "invalid complementary fixture vector".into(),
-        ));
-    }
-    Ok(())
-}
-
-/// A predefined same-export retrieval gate, including queries against stored
-/// CPU documents and CPU queries against new accelerator documents. Numerical
-/// drift alone does not quarantine a plan; changed non-tied rankings do.
-fn check_complementary_retrieval(
-    vectors: Vec<Vec<f32>>,
-    expected: &mut Option<Vec<Vec<f32>>>,
-) -> Result<()> {
-    valid_complementary_vectors(&vectors)?;
-    if vectors.len() != 6 {
-        return Err(IndexError::Numerical(
-            "incomplete complementary retrieval fixture".into(),
-        ));
-    }
-    let reference = expected.as_ref().unwrap_or(&vectors);
-    valid_complementary_vectors(reference)?;
-    if reference.len() != vectors.len() {
-        return Err(IndexError::Numerical(
-            "incomplete CPU retrieval fixture".into(),
-        ));
-    }
-    // The product stores documents as FP16 and exactly rescores recalled
-    // documents against the raw query. Reuse that conversion and dot kernel;
-    // this fixture covers the scorer contract, not ANN recall or corpus quality.
-    let stored_reference: Vec<_> = reference[2..]
-        .iter()
-        .map(|v| crate::half::as_stored(v))
-        .collect();
-    let stored_candidate: Vec<_> = vectors[2..]
-        .iter()
-        .map(|v| crate::half::as_stored(v))
-        .collect();
-    let dot = crate::vector_math::dot;
-    let similarity = |query: &[f32], document: &[f32]| {
-        let lengths = dot(query, query).sqrt() * dot(document, document).sqrt();
-        if lengths > 0.0 {
-            dot(query, document) / lengths
-        } else {
-            0.0
-        }
-    };
-    for (actual, expected) in vectors.iter().zip(reference) {
-        tracing::debug!(
-            similarity = similarity(actual, expected),
-            "complementary fixture numerical drift"
-        );
-    }
-    for query in 0..2 {
-        // Predeclared premise: each query must rank its corresponding rollback
-        // document above the unrelated cake document. A 1e-4 cosine gap defines
-        // a meaningful fixture comparison, independently of benchmark results;
-        // no tolerance is applied to an observed reversal of that comparison.
-        let premise = similarity(&reference[query], &stored_reference[query])
-            - similarity(&reference[query], &stored_reference[2]);
-        if !premise.is_finite() || premise <= 1e-4 {
-            return Err(IndexError::Numerical(
-                "CPU complementary retrieval fixture is not informative".into(),
-            ));
-        }
-        for left in 0..stored_reference.len() {
-            for right in left + 1..stored_reference.len() {
-                let control = similarity(&reference[query], &stored_reference[left])
-                    - similarity(&reference[query], &stored_reference[right]);
-                if !control.is_finite() {
-                    return Err(IndexError::Numerical(
-                        "invalid stored CPU retrieval fixture".into(),
-                    ));
-                }
-                if control.abs() <= 1e-4 {
-                    continue;
-                }
-                for (queries, documents) in [
-                    (&vectors, &stored_reference),
-                    (reference, &stored_candidate),
-                    (&vectors, &stored_candidate),
-                ] {
-                    let observed = similarity(&queries[query], &documents[left])
-                        - similarity(&queries[query], &documents[right]);
-                    if !observed.is_finite() || observed * control <= 0.0 {
-                        return Err(IndexError::Numerical(
-                            "complementary plan failed the startup retrieval ordering fixture"
-                                .into(),
-                        ));
-                    }
-                }
-            }
-        }
-    }
-    if expected.is_none() {
-        *expected = Some(vectors);
-    }
-    Ok(())
-}
-
-fn complementary_vector(model: &mut Encoder, text: &str) -> Result<Vec<f32>> {
-    let outputs = model.run(vec![text])?;
-    let output = outputs.get("pooler_output_int8").ok_or_else(|| {
-        IndexError::Engine("complementary export has no int8 pooled output".into())
-    })?;
-    let (shape, values) = output
-        .try_extract_tensor::<i8>()
-        .map_err(|e| IndexError::Engine(format!("complementary vector: {e}")))?;
-    if **shape != [1, 1024] {
-        return Err(IndexError::Engine(format!(
-            "complementary vector shape {shape:?}"
-        )));
-    }
-    normalized_pooled(values.try_into().expect("validated pooled shape"))
-}
-
-fn normalized_pooled(values: &[i8; 1024]) -> Result<Vec<f32>> {
-    // Every squared i8 is an exact integer. The complete sum is at most
-    // 1024 * 128^2 = 2^24, exact in f32 too. Integer reduction allows LLVM's
-    // portable SIMD vectorization without reassociating floating additions
-    // or changing the encoding's normalization.
-    let squared: i32 = values.iter().map(|v| i32::from(*v).pow(2)).sum();
-    if squared == 0 {
-        return Err(IndexError::Engine("zero complementary vector".into()));
-    }
-    let norm = (squared as f32).sqrt();
-    Ok(values.iter().map(|v| f32::from(*v) / norm).collect())
-}
-
 /// Query vectors already computed, oldest first.
 ///
 /// Keyed by the query itself rather than by a hash of it. The reranker's cache
@@ -965,12 +665,12 @@ fn normalized_pooled(values: &[i8; 1024]) -> Result<Vec<f32>> {
 /// guards.
 #[derive(Default)]
 struct Queries {
-    known: std::collections::HashMap<String, Encoded>,
+    known: std::collections::HashMap<String, Vec<f32>>,
     order: std::collections::VecDeque<String>,
 }
 
 impl Queries {
-    fn get(&self, query: &str) -> Option<Encoded> {
+    fn get(&self, query: &str) -> Option<Vec<f32>> {
         self.known.get(query).cloned()
     }
 
@@ -979,10 +679,10 @@ impl Queries {
     /// Insertion order rather than use order, for the reason the reranker's is:
     /// keeping a true LRU means writing on every hit, and a query asked twice
     /// is asked twice close together.
-    fn put(&mut self, query: &str, vector: &Encoded) {
+    fn put(&mut self, query: &str, vector: &[f32]) {
         if self
             .known
-            .insert(query.to_string(), vector.clone())
+            .insert(query.to_string(), vector.to_vec())
             .is_some()
         {
             return;
@@ -993,78 +693,6 @@ impl Queries {
                 self.known.remove(&oldest);
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod pooled_tests {
-    use super::{check_complementary_retrieval, compatible_vectors, normalized_pooled};
-
-    #[test]
-    fn complementary_retrieval_rejects_tied_or_wrong_cpu_fixture_premises() {
-        let mut vector = vec![0.0; 1024];
-        vector[0] = 1.0;
-        let tied = vec![vector; 6];
-        let mut absent = None;
-        assert!(check_complementary_retrieval(tied.clone(), &mut absent).is_err());
-        assert!(absent.is_none(), "invalid CPU control was published");
-        let mut cached = Some(tied.clone());
-        assert!(check_complementary_retrieval(tied, &mut cached).is_err());
-        let mut vector = vec![0.0; 1024];
-        vector[1] = 1.0;
-        let mut wrong = cached.unwrap();
-        wrong[2] = vector;
-        // Finite and distinct is insufficient: the related document must beat
-        // the unrelated document before this control can validate a candidate.
-        assert!(check_complementary_retrieval(wrong, &mut None).is_err());
-    }
-
-    #[test]
-    fn complementary_retrieval_accepts_drift_but_rejects_changed_rankings() {
-        let vector = |x, y| {
-            let mut v = vec![0.0; 1024];
-            v[0] = x;
-            v[1] = y;
-            v
-        };
-        let reference = vec![
-            vector(1.0, 0.0),
-            vector(0.0, 1.0),
-            vector(1.0, 0.0),
-            vector(0.0, 1.0),
-            vector(-1.0, -1.0),
-            vector(0.2, 0.3),
-        ];
-        let mut expected = Some(reference.clone());
-        let mut drifted = reference.clone();
-        drifted[0] = vector(0.99998, 0.0063245);
-        assert!(compatible_vectors(&drifted[0], &reference[0], 1024));
-        assert!(check_complementary_retrieval(drifted, &mut expected).is_ok());
-        let mut reversed = reference.clone();
-        reversed.swap(2, 3);
-        assert!(check_complementary_retrieval(reversed, &mut expected).is_err());
-        let mut invalid = reference;
-        invalid[0][0] = f32::NAN;
-        assert!(check_complementary_retrieval(invalid, &mut expected).is_err());
-        assert!(check_complementary_retrieval(vec![], &mut expected).is_err());
-    }
-
-    #[test]
-    fn signed_pooled_normalization_matches_scalar_encoding_exactly() {
-        for values in [
-            [-128i8; 1024],
-            [127i8; 1024],
-            std::array::from_fn(|i| (i % 256) as u8 as i8),
-        ] {
-            let norm = values
-                .iter()
-                .map(|v| f32::from(*v).powi(2))
-                .sum::<f32>()
-                .sqrt();
-            let expected: Vec<_> = values.iter().map(|v| f32::from(*v) / norm).collect();
-            assert_eq!(normalized_pooled(&values).unwrap(), expected);
-        }
-        assert!(normalized_pooled(&[0; 1024]).is_err());
     }
 }
 
@@ -1169,7 +797,6 @@ mod tests {
                 model: Box::new(model),
                 profile: Profile::Accuracy,
                 device,
-                secondary: None,
                 remembered: Queries::default(),
             };
             inputs
@@ -1193,7 +820,6 @@ mod tests {
             model: Box::new(model),
             profile: Profile::Accuracy,
             device: crate::inference::Device::Cpu,
-            secondary: None,
             remembered: Queries::default(),
         };
         for (index, text) in inputs.iter().enumerate() {
@@ -1359,34 +985,16 @@ mod tests {
         let mut queries = super::Queries::default();
         assert!(queries.get("how does deployment work").is_none());
 
-        queries.put(
-            "how does deployment work",
-            &Encoded {
-                primary: vec![1.0, 2.0, 3.0],
-                secondary: None,
-            },
-        );
-        queries.put(
-            "how does deployment fail",
-            &Encoded {
-                primary: vec![4.0, 5.0, 6.0],
-                secondary: None,
-            },
-        );
+        queries.put("how does deployment work", &[1.0, 2.0, 3.0]);
+        queries.put("how does deployment fail", &[4.0, 5.0, 6.0]);
 
         assert_eq!(
             queries.get("how does deployment work"),
-            Some(Encoded {
-                primary: vec![1.0, 2.0, 3.0],
-                secondary: None
-            })
+            Some(vec![1.0, 2.0, 3.0])
         );
         assert_eq!(
             queries.get("how does deployment fail"),
-            Some(Encoded {
-                primary: vec![4.0, 5.0, 6.0],
-                secondary: None
-            })
+            Some(vec![4.0, 5.0, 6.0])
         );
         assert!(queries.get("how does deployment").is_none());
     }
@@ -1397,22 +1005,13 @@ mod tests {
         let mut queries = super::Queries::default();
         let cap = super::Embedder::REMEMBERED_QUERIES;
         for i in 0..cap + 10 {
-            queries.put(
-                &format!("query {i}"),
-                &Encoded {
-                    primary: vec![i as f32],
-                    secondary: None,
-                },
-            );
+            queries.put(&format!("query {i}"), &[i as f32]);
         }
         assert_eq!(queries.known.len(), cap);
         assert!(queries.get("query 0").is_none(), "the oldest survived");
         assert_eq!(
             queries.get(&format!("query {}", cap + 9)),
-            Some(Encoded {
-                primary: vec![(cap + 9) as f32],
-                secondary: None
-            }),
+            Some(vec![(cap + 9) as f32]),
             "the newest was lost"
         );
     }
@@ -1422,22 +1021,10 @@ mod tests {
     fn remembering_a_query_twice_does_not_shorten_the_cache() {
         let mut queries = super::Queries::default();
         for _ in 0..super::Embedder::REMEMBERED_QUERIES * 2 {
-            queries.put(
-                "the same question",
-                &Encoded {
-                    primary: vec![1.0],
-                    secondary: None,
-                },
-            );
+            queries.put("the same question", &[1.0]);
         }
         assert_eq!(queries.order.len(), 1);
-        assert_eq!(
-            queries.get("the same question"),
-            Some(Encoded {
-                primary: vec![1.0],
-                secondary: None
-            })
-        );
+        assert_eq!(queries.get("the same question"), Some(vec![1.0]));
     }
 
     use super::*;
@@ -1448,7 +1035,6 @@ mod tests {
             ("speed", Profile::Speed),
             ("balanced", Profile::Balanced),
             ("accuracy", Profile::Accuracy),
-            ("dual_accuracy", Profile::DualAccuracy),
         ] {
             assert_eq!(Profile::parse(name), Some(profile));
         }

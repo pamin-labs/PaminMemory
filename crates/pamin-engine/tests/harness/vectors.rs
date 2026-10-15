@@ -32,9 +32,6 @@ pub fn producer(embedder: &Embedder) -> String {
         .iter()
         .map(|plan| format!("plan={}", shape::provider(plan)))
         .collect();
-    for plan in embedder.secondary_plans().into_iter().flatten() {
-        lines.push(format!("secondary={}", shape::provider(&plan)));
-    }
     lines.push(format!("build={}", shape::build_digest()));
     lines.join("\n")
 }

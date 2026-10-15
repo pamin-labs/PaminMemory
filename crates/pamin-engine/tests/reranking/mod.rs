@@ -842,10 +842,7 @@ pub fn replay(hits: &[SearchHit]) -> Replayed {
         })
         .collect();
 
-    // The fusion this search ran, a profile's secondary vector channel
-    // included, rather than the default.
-    let fusion = crate::channels::effective_fusion(hits, &Fusion::default());
-    let results = fusion.fuse(&crate::channels::replay(hits));
+    let results = Fusion::default().fuse(&crate::channels::replay(hits));
     // The engine's own rule for what the model is shown, not a copy of it.
     let traces: Vec<&[Why]> = results.iter().map(|result| result.why.as_slice()).collect();
     let movable = pamin_engine::rerankable(&traces);

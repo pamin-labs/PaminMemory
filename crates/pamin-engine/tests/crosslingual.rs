@@ -1148,10 +1148,7 @@ async fn report_channels(
             score(alone.entry(channel).or_default(), query, ranking);
         }
         for missing in channels::CHANNELS {
-            let ranking = channels::as_if_effective(
-                &hits,
-                &channels::effective_fusion(&hits, &Fusion::default()).without(missing),
-            );
+            let ranking = channels::as_if(&hits, &Fusion::default().without(missing));
             harness::shape::table(channels::without_table(&missing));
             score(without.entry(missing).or_default(), query, &ranking);
         }
@@ -1521,9 +1518,6 @@ fn the_model_reaches_across_languages() {
     // read once the run is over.
     shape.ran_on(Vec::new);
     shape.also_ran("embedding", &embedder, Embedder::plans);
-    shape.also_ran("embedding secondary", &embedder, |embedder| {
-        embedder.secondary_plans().unwrap_or_default()
-    });
     let mut embedder = harness::shape::lock(&embedder);
 
     let width = profile.dimensions() as usize;
