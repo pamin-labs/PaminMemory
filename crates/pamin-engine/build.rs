@@ -24,6 +24,10 @@
 //! keeps its own `HEAD`, reflog and index in its own git dir, and shares the
 //! refs in the common one.
 //!
+//! It also names the build variables that choose the native libraries
+//! linked in, as `PAMIN_ENGINE_BUILD_ENVIRONMENT`, which pamin-index's build
+//! fingerprint does not hold; a record holds both.
+//!
 //! The flag errs one way only. A flag left at "dirty" by a rerun that did not
 //! happen marks a clean run noncanonical, which costs a rerun of the
 //! evaluation; it never makes a dirty build canonical, and `git` failing to
@@ -43,6 +47,37 @@ const SOURCES: [&str; 4] = [
     "Cargo.lock",
     // Benchmark manifests the evaluation harnesses compile in.
     "benchmarks/results/retrieval",
+];
+
+/// Build variables that change what is compiled or linked in: those the
+/// `ort-sys` and `zvec` build scripts read to choose the native ONNX Runtime
+/// and zvec libraries, and a rustc wrapper. They are what
+/// `benchmarks/harnesses/restart-floor-2026-09-30/build-guarded.py.in`
+/// records as a build's provenance (`ORT_*`, `ZVEC_*`), but for the
+/// toolchain and its flags, which are recorded as rustc's version and the
+/// flags it was given. Named one by one, because Cargo reruns this script on
+/// a change to a variable only when it was named.
+const BUILD_ENVIRONMENT: [&str; 20] = [
+    "ORT_CUDA_VERSION",
+    "ORT_CXX_STDLIB",
+    "ORT_EXT_IOS_XCFWK_LOCATION",
+    "ORT_EXT_IOS_XCFWK_PATH",
+    "ORT_IOS_XCFWK_LOCATION",
+    "ORT_IOS_XCFWK_PATH",
+    "ORT_LIB_LOCATION",
+    "ORT_LIB_PATH",
+    "ORT_LIB_PROFILE",
+    "ORT_OFFLINE",
+    "ORT_PREFER_DYNAMIC_LINK",
+    "ORT_SKIP_DOWNLOAD",
+    "ORT_VCPKG_TARGET",
+    "ZVEC_AUTO_BUILD",
+    "ZVEC_INCLUDE_DIR",
+    "ZVEC_LIB_DIR",
+    "ZVEC_PREBUILT_URL",
+    "ZVEC_REPO_URL",
+    "RUSTC_WRAPPER",
+    "RUSTC_WORKSPACE_WRAPPER",
 ];
 
 fn git(args: &[&str]) -> Option<String> {
@@ -74,17 +109,22 @@ fn main() {
     let dirty = tracked || untracked;
     println!("cargo:rustc-env=PAMIN_ENGINE_DIRTY={dirty}");
     println!("cargo:rustc-env=PAMIN_ENGINE_SOURCES={}", SOURCES.join(":"));
-    // What the code was compiled as, for a record to be named by: the same
-    // commit built for debug and for release runs at different speeds and,
-    // with a different opt-level, may not round floats the same way.
-    for (var, name) in [
-        ("PROFILE", "PAMIN_ENGINE_BUILD_PROFILE"),
-        ("OPT_LEVEL", "PAMIN_ENGINE_OPT_LEVEL"),
-        ("TARGET", "PAMIN_ENGINE_TARGET"),
-    ] {
-        let value = std::env::var(var).unwrap_or_else(|_| "unknown".into());
-        println!("cargo:rustc-env={name}={value}");
-    }
+    // The build environment that chooses the native libraries linked in and
+    // how rustc is wrapped, as the restart-floor harness records it:
+    // `NAME=value` for each one set, separated by 0x1f.
+    let build_environment: Vec<String> = BUILD_ENVIRONMENT
+        .iter()
+        .filter_map(|name| {
+            println!("cargo:rerun-if-env-changed={name}");
+            std::env::var(name)
+                .ok()
+                .map(|value| format!("{name}={value}"))
+        })
+        .collect();
+    println!(
+        "cargo:rustc-env=PAMIN_ENGINE_BUILD_ENVIRONMENT={}",
+        build_environment.join("\x1f")
+    );
 
     // Watched only if they exist: Cargo reruns on every build for a path
     // that does not.

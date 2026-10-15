@@ -31,7 +31,19 @@ pub use descriptors::raise_open_file_limit;
 pub use embedding::{Embedder, Encoded, Profile};
 pub use error::{IndexError, Result};
 pub use half::as_stored;
-pub use inference::Device;
+pub use inference::{CUDA_SELECTION, Device, PlanUse, cuda_devices};
+
+/// What this crate was built from and how: a sha256 over its sources, the
+/// workspace manifests and Cargo config, the target, profile, opt-level,
+/// debug setting, rustflags, target features, every Cargo profile override
+/// and rustc's version. Execution plans are keyed by it, and an evaluation
+/// record names its build by it.
+pub const BUILD_FINGERPRINT: &str = env!("PAMIN_INFERENCE_BUILD");
+
+/// Part of the same build, readable: each Cargo profile override set and
+/// each `cfg` the target resolved to (`CARGO_CFG_*`, the target features
+/// among them), as `NAME=value` lines separated by 0x1f.
+pub const BUILD_CARGO: &str = env!("PAMIN_INFERENCE_CARGO");
 pub use projection::{
     Access, Passage, Previous, Projection, ProjectionIndex, Segmentation, Stored, VectorDocument,
     VectorIndex, is_fragmented, segment_documents, vector_index_lags, wastes_disk,
