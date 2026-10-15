@@ -13,7 +13,6 @@ repository.workspace = true
 # already in the tree as `pamin-cli`'s, so this adds no lockfile entry.
 libc = { workspace = true }
 pamin-core = { workspace = true }
-fastembed = { workspace = true }
 hf-hub = { workspace = true }
 icu_segmenter = { workspace = true }
 # Widens stored fp16 vectors for rescoring with the CPU's own conversion
@@ -71,5 +70,7 @@ ort = { workspace = true, features = ["directml", "copy-dylibs"] }
 sha2 = { workspace = true }
 
 [dev-dependencies]
+# Only for the `shared_vocabulary` parity test; see the workspace manifest.
+fastembed = { workspace = true }
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
