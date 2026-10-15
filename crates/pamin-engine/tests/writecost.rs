@@ -57,8 +57,8 @@ const SCALES: [usize; 2] = [2_000, 20_000];
 /// long before linear.
 const AT_MOST: f64 = 3.0;
 
-/// The smallest profile. This measures a code path, not a model.
-const PROFILE: &str = "speed";
+/// The one profile. This measures a code path, not a model.
+const PROFILE: &str = "accuracy";
 
 /// How many derivations each scale is timed over.
 ///

@@ -3100,111 +3100,110 @@ mod tests {
     fn a_topic_back_where_the_index_left_it_is_not_embedded_again() {
         use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
 
-        for profile in [Profile::Speed, Profile::Accuracy] {
-            let open = |dir: &std::path::Path| {
-                ProjectionIndex::open(
-                    dir,
-                    &dir.join("legacy"),
-                    profile,
-                    VectorIndex::default(),
-                    Access::ReadWrite,
-                    0,
-                )
-                .expect("open index")
-            };
-            let encode = |text: &str, dimensions: u32| -> Vec<f32> {
-                let seed = text.bytes().fold(7u32, |hash, byte| {
-                    hash.wrapping_mul(31).wrapping_add(u32::from(byte))
-                });
-                (0..dimensions)
-                    .map(|at| {
-                        ((seed.wrapping_add(at.wrapping_mul(2_654_435_761)) >> 8) % 1000) as f32
-                            / 1000.0
-                            - 0.5
-                    })
-                    .collect()
-            };
-            let every_dir = tempfile::tempdir().expect("temp dir");
-            let skipping_dir = tempfile::tempdir().expect("temp dir");
-            let every = open(every_dir.path());
-            let skipping = open(skipping_dir.path());
+        let profile = Profile::Accuracy;
+        let open = |dir: &std::path::Path| {
+            ProjectionIndex::open(
+                dir,
+                &dir.join("legacy"),
+                profile,
+                VectorIndex::default(),
+                Access::ReadWrite,
+                0,
+            )
+            .expect("open index")
+        };
+        let encode = |text: &str, dimensions: u32| -> Vec<f32> {
+            let seed = text.bytes().fold(7u32, |hash, byte| {
+                hash.wrapping_mul(31).wrapping_add(u32::from(byte))
+            });
+            (0..dimensions)
+                .map(|at| {
+                    ((seed.wrapping_add(at.wrapping_mul(2_654_435_761)) >> 8) % 1000) as f32
+                        / 1000.0
+                        - 0.5
+                })
+                .collect()
+        };
+        let every_dir = tempfile::tempdir().expect("temp dir");
+        let skipping_dir = tempfile::tempdir().expect("temp dir");
+        let every = open(every_dir.path());
+        let skipping = open(skipping_dir.path());
 
-            let (one, two) = (TopicId::new(), TopicId::new());
-            // Each round is the writes committed before a drain, in order; a
-            // topic written twice in a round owes one sync, of its last text.
-            // `None` removes the topic's document, as a sync of a topic with no
-            // current state does.
-            let rounds: Vec<Vec<(TopicId, Option<&str>)>> = vec![
-                vec![(one, Some("alpha")), (two, Some("xi"))],
-                vec![(one, Some("beta")), (one, Some("alpha"))],
-                vec![(two, Some("ypsilon"))],
-                vec![(one, Some("alpha")), (two, Some("ypsilon"))],
-                vec![(one, Some("alpha ")), (two, None)],
-                vec![(two, Some("ypsilon"))],
-            ];
-            // Encoded per round by the path that writes every drained state,
-            // and by the path that skips what is held.
-            let mut encoded = (Vec::new(), Vec::new());
-            for round in &rounds {
-                let mut owed: Vec<(TopicId, Option<&str>)> = Vec::new();
-                for (topic, text) in round {
-                    owed.retain(|(owing, _)| owing != topic);
-                    owed.push((*topic, *text));
-                }
-                let (present, absent): (Vec<_>, Vec<_>) =
-                    owed.iter().partition(|(_, text)| text.is_some());
-                let wanted: Vec<(TopicId, &str)> = present
-                    .iter()
-                    .map(|(topic, text)| (*topic, text.expect("present")))
-                    .collect();
-                let absent: Vec<TopicId> = absent.iter().map(|(topic, _)| *topic).collect();
-
-                let unheld = super::unheld(&skipping, &wanted);
-                let needed: Vec<(TopicId, &str)> = wanted
-                    .iter()
-                    .zip(&unheld)
-                    .filter(|(_, unheld)| **unheld)
-                    .map(|(wanted, _)| *wanted)
-                    .collect();
-                for (index, writes) in [(&every, &wanted), (&skipping, &needed)] {
-                    let vectors: Vec<Vec<f32>> = writes
-                        .iter()
-                        .map(|(_, text)| encode(text, profile.dimensions()))
-                        .collect();
-                    let documents: Vec<pamin_index::VectorDocument<'_>> = writes
-                        .iter()
-                        .zip(&vectors)
-                        .map(|((topic, text), vector)| (*topic, *text, vector.as_slice()))
-                        .collect();
-                    index.upsert_batch(&documents).expect("write");
-                    index.delete(&absent).expect("delete");
-                    index.flush().expect("flush");
-                }
-                encoded.0.push(wanted.len());
-                encoded.1.push(needed.len());
+        let (one, two) = (TopicId::new(), TopicId::new());
+        // Each round is the writes committed before a drain, in order; a
+        // topic written twice in a round owes one sync, of its last text.
+        // `None` removes the topic's document, as a sync of a topic with no
+        // current state does.
+        let rounds: Vec<Vec<(TopicId, Option<&str>)>> = vec![
+            vec![(one, Some("alpha")), (two, Some("xi"))],
+            vec![(one, Some("beta")), (one, Some("alpha"))],
+            vec![(two, Some("ypsilon"))],
+            vec![(one, Some("alpha")), (two, Some("ypsilon"))],
+            vec![(one, Some("alpha ")), (two, None)],
+            vec![(two, Some("ypsilon"))],
+        ];
+        // Encoded per round by the path that writes every drained state,
+        // and by the path that skips what is held.
+        let mut encoded = (Vec::new(), Vec::new());
+        for round in &rounds {
+            let mut owed: Vec<(TopicId, Option<&str>)> = Vec::new();
+            for (topic, text) in round {
+                owed.retain(|(owing, _)| owing != topic);
+                owed.push((*topic, *text));
             }
+            let (present, absent): (Vec<_>, Vec<_>) =
+                owed.iter().partition(|(_, text)| text.is_some());
+            let wanted: Vec<(TopicId, &str)> = present
+                .iter()
+                .map(|(topic, text)| (*topic, text.expect("present")))
+                .collect();
+            let absent: Vec<TopicId> = absent.iter().map(|(topic, _)| *topic).collect();
 
-            // Round two is the A -> B -> A topic, round four a sync of two
-            // topics already current, round six a removed topic restored to
-            // the text it had: that one has no document to keep, so it is
-            // embedded again. A trailing space is a different text.
-            assert_eq!(encoded.0, [2, 1, 1, 2, 1, 1], "{profile:?}");
-            assert_eq!(encoded.1, [2, 0, 1, 0, 1, 1], "{profile:?}");
+            let unheld = super::unheld(&skipping, &wanted);
+            let needed: Vec<(TopicId, &str)> = wanted
+                .iter()
+                .zip(&unheld)
+                .filter(|(_, unheld)| **unheld)
+                .map(|(wanted, _)| *wanted)
+                .collect();
+            for (index, writes) in [(&every, &wanted), (&skipping, &needed)] {
+                let vectors: Vec<Vec<f32>> = writes
+                    .iter()
+                    .map(|(_, text)| encode(text, profile.dimensions()))
+                    .collect();
+                let documents: Vec<pamin_index::VectorDocument<'_>> = writes
+                    .iter()
+                    .zip(&vectors)
+                    .map(|((topic, text), vector)| (*topic, *text, vector.as_slice()))
+                    .collect();
+                index.upsert_batch(&documents).expect("write");
+                index.delete(&absent).expect("delete");
+                index.flush().expect("flush");
+            }
+            encoded.0.push(wanted.len());
+            encoded.1.push(needed.len());
+        }
 
-            let topics = [one, two];
+        // Round two is the A -> B -> A topic, round four a sync of two
+        // topics already current, round six a removed topic restored to
+        // the text it had: that one has no document to keep, so it is
+        // embedded again. A trailing space is a different text.
+        assert_eq!(encoded.0, [2, 1, 1, 2, 1, 1], "{profile:?}");
+        assert_eq!(encoded.1, [2, 0, 1, 0, 1, 1], "{profile:?}");
+
+        let topics = [one, two];
+        assert_eq!(
+            every.stored(&topics).expect("read back"),
+            skipping.stored(&topics).expect("read back"),
+            "{profile:?}"
+        );
+        for text in ["alpha", "alpha ", "ypsilon"] {
+            let query = encode(text, profile.dimensions());
             assert_eq!(
-                every.stored(&topics).expect("read back"),
-                skipping.stored(&topics).expect("read back"),
+                every.recall_vector(&query, 2).expect("recall"),
+                skipping.recall_vector(&query, 2).expect("recall"),
                 "{profile:?}"
             );
-            for text in ["alpha", "alpha ", "ypsilon"] {
-                let query = encode(text, profile.dimensions());
-                assert_eq!(
-                    every.recall_vector(&query, 2).expect("recall"),
-                    skipping.recall_vector(&query, 2).expect("recall"),
-                    "{profile:?}"
-                );
-            }
         }
     }
 
@@ -3217,14 +3216,14 @@ mod tests {
         let index = ProjectionIndex::open(
             dir.path(),
             &dir.path().join("legacy"),
-            Profile::Speed,
+            Profile::Accuracy,
             VectorIndex::default(),
             Access::ReadWrite,
             0,
         )
         .expect("open index");
         let topic = TopicId::new();
-        let vector = vec![0.1; Profile::Speed.dimensions() as usize];
+        let vector = vec![0.1; Profile::Accuracy.dimensions() as usize];
         index
             .upsert_batch(&[(topic, "alpha", vector.as_slice())])
             .expect("write");
