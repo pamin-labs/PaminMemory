@@ -43,6 +43,28 @@ use crate::hub::Repository;
 /// million documents is terabytes.
 pub const MODEL_ID: &str = "gpahal/bge-m3-onnx-int8";
 
+/// The embedding models earlier builds recorded in an index's marker, and the
+/// profile each shipped as.
+///
+/// Only for saying what an index that will no longer open was built with: a
+/// user chose `speed`, not `intfloat/multilingual-e5-small+p1`.
+const RETIRED: [(&str, &str); 3] = [
+    ("intfloat/multilingual-e5-small+p1", "speed"),
+    ("intfloat/multilingual-e5-base+p1", "balanced"),
+    (
+        "bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4",
+        "dual_accuracy",
+    ),
+];
+
+/// The retired profile that recorded `model`, if one did.
+pub(crate) fn retired_profile(model: &str) -> Option<&'static str> {
+    RETIRED
+        .iter()
+        .find(|(retired, _)| *retired == model)
+        .map(|(_, profile)| *profile)
+}
+
 /// The vector width the model produces.
 ///
 /// The index is built for one width. Mixing embedding spaces yields distances

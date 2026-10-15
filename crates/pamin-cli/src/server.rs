@@ -335,8 +335,21 @@ impl CatchingUp {
             let vector_index = match ProjectionIndex::built_for(&dir) {
                 Ok(Some(built)) => built,
                 Ok(None) => continue,
+                // An index built with a retired model is owed work only a
+                // `pamin reindex` can do. Said once a refusal window rather
+                // than every tick, and not passed over in silence: its
+                // searches go on missing what was written until then.
                 Err(error) => {
-                    tracing::warn!(project = %owing.name, %error, "reading the index's marker failed");
+                    if let std::collections::hash_map::Entry::Vacant(refused) =
+                        self.refused.entry(owing.name)
+                    {
+                        tracing::warn!(
+                            project = %refused.key(),
+                            %error,
+                            "not catching up a project whose index cannot be opened"
+                        );
+                        refused.insert(Instant::now());
+                    }
                     continue;
                 }
             };
