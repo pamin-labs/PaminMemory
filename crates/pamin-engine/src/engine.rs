@@ -455,10 +455,10 @@ impl Models {
         )
     }
 
-    /// The execution provider of every reranker this process has loaded, as
+    /// The execution plans of every reranker this process has loaded, as
     /// `reranking <tier>`, in tier-name order. Handles are cloned out from
     /// under the registry lock first, as in [`counted`](Self::counted).
-    fn reranker_devices(&self) -> Vec<(String, pamin_index::Device)> {
+    fn reranker_plans(&self) -> Vec<(String, pamin_index::PlanUse)> {
         let Some(registry) = held_now(self.rerankers.as_ref()) else {
             return Vec::new();
         };
@@ -467,15 +467,17 @@ impl Models {
             .map(|(tier, (_, reranker))| (*tier, Arc::clone(reranker)))
             .collect();
         drop(registry);
-        let mut devices: Vec<(String, pamin_index::Device)> = held
+        let mut plans: Vec<(String, pamin_index::PlanUse)> = held
             .into_iter()
             .filter_map(|(tier, reranker)| {
-                let device = held_now(reranker.as_ref())?.device();
-                Some((format!("reranking {}", tier.name()), device))
+                let plans = held_now(reranker.as_ref())?.plans();
+                let role = format!("reranking {}", tier.name());
+                Some(plans.into_iter().map(move |plan| (role.clone(), plan)))
             })
+            .flatten()
             .collect();
-        devices.sort_by(|left, right| left.0.cmp(&right.0));
-        devices
+        plans.sort_by(|left, right| left.0.cmp(&right.0));
+        plans
     }
 
     /// Gives back the embedders no open engine is holding any more.
@@ -1502,11 +1504,14 @@ impl Engine {
         self.models.counted(tier)
     }
 
-    /// The execution provider each model this engine has used resolved to,
-    /// by role: `embedding`, `embedding secondary` for a profile with a
-    /// second vector model, and `reranking <tier>` for each tier this process
-    /// has loaded. A model not loaded is not listed. Read as it stands now,
-    /// so a model that fell back to the CPU during a run reports the CPU.
+    /// Every execution plan each model this engine has used ran on, by role:
+    /// `embedding`, `embedding secondary` for a profile with a second vector
+    /// model, and `reranking <tier>` for each tier this process has loaded --
+    /// oldest first, so a model that fell back to the CPU during a run lists
+    /// the plan it left and then the CPU's. Each plan is its target as plans
+    /// are keyed, the hash of its full plan key, and whether it is stable
+    /// across processes ([`pamin_index::PlanUse`]). A model not loaded is not
+    /// listed.
     ///
     /// For an evaluation to say which execution path produced it: under
     /// `PAMIN_DEVICE=auto` the same build runs on whatever the machine has.
@@ -1514,15 +1519,17 @@ impl Engine {
     /// Never panics or waits, so a run that is already failing can still ask:
     /// a poisoned lock is read through, since the device it guards is set at
     /// load, and a model another thread holds right now is left out.
-    pub fn providers(&self) -> Vec<(String, pamin_index::Device)> {
+    pub fn providers(&self) -> Vec<(String, pamin_index::PlanUse)> {
         let mut providers = Vec::new();
         if let Some(embedder) = self.embedder.get().and_then(|held| held_now(held.as_ref())) {
-            providers.push(("embedding".to_string(), embedder.device()));
-            if let Some(device) = embedder.secondary_device() {
-                providers.push(("embedding secondary".to_string(), device));
+            for plan in embedder.plans() {
+                providers.push(("embedding".to_string(), plan));
+            }
+            for plan in embedder.secondary_plans().into_iter().flatten() {
+                providers.push(("embedding secondary".to_string(), plan));
             }
         }
-        providers.extend(self.models.reranker_devices());
+        providers.extend(self.models.reranker_plans());
         providers
     }
 
