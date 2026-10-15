@@ -14,10 +14,11 @@
 //! only one route cannot tell an absence from a miss.
 
 use anyhow::Result;
-use pamin_index::{Profile, Rerank, VectorIndex};
+use pamin_index::{Profile, VectorIndex};
 use serde::{Deserialize, Serialize};
 
 use crate::session::Session;
+use pamin_core::Fusion;
 use pamin_engine::Depths;
 use pamin_store::repository;
 
@@ -87,11 +88,11 @@ pub async fn execute(
     let engine = session.engine(project, profile, vector_index).await?;
     let named = engine.topics_named_like(&query, args.limit).await?;
 
-    // The content route is the ordinary search, at the tier that costs nothing
-    // to run: this returns names, so reordering the ones that got through
-    // would change which twenty came back and not which one is right.
+    // The content route is the ordinary search without the reranker: this
+    // returns names, so reordering the ones that got through would change
+    // which twenty came back and not which one is right.
     let hits = engine
-        .search_reranked(&query, args.limit, Depths::default(), Rerank::Off)
+        .search_fused(&query, args.limit, Depths::default(), Fusion::default())
         .await?;
 
     // Name matches first: a caller looking for what to call something wants
