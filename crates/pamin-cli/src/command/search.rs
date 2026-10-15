@@ -37,17 +37,15 @@ pub struct Args {
     )]
     pub graph_depth: u8,
 
-    /// How much to spend reordering the results: off, fast, or accurate.
+    /// How much to spend reordering the results: off, or accurate.
     ///
     /// A cross-encoder reads the query and a memory together, which is what
     /// lets it correct an order the channels got wrong and what makes it cost
     /// a forward pass per candidate. `accurate` scores the whole fused head,
-    /// including lexical hits, and blends model and fusion scores. `fast`
-    /// reorders only candidates no lexical channel found.
+    /// including lexical hits, and blends model and fusion scores.
     ///
-    /// The default is `accurate`, the highest-accuracy tier measured here;
-    /// `fast` and `off` buy back search time at a measured accuracy price. See
-    /// `docs/cli.md`.
+    /// The default is `accurate`; `off` buys back search time at a measured
+    /// accuracy price. See `docs/cli.md`.
     #[arg(long, env = "PAMIN_RERANK", default_value = "accurate")]
     pub rerank: String,
 }

@@ -179,8 +179,8 @@
 //!
 //! What it costs is written down rather than argued away: 1522 ms a search on
 //! XQuAD-R against 359, about a quarter of `fast`'s throughput, and 571 MB
-//! loaded against 119. `--rerank fast` and `--rerank off` are how a workspace
-//! that cannot afford it buys the time back, knowingly.
+//! loaded against 119. The `fast` tier has since been removed: the product
+//! runs this one reranker (see `docs/adr/0001-tech-selection.md`).
 //!
 //!
 //! ## What is not paid twice
@@ -217,7 +217,8 @@
 //! They were measured on four cores. Published figures for a MiniLM
 //! cross-encoder on CPU are 0.5 to 3 ms per pair; this measures 9.75, and the
 //! gap is two layers' worth of depth and a quarter of the cores. On an ordinary
-//! server the `fast` tier should be tens of milliseconds rather than 165.
+//! server the retired `fast` tier should have been tens of milliseconds rather
+//! than 165.
 //!
 //! The latency column is also the soft one. The same configuration measured in
 //! two separate runs of the harness differs by as much as a fifth, so only
@@ -248,31 +249,16 @@ pub enum Rerank {
     /// Return what fusion ordered.
     ///
     /// Keeps fusion's order without loading a cross-encoder.
-    /// `fast` reorders candidates no lexical channel found; `accurate` can
-    /// reorder the whole head.
     Off,
-    /// A twelve-layer distilled multilingual MiniLM, 113 MB.
-    ///
-    /// The default until it was measured against the order it was chosen on:
-    /// it reaches four fifths of `accurate`'s cross-lingual gain for a quarter
-    /// of the latency, but it is the one tier that costs same-language
-    /// ranking -- below no reranking at all, on both corpora that can say.
-    /// The tier to ask for when a search must stay under half a second.
-    Fast,
     /// XLM-RoBERTa-large, 570 MB. Worth more the less the corpus looks like
     /// a parallel sentence benchmark.
     ///
-    /// On XQuAD-R it is 2.8x the latency for 22% more gain, and better than
-    /// `fast` on *both* groups -- the only tier that costs nothing on either.
-    /// On MIRACL's Swahili passages it is worth **two and a half times** what
-    /// `fast` is, +0.0496 against +0.0201, because a twenty-one-million
-    /// parameter model runs out of capacity on long real text where a
-    /// three-hundred-million one does not.
-    ///
-    /// It is also five times the cost there rather than three: reranking is
-    /// 1725 ms a search against `fast`'s 332. That is the price of the default
-    /// being the most accurate tier; the module note has the paired numbers
-    /// that decided it.
+    /// On XQuAD-R it was 2.8x the latency of the retired MiniLM `fast` tier
+    /// for 22% more gain, and better than it on *both* groups. On MIRACL's
+    /// Swahili passages it is worth **two and a half times** what `fast` was,
+    /// +0.0496 against +0.0201, because a twenty-one-million parameter model
+    /// runs out of capacity on long real text where a three-hundred-million
+    /// one does not. The module note has the paired numbers.
     #[default]
     Accurate,
 }
@@ -368,7 +354,7 @@ fn tuned(name: &str, fallback: usize) -> usize {
 /// saving was taken at a load average of 11 to 12 on four cores and this at 6
 /// to 8; the saving grows with contention, and it is the paired ratio rather
 /// than either set of milliseconds that carries. Measured on the `accurate`
-/// tier; `fast` batches the same way and its scores were not re-measured.
+/// tier.
 const BATCH_TOKENS: usize = 512;
 
 /// How many pairs go through the model at once, at most. See [`BATCH_TOKENS`].
@@ -443,7 +429,6 @@ impl Rerank {
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "off" => Some(Self::Off),
-            "fast" => Some(Self::Fast),
             "accurate" => Some(Self::Accurate),
             _ => None,
         }
@@ -452,7 +437,6 @@ impl Rerank {
     pub fn name(self) -> &'static str {
         match self {
             Self::Off => "off",
-            Self::Fast => "fast",
             Self::Accurate => "accurate",
         }
     }
@@ -461,63 +445,28 @@ impl Rerank {
     pub fn depth(self) -> usize {
         match self {
             Self::Off => 0,
-            Self::Fast | Self::Accurate => tuned("PAMIN_RERANK_DEPTH", DEPTH),
+            Self::Accurate => tuned("PAMIN_RERANK_DEPTH", DEPTH),
         }
     }
 
     fn repository(self) -> &'static str {
         match self {
             Self::Off => unreachable!("nothing is loaded for the off tier"),
-            Self::Fast => "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
             Self::Accurate => "onnx-community/bge-reranker-v2-m3-ONNX",
         }
     }
 
     /// Which export of the model to fetch, for the device it will run on.
     ///
-    /// On an accelerator, the half-precision export where there is one: an
-    /// int8 graph of `MatMulInteger` and `DynamicQuantizeLinear` is a CPU
-    /// format that GPU providers run poorly or partly on the CPU anyway. The
-    /// fast model has no half-precision export and is small enough that full
-    /// precision costs a GPU nothing worth counting.
-    ///
-    /// On the CPU, the fast model publishes one quantized export per instruction set, and
-    /// they are not interchangeable in speed: on a machine with AVX-512 VNNI
-    /// the VNNI build is 1.5x the AVX2 one for the same scores. Picking at
-    /// runtime rather than at build time, because a binary is built once and
-    /// run on whatever is there.
+    /// On an accelerator, the half-precision export: an int8 graph of
+    /// `MatMulInteger` and `DynamicQuantizeLinear` is a CPU format that GPU
+    /// providers run poorly or partly on the CPU anyway. On the CPU, the one
+    /// int8 export.
     fn onnx(self, device: Device) -> &'static str {
-        if device != Device::Cpu {
-            return match self {
-                Self::Off => unreachable!("nothing is loaded for the off tier"),
-                Self::Fast => "onnx/model.onnx",
-                Self::Accurate => "onnx/model_fp16.onnx",
-            };
-        }
         match self {
             Self::Off => unreachable!("nothing is loaded for the off tier"),
-            // One int8 export, not one per instruction set, so there is
-            // nothing to detect at runtime the way `fast` has to.
+            Self::Accurate if device != Device::Cpu => "onnx/model_fp16.onnx",
             Self::Accurate => "onnx/model_int8.onnx",
-            Self::Fast => {
-                #[cfg(target_arch = "x86_64")]
-                {
-                    if std::arch::is_x86_feature_detected!("avx512vnni") {
-                        return "onnx/model_qint8_avx512_vnni.onnx";
-                    }
-                    "onnx/model_quint8_avx2.onnx"
-                }
-                #[cfg(target_arch = "aarch64")]
-                {
-                    "onnx/model_qint8_arm64.onnx"
-                }
-                // No quantized build for this architecture; full precision runs
-                // everywhere and is what the quantized ones were made from.
-                #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-                {
-                    "onnx/model.onnx"
-                }
-            }
         }
     }
 }
@@ -1169,70 +1118,61 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
         Ok(encoder)
     };
 
-    // On Apple Silicon, the Fast model's ARM INT8 CPU export preserved
-    // XQuAD-R quality and beat its CoreML FP32 export on every paired
-    // search. Accurate still uses the shared CoreML-first policy.
-    let (model, device) =
-        if cfg!(all(target_os = "macos", target_arch = "aarch64")) && tier == Rerank::Fast {
-            (
-                session(Device::Cpu, vec![crate::inference::cpu()].into(), false)?,
-                Device::Cpu,
-            )
-        } else {
-            let references = std::cell::RefCell::new(crate::inference::References::default());
-            crate::inference::measured(
-                &format!(
-                    "reranker-v3:{}:{}:{}:{}:{}",
-                    tier.name(),
-                    repository.identity(cache_dir),
-                    max_tokens(),
-                    batch(),
-                    batch_tokens()
-                ),
-                cache_dir,
-                &references,
-                crate::inference::ReferenceShape {
-                    scores: Some(calibration_pairs(tier, "").len()),
-                    ..Default::default()
-                },
-                session,
-                |model, _device| {
-                    let mut reference = references.borrow_mut();
-                    let long = "harbour migration rollback policy ".repeat(max_tokens());
-                    let encoded = model.encode(vec![(ORDER_PAIRS[0].0, long.as_str())])?;
-                    let longest = encoded.iter().map(|row| row.len()).max().unwrap_or(0);
-                    if longest != max_tokens() {
-                        return Err(IndexError::Engine(
-                            "maximum-token fixture did not reach the configured limit".into(),
-                        ));
-                    }
+    let (model, device) = {
+        let references = std::cell::RefCell::new(crate::inference::References::default());
+        crate::inference::measured(
+            &format!(
+                "reranker-v3:{}:{}:{}:{}:{}",
+                tier.name(),
+                repository.identity(cache_dir),
+                max_tokens(),
+                batch(),
+                batch_tokens()
+            ),
+            cache_dir,
+            &references,
+            crate::inference::ReferenceShape {
+                scores: Some(calibration_pairs("").len()),
+                ..Default::default()
+            },
+            session,
+            |model, _device| {
+                let mut reference = references.borrow_mut();
+                let long = "harbour migration rollback policy ".repeat(max_tokens());
+                let encoded = model.encode(vec![(ORDER_PAIRS[0].0, long.as_str())])?;
+                let longest = encoded.iter().map(|row| row.len()).max().unwrap_or(0);
+                if longest != max_tokens() {
+                    return Err(IndexError::Engine(
+                        "maximum-token fixture did not reach the configured limit".into(),
+                    ));
+                }
+                let values = score(model, encoded, batch_tokens(), batch())?.0;
+                if values.len() != 1 || !values[0].is_finite() {
+                    return Err(IndexError::Numerical(
+                        "maximum-token reranker fixture returned invalid output".into(),
+                    ));
+                }
+                crate::inference::time_calls(|| {
+                    let pairs = calibration_pairs(&long);
+                    let count = pairs.len();
+                    let encoded = model.encode(pairs)?;
                     let values = score(model, encoded, batch_tokens(), batch())?.0;
-                    if values.len() != 1 || !values[0].is_finite() {
+                    if values.len() != count || !values.iter().all(|v| v.is_finite()) {
                         return Err(IndexError::Numerical(
-                            "maximum-token reranker fixture returned invalid output".into(),
+                            "reranker calibration returned invalid scores".into(),
                         ));
                     }
-                    crate::inference::time_calls(|| {
-                        let pairs = calibration_pairs(tier, &long);
-                        let count = pairs.len();
-                        let encoded = model.encode(pairs)?;
-                        let values = score(model, encoded, batch_tokens(), batch())?.0;
-                        if values.len() != count || !values.iter().all(|v| v.is_finite()) {
-                            return Err(IndexError::Numerical(
-                                "reranker calibration returned invalid scores".into(),
-                            ));
+                    match &reference.scores {
+                        None => reference.scores = Some(values),
+                        Some(reference) => {
+                            check_accelerator_ordering(&reference[..4], &values[..4])?
                         }
-                        match &reference.scores {
-                            None => reference.scores = Some(values),
-                            Some(reference) => {
-                                check_accelerator_ordering(&reference[..4], &values[..4])?
-                            }
-                        }
-                        Ok(())
-                    })
-                },
-            )?
-        };
+                    }
+                    Ok(())
+                })
+            },
+        )?
+    };
     tracing::info!(
         tier = tier.name(),
         device = device.name(),
@@ -1243,12 +1183,10 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
     Ok((model, device))
 }
 
-fn calibration_pairs(tier: Rerank, long: &str) -> Vec<(&str, &str)> {
+fn calibration_pairs(long: &str) -> Vec<(&str, &str)> {
     let mut pairs = ORDER_PAIRS.to_vec();
-    if tier == Rerank::Accurate {
-        pairs.extend(ORDER_PAIRS.repeat(3));
-        pairs.extend(std::iter::repeat_n((ORDER_PAIRS[0].0, long), 16));
-    }
+    pairs.extend(ORDER_PAIRS.repeat(3));
+    pairs.extend(std::iter::repeat_n((ORDER_PAIRS[0].0, long), 16));
     pairs
 }
 
@@ -1434,9 +1372,9 @@ type Scored = Result<(Vec<Vec<f32>>, u64)>;
 /// wait for. Measured through `Reranker::rank` on four cores (ONNX Runtime
 /// 1.28, Xeon with AMX), 100 calls of 30 uncached pairs, two runs each:
 /// `accurate` from a median of 2,105 and 2,163 ms a call to 1,212 and 1,269,
-/// `fast` from 491 and 496 ms to 222 and 250, every score bit-identical. The
-/// cost is the passes' working memory, about 260 MB more for `accurate` and
-/// 115 MB for `fast`, in proportional set size.
+/// every score bit-identical (and the since-retired `fast` tier from 491 and
+/// 496 ms to 222 and 250). The cost is the passes' working memory, about
+/// 260 MB more for `accurate`, in proportional set size.
 fn forward(model: &mut Encoder, batches: Vec<Vec<Encoding>>) -> Scored {
     let counts: Vec<usize> = batches.iter().map(Vec::len).collect();
     let start = Instant::now();
@@ -1701,11 +1639,9 @@ mod tests {
     }
 
     #[test]
-    fn calibration_uses_short_fast_and_mixed_accurate_workloads() {
+    fn calibration_uses_a_mixed_workload() {
         let long = "long document ".repeat(512);
-        let fast = super::calibration_pairs(super::Rerank::Fast, &long);
-        let accurate = super::calibration_pairs(super::Rerank::Accurate, &long);
-        assert_eq!(fast, super::ORDER_PAIRS);
+        let accurate = super::calibration_pairs(&long);
         assert_eq!(accurate.len(), 32);
         assert_eq!(&accurate[..4], &super::ORDER_PAIRS);
         assert_eq!(
@@ -2629,48 +2565,46 @@ mod tests {
                 _ => long.clone(),
             })
             .collect();
-        for tier in [Rerank::Fast, Rerank::Accurate] {
-            let (mut model, device) = load_model(tier, &cache).expect("load the reranker");
-            assert_eq!(device, Device::Cpu);
-            let encodings = model
-                .encode(
-                    documents
-                        .iter()
-                        .map(|document| {
-                            (
-                                "Where does the harbour pilot board ships?",
-                                document.as_str(),
-                            )
-                        })
-                        .collect::<Vec<_>>(),
-                )
-                .unwrap();
-            let batches: Vec<Vec<Encoding>> =
-                model_batches(&model, encodings, batch_tokens(), batch())
-                    .into_iter()
-                    .map(|batch| batch.encodings)
-                    .collect();
-            assert!(batches.len() > 4, "{} batches", batches.len());
-            let alone: Vec<Vec<u32>> = batches
-                .iter()
-                .map(|batch| bits(&forward(&mut model, vec![batch.clone()]).unwrap().0[0]))
-                .collect();
-            let together: Vec<Vec<u32>> = forward(&mut model, batches)
-                .unwrap()
-                .0
-                .iter()
-                .map(|scores| bits(scores))
-                .collect();
-            assert!(
-                model.side_by_side_sessions() > 1,
-                "nothing ran side by side; this needs more than one core"
-            );
-            assert!(
-                alone == together,
-                "{} logits changed side by side",
-                tier.name()
-            );
-        }
+        let tier = Rerank::Accurate;
+        let (mut model, device) = load_model(tier, &cache).expect("load the reranker");
+        assert_eq!(device, Device::Cpu);
+        let encodings = model
+            .encode(
+                documents
+                    .iter()
+                    .map(|document| {
+                        (
+                            "Where does the harbour pilot board ships?",
+                            document.as_str(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        let batches: Vec<Vec<Encoding>> = model_batches(&model, encodings, batch_tokens(), batch())
+            .into_iter()
+            .map(|batch| batch.encodings)
+            .collect();
+        assert!(batches.len() > 4, "{} batches", batches.len());
+        let alone: Vec<Vec<u32>> = batches
+            .iter()
+            .map(|batch| bits(&forward(&mut model, vec![batch.clone()]).unwrap().0[0]))
+            .collect();
+        let together: Vec<Vec<u32>> = forward(&mut model, batches)
+            .unwrap()
+            .0
+            .iter()
+            .map(|scores| bits(scores))
+            .collect();
+        assert!(
+            model.side_by_side_sessions() > 1,
+            "nothing ran side by side; this needs more than one core"
+        );
+        assert!(
+            alone == together,
+            "{} logits changed side by side",
+            tier.name()
+        );
     }
 
     /// Whatever a tier parses from, it round-trips through its own name.
@@ -2680,7 +2614,7 @@ mod tests {
     /// than it prints would route a caller to a model they did not ask for.
     #[test]
     fn a_tier_parses_from_the_name_it_prints() {
-        for tier in [Rerank::Off, Rerank::Fast, Rerank::Accurate] {
+        for tier in [Rerank::Off, Rerank::Accurate] {
             assert_eq!(
                 Rerank::parse(tier.name()),
                 Some(tier),

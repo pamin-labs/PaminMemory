@@ -347,13 +347,12 @@ async fn retrieval_quality_by_group() {
         return;
     }
 
-    // `ROUTES`: spending less on the reranker -- a cascade, and gates that
-    // skip it -- priced against the shipped pass. See `reranking::Routes`.
+    // `ROUTES`: spending less on the reranker -- gates that skip it, and a
+    // learned router -- priced against the shipped pass. See
+    // `reranking::Routes`.
     if std::env::var("ROUTES").is_ok() {
         const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
         let tier = Rerank::default();
-        let mut small = pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
-            .expect("load the small reranker");
         let mut routes = reranking::Routes::default();
         for query in &queries {
             let hits = engine
@@ -368,7 +367,6 @@ async fn retrieval_quality_by_group() {
                 &query.query,
                 &hits,
                 &replayed,
-                &mut small,
                 &query.query,
                 |into, ranking| {
                     into.add(ranking, relevant.len(), |topic| relevant.contains(topic));
@@ -589,7 +587,7 @@ async fn shipped(
 /// the only place that cost can be read, and it is twenty queries, so the
 /// paired counts are the number to read and the mean is not.
 async fn report_tiers(engine: &Engine, queries: &[Query]) {
-    let tiers = [Rerank::Off, Rerank::Fast, Rerank::Accurate];
+    let tiers = [Rerank::Off, Rerank::Accurate];
     let mut priced: Vec<(Rerank, BTreeMap<String, Scores>, f64)> = Vec::new();
     for tier in tiers {
         let started = std::time::Instant::now();

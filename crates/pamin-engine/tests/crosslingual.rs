@@ -794,65 +794,21 @@ fn pinned_embedding_id(models: &Path) -> String {
     pinned_model_id(models, "embedder")
 }
 
-fn fast_reranker_requested() -> bool {
-    std::env::var_os("ROUTES").is_some()
-        || std::env::var("TIERS")
-            .is_ok_and(|tiers| tiers == "1" || tiers.split(',').any(|tier| tier.trim() == "fast"))
-}
-
 fn pinned_source(model: &serde_json::Value) -> (&str, &str) {
-    let source = &model["source_onnx"];
-    let digest = &model["source_onnx_sha256"];
-    let variant = if source.is_object() {
-        #[cfg(target_arch = "aarch64")]
-        let variant = "aarch64";
-        #[cfg(target_arch = "x86_64")]
-        let variant = if std::arch::is_x86_feature_detected!("avx512vnni") {
-            "x86_vnni"
-        } else {
-            "x86_avx2"
-        };
-        #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-        let variant = "other";
-        Some(variant)
-    } else {
-        None
-    };
-    let (source, digest) = match variant {
-        Some(variant) => (&source[variant], &digest[variant]),
-        None => (source, digest),
-    };
     (
-        source.as_str().expect("pinned ONNX path"),
-        digest.as_str().expect("pinned ONNX SHA256"),
+        model["source_onnx"].as_str().expect("pinned ONNX path"),
+        model["source_onnx_sha256"]
+            .as_str()
+            .expect("pinned ONNX SHA256"),
     )
-}
-
-#[test]
-#[should_panic(expected = "XQuAD-R reranker_fast revision differs")]
-fn stale_fast_reranker_revision_is_rejected_before_scoring() {
-    let models = tempfile::tempdir().unwrap();
-    let refs = models
-        .path()
-        .join("models--cross-encoder--mmarco-mMiniLMv2-L12-H384-v1/refs");
-    std::fs::create_dir_all(&refs).unwrap();
-    std::fs::write(refs.join("main"), "stale").unwrap();
-    pinned_model_id(models.path(), "reranker_fast");
 }
 
 /// Validate every pinned role before opening or scoring a project.
 fn pinned_model_id(models: &Path, role: &str) -> String {
-    let manifest: serde_json::Value = if role == "reranker_fast" {
-        serde_json::from_str(include_str!(
-            "../../../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json"
-        ))
-        .unwrap()
-    } else {
-        serde_json::from_str(include_str!(
-            "../../../benchmarks/results/retrieval/xquad-r-model-artifacts.json"
-        ))
-        .unwrap()
-    };
+    let manifest: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../benchmarks/results/retrieval/xquad-r-model-artifacts.json"
+    ))
+    .unwrap();
     let model = manifest["models"]
         .as_array()
         .unwrap()
@@ -1060,81 +1016,6 @@ fn prepare_pinned_model(api: &hf_hub::api::sync::Api, models: &Path, model: &ser
     println!("  prepared {name} at {revision}");
 }
 
-/// Load the architecture-selected Fast export and rank two unambiguous pairs.
-/// This tests the manifest against the actual product loader, without a corpus.
-#[test]
-#[ignore = "downloads a pinned Fast reranker into PAMIN_EVAL_HOME"]
-fn pinned_fast_reranker_loads_and_scores() {
-    let Some(home) = pinned_benchmark_home("pinned_fast_reranker_loads_and_scores") else {
-        return;
-    };
-    assert_eq!(std::env::var("PAMIN_DEVICE").as_deref(), Ok("cpu"));
-    assert!(std::env::var_os("HF_HOME").is_none());
-    let models = Path::new(&home).join("models");
-    let fast: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json"
-    ))
-    .unwrap();
-    prepare_pinned_model(&pinned_model_api(&models), &models, &fast["models"][0]);
-    let identity = pinned_model_id(&models, "reranker_fast");
-    report_loaded_graphs();
-    let mut reranker =
-        pamin_index::Reranker::load(Rerank::Fast, &models).expect("load pinned Fast tier");
-    assert_eq!(reranker.device(), pamin_index::Device::Cpu);
-    let ranked = reranker
-        .rank(
-            "Where does the harbour pilot board ships?",
-            &[
-                "The harbour pilot boards ships at the outer buoy.",
-                "Chocolate cake is baked with flour and cocoa.",
-            ],
-        )
-        .expect("score the pinned Fast tier");
-    assert_eq!(ranked.len(), 2);
-    assert!(ranked.iter().all(|item| item.score.is_finite()));
-    assert_eq!(ranked[0].position, 0);
-    assert_eq!(
-        pinned_model_id(&models, "reranker_fast"),
-        identity,
-        "release changed the pinned source identity"
-    );
-}
-
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-#[test]
-#[ignore = "downloads a pinned Fast INT8 export and checks the Apple auto route"]
-fn pinned_fast_auto_prefers_cpu_model() {
-    let Some(home) = pinned_benchmark_home("pinned_fast_auto_prefers_cpu_model") else {
-        return;
-    };
-    assert_eq!(std::env::var("PAMIN_DEVICE").as_deref(), Ok("auto"));
-    assert!(std::env::var_os("HF_HOME").is_none());
-    let models = Path::new(&home).join("models");
-    let fast: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json"
-    ))
-    .unwrap();
-    prepare_pinned_model(&pinned_model_api(&models), &models, &fast["models"][0]);
-    let identity = pinned_model_id(&models, "reranker_fast");
-    report_loaded_graphs();
-    let mut reranker =
-        pamin_index::Reranker::load(Rerank::Fast, &models).expect("load pinned Fast tier");
-    assert_eq!(reranker.device(), pamin_index::Device::Cpu);
-    let ranked = reranker
-        .rank(
-            "Where does the harbour pilot board ships?",
-            &[
-                "The harbour pilot boards ships at the outer buoy.",
-                "Chocolate cake is baked with flour and cocoa.",
-            ],
-        )
-        .expect("score on optimized CPU");
-    assert_eq!(ranked.len(), 2);
-    assert!(ranked.iter().all(|item| item.score.is_finite()));
-    assert_eq!(ranked[0].position, 0);
-    assert_eq!(pinned_model_id(&models, "reranker_fast"), identity);
-}
-
 /// A cheap real-loader check for the reproduction log and verifier, without
 /// indexing or scoring a corpus. The Python verifier consumes its stdout.
 #[test]
@@ -1172,21 +1053,7 @@ fn prepare_pinned_xquad_models() {
         "../../../benchmarks/results/retrieval/xquad-r-model-artifacts.json"
     ))
     .unwrap();
-    let fast: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json"
-    ))
-    .unwrap();
-    let selected_fast = fast["models"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|_| fast_reranker_requested());
-    for model in manifest["models"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .chain(selected_fast)
-    {
+    for model in manifest["models"].as_array().unwrap() {
         prepare_pinned_model(&api, &models, model);
     }
 }
@@ -1813,10 +1680,6 @@ async fn search_reaches_across_languages() {
 
     let reranker_id = pinned_model_id(&workspace.root().join("models"), "reranker");
     println!("  pinned reranker identity: {reranker_id}");
-    if fast_reranker_requested() {
-        let fast_id = pinned_model_id(&workspace.root().join("models"), "reranker_fast");
-        println!("  pinned fast reranker identity: {fast_id}");
-    }
 
     // The profile is part of the workspace identity: an index records the
     // profile it was built with and refuses to open under another.
@@ -1999,20 +1862,12 @@ async fn search_reaches_across_languages() {
         return;
     }
 
-    // `ROUTES`: spending less on the reranker -- a cascade, and gates that
-    // skip it -- priced against the shipped pass. See `reranking::Routes`.
+    // `ROUTES`: spending less on the reranker -- gates that skip it, and a
+    // learned router -- priced against the shipped pass. See
+    // `reranking::Routes`.
     if std::env::var("ROUTES").is_ok() {
         const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
         let tier = Rerank::default();
-        let small = harness::shape::owned(
-            pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
-                .expect("load the small reranker"),
-        );
-        shape.also_ran(
-            "routes small reranker",
-            &small,
-            pamin_index::Reranker::plans,
-        );
         let mut routes = reranking::Routes::default();
         for query in &queries {
             let hits = engine
@@ -2027,7 +1882,6 @@ async fn search_reaches_across_languages() {
                     &query.question.answers["en"],
                     &hits,
                     &replayed,
-                    &mut harness::shape::lock(&small),
                     query.text(),
                     |into, ranking| score_group(into, query, group, ranking),
                 );
@@ -2108,12 +1962,12 @@ async fn search_reaches_across_languages() {
     // same pipeline that produced the ordering.
     if std::env::var("TIERS").is_ok() {
         // Every tier that loads a model, plus `off` as the baseline the others
-        // are read against. `TIERS=1` runs every tier; `TIERS=fast` runs the
-        // ones named, with `off` always first because every row is also priced
-        // against it.
+        // are read against. `TIERS=1` runs every tier; `TIERS=accurate` runs
+        // the ones named, with `off` always first because every row is also
+        // priced against it.
         let wanted = std::env::var("TIERS").expect("checked above");
         let tiers: Vec<Rerank> = if wanted == "1" {
-            vec![Rerank::Off, Rerank::Fast, Rerank::Accurate]
+            vec![Rerank::Off, Rerank::Accurate]
         } else {
             // Each tier is one table of every query: naming `off`, or a tier
             // twice, would score every query twice into one table and fail
@@ -2306,11 +2160,11 @@ enum Route {
 /// label and then asks, feature by feature, whether anything available *before*
 /// the pass predicts it.
 ///
-/// **Three tiers, not six, and that is a narrowing rather than a shortcut.**
-/// `typed` measured *below* `off` and is closed; `balanced` cost four times
-/// `fast`'s parameters for a quarter of its gain and has been removed. What
-/// is left — nothing, cheap, expensive — is what a shipped router would choose
-/// between, and is the same triple the published router used.
+/// **Two tiers, not six.** `typed` measured *below* `off` and is closed;
+/// `balanced` cost four times `fast`'s parameters for a quarter of its gain
+/// and was removed, and `fast` itself went with the single-tier decision.
+/// What is left — nothing, or the reranker — is what a shipped gate would
+/// choose between.
 ///
 /// Every feature here is read from the **`off`** search, because that is all a
 /// router can see: it runs before the pass it is deciding about.
@@ -2321,7 +2175,7 @@ async fn labels(engine: &Engine, queries: &[Query<'_>], named: &str) {
 
     /// The tiers a router would choose between, cheapest first, so the first
     /// sufficient one is the cheapest sufficient one.
-    const LADDER: [Rerank; 3] = [Rerank::Off, Rerank::Fast, Rerank::Accurate];
+    const LADDER: [Rerank; 2] = [Rerank::Off, Rerank::Accurate];
 
     /// What a feature is measured against: whether the pass was needed at all.
     /// Binary rather than three-way because that is the decision worth most --

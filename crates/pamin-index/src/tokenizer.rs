@@ -1015,7 +1015,6 @@ pub(crate) mod tests {
         let models = [
             ("gpahal/bge-m3-onnx-int8", 512),
             ("onnx-community/bge-reranker-v2-m3-ONNX", 256),
-            ("cross-encoder/mmarco-mMiniLMv2-L12-H384-v1", 256),
         ];
         let mut vocabularies = Vec::new();
         for (name, product_length) in models {
@@ -1101,7 +1100,7 @@ pub(crate) mod tests {
             vocabularies
                 .iter()
                 .all(|held| Arc::ptr_eq(held, &vocabularies[0])),
-            "the three tokenizers do not share one vocabulary"
+            "the two tokenizers do not share one vocabulary"
         );
     }
 

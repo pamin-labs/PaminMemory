@@ -1573,7 +1573,6 @@ impl Engine {
     }
 
     /// Search, then reorder the head of the result with a cross-encoder.
-    /// `accurate` sees the whole head; `fast` keeps the non-lexical rule.
     ///
     /// Fused deeper than it returns, because a reranker that only sees what the
     /// caller asked for has nothing to work with: the tier's depth was measured
@@ -1581,9 +1580,8 @@ impl Engine {
     /// left it reordering five candidates and usually declining to reorder at
     /// all.
     ///
-    /// The `accurate` tier scores the whole head and blends the model's score
-    /// with fusion's, so graph and channel agreement still contribute. The
-    /// `fast` tier stays confined to candidates no lexical channel found.
+    /// The reranker scores the whole head and blends the model's score with
+    /// fusion's, so graph and channel agreement still contribute.
     ///
     /// This was a language comparison first, since "written in another
     /// language" is what the case really is. The two pick the same candidates
@@ -1697,19 +1695,15 @@ impl Engine {
                     score: ranked.score,
                 });
         }
-        let best_first: Vec<usize> = if rerank == Rerank::Accurate {
-            let fused_scores: Vec<f64> = unlexical
-                .iter()
-                .map(|at| f64::from(fused.results[*at].score))
-                .collect();
-            let mut model_scores = vec![0.0; ordered.len()];
-            for ranked in &ordered {
-                model_scores[ranked.position] = f64::from(ranked.score);
-            }
-            score_blend_order(&fused_scores, &model_scores, RERANK_FUSION)
-        } else {
-            ordered.iter().map(|ranked| ranked.position).collect()
-        };
+        let fused_scores: Vec<f64> = unlexical
+            .iter()
+            .map(|at| f64::from(fused.results[*at].score))
+            .collect();
+        let mut model_scores = vec![0.0; ordered.len()];
+        for ranked in &ordered {
+            model_scores[ranked.position] = f64::from(ranked.score);
+        }
+        let best_first = score_blend_order(&fused_scores, &model_scores, RERANK_FUSION);
         fused.results = place(
             std::mem::take(&mut fused.results),
             &unlexical,
@@ -2524,9 +2518,8 @@ const GRAPH_SHOWN_FROM: f32 = 0.5;
 /// eight. Thirty is the cap the threshold was measured with, not a tuned value.
 const GRAPH_SHOWN_AT_MOST: usize = 30;
 
-/// The positions of a fused list the reranker is shown: the whole head for
-/// `accurate`, the head's non-lexical candidates for `fast`, and those below the head that only the
-/// graph found with a graph score of at least [`GRAPH_SHOWN_FROM`], strongest
+/// The positions of a fused list the reranker is shown: the whole head, and
+/// those below the head that only the graph found with a graph score of at least [`GRAPH_SHOWN_FROM`], strongest
 /// first and at most [`GRAPH_SHOWN_AT_MOST`] of them. Ascending.
 ///
 /// One rule, public so the harnesses that replay a search from its trace use
@@ -2534,15 +2527,6 @@ const GRAPH_SHOWN_AT_MOST: usize = 30;
 /// result's `why`, in fused order.
 pub fn rerankable(traces: &[&[Why]], rerank: Rerank) -> Vec<usize> {
     let head = rerank.depth().min(traces.len());
-    let lexical = |why: &[Why]| {
-        why.iter().any(|entry| {
-            matches!(
-                entry,
-                Why::Channel { channel, .. }
-                    if *channel == Channel::LexicalSegmented || *channel == Channel::LexicalNgram
-            )
-        })
-    };
     let graph_only = |why: &[Why]| -> Option<f32> {
         let mut graph = None;
         for entry in why {
@@ -2556,9 +2540,7 @@ pub fn rerankable(traces: &[&[Why]], rerank: Rerank) -> Vec<usize> {
         graph
     };
 
-    let mut positions: Vec<usize> = (0..head)
-        .filter(|at| rerank == Rerank::Accurate || !lexical(traces[*at]))
-        .collect();
+    let mut positions: Vec<usize> = (0..head).collect();
     let mut graph: Vec<(usize, f32)> = (head..traces.len())
         .filter_map(|at| graph_only(traces[at]).map(|score| (at, score)))
         .collect();
@@ -2969,8 +2951,8 @@ mod tests {
     use pamin_index::Segmenter;
     use pamin_index::segmentation::names;
 
-    /// Accurate sees the whole head; fast keeps the old non-lexical rule.
-    /// Both see strong graph-only candidates below the head.
+    /// The reranker sees the whole head, and strong graph-only candidates
+    /// below it.
     #[test]
     fn the_accurate_reranker_sees_the_whole_head_and_strong_graph_finds() {
         use pamin_core::Why;
@@ -3015,14 +2997,6 @@ mod tests {
         let shown = rerankable(&borrowed, Rerank::Accurate);
         let head_shown: Vec<usize> = shown.iter().copied().filter(|at| *at < head).collect();
         assert_eq!(head_shown, (0..head).collect::<Vec<_>>());
-        let fast_head = Rerank::Fast.depth();
-        assert_eq!(
-            rerankable(&borrowed, Rerank::Fast)
-                .into_iter()
-                .filter(|at| *at < fast_head)
-                .collect::<Vec<_>>(),
-            (0..fast_head).filter(|at| at % 2 == 1).collect::<Vec<_>>()
-        );
         let below: Vec<usize> = shown.iter().copied().filter(|at| *at >= head).collect();
         // The strongest GRAPH_SHOWN_AT_MOST, which are the last ones pushed;
         // the weakest three that reach the threshold lose to the cap.

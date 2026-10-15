@@ -661,20 +661,12 @@ async fn search_answers_questions_that_take_several_steps() {
         return;
     }
 
-    // `ROUTES`: spending less on the reranker -- a cascade, and gates that
-    // skip it -- priced against the shipped pass. See `reranking::Routes`.
+    // `ROUTES`: spending less on the reranker -- gates that skip it, and a
+    // learned router -- priced against the shipped pass. See
+    // `reranking::Routes`.
     if std::env::var("ROUTES").is_ok() {
         const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
         let tier = Rerank::default();
-        let small = harness::shape::owned(
-            pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
-                .expect("load the small reranker"),
-        );
-        shape.also_ran(
-            "routes small reranker",
-            &small,
-            pamin_index::Reranker::plans,
-        );
         let mut routes = reranking::Routes::default();
         for query in &corpus.queries {
             let hits = engine
@@ -688,7 +680,6 @@ async fn search_answers_questions_that_take_several_steps() {
                 &query.text,
                 &hits,
                 &replayed,
-                &mut harness::shape::lock(&small),
                 &query.text,
                 |into, ranking| score(into, query, ranking),
             );
