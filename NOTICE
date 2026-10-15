@@ -14,7 +14,7 @@ time a command asks for one, into a cache under the workspace, by the user's
 own machine.
 
 That distinction is what the list below is scoped by. These licences govern
-what a user downloads and runs when they choose a profile or a reranker tier.
+what a user downloads and runs when they search.
 They are not distribution terms for anything this project ships, and adding a
 model does not move the size budget.
 
@@ -25,33 +25,15 @@ a licensed source is readable, and the chain is given for it.
 Embedding models
 ----------------
 
-  intfloat/multilingual-e5-small                       MIT
-    Profile `speed`.
-
-  intfloat/multilingual-e5-base                        MIT
-    Profile `balanced`.
-
   gpahal/bge-m3-onnx-int8                              MIT
-    Profiles `accuracy` (default) and `dual_accuracy`. An int8 export of BAAI/bge-m3, itself
-    MIT.
-
-  perplexity-ai/pplx-embed-v1-0.6b                     MIT
-    Complementary model in the opt-in `dual_accuracy` profile, pinned to
-    2c4d510dd4a732063c31a0f70193e35067b51fd8. The model card at that revision
-    declares MIT. Both primary and complementary dense fields are FP16.
+    The embedding model. An int8 export of BAAI/bge-m3, itself MIT.
 
 Reranker models
 ---------------
 
-  cross-encoder/mmarco-mMiniLMv2-L12-H384-v1           Apache-2.0
-    Tier `fast`. Distilled from
-    nreimers/mMiniLMv2-L12-H384-distilled-from-XLMR-Large, which carries no
-    tag; that model is Microsoft's MiniLMv2 recipe from the UniLM
-    repository, MIT.
-
   onnx-community/bge-reranker-v2-m3-ONNX               no tag
-    Tier `accurate`, the default. An ONNX re-export of
-    BAAI/bge-reranker-v2-m3, itself Apache-2.0.
+    The reranker. An ONNX re-export of BAAI/bge-reranker-v2-m3, itself
+    Apache-2.0.
 
 ================================================================================
 Rust dependencies

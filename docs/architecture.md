@@ -72,11 +72,11 @@ $ pamin search "deployment pipeline" --json | jq '.hits[0].why'
 Every hit reports the rank it held in each channel and the graph path that
 reached it. There is no step at which a score becomes unattributable.
 
-**A cross-encoder pass, tiered.** Over the fused shortlist, `off`, `fast`
-and `accurate` (default) trade latency for quality on a curve that is measured
-rather than assumed — the figures are in [cli.md](cli.md), and the one that had
-to be corrected twice, along with why, is in
-[the ADR](adr/0001-tech-selection.md).
+**A cross-encoder pass.** Every search reranks the fused shortlist with one
+cross-encoder, bge-reranker-v2-m3. It was chosen over no reranking and a
+smaller MiniLM tier on measurements rather than assumption — the figures are in
+[cli.md](cli.md), and the one that had to be corrected twice, along with why, is
+in [the ADR](adr/0001-tech-selection.md).
 
 **Everything local.** Embeddings run in-process through ONNX Runtime;
 PostgreSQL is bundled rather than something you install. A default install
