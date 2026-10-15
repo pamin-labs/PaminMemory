@@ -16,9 +16,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-/// The smallest embedding profile. This test is about the pipeline, not about
-/// which model is most accurate.
-const PROFILE: &str = "speed";
+/// The one embedding profile.
+const PROFILE: &str = "accuracy";
 
 struct Cli {
     home: tempfile::TempDir,
@@ -182,7 +181,6 @@ fn a_workspace_serves_memories_in_any_language() {
     a_write_can_state_when_its_claim_holds(&cli);
     topics_are_findable_before_you_know_their_names(&cli);
     the_index_rebuilds_from_postgres(&cli);
-    a_profile_change_is_refused_rather_than_silently_wrong(&cli);
 }
 
 #[test]
@@ -1130,21 +1128,6 @@ fn the_index_rebuilds_from_postgres(cli: &Cli) {
     assert_eq!(
         before, after,
         "the projection holds nothing postgres cannot reproduce"
-    );
-}
-
-fn a_profile_change_is_refused_rather_than_silently_wrong(cli: &Cli) {
-    let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
-        .args(["--profile", "balanced", "search", "流水线"])
-        .env("PAMIN_HOME", cli.home())
-        .output()
-        .expect("running pamin");
-
-    assert!(!output.status.success());
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        error.contains("reindex"),
-        "a profile mismatch should say how to fix it, got {error:?}"
     );
 }
 

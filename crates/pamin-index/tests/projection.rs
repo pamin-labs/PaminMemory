@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use pamin_core::{Scored, TopicId};
 use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
 
-const PROFILE: Profile = Profile::Speed;
+const PROFILE: Profile = Profile::Accuracy;
 
 /// A stand-in embedding. These tests exercise the lexical channels, so the
 /// vector only has to be the right width.

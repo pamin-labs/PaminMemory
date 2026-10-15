@@ -614,7 +614,7 @@ mod tests {
     use super::*;
     use crate::projection::{Access, segment_documents};
 
-    const PROFILE: Profile = Profile::Speed;
+    const PROFILE: Profile = Profile::Accuracy;
 
     /// The smallest segment the engine will create -- it refuses anything
     /// under a thousand -- so that [`DOCUMENTS`] are four segments where the

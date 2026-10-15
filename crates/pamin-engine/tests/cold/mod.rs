@@ -208,8 +208,6 @@ pub async fn report(
 
 fn profile_name(profile: Profile) -> &'static str {
     match profile {
-        Profile::Speed => "speed",
-        Profile::Balanced => "balanced",
         Profile::Accuracy => "accuracy",
     }
 }
