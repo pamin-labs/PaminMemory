@@ -117,19 +117,6 @@ fn sample() -> Option<usize> {
     sample
 }
 
-/// The variables that pick an arm of the test, for the name of the run's
-/// shape record.
-const ARMS: [&str; 8] = [
-    "PASSAGES",
-    "ROUTES",
-    "REACH",
-    "ENTITIES",
-    "FEATURES_OUT",
-    "CHANNELS",
-    "DEPTH_VARIANTS",
-    "CONTEXT",
-];
-
 /// How deep to retrieve, so recall@50 can be scored.
 const DEPTH: usize = RECALL_AT + 1;
 
@@ -574,11 +561,7 @@ async fn search_answers_questions_that_take_several_steps() {
     let mut shape = corpus.shape();
     // Published before anything is printed, so a failed write to stdout
     // still leaves the in-progress record.
-    shape.publish(
-        "search_answers_questions_that_take_several_steps",
-        &named,
-        &ARMS,
-    );
+    shape.publish("search_answers_questions_that_take_several_steps", &named);
     corpus.describe();
     // The run ends on a significance gate per hop count; a sample too small
     // to ever pass it fails here, before the corpus is indexed.
@@ -683,9 +666,15 @@ async fn search_answers_questions_that_take_several_steps() {
     if std::env::var("ROUTES").is_ok() {
         const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
         let tier = Rerank::default();
-        let mut small = pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
-            .expect("load the small reranker");
-        shape.also_ran("routes small reranker", small.device());
+        let small = harness::shape::owned(
+            pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
+                .expect("load the small reranker"),
+        );
+        shape.also_ran(
+            "routes small reranker",
+            &small,
+            pamin_index::Reranker::plans,
+        );
         let mut routes = reranking::Routes::default();
         for query in &corpus.queries {
             let hits = engine
@@ -699,7 +688,7 @@ async fn search_answers_questions_that_take_several_steps() {
                 &query.text,
                 &hits,
                 &replayed,
-                &mut small,
+                &mut harness::shape::lock(&small),
                 &query.text,
                 |into, ranking| score(into, query, ranking),
             );
@@ -835,9 +824,11 @@ async fn search_answers_questions_that_take_several_steps() {
 
     if std::env::var("CONTEXT").is_ok() {
         let tier = Rerank::default();
-        let mut model = pamin_index::Reranker::load(tier, &workspace.root().join("models"))
-            .expect("load the reranker");
-        shape.also_ran("context reranker", model.device());
+        let model = harness::shape::owned(
+            pamin_index::Reranker::load(tier, &workspace.root().join("models"))
+                .expect("load the reranker"),
+        );
+        shape.also_ran("context reranker", &model, pamin_index::Reranker::plans);
         let labels = reranking::context_labels();
         let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
         harness::shape::tables(labels.iter().map(|(label, _)| label));
@@ -849,7 +840,12 @@ async fn search_answers_questions_that_take_several_steps() {
                 .expect("search");
             channels::enough_room(&hits, WIDE);
             let replayed = reranking::replay(&hits, tier);
-            let (orders, shown) = reranking::in_context(&hits, &replayed, &mut model, &query.text);
+            let (orders, shown) = reranking::in_context(
+                &hits,
+                &replayed,
+                &mut harness::shape::lock(&model),
+                &query.text,
+            );
             seeded += shown;
             for ((order, into), (label, _)) in orders.iter().zip(&mut measured).zip(&labels) {
                 harness::shape::table(label);

@@ -1074,6 +1074,54 @@ three:
 | anonymous MiB after loading both models | 345.0 | 95.8 | −249.2 (−72.2%) |
 | anonymous MiB held after use and trim | 314.4 | 47.1 | −267.3 (−85.0%) |
 | peak RSS MiB | 991.2 | 744.2 | −247.0 (−24.9%) |
+| release `pamin` binary, bytes | 38,494,728 | 38,523,368 | +28,640 (+0.074%) |
+| new cache or index files | none | none | N/A: no file write added |
+| model cache | unchanged | unchanged | N/A: no model or prepared-copy path touched |
+
+The disk rows compare the release binary built at `perf/rescore-simd`
+(`67fd1f3`) and at this change (`21d249d`). The change's product code is the
+tokenizer and its `yada` dependency, and it adds no file write.
+
+At the search entry point (`pamin import` and `pamin search` against a fresh
+`pamin serve`), the same two commits gave the rows below. Before is
+`67fd1f3` (`perf/rescore-simd`) and after is `21d249d`.
+
+**Conditions.**
+
+- Host: a shared 4-vCPU Xeon @ 2.10 GHz (AVX-512 VNNI, AMX). ONNX Runtime
+  1.28 on the CPU execution provider, with 4 threads.
+- Models: profile `accuracy`, which is BGE-M3 int8 with the `accurate`
+  reranker.
+- Workload: the corpus is 3,230 texts in a fixed order. The search phase is
+  120 timed queries, after 20 warm-up queries, on a warm server for each
+  phase.
+- Runs: 4 runs per arm in the order ABBA BAAB. Every arm first waited for a
+  load average under 1.0 for 60 s. No run was marked shared.
+- Memory: server process only, with no accelerator services.
+- Disk: the timed project's index directory and the model cache in use.
+- CIs: 95% percentile bootstrap.
+
+**No speed change is claimed: every CI includes 1.0.** The gain is memory.
+
+| metric | before | after | change | ratio [95% CI] |
+| --- | ---: | ---: | ---: | ---: |
+| search p50 ms (pooled) | 2,199.84 | 2,155.41 | −44.44 (−2.0%) | 0.980 [0.925, 1.041] |
+| search p95 ms (pooled) | 3,336.45 | 3,213.47 | −122.98 (−3.7%) | 0.963 [0.901, 1.074] |
+| ingest wall s (import and drain) | 285.17 | 286.70 | +1.53 (+0.5%) | 1.005 [0.968, 1.039] |
+| search server peak RSS MB (VmHWM) | 2,082 | 1,922 | −160 (−7.7%) | N/A |
+| search server Pss_Anon MB | 853 | 659 | −194 (−22.7%) | N/A |
+| ingest server peak RSS MB (VmHWM) | 1,750 | 1,487 | −263 (−15.0%) | N/A |
+| index directory MB allocated | 54.97 | 55.64 | +0.66 (+1.2%) | N/A |
+| model cache in use MB | 2,788 | 2,788 | 0 (0.0%) | N/A |
+
+q38 gives no CI for the memory and disk rows. The change
+writes no new files.
+
+Top-5 results at the entry point fall into two clusters that mix both arms.
+This is the segment-layout run-to-run variation, not the tokenizer. The
+write-up, raw rows and harness are at
+`internal-docs/pamin-memory/research/2026-10-14/q38-compact-tokenizer-timing.md`
+and `internal-docs/pamin-memory/research/2026-10-14/raw/q38/`.
 
 Outputs were bit-identical in all six runs. Encoding time was not measured,
 because the host was busy; load time moved by less than its run-to-run spread.
