@@ -160,11 +160,18 @@ async fn maintain(session: Arc<Session>) {
                 seconds = flush.elapsed().as_secs_f64(),
                 "flush stage finished"
             );
+            // Only between requests. An `optimize` seals the segment being
+            // written and lexical scores are per segment (BM25 statistics), so
+            // compacting mid-import split the same corpus wherever the tick
+            // landed and gave different top-5s from identical vectors. The
+            // first quiet tick after an import compacts all it wrote.
             let upkeep = Instant::now();
-            match engine.maintain().await {
-                Ok(true) => tracing::debug!("ran index upkeep"),
-                Ok(false) => {}
-                Err(error) => tracing::warn!(%error, "index upkeep failed"),
+            if session.is_quiet() {
+                match engine.maintain().await {
+                    Ok(true) => tracing::debug!("ran index upkeep"),
+                    Ok(false) => {}
+                    Err(error) => tracing::warn!(%error, "index upkeep failed"),
+                }
             }
             tracing::debug!(
                 ?key,
