@@ -147,21 +147,12 @@ Ranks travel between channels; scores do not, which is why fusion combines
 ranks. A `path` entry is verifiable in a way a rank is not — anyone can check
 that two topics really are related the way it claims.
 
-### Flags worth using, and one to leave alone
+### Flags to leave alone
 
-`--rerank` decides how much to spend reordering:
-
-| | cost | when |
-| --- | --- | --- |
-| `off` | 99 ms | Every memory is in one language, or a search must be as fast as possible |
-| `fast` | 359 ms | Mixed languages, and a search must stay under half a second |
-| `accurate` (default) | 1522 ms | Mixed languages — the tier that ranks best on every corpus measured |
-
-Costs are one search against a warm server on four cores, from `docs/cli.md`.
-`accurate` is the default because accuracy comes first; `fast` buys most of the
-time back and is the one tier that costs same-language ranking. Only candidates
-that no lexical channel found are reordered, which is why a single-language
-workspace gains almost nothing.
+Every search reranks with one cross-encoder, and there is no flag for it:
+`--rerank` and `PAMIN_RERANK` were removed, and setting `PAMIN_RERANK` is an
+error. A search against a warm server on four cores costs more than a second,
+most of it the reranker (`docs/cli.md`).
 
 **Leave `--channel-depth` and `--graph-depth` alone.** They exist for the
 evaluation harness. Raising them costs latency for recall you have no way to
@@ -170,9 +161,9 @@ measure from outside. If you want more control over retrieval, use `grep`,
 
 ### When to stop searching
 
-Every `search` at the default tier costs more than a second and a page of
-results in your context. The 1522 ms in the table above was measured at twenty
-reranked candidates; the default now reranks thirty, and `docs/measured.md`
+Every `search` costs more than a second and a page of results in your
+context. The 1522 ms `docs/cli.md` records was measured at twenty reranked
+candidates; a search now reranks thirty, and `docs/measured.md`
 records slower medians on busier machines. A second search pays off only when
 it can find something the first could not. The rules below are a heuristic for
 spending that cost; no agent-task measurement yet shows how often a repeat
@@ -261,9 +252,10 @@ than that the claim was wrong.
   command returned. `applied` means yes; `queued` means the index still owes
   work, which the server runs within seconds and `pamin cascade drain` runs at
   once. The memory is recorded either way.
-- **Do not change `--profile` casually.** It changes the vector space, and the
-  index refuses to open under a different one until `pamin reindex` rebuilds
-  that project.
+- **There is one embedding model.** `--profile` and `PAMIN_PROFILE` were
+  removed, and setting `PAMIN_PROFILE` is an error. A project indexed under a
+  retired profile refuses to open, naming it, until `pamin reindex` rebuilds
+  it.
 
 ## Why this rather than a notes file
 
