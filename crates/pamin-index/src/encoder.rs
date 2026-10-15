@@ -12,10 +12,14 @@
 //! token type ids only to a graph that declares an input of that name.
 
 use std::borrow::Cow;
+use std::ffi::CString;
 use std::path::PathBuf;
+use std::ptr::NonNull;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 
 use ort::session::{Session, SessionInputValue, SessionOutputs};
-use ort::value::Tensor;
+use ort::value::{DynValue, Tensor};
 use tokenizers::{EncodeInput, Encoding};
 
 use crate::error::{IndexError, Result};
@@ -32,10 +36,16 @@ pub(crate) struct Encoder {
     /// most of its exports do not declare the input.
     token_type_ids: bool,
     /// The graph [`run_each`](Self::run_each) loads its single-threaded
-    /// sessions from, and the sessions loaded so far; `None` runs every text
-    /// on [`session`](Self::session).
-    side_by_side: Option<(PathBuf, Vec<Session>)>,
+    /// session from, and that session once it has been loaded; `None` runs
+    /// every text on [`session`](Self::session).
+    side_by_side: Option<(PathBuf, Option<Session>)>,
+    /// The most passes [`run_each`](Self::run_each) has had running at once.
+    #[cfg(test)]
+    most_at_once: usize,
 }
+
+/// A forward pass's outputs, by name, in the graph's order.
+pub(crate) type Outputs = Vec<(String, DynValue)>;
 
 impl crate::inference::RuntimeModel for Encoder {
     fn runtime_plan(&self) -> &crate::inference::RuntimePlan {
@@ -86,13 +96,15 @@ impl Encoder {
             fixed: None,
             token_type_ids,
             side_by_side: None,
+            #[cfg(test)]
+            most_at_once: 0,
         }
     }
 
     /// The model on the CPU over a session of `threads` intra-op threads, with
-    /// [`run_each`](Self::run_each) running several texts at once on
-    /// single-threaded sessions over the same `model` -- a mapped copy (see
-    /// `crate::prepared`), so that they share its weights.
+    /// [`run_each`](Self::run_each) running several texts at once on one
+    /// single-threaded session over the same `model` -- a mapped copy (see
+    /// `crate::prepared`).
     pub(crate) fn side_by_side(
         model: PathBuf,
         threads: usize,
@@ -100,7 +112,7 @@ impl Encoder {
     ) -> Result<Self> {
         let session = crate::inference::cpu_session(&model, threads)?;
         Ok(Self {
-            side_by_side: Some((model, Vec::new())),
+            side_by_side: Some((model, None)),
             ..Self::from_parts(session, tokenizer)
         })
     }
@@ -131,6 +143,8 @@ impl Encoder {
             fixed: Some((short, long)),
             token_type_ids: false,
             side_by_side: None,
+            #[cfg(test)]
+            most_at_once: 0,
         })
     }
 
@@ -193,45 +207,48 @@ impl Encoder {
     ///
     /// On [`session`](Self::session) one after another, unless the model was
     /// loaded [`side_by_side`](Self::side_by_side) and there is more than one
-    /// batch: then as many passes at once as the inference budget allows, each
-    /// on a session of one intra-op thread taking the next batch when it
-    /// finishes one. A pass hands each of the graph's nodes to its threads and
-    /// waits for them, and on a short input that hand-off is most of the pass;
-    /// passes side by side pay none of it. Measured through `Embedder` on four
-    /// cores (ONNX Runtime 1.28, Xeon with AMX), 500 texts stored 64 at a time,
-    /// two runs each: BGE-M3 from 38.3 and 40.3 s to 18.7 and 17.3 s, every
-    /// vector bit-identical to one thread's. The cost is the passes' working
-    /// memory: anonymous memory 60 to 100 MB higher. One session run from
-    /// several threads would not save it, and `ort` runs a session only
-    /// through `&mut`.
+    /// batch: then as many passes at once as the inference budget allows, all
+    /// on one session of one intra-op thread, each thread taking the next
+    /// batch when it finishes one. A pass hands each of the graph's nodes to
+    /// its threads and waits for them, and on a short input that hand-off is
+    /// most of the pass; passes side by side pay none of it. Measured through
+    /// `Embedder` on four cores (ONNX Runtime 1.28, Xeon with AMX), 500 texts
+    /// stored 64 at a time, two runs each, when each pass still had a session
+    /// of its own: BGE-M3 from 38.3 and 40.3 s to 18.7 and 17.3 s, every vector
+    /// bit-identical to one thread's.
     ///
-    /// The sessions are loaded the first time they are wanted, as many as the
-    /// batches can use, so a model that only ever answers queries loads none.
+    /// One session for every pass rather than one a pass, so the graph, its
+    /// kernels and its weights are loaded once whatever the budget; see
+    /// [`run_shared`] for how a session is run from several threads at once.
+    /// The session is loaded the first time it is wanted, so a model that only
+    /// ever answers queries loads none.
     pub(crate) fn run_each<T: Send>(
         &mut self,
         batches: Vec<Vec<Encoding>>,
-        read: impl Fn(SessionOutputs<'_>) -> Result<T> + Sync,
+        read: impl Fn(Outputs) -> Result<T> + Sync,
     ) -> Result<Vec<T>> {
-        let (model, sessions) = match &mut self.side_by_side {
-            Some((model, sessions)) if batches.len() > 1 => (model, sessions),
+        let (model, shared) = match &mut self.side_by_side {
+            Some((model, shared)) if batches.len() > 1 => (model, shared),
             _ => {
                 return batches
                     .into_iter()
-                    .map(|batch| read(self.run_encoded(batch)?))
+                    .map(|batch| read(owned(self.run_encoded(batch)?)))
                     .collect();
             }
         };
-        let wanted = crate::inference::budget()?.min(batches.len());
-        while sessions.len() < wanted {
-            sessions.push(crate::inference::cpu_session(model, 1)?);
+        if shared.is_none() {
+            *shared = Some(crate::inference::cpu_session(model, 1)?);
         }
+        let session = shared.as_ref().expect("loaded above");
+        let workers = crate::inference::budget()?.min(batches.len());
         let (tokenizer, token_type_ids) = (&self.tokenizer, self.token_type_ids);
         let pending = &std::sync::Mutex::new(batches.into_iter().enumerate());
         let read = &read;
+        #[cfg(test)]
+        let (running, most) = (&AtomicUsize::new(0), &AtomicUsize::new(0));
         let mut done: Vec<(usize, Result<T>)> = std::thread::scope(|scope| {
-            let workers: Vec<_> = sessions[..wanted]
-                .iter_mut()
-                .map(|session| {
+            let workers: Vec<_> = (0..workers)
+                .map(|_| {
                     scope.spawn(move || {
                         let mut done = Vec::new();
                         loop {
@@ -242,7 +259,12 @@ impl Encoder {
                             let outputs = pad(tokenizer, &mut batch).and_then(|()| {
                                 let shape = [batch.len(), batch[0].len()];
                                 let feed = feed(&batch, shape, token_type_ids)?;
-                                session.run(feed).map_err(|error| failed(&error))
+                                #[cfg(test)]
+                                most.fetch_max(running.fetch_add(1, SeqCst) + 1, SeqCst);
+                                let outputs = run_shared(session, &feed);
+                                #[cfg(test)]
+                                running.fetch_sub(1, SeqCst);
+                                outputs
                             });
                             done.push((at, outputs.and_then(read)));
                         }
@@ -258,17 +280,24 @@ impl Encoder {
                 })
                 .collect()
         });
+        #[cfg(test)]
+        {
+            self.most_at_once = self.most_at_once.max(most.load(SeqCst));
+        }
         done.sort_unstable_by_key(|(at, _)| *at);
         done.into_iter().map(|(_, result)| result).collect()
     }
 
-    /// How many single-threaded sessions [`run_each`](Self::run_each) has
-    /// loaded.
+    /// How many sessions [`run_each`](Self::run_each) has loaded beside
+    /// [`session`](Self::session), and the most passes it has had running on
+    /// them at one moment.
     #[cfg(test)]
-    pub(crate) fn side_by_side_sessions(&self) -> usize {
-        self.side_by_side
+    pub(crate) fn side_by_side_passes(&self) -> (usize, usize) {
+        let loaded = self
+            .side_by_side
             .as_ref()
-            .map_or(0, |(_, sessions)| sessions.len())
+            .map_or(0, |(_, shared)| usize::from(shared.is_some()));
+        (loaded, self.most_at_once)
     }
 
     /// Each of `inputs` tokenized on its own: truncated and given its special
@@ -410,6 +439,75 @@ fn native_shape(length: usize) -> (usize, usize) {
     } else {
         (2, 256)
     }
+}
+
+/// One forward pass over `feed` on `session`, which other threads may be
+/// running at the same moment, as [`Session::run`] would make it.
+///
+/// `ort` runs a session only through `&mut`: its author does not trust ONNX
+/// Runtime's `Run` from several threads, and says so in `ort`'s source. ONNX
+/// Runtime documents it as safe (`InferenceSession::Run` in
+/// `onnxruntime/core/session/inference_session.h`: "Multiple threads are
+/// allowed to run this function"), and [`Encoder::run_each`] calls this only
+/// on a session it loaded on the CPU alone, of one intra-op thread, so that
+/// every pass runs on the thread that asked for it. So this is `Run` itself,
+/// through ONNX Runtime's C API, called on a shared session -- the call the
+/// `ort` crate makes, without the exclusive borrow it puts in front of it.
+fn run_shared(
+    session: &Session,
+    feed: &[(Cow<'static, str>, SessionInputValue<'static>)],
+) -> Result<Outputs> {
+    use ort::AsPointer;
+    let names = |names: &mut dyn Iterator<Item = &str>| -> Result<Vec<CString>> {
+        names
+            .map(|name| CString::new(name).map_err(|error| failed(&error)))
+            .collect()
+    };
+    let inputs = names(&mut feed.iter().map(|(name, _)| name.as_ref()))?;
+    let outputs = names(&mut session.outputs().iter().map(|output| output.name()))?;
+    let input_names: Vec<_> = inputs.iter().map(|name| name.as_ptr()).collect();
+    let output_names: Vec<_> = outputs.iter().map(|name| name.as_ptr()).collect();
+    let values: Vec<_> = feed.iter().map(|(_, value)| value.ptr()).collect();
+    let mut fetched = vec![std::ptr::null_mut(); outputs.len()];
+    // SAFETY: the session is live for the call, and ONNX Runtime allows `Run`
+    // on it from several threads at once (see above). Every name is a
+    // NUL-terminated string and every input a live value, all outliving the
+    // call; `fetched` has a slot for each output name, which `Run` fills.
+    let status = unsafe {
+        (ort::api().Run)(
+            session.ptr().cast_mut(),
+            std::ptr::null(),
+            input_names.as_ptr(),
+            values.as_ptr(),
+            values.len(),
+            output_names.as_ptr(),
+            output_names.len(),
+            fetched.as_mut_ptr(),
+        )
+    };
+    // SAFETY: the status comes straight from ONNX Runtime and is read once.
+    unsafe { ort::Error::result_from_status(status) }.map_err(|error| failed(&error))?;
+    let owner = session.inner();
+    outputs
+        .into_iter()
+        .zip(fetched)
+        .map(|(name, value)| {
+            let value = NonNull::new(value).ok_or_else(|| failed(&"an output came back empty"))?;
+            // SAFETY: `Run` succeeded, so `value` is an output it allocated
+            // and this pass now owns; `owner` keeps the session alive for as
+            // long as the value is.
+            let value = unsafe { DynValue::from_ptr(value, Some(std::sync::Arc::clone(&owner))) };
+            Ok((name.to_string_lossy().into_owned(), value))
+        })
+        .collect()
+}
+
+/// `outputs` as [`run_shared`] returns them.
+fn owned(outputs: SessionOutputs<'_>) -> Outputs {
+    outputs
+        .into_iter()
+        .map(|(name, value)| (name.to_owned(), value))
+        .collect()
 }
 
 fn failed(error: &dyn std::fmt::Display) -> IndexError {
