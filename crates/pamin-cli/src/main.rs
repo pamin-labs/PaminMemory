@@ -343,9 +343,9 @@ mod tests {
     const UNDOCUMENTED: &[&str] = &[
         // Compile-time source/compiler fingerprint, not a runtime user setting.
         "PAMIN_INFERENCE_BUILD",
+        "PAMIN_INFERENCE_CARGO",
         // Compile-time harness provenance from pamin-engine's build.rs: how the
         // evaluation binary was compiled, recorded in its shape records.
-        "PAMIN_ENGINE_CARGO",
         "PAMIN_ENGINE_BUILD_ENVIRONMENT",
         "PAMIN_CATCH_UP_BATCH",
         "PAMIN_EVAL_HOME",
