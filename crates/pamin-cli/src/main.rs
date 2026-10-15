@@ -14,7 +14,7 @@ mod session;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use pamin_index::{Profile, VectorIndex};
+use pamin_index::VectorIndex;
 use pamin_store::Workspace;
 
 #[derive(Parser)]
@@ -33,20 +33,12 @@ struct Cli {
     #[arg(long, env = "PAMIN_PROJECT", global = true, default_value = "default")]
     project: String,
 
-    /// Which embedding profile to use: speed, balanced or accuracy.
-    ///
-    /// The index records the profile it was built with, so changing this
-    /// requires `pamin reindex` rather than silently mixing vector spaces.
-    #[arg(long, env = "PAMIN_PROFILE", global = true, default_value = "accuracy")]
-    profile: String,
-
     /// Which vector index to build: disk or memory.
     ///
     /// `disk` holds almost nothing resident and is slower to query and much
     /// slower to build; `memory` is the fastest and the smallest on disk, and
     /// holds its graph and vectors resident. The index records which it was
-    /// built with, so changing this requires `pamin reindex`, as a profile
-    /// change does.
+    /// built with, so changing this requires `pamin reindex`.
     #[arg(
         long,
         env = "PAMIN_VECTOR_INDEX",
@@ -140,9 +132,7 @@ async fn main() -> Result<()> {
     };
     let format = output::Format::from_flags(cli.json, cli.pretty);
     // Checked here although the server parses it again, so that a misspelled
-    // profile is refused before a server is started for it.
-    Profile::parse(&cli.profile)
-        .ok_or_else(|| anyhow::anyhow!("unknown profile {:?}", cli.profile))?;
+    // vector index is refused before a server is started for it.
     VectorIndex::parse(&cli.vector_index)
         .ok_or_else(|| anyhow::anyhow!("unknown vector index {:?}", cli.vector_index))?;
 
@@ -190,7 +180,7 @@ async fn main() -> Result<()> {
     let request = protocol::Request {
         version: protocol::version(),
         project,
-        profile: cli.profile.clone(),
+        profile: String::new(),
         vector_index: cli.vector_index.clone(),
         call,
     };
@@ -236,6 +226,11 @@ const REMOVED: &[(&str, &str)] = &[
         "PAMIN_NO_SERVER",
         "every command now goes through the workspace's server, and none can run in \
          the calling process.",
+    ),
+    (
+        "PAMIN_PROFILE",
+        "every project uses the one embedding model, BGE-M3, so there is no profile to \
+         choose.",
     ),
     (
         "PAMIN_RERANK",
@@ -462,36 +457,16 @@ mod tests {
         }
     }
 
-    /// The profile a command gets when nobody names one.
+    /// The vector index a command gets when nobody names one.
     ///
     /// Two defaults, and nothing else makes them agree: `clap` parses a string
-    /// and the library has its own `Default`. They are used in different
-    /// places -- the string here, the impl by anything constructing a profile
-    /// directly -- so a change to one and not the other is two defaults, both
-    /// shipping, differing in which vector space a project ends up in.
-    #[test]
-    fn the_documented_default_profile_is_the_library_default() {
-        // Read off the declared argument rather than by parsing a command
-        // line, because parsing consults `PAMIN_PROFILE` and would then be
-        // measuring whatever the environment running the test happens to say.
-        let command = <Cli as clap::CommandFactory>::command();
-        let declared = command
-            .get_arguments()
-            .find(|argument| argument.get_id() == "profile")
-            .and_then(|argument| argument.get_default_values().first().cloned())
-            .expect("the profile argument declares a default");
-
-        assert_eq!(
-            Profile::parse(&declared.to_string_lossy()),
-            Some(Profile::default())
-        );
-    }
-
-    /// The vector index a command gets when nobody names one, for the same
-    /// reason: the string here and the library's `Default` are two defaults
-    /// that nothing else makes agree.
+    /// and the library has its own `Default`. A change to one and not the
+    /// other is two defaults, both shipping.
     #[test]
     fn the_documented_default_vector_index_is_the_library_default() {
+        // Read off the declared argument rather than by parsing a command
+        // line, because parsing consults `PAMIN_VECTOR_INDEX` and would then
+        // be measuring whatever the environment running the test says.
         let command = <Cli as clap::CommandFactory>::command();
         let declared = command
             .get_arguments()

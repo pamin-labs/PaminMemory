@@ -52,11 +52,17 @@ pub struct Request {
     /// The namespace to operate in. Per request rather than per connection,
     /// because the server holds many and a client speaks for one at a time.
     pub project: String,
-    /// The embedding profile, by name. The client refuses an unknown one
-    /// before sending it; the server parses it again because a name is what
-    /// crosses the socket.
+    /// Always empty, and read by nothing in this build.
+    ///
+    /// It named the embedding profile until there was one model. A server
+    /// from before then refuses a request without it as unreadable rather
+    /// than answering with its version, so a client that stopped sending it
+    /// could neither use such a server nor replace it.
+    #[serde(default)]
     pub profile: String,
-    /// The vector index, by name, checked and parsed like the profile.
+    /// The vector index, by name. The client refuses an unknown one before
+    /// sending it; the server parses it again because a name is what crosses
+    /// the socket.
     /// Defaulted so a `stop` from another build, which may carry none, is
     /// still read.
     #[serde(default)]

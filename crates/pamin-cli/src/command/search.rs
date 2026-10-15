@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use pamin_core::{Channel, Derivation, EdgeKind, Why};
-use pamin_index::{Profile, VectorIndex};
+use pamin_index::VectorIndex;
 
 use serde::{Deserialize, Serialize};
 
@@ -158,11 +158,10 @@ pub struct Results {
 pub async fn execute(
     session: &Session,
     project: &str,
-    profile: Profile,
     vector_index: VectorIndex,
     args: Args,
 ) -> Result<Results> {
-    let engine = session.engine(project, profile, vector_index).await?;
+    let engine = session.engine(project, vector_index).await?;
     let depths = Depths {
         channel: args.channel_depth,
         graph: args.graph_depth,

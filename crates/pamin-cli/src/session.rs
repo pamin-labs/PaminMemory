@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::Result;
 use pamin_core::ProjectId;
 use pamin_engine::{Engine, Models};
-use pamin_index::{Access, IndexError, Profile, VectorIndex};
+use pamin_index::{Access, IndexError, VectorIndex};
 use pamin_store::{Connections, Database, Workspace, repository};
 
 use crate::registry::Registry;
@@ -32,17 +32,13 @@ pub struct Session {
     projects: Mutex<HashMap<String, ProjectId>>,
     /// The models this process has loaded, shared by every engine below.
     models: Models,
-    /// The engines this process is holding open, most recently used last.
-    ///
-    /// Keyed by profile as well as project because an index records the
-    /// profile it was built with and refuses to open under another; two
-    /// profiles against one project are two indexes, and the engine holding
-    /// one cannot answer for the other.
-    engines: Registry<(String, Profile), Engine>,
+    /// The engines this process is holding open, most recently used last,
+    /// keyed by project.
+    engines: Registry<String, Engine>,
     /// Projects being warmed in the background, so a burst of requests at one
     /// cold project starts one warm-up rather than one each. See
     /// [`Session::warm`].
-    warming: std::sync::Mutex<std::collections::HashSet<(String, Profile)>>,
+    warming: std::sync::Mutex<std::collections::HashSet<String>>,
     /// How many requests are being answered right now.
     ///
     /// What the server's upkeep asks before it spends a model on work nobody
@@ -93,7 +89,7 @@ impl Drop for Serving<'_> {
 /// 152 MiB apiece while the first sixteen opened.
 ///
 /// A count cannot be made to mean bytes here: what an index costs depends on
-/// the profile, the quantization, and how much has been written, and this
+/// the model, the quantization, and how much has been written, and this
 /// process learns the last of those only by opening it. So the number stays a
 /// count, and [`OPEN_INDEXES_VAR`] lets whoever knows their machine say a
 /// smaller one. Sizing it from a memory budget is [ADR 0001]'s hot-set
@@ -164,8 +160,8 @@ impl Session {
     /// same registry and the models into the same [`Models`], stamped as used
     /// now, so a project warmed and then left alone is closed and its models
     /// released one idle window later, as if a search had opened them.
-    pub fn warm(self: &Arc<Self>, project: &str, profile: Profile, vector_index: VectorIndex) {
-        let key = (project.to_string(), profile);
+    pub fn warm(self: &Arc<Self>, project: &str, vector_index: VectorIndex) {
+        let key = project.to_string();
         if self.engines.holds(&key) {
             return;
         }
@@ -180,14 +176,14 @@ impl Session {
         let session = Arc::clone(self);
         tokio::spawn(async move {
             let models = session.models.clone();
-            let loading = tokio::task::spawn_blocking(move || models.warm(profile));
-            if let Err(error) = session.engine(&key.0, profile, vector_index).await {
-                tracing::debug!(project = %key.0, %error, "warming: opening the project failed");
+            let loading = tokio::task::spawn_blocking(move || models.warm());
+            if let Err(error) = session.engine(&key, vector_index).await {
+                tracing::debug!(project = %key, %error, "warming: opening the project failed");
             }
             match loading.await {
-                Ok(Ok(())) => tracing::debug!(project = %key.0, "warmed"),
+                Ok(Ok(())) => tracing::debug!(project = %key, "warmed"),
                 Ok(Err(error)) => {
-                    tracing::debug!(project = %key.0, %error, "warming: loading a model failed");
+                    tracing::debug!(project = %key, %error, "warming: loading a model failed");
                 }
                 Err(error) => tracing::warn!(%error, "warming: the load panicked"),
             }
@@ -209,31 +205,29 @@ impl Session {
 
     /// Gives back what this process has held open without being asked.
     ///
-    /// Returns what it closed: the project-and-profile keys, then the model
-    /// profiles and whether the reranker went, so a caller can say so in a
-    /// log rather than guess.
+    /// Returns what it closed: the projects, then whether the embedder and
+    /// the reranker went, so a caller can say so in a log rather than guess.
     ///
     /// **The order is the whole of it and cannot be swapped.** An engine holds
-    /// its profile's embedder for as long as it is open, so releasing models
+    /// the embedder for as long as it is open, so releasing models
     /// first releases nothing; the indexes have to go before the weights they
     /// pin become releasable. Doing it in one pass means an idle server gives
     /// everything back on one tick rather than over two.
     ///
     /// What each half is worth, measured on this machine: an open index is
-    /// about 205 MB on the shipping profile, and the constant above says what
+    /// about 205 MB with the shipping model, and the constant above says what
     /// sixteen of them did to two benchmark servers; the embedder is 1,625 MB
-    /// against 29 MB for a server that has not loaded one, and the `fast`
-    /// reranker another 380 to 645 MB.
+    /// against 29 MB for a server that has not loaded one.
     ///
     /// Only the server calls this. A command that exits after one search gives
     /// everything back by exiting, and closing an index it is about to use
     /// again would be the opposite of the point.
-    pub fn close_what_is_idle(&self) -> (Vec<(String, Profile)>, Vec<Profile>, bool) {
+    pub fn close_what_is_idle(&self) -> (Vec<String>, bool, bool) {
         let idle = pamin_engine::model_idle();
         let engines = self.engines.close_idle(idle);
-        let embedders = self.models.release_idle_embedders();
+        let embedder = self.models.release_idle_embedder();
         let reranker = self.models.release_idle_reranker();
-        (engines, embedders, reranker)
+        (engines, embedder, reranker)
     }
 
     /// How many indexes the open-index bound has closed since the last call.
@@ -256,7 +250,7 @@ impl Session {
         Ok(project.id)
     }
 
-    /// An engine for this project and profile, opening one if there is none.
+    /// An engine for this project, opening one if there is none.
     ///
     /// Always for writing. Read-only opens existed so that two *processes*
     /// could search one project at once, by taking a shared lock on the
@@ -272,30 +266,24 @@ impl Session {
     ///
     /// What they no longer cost is every *other* project. The exclusion used to
     /// be one lock over the whole registry, held across the open -- and an open
-    /// downloads the profile's weights the first time anyone wants them, so a
+    /// downloads the model's weights the first time anyone wants them, so a
     /// cold project stalled every project this process was serving, including
-    /// ones already open. Two projects on one profile still wait for each other
+    /// ones already open. Two cold projects still wait for each other
     /// inside [`Models`], which is where waiting for weights belongs.
     ///
-    /// Asked for under the vector index its index was built with, as it is
-    /// under that profile: an open engine asked for under the other one is
+    /// Asked for under the vector index its index was built with: an open
+    /// engine asked for under the other one is
     /// refused the way opening its index would be, rather than answering as
     /// what it is not.
-    pub async fn engine(
-        &self,
-        project: &str,
-        profile: Profile,
-        vector_index: VectorIndex,
-    ) -> Result<Arc<Engine>> {
+    pub async fn engine(&self, project: &str, vector_index: VectorIndex) -> Result<Arc<Engine>> {
         let engine = self
             .engines
-            .get_or_open((project.to_string(), profile), || {
+            .get_or_open(project.to_string(), || {
                 Engine::attached(
                     self.database.clone(),
                     &self.models,
                     &self.workspace,
                     project,
-                    profile,
                     vector_index,
                     Access::ReadWrite,
                 )
@@ -323,7 +311,7 @@ impl Session {
     /// Handed out one at a time rather than all at once, because holding every
     /// engine for the length of a sweep makes all of them look busy and stops
     /// eviction finding anything to close while it runs.
-    pub fn opened_projects(&self) -> Vec<(String, Profile)> {
+    pub fn opened_projects(&self) -> Vec<String> {
         self.engines.keys()
     }
 
@@ -331,8 +319,8 @@ impl Session {
     ///
     /// Never opens one: a caller working through what is open should not be
     /// what reopens a project nobody asked for.
-    pub fn opened_engine(&self, key: &(String, Profile)) -> Option<Arc<Engine>> {
-        self.engines.opened(key)
+    pub fn opened_engine(&self, project: &str) -> Option<Arc<Engine>> {
+        self.engines.opened(&project.to_string())
     }
 
     /// One open engine to do owed work on, if nobody else is inside it.
@@ -340,16 +328,16 @@ impl Session {
     /// [`Session::opened_engine`], except that it counts as a use: work owed
     /// is a reason to keep the index, so the idle sweep waits for the work to
     /// be done and then an idle window, as it would after a request.
-    pub fn opened_engine_for_work(&self, key: &(String, Profile)) -> Option<Arc<Engine>> {
-        self.engines.opened_for_work(key)
+    pub fn opened_engine_for_work(&self, project: &str) -> Option<Arc<Engine>> {
+        self.engines.opened_for_work(&project.to_string())
     }
 
-    /// Whether this project and profile has a place here, open or opening.
+    /// Whether this project has a place here, open or opening.
     ///
     /// Not a use, like [`Session::opened_engine`]: asking must not keep a
     /// project open that nothing is using.
-    pub fn holds(&self, key: &(String, Profile)) -> bool {
-        self.engines.holds(key)
+    pub fn holds(&self, project: &str) -> bool {
+        self.engines.holds(&project.to_string())
     }
 
     /// An engine with this project's index discarded first, for a rebuild.
@@ -360,17 +348,15 @@ impl Session {
     pub async fn rebuilding(
         &self,
         project: &str,
-        profile: Profile,
         vector_index: VectorIndex,
     ) -> Result<Arc<Engine>> {
         self.engines
-            .reopen((project.to_string(), profile), || {
+            .reopen(project.to_string(), || {
                 Engine::rebuilding_attached(
                     self.database.clone(),
                     &self.models,
                     &self.workspace,
                     project,
-                    profile,
                     vector_index,
                 )
             })

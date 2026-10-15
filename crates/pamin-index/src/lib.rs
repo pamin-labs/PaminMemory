@@ -27,7 +27,7 @@ mod vector_math;
 mod winml;
 
 pub use descriptors::raise_open_file_limit;
-pub use embedding::{Embedder, Profile};
+pub use embedding::{DIMENSIONS, Embedder, MODEL_ID};
 pub use error::{IndexError, Result};
 pub use half::as_stored;
 pub use inference::{CUDA_SELECTION, Device, PlanUse, cuda_devices};

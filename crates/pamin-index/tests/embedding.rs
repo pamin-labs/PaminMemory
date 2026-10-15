@@ -4,7 +4,7 @@
 //! `cargo test -p pamin-index -- --ignored`.
 
 use pamin_core::TopicId;
-use pamin_index::{Access, Embedder, Profile, Projection, ProjectionIndex, VectorIndex};
+use pamin_index::{Access, Embedder, Projection, ProjectionIndex, VectorIndex};
 
 fn id(byte: u8) -> TopicId {
     TopicId(uuid::Uuid::from_bytes([byte; 16]))
@@ -15,13 +15,11 @@ fn id(byte: u8) -> TopicId {
 fn the_vector_channel_recalls_across_languages_without_translating() {
     let dir = tempfile::tempdir().expect("temp dir");
 
-    let profile = Profile::Accuracy;
-    let mut embedder = Embedder::load(profile, &dir.path().join("models")).expect("load model");
+    let mut embedder = Embedder::load(&dir.path().join("models")).expect("load model");
 
     let index = ProjectionIndex::open(
         &dir.path().join("index"),
         &dir.path().join("legacy"),
-        profile,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -69,15 +67,14 @@ fn the_vector_channel_recalls_across_languages_without_translating() {
 
 #[test]
 #[ignore = "downloads embedding model weights"]
-fn embeddings_have_the_width_their_profile_declares() {
+fn embeddings_have_the_width_the_index_is_built_for() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let profile = Profile::Accuracy;
-    let mut embedder = Embedder::load(profile, dir.path()).expect("load model");
+    let mut embedder = Embedder::load(dir.path()).expect("load model");
 
     let vector = embedder.embed_passage("a durable claim").expect("embed");
     assert_eq!(
         vector.len() as u32,
-        profile.dimensions(),
+        pamin_index::DIMENSIONS,
         "the index is built for this width, so a mismatch would be silent corruption"
     );
 }
@@ -86,7 +83,7 @@ fn embeddings_have_the_width_their_profile_declares() {
 #[ignore = "downloads embedding model weights"]
 fn a_symmetric_model_is_left_alone() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let mut embedder = Embedder::load(Profile::Accuracy, dir.path()).expect("load model");
+    let mut embedder = Embedder::load(dir.path()).expect("load model");
 
     let text = "the deployment pipeline runs on continuous integration";
     assert_eq!(
@@ -104,12 +101,8 @@ fn a_symmetric_model_is_left_alone() {
 #[test]
 #[ignore = "downloads embedding model weights"]
 fn a_batch_gives_each_text_the_vector_it_would_have_got_alone() {
-    a_batch_changes_nothing_on(Profile::Accuracy);
-}
-
-fn a_batch_changes_nothing_on(profile: Profile) {
     let dir = tempfile::tempdir().expect("temp dir");
-    let mut embedder = Embedder::load(profile, dir.path()).expect("load model");
+    let mut embedder = Embedder::load(dir.path()).expect("load model");
 
     let texts = [
         "the deployment pipeline runs on continuous integration",
@@ -130,10 +123,6 @@ fn a_batch_changes_nothing_on(profile: Profile) {
     // simply return the wrong memories.
     assert_eq!(together.len(), alone.len());
     for (index, (batched, single)) in together.iter().zip(&alone).enumerate() {
-        assert_eq!(
-            batched, single,
-            "{profile:?}: {:?} came back changed",
-            texts[index]
-        );
+        assert_eq!(batched, single, "{:?} came back changed", texts[index]);
     }
 }

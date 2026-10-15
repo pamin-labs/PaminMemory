@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use pamin_core::{Scored, TopicId};
 
-use crate::embedding::Profile;
+use crate::embedding::{DIMENSIONS, MODEL_ID};
 use zvec_rust::{
     Collection, CollectionOptions, CollectionSchema, DataType, DiskannQueryParams, Doc,
     FieldSchema, Fts, FtsQueryParams, HnswQueryParams, IndexParams, MetricType, SearchQuery,
@@ -766,7 +766,7 @@ const GRAPH_DEGREE: i32 = 32;
 ///
 /// The marker records which one an index was built with, and an index is
 /// never searched as the other: opening one under the other is refused with a
-/// message naming `pamin reindex`, as a profile change is. Reading an index
+/// message naming `pamin reindex`, as a model change is. Reading an index
 /// built one way as another is the silent-wrong-answer shape ADR 0001 records
 /// from the first attempt at quantization, which returned recall@10 of 0.000
 /// with no error. `pamin reindex` lends every vector the old index holds to
@@ -972,7 +972,6 @@ impl ProjectionIndex {
     pub fn open(
         dir: &Path,
         legacy_dir: &Path,
-        profile: Profile,
         index: VectorIndex,
         access: Access,
         documents: u64,
@@ -985,27 +984,25 @@ impl ProjectionIndex {
             return Err(IndexError::LegacyLayout);
         }
 
-        Self::open_sized(dir, profile, index, access, segment_documents(documents))
+        Self::open_sized(dir, index, access, segment_documents(documents))
     }
 
-    /// The profile the index at `dir` was built with, if there is one there.
+    /// The vector index the index at `dir` was built with, if there is one
+    /// there that this build can open.
     ///
     /// For a caller that has to open an index nobody asked it to and so has
-    /// no profile in hand: the resident server, bringing up to date a project
-    /// that was written to by a process that is gone. Opening under a guess is
-    /// not an option -- a wrong guess is refused, and a guess at a directory
-    /// with no index creates one for that profile.
+    /// no vector index in hand: the resident server, bringing up to date a
+    /// project that was written to by a process that is gone. Opening under a
+    /// guess is not an option -- a wrong guess is refused, and a guess at a
+    /// directory with no index creates one.
     ///
-    /// `None` for no index, and for one recorded with a model no profile runs
-    /// any more or a vector index no build makes any more, which only a
-    /// rebuild can open.
-    pub fn built_for(dir: &Path) -> Result<Option<(Profile, VectorIndex)>> {
-        Ok(Marker::read(dir)?.and_then(|recorded| {
-            let profile = Profile::ALL
-                .into_iter()
-                .find(|profile| profile.model_id() == recorded.model)?;
-            Some((profile, VectorIndex::parse(&recorded.storage)?))
-        }))
+    /// `None` for no index, and for one recorded with another embedding model
+    /// or a vector index no build makes any more, which only a rebuild can
+    /// open.
+    pub fn built_for(dir: &Path) -> Result<Option<VectorIndex>> {
+        Ok(Marker::read(dir)?
+            .filter(|recorded| recorded.model == MODEL_ID)
+            .and_then(|recorded| VectorIndex::parse(&recorded.storage)))
     }
 
     /// Opens the index at `dir`, creating it with segments of `segment`
@@ -1016,7 +1013,6 @@ impl ProjectionIndex {
     /// is in -- many segments -- without writing fifty thousand documents.
     pub(crate) fn open_sized(
         dir: &Path,
-        profile: Profile,
         index: VectorIndex,
         access: Access,
         segment: u64,
@@ -1024,10 +1020,10 @@ impl ProjectionIndex {
         std::fs::create_dir_all(dir)?;
         let (passage, keys) = match Marker::read(dir)? {
             Some(recorded) => {
-                if recorded.model != profile.model_id() {
+                if recorded.model != MODEL_ID {
                     return Err(IndexError::ProfileMismatch {
                         indexed: recorded.model,
-                        requested: profile.model_id().to_string(),
+                        requested: MODEL_ID.to_string(),
                     });
                 }
                 if recorded.grain != DOCUMENT_GRAIN {
@@ -1052,13 +1048,12 @@ impl ProjectionIndex {
                 (recorded.passage, recorded.keys)
             }
             None => {
-                Marker::current(profile, index).write(dir)?;
+                Marker::current(index).write(dir)?;
                 (PASSAGE, KEYS)
             }
         };
 
-        let mut opened =
-            Self::open_with_dimensions(dir, profile.dimensions(), index, access, segment)?;
+        let mut opened = Self::open_with_dimensions(dir, DIMENSIONS, index, access, segment)?;
         opened.passage = passage;
         opened.keys = keys;
         Ok(opened)
@@ -1071,7 +1066,7 @@ impl ProjectionIndex {
     /// source's encoding: a copy of an index whose vectors were embedded from
     /// content alone must go on being written that way, and writing the
     /// current marker would label those vectors `name: content`. Reopening
-    /// then checks the copied marker against `profile` like any other open.
+    /// then checks the copied marker against the model like any other open.
     ///
     /// Except for the [`Keys`]: the copy is written a document at a time
     /// through this index, which spells every key itself, so nothing of the
@@ -1082,7 +1077,6 @@ impl ProjectionIndex {
     pub(crate) fn create_beside(
         source: &Path,
         dir: &Path,
-        profile: Profile,
         index: VectorIndex,
         documents: u64,
     ) -> Result<Self> {
@@ -1099,13 +1093,7 @@ impl ProjectionIndex {
             ..recorded
         }
         .write(dir)?;
-        Self::open_sized(
-            dir,
-            profile,
-            index,
-            Access::ReadWrite,
-            segment_documents(documents),
-        )
+        Self::open_sized(dir, index, Access::ReadWrite, segment_documents(documents))
     }
 
     /// Opens the index at `dir` for writing, refusing to create one.
@@ -1113,14 +1101,14 @@ impl ProjectionIndex {
     /// For reopening an index after its directory was moved into place, where
     /// finding nothing there is a fault: an open that created an empty index
     /// would hand the caller a project with no memories and no error.
-    pub(crate) fn reopen(dir: &Path, profile: Profile, index: VectorIndex) -> Result<Self> {
+    pub(crate) fn reopen(dir: &Path, index: VectorIndex) -> Result<Self> {
         if !std::fs::exists(dir.join(COLLECTION))? {
             return Err(IndexError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("no index at {}", dir.display()),
             )));
         }
-        Self::open_sized(dir, profile, index, Access::ReadWrite, segment_documents(0))
+        Self::open_sized(dir, index, Access::ReadWrite, segment_documents(0))
     }
 
     fn open_with_dimensions(
@@ -1355,10 +1343,10 @@ struct Marker {
 impl Marker {
     const FILE: &str = "profile";
 
-    /// What an index built now, for this profile and vector index, is.
-    fn current(profile: Profile, index: VectorIndex) -> Self {
+    /// What an index built now, with this vector index, is.
+    fn current(index: VectorIndex) -> Self {
         Self {
-            model: profile.model_id().to_string(),
+            model: MODEL_ID.to_string(),
             grain: DOCUMENT_GRAIN.to_string(),
             storage: index.label().to_string(),
             passage: PASSAGE,
@@ -1454,10 +1442,10 @@ impl Previous {
     /// compute them. A directory left aside by a rebuild that did not finish is
     /// discarded first: what is in `dir` is then that rebuild's partial output
     /// or its finished one, and the ledger reproduces either.
-    pub fn set_aside(dir: &Path, profile: Profile) -> Result<Option<Self>> {
+    pub fn set_aside(dir: &Path) -> Result<Option<Self>> {
         let aside = dir.with_extension("previous");
         ProjectionIndex::discard(&aside)?;
-        let current = Marker::current(profile, VectorIndex::default());
+        let current = Marker::current(VectorIndex::default());
         let Some(recorded) = Marker::read(dir)?.filter(|recorded| recorded.matches(&current))
         else {
             ProjectionIndex::discard(dir)?;
@@ -1468,7 +1456,7 @@ impl Previous {
         // schema the engine does not read.
         let mut index = ProjectionIndex::open_with_dimensions(
             &aside,
-            profile.dimensions(),
+            DIMENSIONS,
             VectorIndex::default(),
             Access::ReadOnly,
             segment_documents(0),
@@ -2194,36 +2182,32 @@ mod keys {
 #[cfg(test)]
 mod marker {
     use super::{Marker, ProjectionIndex, VectorIndex};
-    use crate::Profile;
 
-    /// What an index was built with reads back as the profile that built it.
+    /// What an index was built with reads back as the vector index that built
+    /// it.
     ///
     /// The server opens a project nobody asked for under this answer, and
     /// the answer being wrong has no quiet failure: the open is refused, or
     /// -- for a directory with no index -- an empty one is created under the
-    /// guess. So every profile is written and read back, and an empty
+    /// guess. So every vector index is written and read back, and an empty
     /// directory has to answer that there is nothing to open.
     #[test]
-    fn an_index_reads_back_the_profile_it_was_built_with() {
-        for profile in Profile::ALL {
-            for index in VectorIndex::ALL {
-                let dir = tempfile::tempdir().expect("a directory");
-                Marker::current(profile, index)
-                    .write(dir.path())
-                    .expect("marking");
-                assert_eq!(
-                    ProjectionIndex::built_for(dir.path()).expect("reading"),
-                    Some((profile, index))
-                );
-            }
+    fn an_index_reads_back_what_it_was_built_with() {
+        for index in VectorIndex::ALL {
+            let dir = tempfile::tempdir().expect("a directory");
+            Marker::current(index).write(dir.path()).expect("marking");
+            assert_eq!(
+                ProjectionIndex::built_for(dir.path()).expect("reading"),
+                Some(index)
+            );
         }
 
-        // An index from before the vector indexes names no profile to open it
+        // An index from before the vector indexes names nothing to open it
         // under: only a rebuild can.
         let legacy = tempfile::tempdir().expect("a directory");
         std::fs::write(
             legacy.path().join("profile"),
-            format!("{}\ntopic\nfp32\nnamed", Profile::Accuracy.model_id()),
+            format!("{}\ntopic\nfp32\nnamed", super::MODEL_ID),
         )
         .expect("marking");
         assert_eq!(
@@ -2235,7 +2219,7 @@ mod marker {
         assert_eq!(
             ProjectionIndex::built_for(empty.path()).expect("reading"),
             None,
-            "a directory with no index named a profile to open it under"
+            "a directory with no index named something to open it under"
         );
     }
 }

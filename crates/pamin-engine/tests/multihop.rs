@@ -46,7 +46,6 @@
 //! | `MUSIQUE_QUESTIONS` | read only the first this many questions -- the split is ordered by hop count, so a short prefix is all two-hop; kept so a run can be paired with a project built on a prefix |
 //! | `MUSIQUE_SAMPLE` | ask this many, drawn from the whole split by a seeded hash, stratified by hop count |
 //! | `EVAL_SEED` | the seed `MUSIQUE_SAMPLE` draws with, default `harness::shape::SEED` |
-//! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
 //! | `CHANNELS` | the channel diagnostic and the offline fusion sweep |
 //! | `FEATURES_OUT` | a path: every candidate fusion saw, one row each, for fitting a fusion offline |
 //! | `CONTEXT` | price what the reranker is shown, from one run |
@@ -68,7 +67,7 @@ use std::process::Command;
 
 use pamin_core::Fusion;
 use pamin_engine::{Depths, Engine};
-use pamin_index::{Access, Profile, VectorIndex};
+use pamin_index::{Access, VectorIndex};
 use pamin_store::Workspace;
 
 use harness::shape::Shape;
@@ -127,8 +126,6 @@ const DEPTHS: Depths = Depths {
 
 /// Past four times the channel depth, so a trace is never truncated.
 const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
-
-const DEFAULT_PROFILE: &str = "accuracy";
 
 /// A paragraph longer than this is cut, on a character boundary, at about what
 /// the embedders' window holds; joined same-title paragraphs can run long.
@@ -556,8 +553,7 @@ fn score(into: &mut Scores, query: &Query, ranked: &[String]) {
 #[ignore = "provisions postgres, downloads the dataset and model weights, and embeds the corpus"]
 async fn search_answers_questions_that_take_several_steps() {
     let corpus = Corpus::load();
-    let named = std::env::var("PAMIN_PROFILE").unwrap_or_else(|_| DEFAULT_PROFILE.into());
-    let profile = Profile::parse(&named).unwrap_or_else(|| panic!("unknown profile {named}"));
+    let named = harness::profile();
     let mut shape = corpus.shape();
     // Published before anything is printed, so a failed write to stdout
     // still leaves the in-progress record.
@@ -586,7 +582,6 @@ async fn search_answers_questions_that_take_several_steps() {
     let engine = Engine::open(
         &workspace,
         &project,
-        profile,
         VectorIndex::default(),
         Access::ReadWrite,
     )
@@ -620,7 +615,6 @@ async fn search_answers_questions_that_take_several_steps() {
         let other = Engine::open(
             &workspace,
             &format!("{project}-named"),
-            profile,
             VectorIndex::default(),
             Access::ReadWrite,
         )
@@ -724,7 +718,6 @@ async fn search_answers_questions_that_take_several_steps() {
         let entities = Engine::open(
             &workspace,
             &format!("{project}-entities"),
-            profile,
             VectorIndex::default(),
             Access::ReadOnly,
         )
@@ -739,10 +732,7 @@ async fn search_answers_questions_that_take_several_steps() {
     }
 
     if std::env::var("ENTITIES").is_ok() {
-        entities(
-            &engine, &mut shape, &workspace, &corpus, &project, profile, &named,
-        )
-        .await;
+        entities(&engine, &mut shape, &workspace, &corpus, &project, &named).await;
         return;
     }
 
@@ -992,7 +982,6 @@ async fn entities(
     workspace: &Workspace,
     corpus: &Corpus,
     project: &str,
-    profile: Profile,
     named: &str,
 ) {
     use pamin_core::{Derivation, EdgeKind, Validity};
@@ -1007,7 +996,6 @@ async fn entities(
     let engine = Engine::open(
         workspace,
         &format!("{project}-entities"),
-        profile,
         VectorIndex::default(),
         Access::ReadWrite,
     )

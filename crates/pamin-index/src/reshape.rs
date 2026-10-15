@@ -33,7 +33,6 @@ use std::time::Duration;
 
 use pamin_core::{Scored, TopicId};
 
-use crate::embedding::Profile;
 use crate::error::{IndexError, Result};
 use crate::projection::{
     Passage, Projection, ProjectionIndex, Segmentation, Stored, VectorDocument, VectorIndex,
@@ -124,7 +123,6 @@ pub struct Reshape {
     /// The copy; `None` once the swap has closed it.
     next: Option<ProjectionIndex>,
     live: PathBuf,
-    profile: Profile,
     /// The served index's own, which the copy keeps.
     index: VectorIndex,
     before: Segmentation,
@@ -140,7 +138,7 @@ impl Reshape {
     /// written before the recording starts is in the served index by then, so
     /// listing afterwards finds it; one written after is recorded. Listing
     /// first would miss a topic created and indexed between the two.
-    pub fn begin(held: &Arc<Held>, live: &Path, profile: Profile) -> Result<Option<Self>> {
+    pub fn begin(held: &Arc<Held>, live: &Path) -> Result<Option<Self>> {
         let (before, index) = {
             let served = lock(held);
             (served.segmentation()?, served.vector_index())
@@ -149,8 +147,7 @@ impl Reshape {
             return Ok(None);
         }
 
-        let next =
-            ProjectionIndex::create_beside(live, &sibling(live), profile, index, before.documents)?;
+        let next = ProjectionIndex::create_beside(live, &sibling(live), index, before.documents)?;
         let recording = {
             let mut served = lock(held);
             let recording = Arc::new(Recording {
@@ -166,7 +163,6 @@ impl Reshape {
             recording: Some(recording),
             next: Some(next),
             live: live.to_path_buf(),
-            profile,
             index,
             before,
             copied: 0,
@@ -270,7 +266,7 @@ impl Reshape {
             drop(self.recording.take());
             drop(self.next.take());
 
-            match exchange(&self.live, self.profile, self.index) {
+            match exchange(&self.live, self.index) {
                 Ok(index) => {
                     *served = Arc::new(index);
                     let after = served.segmentation();
@@ -288,7 +284,7 @@ impl Reshape {
                     });
                 }
                 Err(error) => {
-                    match ProjectionIndex::reopen(&self.live, self.profile, self.index) {
+                    match ProjectionIndex::reopen(&self.live, self.index) {
                         Ok(index) => *served = Arc::new(index),
                         Err(reopening) => {
                             *served = Arc::new(Closed {
@@ -387,7 +383,7 @@ impl Drop for Reshape {
 /// Both indexes are closed by now. If the second rename or the open fails,
 /// the served index is moved back before returning; if moving it back fails
 /// as well, [`Reshape::recover`] does it on the next open.
-fn exchange(live: &Path, profile: Profile, index: VectorIndex) -> Result<ProjectionIndex> {
+fn exchange(live: &Path, index: VectorIndex) -> Result<ProjectionIndex> {
     let replaced = replaced(live);
     ProjectionIndex::discard(&replaced)?;
     std::fs::rename(live, &replaced)?;
@@ -395,7 +391,7 @@ fn exchange(live: &Path, profile: Profile, index: VectorIndex) -> Result<Project
         std::fs::rename(&replaced, live)?;
         return Err(error.into());
     }
-    ProjectionIndex::reopen(live, profile, index).or_else(|error| {
+    ProjectionIndex::reopen(live, index).or_else(|error| {
         ProjectionIndex::discard(live)?;
         std::fs::rename(&replaced, live)?;
         Err(error)
@@ -614,8 +610,6 @@ mod tests {
     use super::*;
     use crate::projection::{Access, segment_documents};
 
-    const PROFILE: Profile = Profile::Accuracy;
-
     /// The smallest segment the engine will create -- it refuses anything
     /// under a thousand -- so that [`DOCUMENTS`] are four segments where the
     /// policy wants one: the shape a grown project is in, without writing
@@ -638,8 +632,8 @@ mod tests {
         let mut state = (seed as u64)
             .wrapping_mul(0x9E37_79B9_7F4A_7C15)
             .wrapping_add(1);
-        let mut vector = Vec::with_capacity(PROFILE.dimensions() as usize);
-        for _ in 0..PROFILE.dimensions() {
+        let mut vector = Vec::with_capacity(crate::DIMENSIONS as usize);
+        for _ in 0..crate::DIMENSIONS {
             state ^= state << 13;
             state ^= state >> 7;
             state ^= state << 17;
@@ -658,14 +652,13 @@ mod tests {
             live.join("profile"),
             format!(
                 "{}\ntopic\n{}\ncontent",
-                PROFILE.model_id(),
+                crate::MODEL_ID,
                 VectorIndex::default().label()
             ),
         )
         .expect("marker");
         let index = ProjectionIndex::open_sized(
             live,
-            PROFILE,
             VectorIndex::default(),
             Access::ReadWrite,
             TINY_SEGMENT,
@@ -717,7 +710,7 @@ mod tests {
             "the fixture's lexical channel finds nothing to compare against"
         );
 
-        let mut reshape = Reshape::begin(&held, &live, PROFILE)
+        let mut reshape = Reshape::begin(&held, &live)
             .expect("begin")
             .expect("four segments where one would do is worth reshaping");
         reshape.copy(&every_topic()).expect("copy");
@@ -814,8 +807,7 @@ mod tests {
 
         // On disk, not only in the handle: what reopens is the copy.
         drop(held);
-        let reopened =
-            ProjectionIndex::reopen(&live, PROFILE, VectorIndex::default()).expect("reopen");
+        let reopened = ProjectionIndex::reopen(&live, VectorIndex::default()).expect("reopen");
         assert_eq!(reopened.document_count().expect("count"), DOCUMENTS as u64);
         assert!(
             !reopened
@@ -835,7 +827,7 @@ mod tests {
         // What the upkeep worker takes for an `optimize`.
         let upkeep = Arc::clone(&*lock(&held));
 
-        let mut reshape = Reshape::begin(&held, &live, PROFILE)
+        let mut reshape = Reshape::begin(&held, &live)
             .expect("begin")
             .expect("worth reshaping");
         reshape.copy(&every_topic()).expect("copy");
@@ -863,7 +855,7 @@ mod tests {
         let held = served(&live);
         let original = Arc::as_ptr(&*lock(&held));
 
-        let mut reshape = Reshape::begin(&held, &live, PROFILE)
+        let mut reshape = Reshape::begin(&held, &live)
             .expect("begin")
             .expect("worth reshaping");
         reshape.copy(&every_topic()).expect("copy");
@@ -886,18 +878,13 @@ mod tests {
         let live = root.path().join("index");
         let index = ProjectionIndex::open_sized(
             &live,
-            PROFILE,
             VectorIndex::default(),
             Access::ReadWrite,
             segment_documents(0),
         )
         .expect("open");
         let held: Arc<Held> = Arc::new(Mutex::new(Arc::new(index)));
-        assert!(
-            Reshape::begin(&held, &live, PROFILE)
-                .expect("begin")
-                .is_none()
-        );
+        assert!(Reshape::begin(&held, &live).expect("begin").is_none());
         assert!(!sibling(&live).exists());
     }
 
@@ -912,8 +899,8 @@ mod tests {
 
         std::fs::rename(&live, replaced(&live)).expect("interrupt a swap");
         Reshape::recover(&live).expect("recover");
-        let index = ProjectionIndex::reopen(&live, PROFILE, VectorIndex::default())
-            .expect("the index is back");
+        let index =
+            ProjectionIndex::reopen(&live, VectorIndex::default()).expect("the index is back");
         assert_eq!(index.document_count().expect("count"), DOCUMENTS as u64);
         drop(index);
 

@@ -341,7 +341,7 @@ async fn search_ranks_product_listings() {
     let corpus = Corpus::load();
     corpus.describe();
 
-    let (named, profile) = profile();
+    let named = profile();
     let home = std::env::var("PAMIN_EVAL_HOME").ok();
     let scratch = home
         .is_none()
@@ -356,7 +356,6 @@ async fn search_ranks_product_listings() {
     let engine = Engine::open(
         &workspace,
         &project,
-        profile,
         VectorIndex::default(),
         Access::ReadWrite,
     )
