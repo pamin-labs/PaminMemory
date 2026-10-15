@@ -447,7 +447,8 @@ fn the_model_ranks_real_passages() {
     let mut scores = Scores::default();
     let started = std::time::Instant::now();
     for query in &corpus.queries {
-        let vector = unit(embedder.embed_query(&query.text).expect("embed the query"));
+        let vector =
+            harness::vectors::unit(embedder.embed_query(&query.text).expect("embed the query"));
 
         let mut scored: Vec<(f32, usize)> = (0..corpus.passages.len())
             .map(|document| {
@@ -477,12 +478,8 @@ fn the_model_ranks_real_passages() {
     assert_floors(&named, &corpus, &scores, MODEL_FLOORS);
 }
 
-/// Embeds every passage, reusing and resuming a cache on disk.
-///
-/// Resumable rather than merely cached: on the default profile this is hours
-/// of forward passes, and a machine that loses the process halfway would
-/// otherwise start again from nothing. Vectors are appended in batches, so the
-/// length of the file is how many are done.
+/// Embeds every passage through the shared vector cache (see
+/// `harness::vectors`).
 fn embed_corpus(embedder: &mut Embedder, corpus: &Corpus, home: &Path, width: usize) -> Vec<f32> {
     /// How many passages go into one call.
     ///
@@ -497,85 +494,12 @@ fn embed_corpus(embedder: &mut Embedder, corpus: &Corpus, home: &Path, width: us
         embedder.profile().model_id().replace('/', "-"),
         corpus.fingerprint()
     ));
-    std::fs::create_dir_all(home).expect("the evaluation directory");
-
-    let bytes = std::fs::metadata(&path)
-        .map(|file| file.len() as usize)
-        .unwrap_or(0);
-    let mut done = bytes / 4 / width;
-    if done > corpus.passages.len() {
-        // The name carries the model and the corpus, so a mismatch cannot
-        // happen -- but a truncated write can leave half a vector, and half a
-        // vector is worse than none.
-        done = 0;
-    }
-    let mut vectors: Vec<f32> = std::fs::read(&path)
-        .map(|raw| {
-            raw[..done * width * 4]
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|bytes| f32::from_le_bytes(*bytes))
-                .collect()
-        })
-        .unwrap_or_default();
-    if done > 0 {
-        println!("  reusing {done} embedded passages");
-    }
-
-    let resumed = done;
-    let started = std::time::Instant::now();
-    while done < corpus.passages.len() {
-        let batch: Vec<&str> = corpus.passages[done..]
-            .iter()
-            .take(BATCH)
-            .map(|passage| passage.text.as_str())
-            .collect();
-        let embedded = embedder.embed_passages(&batch).expect("embed the corpus");
-
-        let mut appended = Vec::with_capacity(batch.len() * width * 4);
-        for vector in embedded {
-            let vector = unit(vector);
-            for value in &vector {
-                appended.extend_from_slice(&value.to_le_bytes());
-            }
-            vectors.extend_from_slice(&vector);
-        }
-        append(&path, &appended);
-
-        done += batch.len();
-        if done.is_multiple_of(BATCH * 50) {
-            let rate = (done - resumed) as f64 / started.elapsed().as_secs_f64();
-            println!(
-                "  embedded {done}/{} at {rate:.1}/s, {:.0} minutes left",
-                corpus.passages.len(),
-                (corpus.passages.len() - done) as f64 / rate / 60.0,
-            );
-        }
-    }
-
-    vectors
-}
-
-fn append(path: &Path, bytes: &[u8]) {
-    use std::io::Write as _;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .unwrap_or_else(|error| panic!("opening {}: {error}", path.display()));
-    file.write_all(bytes).expect("write the vector cache");
-}
-
-/// Scales a vector to unit length, so a dot product is a cosine.
-fn unit(mut vector: Vec<f32>) -> Vec<f32> {
-    let norm: f32 = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        for value in &mut vector {
-            *value /= norm;
-        }
-    }
-    vector
+    let texts: Vec<&str> = corpus
+        .passages
+        .iter()
+        .map(|passage| passage.text.as_str())
+        .collect();
+    harness::vectors::embed(embedder, &path, &texts, width, BATCH).vectors
 }
 
 // ---------------------------------------------------------------------------
