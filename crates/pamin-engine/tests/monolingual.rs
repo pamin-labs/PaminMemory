@@ -797,13 +797,12 @@ async fn search() {
         return;
     }
 
-    // `ROUTES`: spending less on the reranker -- a cascade, and gates that
-    // skip it -- priced against the shipped pass. See `reranking::Routes`.
+    // `ROUTES`: spending less on the reranker -- gates that skip it, and a
+    // learned router -- priced against the shipped pass. See
+    // `reranking::Routes`.
     if std::env::var("ROUTES").is_ok() {
         const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
         let tier = Rerank::default();
-        let mut small = pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
-            .expect("load the small reranker");
         let mut routes = reranking::Routes::default();
         for query in &corpus.queries {
             let hits = engine
@@ -817,7 +816,6 @@ async fn search() {
                 &query.text,
                 &hits,
                 &replayed,
-                &mut small,
                 &query.text,
                 |into, ranking| {
                     into.add(ranking, query.relevant.len(), |topic| {
@@ -842,7 +840,7 @@ async fn search() {
 
     if std::env::var("TIERS").is_ok() {
         let mut priced: Vec<(Rerank, Scores)> = Vec::new();
-        for tier in [Rerank::Off, Rerank::Fast, Rerank::Accurate] {
+        for tier in [Rerank::Off, Rerank::Accurate] {
             let started = std::time::Instant::now();
             let scores = run(&engine, &corpus, Route::Shipped(tier)).await;
             report(
@@ -1222,7 +1220,7 @@ async fn attribute_memory(engine: &Engine, corpus: &Corpus) {
         .take(SEARCHES)
         .map(|query| query.text.as_str())
         .collect();
-    for tier in [Rerank::Off, Rerank::Fast, Rerank::Accurate] {
+    for tier in [Rerank::Off, Rerank::Accurate] {
         engine
             .search_reranked(queries[0], DEPTH as u32, DEPTHS, tier)
             .await
