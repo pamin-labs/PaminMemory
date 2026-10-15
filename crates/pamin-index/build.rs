@@ -100,10 +100,14 @@ fn build_identity() {
     // fingerprint: each Cargo profile override set and each `cfg` the target
     // resolved to, `NAME=value`, separated by 0x1f.
     let mut readable = Vec::new();
-    for (key, value) in std::env::vars() {
+    // `vars_os`: `vars` panics on any variable in the environment that is
+    // not UTF-8, which need not be one of these. Lossy, so a non-UTF-8 value
+    // is still read the same way every time.
+    for (key, value) in std::env::vars_os() {
+        let key = key.to_string_lossy();
         if key.starts_with("CARGO_CFG_") {
             println!("cargo:rerun-if-env-changed={key}");
-            readable.push(format!("{key}={value}"));
+            readable.push(format!("{key}={}", value.to_string_lossy()));
         }
     }
     for (key, value) in build_profile::settings(
