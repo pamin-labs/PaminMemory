@@ -93,8 +93,37 @@ pub fn embed(
     width: usize,
     batch: usize,
 ) -> Embedded {
-    let producer = producer(embedder);
-    let mut vectors = resume(path, &producer, width, texts.len());
+    embed_with(
+        embedder,
+        producer,
+        |embedder, chunk| embedder.embed_passages(chunk).expect("embed the corpus"),
+        path,
+        texts,
+        width,
+        batch,
+    )
+}
+
+/// [`embed`] over any `model`: `producer` names who embeds with it now and
+/// `run` embeds one batch.
+///
+/// The producer is asked again after every batch, before that batch is
+/// written: a model that fell back to another plan partway has just embedded
+/// with a producer the file's header does not name, so the cache is removed
+/// and nothing more is written to it. Checked only at the end, an
+/// interruption in between left a file whose header named the first
+/// producer over vectors from two, and the next run reused them.
+fn embed_with<M>(
+    model: &mut M,
+    producer: impl Fn(&M) -> String,
+    mut run: impl FnMut(&mut M, &[&str]) -> Vec<Vec<f32>>,
+    path: &Path,
+    texts: &[&str],
+    width: usize,
+    batch: usize,
+) -> Embedded {
+    let named = producer(model);
+    let mut vectors = resume(path, &named, width, texts.len());
     let reused = vectors.len() / width;
     if reused > 0 {
         println!("  reusing {reused} embedded texts");
@@ -102,9 +131,15 @@ pub fn embed(
 
     let started = std::time::Instant::now();
     let mut done = reused;
+    let mut caching = true;
     while done < texts.len() {
         let chunk: Vec<&str> = texts[done..].iter().take(batch).copied().collect();
-        let embedded = embedder.embed_passages(&chunk).expect("embed the corpus");
+        let embedded = run(model, &chunk);
+        if caching && producer(model) != named {
+            println!("  the embedder's plan changed during the run; removing its vector cache");
+            let _ = std::fs::remove_file(path);
+            caching = false;
+        }
 
         let mut appended = Vec::with_capacity(chunk.len() * width * 4);
         for vector in embedded {
@@ -114,7 +149,9 @@ pub fn embed(
             }
             vectors.extend_from_slice(&vector);
         }
-        append(path, &appended);
+        if caching {
+            append(path, &appended);
+        }
 
         done += chunk.len();
         if done.is_multiple_of(batch * 50) {
@@ -126,15 +163,10 @@ pub fn embed(
             );
         }
     }
-
-    if self::producer(embedder) != producer {
-        println!("  the embedder's plan changed during the run; removing its vector cache");
-        let _ = std::fs::remove_file(path);
-    }
     Embedded {
         vectors,
         reused,
-        producer,
+        producer: named,
     }
 }
 
@@ -244,6 +276,67 @@ mod tests {
             std::fs::read(&path).unwrap(),
             header("plan=cuda@cccccccccccccccc\nbuild=b")
         );
+    }
+
+    /// A model that falls back partway leaves no cache behind under its
+    /// first producer's header, so a run interrupted after the fallback
+    /// cannot hand the next one a prefix from two producers.
+    #[test]
+    fn a_fallback_partway_removes_the_cache_before_writing_to_it() {
+        struct Model {
+            batches: usize,
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vectors.f32");
+        let producer = |model: &Model| {
+            if model.batches < 2 {
+                "plan=cuda@a"
+            } else {
+                "plan=cpu@b"
+            }
+            .to_string()
+        };
+        let run = |model: &mut Model, chunk: &[&str]| {
+            model.batches += 1;
+            chunk.iter().map(|_| vec![1.0, 0.0]).collect()
+        };
+        let texts = ["a", "b", "c", "d"];
+        // Interrupted in the third batch, after one batch of the new plan.
+        let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            embed_with(
+                &mut Model { batches: 0 },
+                producer,
+                |model: &mut Model, chunk: &[&str]| {
+                    assert!(model.batches < 2, "interrupted");
+                    run(model, chunk)
+                },
+                &path,
+                &texts,
+                2,
+                1,
+            )
+        }));
+        assert!(interrupted.is_err());
+        assert!(
+            read(&path, "plan=cuda@a", 2, 4).is_empty(),
+            "the first producer's header kept the new plan's vectors"
+        );
+        assert!(!path.exists(), "the cache outlived the fallback");
+
+        // Without a fallback, the next run resumes what was written.
+        let steady = |_: &Model| "plan=cpu@b".to_string();
+        embed_with(
+            &mut Model { batches: 2 },
+            steady,
+            run,
+            &path,
+            &texts[..2],
+            2,
+            1,
+        );
+        let resumed = embed_with(&mut Model { batches: 2 }, steady, run, &path, &texts, 2, 1);
+        assert_eq!(resumed.reused, 2);
+        assert_eq!(resumed.vectors.len(), 8);
     }
 
     /// The same plans over a moved `refs/main` are another producer, so
