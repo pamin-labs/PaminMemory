@@ -1228,19 +1228,24 @@ impl Shape {
     }
 
     /// SHA-256 over the questions in the order they were given, which is the
-    /// order every arm asks them in.
+    /// order every arm asks them in, and the documents in the order they
+    /// were given, which is the order they are written in.
     ///
     /// The [`digest`](Self::digest) names a set, so two runs over the same
-    /// questions in a different order share it -- and the questions are asked
-    /// one after another, so order is a condition of every latency and cache
-    /// figure a run reports. This names the sequence, and is part of the
-    /// record's name beside the digest, so the two runs are kept apart.
+    /// questions or documents in a different order share it -- and the
+    /// questions are asked one after another, so order is a condition of
+    /// every latency and cache figure a run reports, while the order the
+    /// documents are inserted in shapes the graph and the vector index a
+    /// search walks. This names both sequences, and is part of the record's
+    /// name beside the digest, so the runs are kept apart.
     pub fn sequence(&self) -> String {
         let mut hash = Sha256::new();
         hash.update(b"sequence");
-        hash.update((self.queries.len() as u64).to_be_bytes());
-        for one in &self.queries {
-            hash.update(one);
+        for records in [&self.queries, &self.documents] {
+            hash.update((records.len() as u64).to_be_bytes());
+            for one in records {
+                hash.update(one);
+            }
         }
         format!("{:x}", hash.finalize())
     }
@@ -1765,6 +1770,23 @@ mod tests {
         assert_eq!(forward.0, backward.0);
         assert_ne!(forward.1, backward.1);
         assert_eq!(forward, build(&["q1", "q2"]));
+    }
+
+    /// The same documents written in another order are the same set and a
+    /// different sequence: insertion order shapes the index searched.
+    #[test]
+    fn the_sequence_sees_the_document_order() {
+        let build = |documents: &[&str]| {
+            let mut shape = Shape::new("test", String::new(), None);
+            for document in documents {
+                shape.document(&[document, "text"]);
+            }
+            shape.query(&["group"], "q1", &["a question"]);
+            (shape.digest(), shape.sequence())
+        };
+        let (forward, backward) = (build(&["d1", "d2"]), build(&["d2", "d1"]));
+        assert_eq!(forward.0, backward.0);
+        assert_ne!(forward.1, backward.1);
     }
 
     /// A git object id: 40 lowercase hex digits under SHA-1, 64 under
