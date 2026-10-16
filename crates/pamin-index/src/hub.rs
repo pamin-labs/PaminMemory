@@ -155,8 +155,29 @@ impl Repository {
             let _ = std::fs::remove_file(&own);
         }
         let fetched = fetched?;
-        self.pin();
+        self.pin_fetched(&fetched);
         Ok(fetched)
+    }
+
+    /// Pins the commit `fetched` was read at, from its own path --
+    /// `snapshots/<commit>/<file>` -- rather than from the ref, which
+    /// another client sharing the cache may have moved since the fetch
+    /// returned. Reading the ref instead could pin a newer commit than the
+    /// file came from, and read the rest of the model at that one.
+    fn pin_fetched(&self, fetched: &Path) {
+        let snapshots = self.root().join("snapshots");
+        let commit = fetched
+            .strip_prefix(&snapshots)
+            .ok()
+            .and_then(|inside| inside.components().next())
+            .and_then(|commit| commit.as_os_str().to_str())
+            .filter(|commit| is_commit(commit));
+        match commit {
+            Some(commit) => {
+                let _ = self.pinned.set(commit.to_string());
+            }
+            None => self.pin(),
+        }
     }
 
     /// hf-hub releases its blob lock before linking the snapshot. In our
@@ -404,6 +425,22 @@ mod tests {
         let reopened = Repository::open(dir.path(), NAME).expect("open");
         assert_eq!(reopened.revision(), format!("someone/model@{NEW}"));
         assert!(reopened.file(dir.path(), FILE).on_disk().is_none());
+    }
+
+    /// A fetch pins the commit its file was read at, though the ref moved
+    /// between the fetch and the pin: another client sharing the cache can
+    /// move it at any moment.
+    #[test]
+    fn a_fetch_pins_the_snapshot_it_read_not_the_ref_moved_since() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repository = Repository::open(dir.path(), NAME).expect("open");
+        assert_eq!(repository.revision(), "someone/model@main");
+        let (entry, _) = downloaded(dir.path());
+        std::fs::write(dir.path().join("models--someone--model/refs/main"), NEW)
+            .expect("another client moves the ref");
+        repository.pin_fetched(&entry);
+        assert_eq!(repository.revision(), format!("someone/model@{OLD}"));
+        assert_eq!(repository.get(FILE).expect("the pinned file"), entry);
     }
 
     /// An empty or cut-short ref names no commit, so nothing is pinned: the
