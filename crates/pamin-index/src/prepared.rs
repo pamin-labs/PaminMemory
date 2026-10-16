@@ -217,7 +217,7 @@ pub(crate) fn load_path(download: &impl Download, cache_dir: &Path) -> Result<Pa
     let root = cache_dir.join("prepared");
     if !wanted() {
         let fetched = download.fetch()?;
-        if let Some(recorded) = recorded(download, &root) {
+        if let Some((recorded, _)) = record(download, &root) {
             recorded.restore(&fetched);
         }
         return Ok(fetched);
@@ -241,7 +241,9 @@ pub(crate) fn load_path(download: &impl Download, cache_dir: &Path) -> Result<Pa
                 )),
                 None => error,
             })?;
-            if let Some(recorded) = &recorded {
+            // Of any revision: a hub blob is named by its content, so a
+            // fetch that is the same file as the record's keys as it did.
+            if let Some((recorded, _)) = record(download, &root) {
                 recorded.restore(&fetched);
             }
             fetched
@@ -388,23 +390,32 @@ fn found(source: &Source, root: &Path) -> Option<PathBuf> {
     find(root, &source.key().0).map(graph)
 }
 
-/// What a removed download was, as [`release`] recorded it, if it was of
-/// the revision the repository's ref resolves to now.
+/// What a removed download was, as [`release`] recorded it, if the record
+/// names the revision the repository's ref resolves to now.
 ///
 /// The record is named by the file, not the revision, so once `refs/main`
 /// moves, the copy it finds holds the old weights while everything else the
 /// model reads -- its tokenizer -- follows the new ref. A record of another
-/// revision is therefore not this load's: the new revision is fetched and
-/// written into a copy of its own, and its record replaces this one, which
-/// leaves the old copy to [`collect`]. A record written before records named
-/// a revision is taken as it always was.
+/// revision is therefore not this load's, and neither is one written before
+/// records named a revision, which cannot say which it was: the download is
+/// fetched again, and [`load_path`] keys it as the record's own source when
+/// the two are the same file, so an unchanged model finds its copy without
+/// writing it again. Otherwise a new copy is written, and its record
+/// replaces this one, which removes the old copy (see [`release`]).
 fn recorded(download: &impl Download, root: &Path) -> Option<Source> {
+    let (source, revision) = record(download, root)?;
+    (revision.as_deref() == Some(download.revision().as_str())).then_some(source)
+}
+
+/// The record [`release`] wrote for `download`, of whichever revision, and
+/// the revision it names, if it names one.
+fn record(download: &impl Download, root: &Path) -> Option<(Source, Option<String>)> {
     let record = std::fs::read_to_string(root.join(record_name(download))).ok()?;
-    let revision = record.lines().find_map(|line| line.strip_prefix(REVISION));
-    if revision.is_some_and(|revision| revision != download.revision()) {
-        return None;
-    }
-    Source::parse(&record)
+    let revision = record
+        .lines()
+        .find_map(|line| line.strip_prefix(REVISION))
+        .map(str::to_string);
+    Some((Source::parse(&record)?, revision))
 }
 
 /// The record line naming the revision a copy was written from.
@@ -1052,7 +1063,7 @@ mod tests {
     /// as a download would, and fails while `online` is false.
     struct Hub {
         origin: PathBuf,
-        blob: PathBuf,
+        blob: std::cell::RefCell<PathBuf>,
         online: Cell<bool>,
         fetches: Cell<usize>,
         revision: std::cell::RefCell<String>,
@@ -1064,11 +1075,21 @@ mod tests {
             std::fs::write(&origin, model).expect("write the hub's copy");
             Self {
                 origin,
-                blob: dir.join("models").join("blobs").join("0123abcd"),
+                blob: std::cell::RefCell::new(dir.join("models").join("blobs").join("0123abcd")),
                 online: Cell::new(true),
                 fetches: Cell::new(0),
                 revision: std::cell::RefCell::new("someone/model@c0ffee".into()),
             }
+        }
+    }
+
+    impl Hub {
+        /// Moves the ref to `revision`, whose weights are another file: a
+        /// hub blob is named by its content.
+        fn moved(&self, revision: &str, blob: &str) {
+            *self.revision.borrow_mut() = revision.into();
+            let path = self.blob.borrow().with_file_name(blob);
+            *self.blob.borrow_mut() = path;
         }
     }
 
@@ -1082,7 +1103,8 @@ mod tests {
         }
 
         fn on_disk(&self) -> Option<PathBuf> {
-            self.blob.exists().then(|| self.blob.clone())
+            let blob = self.blob.borrow();
+            blob.exists().then(|| blob.clone())
         }
 
         fn fetch(&self) -> Result<PathBuf> {
@@ -1092,14 +1114,15 @@ mod tests {
             if !self.online.get() {
                 return Err(IndexError::Engine("the hub cannot be reached".into()));
             }
-            std::fs::create_dir_all(self.blob.parent().expect("a parent"))?;
-            std::fs::copy(&self.origin, &self.blob)?;
+            let blob = self.blob.borrow().clone();
+            std::fs::create_dir_all(blob.parent().expect("a parent"))?;
+            std::fs::copy(&self.origin, &blob)?;
             self.fetches.set(self.fetches.get() + 1);
-            Ok(self.blob.clone())
+            Ok(blob)
         }
 
         fn remove(&self) -> Result<bool> {
-            std::fs::remove_file(&self.blob)?;
+            std::fs::remove_file(&*self.blob.borrow())?;
             Ok(true)
         }
     }
@@ -1200,7 +1223,7 @@ mod tests {
 
         hub.online.set(false);
         assert_eq!(load_path(&hub, &cache).expect("the same revision"), copy);
-        *hub.revision.borrow_mut() = "someone/model@decaf".into();
+        hub.moved("someone/model@decaf", "4567cdef");
         assert!(!is_ready(&hub, &cache), "the old revision's copy is ready");
         assert!(
             load_path(&hub, &cache).is_err(),
@@ -1217,13 +1240,48 @@ mod tests {
         release(&hub, &cache);
         assert!(copy.exists(), "a held copy was removed");
         held().remove(new.parent().expect("the copy's directory"));
-        *hub.revision.borrow_mut() = "someone/model@beef".into();
+        hub.moved("someone/model@beef", "89abef01");
         let newest = load_path(&hub, &cache).expect("a load of the next revision");
         assert_eq!(hub.fetches.get(), 3, "the next revision was not fetched");
         load(&newest);
         release(&hub, &cache);
         assert!(!new.exists(), "the replaced, unheld copy is still on disk");
         assert!(newest.exists() && copy.exists());
+    }
+
+    /// A record written before records named a revision cannot say which
+    /// revision its copy is of, so it is not trusted to find the copy: the
+    /// download is fetched again, and the same file keys to the same copy,
+    /// which is not written again.
+    #[test]
+    fn a_record_without_a_revision_is_verified_by_a_fetch() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let hub = Hub::new(dir.path(), &tiny_model());
+        let cache = dir.path().join("models");
+        let copy = load_path(&hub, &cache).expect("the first load");
+        load(&copy);
+        release(&hub, &cache);
+        let path = cache.join("prepared").join(record_name(&hub));
+        let record = std::fs::read_to_string(&path).expect("the record");
+        let legacy: String = record
+            .lines()
+            .filter(|line| !line.starts_with(REVISION))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        std::fs::write(&path, legacy).expect("an old record");
+
+        hub.online.set(false);
+        assert!(!is_ready(&hub, &cache), "an unverified copy is ready");
+        assert!(
+            load_path(&hub, &cache).is_err(),
+            "an unverified copy loaded"
+        );
+        hub.online.set(true);
+        assert_eq!(load_path(&hub, &cache).expect("a verified load"), copy);
+        assert_eq!(hub.fetches.get(), 2);
+        load(&copy);
+        release(&hub, &cache);
+        assert_eq!(std::fs::read_to_string(&path).expect("the record"), record);
     }
 
     /// The download's whole life: written into a copy and removed, the copy
@@ -1308,7 +1366,9 @@ mod tests {
             "the only loadable file was removed"
         );
 
-        let (key, _) = Source::of(&hub.blob).expect("key the source").key();
+        let (key, _) = Source::of(&hub.blob.borrow())
+            .expect("key the source")
+            .key();
         let root = cache.join("prepared");
         assert!(!root.join(&key).exists(), "a failed write left a copy");
         assert!(
