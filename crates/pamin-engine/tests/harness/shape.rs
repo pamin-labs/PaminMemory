@@ -192,10 +192,17 @@ fn open_tally() {
 }
 
 /// `PAMIN_` variables that say only where something is, or what to log, and
-/// change no result -- plus `PAMIN_PROFILE`, which the record names already.
+/// change no result -- plus `PAMIN_PROFILE`, which the record names already,
+/// and the four `PAMIN_ENGINE_` variables `build.rs` sets with
+/// `cargo:rustc-env`, which Cargo also sets on every test it runs: they
+/// describe the build, which the record names as its source and build.
 /// Every other `PAMIN_` variable is taken to change what is measured.
-const NOT_SETTINGS: [&str; 12] = [
+const NOT_SETTINGS: [&str; 16] = [
     "PAMIN_EMBEDDING_TEST_OUTPUT",
+    "PAMIN_ENGINE_BUILD_ENVIRONMENT",
+    "PAMIN_ENGINE_COMMIT",
+    "PAMIN_ENGINE_DIRTY",
+    "PAMIN_ENGINE_SOURCES",
     "PAMIN_EVAL_HOME",
     "PAMIN_HOME",
     "PAMIN_LOG",
@@ -3839,6 +3846,17 @@ mod tests {
             ("HOME", "/root"),
         ]);
         assert_eq!(shipped, "shipped");
+        // What `cargo test` puts in every test's environment from `build.rs`.
+        let built = named(&[
+            ("PAMIN_ENGINE_COMMIT", env!("PAMIN_ENGINE_COMMIT")),
+            ("PAMIN_ENGINE_DIRTY", env!("PAMIN_ENGINE_DIRTY")),
+            ("PAMIN_ENGINE_SOURCES", env!("PAMIN_ENGINE_SOURCES")),
+            (
+                "PAMIN_ENGINE_BUILD_ENVIRONMENT",
+                env!("PAMIN_ENGINE_BUILD_ENVIRONMENT"),
+            ),
+        ]);
+        assert_eq!(built, "shipped");
         let depth = named(&[("PAMIN_RERANK_DEPTH", "20")]);
         let effort = named(&[("PAMIN_SEARCH_EFFORT", "low")]);
         let both = named(&[("PAMIN_SEARCH_EFFORT", "low"), ("PAMIN_RERANK_DEPTH", "20")]);
