@@ -258,6 +258,28 @@ impl Corpus {
         format!("{hash:016x}")
     }
 
+    /// The run's shape (see [`harness::shape`]): every passage in file
+    /// order, and every query with its judged passages, in the one group.
+    fn shape(&self) -> harness::shape::Shape {
+        let selection = if self.capped {
+            "every dev query with a judged passage in the first MIRACL_MAX_DOCS passages"
+        } else {
+            "every dev query with a judged passage"
+        };
+        let mut shape = harness::shape::Shape::new("miracl-sw", selection.into(), None);
+        for passage in &self.passages {
+            shape.document(&[&passage.docid, &passage.text]);
+        }
+        for query in &self.queries {
+            let mut relevant: Vec<&str> = query.relevant.iter().map(String::as_str).collect();
+            relevant.sort_unstable();
+            let mut fields = vec![query.text.as_str()];
+            fields.extend(relevant);
+            shape.query(&[GROUP], &query.id, &fields);
+        }
+        shape
+    }
+
     fn describe(&self, named: &str) {
         println!(
             "  {} passages, {} judged queries, profile {named}{}",
@@ -435,18 +457,39 @@ const MODEL_FLOORS: (f64, f64) = (0.0, 0.0);
 fn the_model_ranks_real_passages() {
     let corpus = Corpus::load();
     let (named, profile) = profile();
+    let mut shape = corpus.shape();
+    shape.publish("the_model_ranks_real_passages", &named);
     corpus.describe(&named);
 
     let home = eval_home();
-    let mut embedder =
-        Embedder::load(profile, &home.join("models")).expect("load the embedding model");
+    shape.observe_models(&home.join("models"));
+    let embedder = harness::shape::owned(
+        Embedder::load(profile, &home.join("models")).expect("load the embedding model"),
+    );
+    // No engine: the record's providers are the harness's own model.
+    shape.ran_on(Vec::new);
+    shape.also_ran("embedding", &embedder, Embedder::plans);
+    shape.also_ran("embedding secondary", &embedder, |embedder| {
+        embedder.secondary_plans().unwrap_or_default()
+    });
+    let mut embedder = harness::shape::lock(&embedder);
 
     let width = profile.dimensions() as usize;
-    let vectors = embed_corpus(&mut embedder, &corpus, &home, width);
+    let (file, embedded) = embed_corpus(&mut embedder, &corpus, &home, width);
+    shape.cached(
+        &file,
+        &embedded.producer,
+        embedded.reused,
+        corpus.passages.len(),
+    );
+    let vectors = embedded.vectors;
 
+    harness::shape::tables(["embedding space"]);
+    harness::shape::table("embedding space");
     let mut scores = Scores::default();
     let started = std::time::Instant::now();
     for query in &corpus.queries {
+        harness::shape::tally(GROUP, &query.id);
         let vector =
             harness::vectors::unit(embedder.embed_query(&query.text).expect("embed the query"));
 
@@ -480,7 +523,12 @@ fn the_model_ranks_real_passages() {
 
 /// Embeds every passage through the shared vector cache (see
 /// `harness::vectors`).
-fn embed_corpus(embedder: &mut Embedder, corpus: &Corpus, home: &Path, width: usize) -> Vec<f32> {
+fn embed_corpus(
+    embedder: &mut Embedder,
+    corpus: &Corpus,
+    home: &Path,
+    width: usize,
+) -> (String, harness::vectors::Embedded) {
     /// How many passages go into one call.
     ///
     /// A call and not a forward pass on the default profile: the joint export
@@ -489,17 +537,19 @@ fn embed_corpus(embedder: &mut Embedder, corpus: &Corpus, home: &Path, width: us
     /// when the process dies.
     const BATCH: usize = 32;
 
-    let path = home.join(format!(
+    let file = format!(
         "miracl-sw-{}-{}.f32",
         embedder.profile().model_id().replace('/', "-"),
         corpus.fingerprint()
-    ));
+    );
+    let path = home.join(&file);
     let texts: Vec<&str> = corpus
         .passages
         .iter()
         .map(|passage| passage.text.as_str())
         .collect();
-    harness::vectors::embed(embedder, &path, &texts, width, BATCH).vectors
+    let embedded = harness::vectors::embed(embedder, &path, &texts, width, BATCH);
+    (file, embedded)
 }
 
 // ---------------------------------------------------------------------------
