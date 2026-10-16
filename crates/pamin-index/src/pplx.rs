@@ -4,12 +4,36 @@ use crate::error::{IndexError, Result};
 use crate::onnx::*;
 use std::path::{Path, PathBuf};
 
-pub(crate) fn prepare(source: &Path, cache: &Path) -> Result<PathBuf> {
+/// Where the derived copy of the graph at `source` is kept under `cache`:
+/// named by the graph's digest.
+fn derived(source: &Path, cache: &Path) -> Result<PathBuf> {
     let digest = crate::prepared::source_digest(source)?;
+    Ok(cache.join("pplx-int8-v1").join(digest))
+}
+
+/// The external weights beside the graph at `source`.
+fn data_beside(source: &Path) -> PathBuf {
+    source.parent().expect("snapshot graph parent").join(DATA)
+}
+
+const DATA: &str = "model_quantized.onnx_data";
+
+/// Whether the derived copy of `source` is written, as [`prepare`] finds
+/// it: the rewritten graph, and its own copy of the weights rather than a
+/// link -- both written whole, under a temporary name renamed into place.
+pub(crate) fn is_ready(source: &Path, cache: &Path) -> bool {
+    derived(source, cache).is_ok_and(|directory| {
+        directory.join("model.onnx").is_file()
+            && std::fs::symlink_metadata(directory.join(DATA))
+                .is_ok_and(|data| data.file_type().is_file())
+    })
+}
+
+pub(crate) fn prepare(source: &Path, cache: &Path) -> Result<PathBuf> {
     // Derived files belong to the writable workspace. ONNX rejects external
     // data symlinks that escape its graph directory and multiply-linked files;
     // keep one independently owned copy, leaving a shared/read-only hub alone.
-    let directory = cache.join("pplx-int8-v1").join(&digest);
+    let directory = derived(source, cache)?;
     std::fs::create_dir_all(&directory)?;
     let output = directory.join("model.onnx");
     let lock = std::fs::OpenOptions::new()
@@ -26,12 +50,8 @@ pub(crate) fn prepare(source: &Path, cache: &Path) -> Result<PathBuf> {
             "pinned PPLX export has {count} MatMulNBits nodes, expected 196"
         )));
     }
-    let data = source
-        .parent()
-        .expect("snapshot graph parent")
-        .join("model_quantized.onnx_data");
-    let data = std::fs::canonicalize(data)?;
-    let linked = directory.join("model_quantized.onnx_data");
+    let data = std::fs::canonicalize(data_beside(source))?;
+    let linked = directory.join(DATA);
     if !linked.is_file() || std::fs::symlink_metadata(&linked)?.file_type().is_symlink() {
         if std::fs::symlink_metadata(&linked).is_ok() {
             std::fs::remove_file(&linked)?;
