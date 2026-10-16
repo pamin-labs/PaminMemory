@@ -1448,7 +1448,8 @@ type Scored = Result<(Vec<Vec<f32>>, u64)>;
 /// Through [`Encoder::run_each`], so on the CPU the batches of one call run
 /// side by side, one thread a pass, longest first: the plan is shortest
 /// first, and the longest pass started last would be the one the others
-/// wait for. Measured through `Reranker::rank` on four cores (ONNX Runtime
+/// wait for. The time is of the passes alone: the sessions they run on are
+/// loaded before it starts. Measured through `Reranker::rank` on four cores (ONNX Runtime
 /// 1.28, Xeon with AMX), 100 calls of 30 uncached pairs, two runs each:
 /// `accurate` from a median of 2,105 and 2,163 ms a call to 1,212 and 1,269,
 /// `fast` from 491 and 496 ms to 222 and 250, every score bit-identical. The
@@ -1456,6 +1457,7 @@ type Scored = Result<(Vec<Vec<f32>>, u64)>;
 /// 115 MB for `fast`, in proportional set size.
 fn forward(model: &mut Encoder, batches: Vec<Vec<Encoding>>) -> Scored {
     let counts: Vec<usize> = batches.iter().map(Vec::len).collect();
+    model.ready(batches.len())?;
     let start = Instant::now();
     let mut scores = model.run_each(batches.into_iter().rev().collect(), first_column)?;
     let forward_us = start.elapsed().as_micros() as u64;
