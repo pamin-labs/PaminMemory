@@ -183,9 +183,11 @@ search finds something new.
 
 - **Before searching again, name what is missing.** List the facts the
   question needs, then check them against the results you already have. Stop
-  when each one is either backed by a hit or is plainly not there. A result
-  that answers the question but that you have not read in full calls for
-  `read`, not another `search`.
+  when each one is backed by a hit. A fact missing from those results is
+  missing from one page of five, not from memory, so take it to the rules
+  below rather than concluding it is not there. A hit already carries its
+  topic's full current content; do not `read` it again. `read` is for its
+  earlier versions and the source span a claim came from.
 - **Rephrase at most once, and never to the same place.** If the second
   phrasing brings back mostly the same topics (say, eight of the first ten),
   the ranking is not the problem and a third phrasing will land there too.
