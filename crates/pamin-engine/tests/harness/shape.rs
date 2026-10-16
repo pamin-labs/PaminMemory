@@ -1019,6 +1019,15 @@ fn record(kind: &str, fields: &[&str]) -> [u8; 32] {
     hash.finalize().into()
 }
 
+/// The groups a query is asked in, sorted and joined, as a record field:
+/// a query moved to another group is scored and counted there, so it is
+/// another question set.
+fn assigned(groups: &[&str]) -> String {
+    let mut sorted = groups.to_vec();
+    sorted.sort_unstable();
+    sorted.join("\u{1f}")
+}
+
 /// At most this many ids are named in a coverage failure; the count says how
 /// many there were.
 const NAMED: usize = 5;
@@ -1176,7 +1185,8 @@ impl Shape {
     /// harness passes to [`tally`] -- by every other field that decides how it
     /// is scored: its text and its answer key.
     pub fn query(&mut self, groups: &[&str], id: &str, fields: &[&str]) {
-        let mut all = vec![id];
+        let assigned = assigned(groups);
+        let mut all = vec![id, assigned.as_str()];
         all.extend(fields);
         self.queries.push(record("query", &all));
         for group in groups {
@@ -1192,7 +1202,8 @@ impl Shape {
     /// A question the selection drew and the harness will not score. It
     /// counts as asked, so the gap shows in every coverage line.
     pub fn exclude(&mut self, groups: &[&str], id: &str, reason: &str) {
-        self.queries.push(record("excluded", &[id, reason]));
+        self.queries
+            .push(record("excluded", &[id, &assigned(groups), reason]));
         for group in groups {
             let fresh = self
                 .asked
@@ -1787,6 +1798,21 @@ mod tests {
         let (forward, backward) = (build(&["d1", "d2"]), build(&["d2", "d1"]));
         assert_eq!(forward.0, backward.0);
         assert_ne!(forward.1, backward.1);
+    }
+
+    /// A query moved to another group, its text and answer key unchanged,
+    /// is another question set; the order groups are listed in is not.
+    #[test]
+    fn the_digest_sees_which_groups_a_query_is_asked_in() {
+        let build = |groups: &[&str]| {
+            let mut shape = Shape::new("test", String::new(), None);
+            shape.query(groups, "q1", &["a question", "answer"]);
+            shape.exclude(groups, "q2", "unanswerable");
+            shape.digest()
+        };
+        assert_ne!(build(&["2hop"]), build(&["3hop"]));
+        assert_ne!(build(&["a"]), build(&["a", "b"]));
+        assert_eq!(build(&["a", "b"]), build(&["b", "a"]));
     }
 
     /// A git object id: 40 lowercase hex digits under SHA-1, 64 under
