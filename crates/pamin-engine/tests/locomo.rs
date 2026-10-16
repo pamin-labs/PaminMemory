@@ -460,6 +460,15 @@ async fn locomo_evidence_with_and_without_links() {
         .await
         .expect("open the engine");
         write(&engine, conversation).await;
+        // `write_absent` skips a topic the ledger has, and `drain` sees
+        // nothing owed, even when the index beside a reused project was
+        // removed or half rebuilt; so count what the index holds.
+        assert_eq!(
+            engine.indexed_documents().expect("count the documents") as usize,
+            conversation.turns.len(),
+            "{}: the index does not hold every turn",
+            conversation.id
+        );
         linked_edges += link(&engine, conversation).await;
 
         let before: [BTreeMap<String, usize>; 2] = std::array::from_fn(|side| {
