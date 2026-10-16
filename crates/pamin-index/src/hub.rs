@@ -67,13 +67,19 @@ impl Repository {
     }
 
     /// Pins the commit the requested revision's ref names now, if it names
-    /// one and nothing is pinned yet.
+    /// one and nothing is pinned yet. A ref that is empty or cut short -- a
+    /// write interrupted, a disk that filled -- names none, and pinning it
+    /// would read every file from a snapshot that is not there for the rest
+    /// of the process: the requested revision is fetched instead, as it is
+    /// before anything is cached.
     fn pin(&self) {
         if self.pinned.get().is_some() {
             return;
         }
         let resolved = std::fs::read_to_string(self.root().join("refs").join(&self.revision));
-        if let Ok(commit) = resolved {
+        if let Ok(commit) = resolved
+            && is_commit(commit.trim())
+        {
             let _ = self.pinned.set(commit.trim().to_string());
         }
     }
@@ -332,6 +338,11 @@ fn cache_root(cache_dir: &Path) -> PathBuf {
         .unwrap_or_else(|| cache_dir.to_path_buf())
 }
 
+/// Whether `text` is a full commit id: forty hexadecimal digits.
+fn is_commit(text: &str) -> bool {
+    text.len() == 40 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 /// Where `file` of repository `name` is on disk, without asking the hub
 /// anything, or `None` if it is not.
 fn cached_at(cache_dir: &Path, name: &str, revision: &str, file: &str) -> Option<PathBuf> {
@@ -351,17 +362,20 @@ mod tests {
 
     const NAME: &str = "someone/model";
     const FILE: &str = "onnx/model.onnx";
+    /// The commit `refs/main` names, and the one it moves to.
+    const OLD: &str = "c0ffee0000000000000000000000000000000000";
+    const NEW: &str = "decaf00000000000000000000000000000000000";
 
     /// A repository laid out as the hub client leaves it under `cache`: a
     /// ref naming a snapshot, whose entry links to a blob named by content.
     fn downloaded(cache: &Path) -> (PathBuf, PathBuf) {
         let repository = cache.join("models--someone--model");
         std::fs::create_dir_all(repository.join("refs")).expect("refs");
-        std::fs::write(repository.join("refs/main"), "c0ffee").expect("the ref");
+        std::fs::write(repository.join("refs/main"), OLD).expect("the ref");
         std::fs::create_dir_all(repository.join("blobs")).expect("blobs");
         let blob = repository.join("blobs/0123abcd");
         std::fs::write(&blob, b"weights").expect("the blob");
-        let entry = repository.join("snapshots/c0ffee").join(FILE);
+        let entry = repository.join(format!("snapshots/{OLD}")).join(FILE);
         std::fs::create_dir_all(entry.parent().expect("a parent")).expect("the snapshot");
         std::os::unix::fs::symlink("../../../blobs/0123abcd", &entry).expect("the entry");
         (entry, blob)
@@ -376,20 +390,39 @@ mod tests {
         let repository = Repository::open(dir.path(), NAME).expect("open");
         assert_eq!(repository.revision(), "someone/model@main");
         let (entry, _) = downloaded(dir.path());
-        assert_eq!(repository.revision(), "someone/model@c0ffee");
+        assert_eq!(repository.revision(), format!("someone/model@{OLD}"));
         std::fs::write(
             dir.path().join("models--someone--model/refs/main"),
-            "decaf\n",
+            format!("{NEW}\n"),
         )
         .expect("move the ref");
-        assert_eq!(repository.revision(), "someone/model@c0ffee");
+        assert_eq!(repository.revision(), format!("someone/model@{OLD}"));
         assert_eq!(repository.get(FILE).expect("the pinned file"), entry);
         assert_eq!(repository.file(dir.path(), FILE).on_disk(), Some(entry));
 
         // Opened after the move, a repository pins the new commit.
         let reopened = Repository::open(dir.path(), NAME).expect("open");
-        assert_eq!(reopened.revision(), "someone/model@decaf");
+        assert_eq!(reopened.revision(), format!("someone/model@{NEW}"));
         assert!(reopened.file(dir.path(), FILE).on_disk().is_none());
+    }
+
+    /// An empty or cut-short ref names no commit, so nothing is pinned: the
+    /// requested revision is read, and the commit is pinned once the ref
+    /// names one whole.
+    #[test]
+    fn an_empty_or_cut_short_ref_pins_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (entry, _) = downloaded(dir.path());
+        let main = dir.path().join("models--someone--model/refs/main");
+        for broken in ["", "\n", &OLD[..6]] {
+            std::fs::write(&main, broken).expect("break the ref");
+            let repository = Repository::open(dir.path(), NAME).expect("open");
+            assert_eq!(repository.revision(), "someone/model@main", "{broken:?}");
+        }
+        let repository = Repository::open(dir.path(), NAME).expect("open");
+        std::fs::write(&main, OLD).expect("mend the ref");
+        assert_eq!(repository.revision(), format!("someone/model@{OLD}"));
+        assert_eq!(repository.get(FILE).expect("the file"), entry);
     }
 
     /// Removing takes the entry and the blob both: a blob left behind is the
@@ -428,9 +461,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (entry, _) = downloaded(dir.path());
         let root = dir.path().join("models--someone--model");
-        std::fs::write(root.join("refs/fixed"), "c0ffee").unwrap();
-        std::fs::write(root.join("refs/main"), "decaf").unwrap();
-        let moving = root.join("snapshots/decaf").join(FILE);
+        std::fs::write(root.join("refs/fixed"), OLD).unwrap();
+        std::fs::write(root.join("refs/main"), NEW).unwrap();
+        let moving = root.join(format!("snapshots/{NEW}")).join(FILE);
         std::fs::create_dir_all(moving.parent().unwrap()).unwrap();
         std::fs::write(&moving, b"different weights").unwrap();
         let pinned = Repository::open_at(dir.path(), NAME, "fixed").unwrap();
@@ -462,11 +495,7 @@ mod tests {
     fn two_revision_refs_preserve_the_same_snapshot_entry() {
         let dir = tempfile::tempdir().unwrap();
         let (entry, blob) = downloaded(dir.path());
-        std::fs::write(
-            dir.path().join("models--someone--model/refs/fixed"),
-            "c0ffee",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("models--someone--model/refs/fixed"), OLD).unwrap();
         let moving = Repository::open(dir.path(), NAME).unwrap();
         let pinned = Repository::open_at(dir.path(), NAME, "fixed").unwrap();
         assert!(!moving.file(dir.path(), FILE).remove().unwrap());
@@ -494,7 +523,7 @@ mod tests {
         let early = received.recv_timeout(Duration::from_millis(100));
         let other = dir
             .path()
-            .join("models--someone--model/snapshots/decaf")
+            .join(format!("models--someone--model/snapshots/{NEW}"))
             .join(FILE);
         std::fs::create_dir_all(other.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink("../../../blobs/0123abcd", &other).unwrap();
@@ -520,7 +549,7 @@ mod tests {
         let (entry, blob) = downloaded(dir.path());
         let other = dir
             .path()
-            .join("models--someone--model/snapshots/decaf")
+            .join(format!("models--someone--model/snapshots/{NEW}"))
             .join(FILE);
         std::fs::create_dir_all(other.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink("../../../blobs/0123abcd", &other).unwrap();
