@@ -462,7 +462,7 @@ fn the_model_ranks_real_passages() {
     corpus.describe(&named);
 
     let home = eval_home();
-    shape.observe_models(&home.join("models"));
+    shape.observe_models(&home.join("models"), profile, &[]);
     let embedder = harness::shape::owned(
         Embedder::load(profile, &home.join("models")).expect("load the embedding model"),
     );

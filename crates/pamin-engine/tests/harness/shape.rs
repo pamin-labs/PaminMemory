@@ -1171,45 +1171,51 @@ impl Shape {
             .push(format!("{file}: {reused}/{total} from {producer}"));
     }
 
-    /// Observes, before any model loads from `models`, which repositories
-    /// are downloaded there and which prepared copies are recorded -- so a
-    /// run that fetched or prepared a model, and paid for it in its timings,
-    /// is not taken for one that found them. Observed, not declared.
-    pub fn observe_models(&mut self, models: &Path) {
-        let names = |dir: &Path, keep: fn(&str) -> bool| -> Vec<String> {
-            let mut names: Vec<String> = std::fs::read_dir(dir)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .filter(|name| keep(name))
-                .collect();
-            names.sort();
-            names
-        };
-        let downloaded = names(models, |name| name.starts_with("models--"));
-        let prepared = names(&models.join("prepared"), |name| name.ends_with(".source"));
-        // Only plans a load would accept (`pamin_index::plan_is_usable`): an
-        // expired or broken one is calibrated again, as if it were absent.
-        let directory = models.join("compute-plans-v1");
-        let plans = names(&directory, |name| name.ends_with(".json"));
-        self.plans_before.get_or_insert_with(BTreeSet::new).extend(
-            plans
-                .iter()
-                .filter(|name| pamin_index::plan_is_usable(&directory.join(name)))
-                .filter_map(|name| name.strip_suffix(".json"))
-                .map(str::to_string),
-        );
-        for (what, found) in [("downloaded", downloaded), ("prepared", prepared)] {
-            let line = if found.is_empty() {
-                format!("{what}: none")
-            } else {
-                format!("{what}: {}", found.join(", "))
-            };
+    /// Observes, before any model loads from `models`, whether each model
+    /// the run may load -- `profile`'s embedder and each of `tiers` -- is on
+    /// disk as a load would read it (`Embedder::is_downloaded`,
+    /// `Reranker::is_downloaded`: the download, or a usable prepared copy),
+    /// and which calibrated plans a load would accept. A run that fetched or
+    /// prepared a model, and paid for it in its timings, is not taken for
+    /// one that found them. Observed, not declared.
+    pub fn observe_models(
+        &mut self,
+        models: &Path,
+        profile: pamin_index::Profile,
+        tiers: &[pamin_index::Rerank],
+    ) {
+        let state = |ready: bool| if ready { "on disk" } else { "not on disk" };
+        let mut lines = vec![format!(
+            "embedding {}: {}",
+            profile.model_id(),
+            state(pamin_index::Embedder::is_downloaded(profile, models))
+        )];
+        for tier in tiers {
+            lines.push(format!(
+                "reranking {}: {}",
+                tier.name(),
+                state(pamin_index::Reranker::is_downloaded(*tier, models))
+            ));
+        }
+        for line in lines {
             if !self.warmth.contains(&line) {
                 self.warmth.push(line);
             }
         }
+        // Only plans a load would accept (`pamin_index::plan_is_usable`): an
+        // expired or broken one is calibrated again, as if it were absent.
+        let directory = models.join("compute-plans-v1");
+        let plans: Vec<String> = std::fs::read_dir(&directory)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| pamin_index::plan_is_usable(&directory.join(name)))
+            .filter_map(|name| name.strip_suffix(".json").map(str::to_string))
+            .collect();
+        self.plans_before
+            .get_or_insert_with(BTreeSet::new)
+            .extend(plans);
     }
 
     /// What was on disk before the models loaded, and per role whether its
@@ -2096,7 +2102,8 @@ mod tests {
         assert_eq!(reasons.len(), 1, "a dirty build's index was vouched for");
     }
 
-    /// What was on disk before the models loaded is observed, and a plan
+    /// What was on disk before the models loaded is observed as a load
+    /// would find it, and a plan
     /// calibrated before the run is told from one the run calibrated -- an
     /// expired plan file counting as none, as the load treats it.
     #[test]
@@ -2105,14 +2112,31 @@ mod tests {
         let models = dir.path();
         let observe = || {
             let mut shape = Shape::new("test", String::new(), None);
-            shape.observe_models(models);
+            shape.observe_models(
+                models,
+                pamin_index::Profile::Accuracy,
+                &[pamin_index::Rerank::Fast],
+            );
             shape
         };
-        assert_eq!(observe().warmth, ["downloaded: none", "prepared: none"]);
+        let cold = [
+            format!(
+                "embedding {}: not on disk",
+                pamin_index::Profile::Accuracy.model_id()
+            ),
+            "reranking fast: not on disk".to_string(),
+        ];
+        assert_eq!(observe().warmth, cold);
 
-        std::fs::create_dir_all(models.join("models--someone--model")).unwrap();
+        // A repository directory a failed fetch left, and a record whose
+        // copy is gone, are not a model on disk.
+        std::fs::create_dir_all(models.join("models--gpahal--bge-m3-onnx-int8")).unwrap();
         std::fs::create_dir_all(models.join("prepared")).unwrap();
-        std::fs::write(models.join("prepared/someone--model.source"), "").unwrap();
+        std::fs::write(
+            models.join("prepared/gpahal--bge-m3-onnx-int8--model_quantized.onnx.source"),
+            "model_quantized.onnx\n1\n1\n",
+        )
+        .unwrap();
         // A plan a load would use, and one it would not: expired.
         let plans = models.join("compute-plans-v1");
         std::fs::create_dir_all(&plans).unwrap();
@@ -2131,13 +2155,7 @@ mod tests {
             std::fs::write(plans.join(format!("{fingerprint}.json")), plan.to_string()).unwrap();
         }
         let mut shape = observe();
-        assert_eq!(
-            shape.warmth,
-            [
-                "downloaded: models--someone--model",
-                "prepared: someone--model.source"
-            ]
-        );
+        assert_eq!(shape.warmth, cold);
         shape.ran_on(|| {
             vec![
                 ("embedding".to_string(), used("cpu", "1", REVISION)),
@@ -2500,7 +2518,7 @@ mod tests {
                 format!("reranking accurate={REVISION}"),
             ],
             caches: Vec::new(),
-            warmth: vec!["downloaded: none".into(), "prepared: none".into()],
+            warmth: vec!["embedding m: not on disk".into()],
             indexes: Vec::new(),
             build: Build {
                 inference: "f".repeat(64),
@@ -2566,9 +2584,7 @@ mod tests {
                 id.caches
                     .push("xquad.f32: 0/10 from 0123456789abcdef".into())
             }),
-            ("warmth", |id| {
-                id.warmth[0] = "downloaded: models--someone--model".into()
-            }),
+            ("warmth", |id| id.warmth[0] = "embedding m: on disk".into()),
             ("indexes", |id| {
                 id.indexes.push("primary: reused by 01234567".into())
             }),

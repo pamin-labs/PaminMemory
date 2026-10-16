@@ -181,6 +181,32 @@ impl Embedder {
     /// The model is fetched lazily rather than bundled: it is larger than the
     /// binary by an order of magnitude, and a user who never searches should
     /// not pay for it.
+    /// Whether `profile`'s weights for the CPU are on disk already, as
+    /// [`crate::Reranker::is_downloaded`] says of a reranker: the download,
+    /// or the mapped copy that replaced it (see `crate::prepared`) -- and,
+    /// for a profile with a second vector model, its weights too.
+    pub fn is_downloaded(profile: Profile, cache_dir: &std::path::Path) -> bool {
+        let primary = primary_repository(profile, cache_dir).is_ok_and(|repository| {
+            if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
+                crate::prepared::is_ready(&repository.file(cache_dir, JOINT_FILE), cache_dir)
+            } else {
+                e5_info(profile).is_ok_and(|info| {
+                    crate::prepared::Download::on_disk(
+                        &repository.file(cache_dir, &info.model_file),
+                    )
+                    .is_some()
+                })
+            }
+        });
+        let secondary = profile != Profile::DualAccuracy
+            || complementary_repository(cache_dir).is_ok_and(|repository| {
+                COMPLEMENTARY_FILES.iter().all(|file| {
+                    crate::prepared::Download::on_disk(&repository.file(cache_dir, file)).is_some()
+                })
+            });
+        primary && secondary
+    }
+
     pub fn load(profile: Profile, cache_dir: &std::path::Path) -> Result<Self> {
         let (model, device) = primary_model(profile, cache_dir)?;
         let secondary = if profile == Profile::DualAccuracy {
@@ -393,12 +419,9 @@ impl Embedder {
     }
 }
 
-fn primary_model(
-    profile: Profile,
-    cache_dir: &std::path::Path,
-) -> Result<(Encoder, crate::inference::Device)> {
-    std::fs::create_dir_all(cache_dir)?;
-    let repository = if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
+/// The repository `profile`'s primary model is read from.
+fn primary_repository(profile: Profile, cache_dir: &std::path::Path) -> Result<Repository> {
+    if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
         Repository::open_at(
             cache_dir,
             JOINT_REPOSITORY,
@@ -407,13 +430,25 @@ fn primary_model(
             } else {
                 "main"
             },
-        )?
+        )
     } else {
-        let model = profile.model();
-        let info = TextEmbedding::get_model_info(&model)
-            .map_err(|error| IndexError::Engine(format!("finding embedding model: {error}")))?;
-        Repository::open(cache_dir, &info.model_code)?
-    };
+        Repository::open(cache_dir, &e5_info(profile)?.model_code)
+    }
+}
+
+/// FastEmbed's registry entry for an E5 profile's model.
+fn e5_info(profile: Profile) -> Result<fastembed::ModelInfo<EmbeddingModel>> {
+    TextEmbedding::get_model_info(&profile.model())
+        .cloned()
+        .map_err(|error| IndexError::Engine(format!("finding embedding model: {error}")))
+}
+
+fn primary_model(
+    profile: Profile,
+    cache_dir: &std::path::Path,
+) -> Result<(Encoder, crate::inference::Device)> {
+    std::fs::create_dir_all(cache_dir)?;
+    let repository = primary_repository(profile, cache_dir)?;
     let identity = format!(
         "embedding-query-v4:max512:joint-singleton:e5-cpu256-accelerator8:{}:{}",
         profile.model_id(),
@@ -570,9 +605,7 @@ fn load_on(
         let encoder = joint_session(repository, &weights, cache_dir, device, target)?;
         return Ok(encoder);
     }
-    let model = profile.model();
-    let info = TextEmbedding::get_model_info(&model)
-        .map_err(|error| IndexError::Engine(format!("finding embedding model: {error}")))?;
+    let info = e5_info(profile)?;
     let encoder = Encoder::load(
         || repository.get(&info.model_file),
         repository,
@@ -735,17 +768,28 @@ fn dense(model: &mut Encoder, text: &str) -> Result<Vec<f32>> {
     }
 }
 
-fn complementary(cache: &std::path::Path) -> Result<(Encoder, crate::inference::Device)> {
-    let repository = Repository::open_at(
+/// The second vector model's repository, at its pinned commit.
+fn complementary_repository(cache: &std::path::Path) -> Result<Repository> {
+    Repository::open_at(
         cache,
         "perplexity-ai/pplx-embed-v1-0.6b",
         "2c4d510dd4a732063c31a0f70193e35067b51fd8",
-    )?;
+    )
+}
+
+/// The second vector model's weights: its graph and the data beside it.
+const COMPLEMENTARY_FILES: [&str; 2] = [
+    "onnx/model_quantized.onnx",
+    "onnx/model_quantized.onnx_data",
+];
+
+fn complementary(cache: &std::path::Path) -> Result<(Encoder, crate::inference::Device)> {
+    let repository = complementary_repository(cache)?;
     let load = |device, target| -> Result<Encoder> {
         let model = Encoder::load(
             || {
-                repository.get("onnx/model_quantized.onnx_data")?;
-                crate::pplx::prepare(&repository.get("onnx/model_quantized.onnx")?, cache)
+                repository.get(COMPLEMENTARY_FILES[1])?;
+                crate::pplx::prepare(&repository.get(COMPLEMENTARY_FILES[0])?, cache)
             },
             &repository,
             JOINT_MAX_TOKENS,
@@ -1361,6 +1405,44 @@ mod tests {
     }
 
     use super::*;
+
+    /// A model is on disk only if a load would read it there: an empty
+    /// repository directory left by a failed fetch, or a prepared-copy record
+    /// whose copy is gone, is not; a resolved snapshot holding the weights is.
+    #[test]
+    fn a_model_is_downloaded_only_if_a_load_would_read_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let cache = dir.path();
+        let repository = cache.join("models--gpahal--bge-m3-onnx-int8");
+        assert!(!Embedder::is_downloaded(Profile::Accuracy, cache));
+
+        std::fs::create_dir_all(&repository).expect("an empty repository");
+        assert!(!Embedder::is_downloaded(Profile::Accuracy, cache));
+
+        let prepared = cache.join("prepared");
+        std::fs::create_dir_all(&prepared).expect("the copies' directory");
+        std::fs::write(
+            prepared.join(format!("{JOINT_REPOSITORY}/{JOINT_FILE}.source").replace('/', "--")),
+            format!(
+                "{}\n1\n1\nsha256 {}\nrevision {JOINT_REPOSITORY}@main\n",
+                "a".repeat(64),
+                "a".repeat(64)
+            ),
+        )
+        .expect("a stale record");
+        assert!(
+            !Embedder::is_downloaded(Profile::Accuracy, cache),
+            "a record whose copy is gone"
+        );
+
+        let commit = "c0ffee0000000000000000000000000000000000";
+        std::fs::create_dir_all(repository.join("refs")).expect("refs");
+        std::fs::write(repository.join("refs/main"), commit).expect("the ref");
+        let weights = repository.join("snapshots").join(commit).join(JOINT_FILE);
+        std::fs::create_dir_all(weights.parent().expect("a parent")).expect("the snapshot");
+        std::fs::write(&weights, b"weights").expect("the weights");
+        assert!(Embedder::is_downloaded(Profile::Accuracy, cache));
+    }
 
     #[test]
     fn profile_names_round_trip() {
