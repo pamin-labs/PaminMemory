@@ -120,9 +120,11 @@ fn topic_of(dia_id: &str) -> String {
 /// The dialogue ids an upstream evidence string names, canonicalised.
 ///
 /// Upstream sometimes packs several ids into one string (`D8:6; D9:17`,
-/// `D9:1 D4:4 D4:6`) or zero-pads a turn (`D30:05`). Those are split and
-/// written as `D{session}:{turn}`; a piece that is not `D<n>:<n>`, such as
-/// `D:11:26`, is returned as is and fails the existence check.
+/// `D9:1 D4:4 D4:6`), zero-pads a turn (`D30:05`), or puts a colon after the
+/// `D` (`D:11:26`, where conversation 5 has `D11:26` and another question
+/// cites it). Those are split and written as `D{session}:{turn}`; a piece
+/// that is still not `D<n>:<n>`, such as a bare `D`, is returned as is and
+/// fails the existence check.
 fn evidence_ids(evidence: &str) -> Vec<String> {
     evidence
         .split(|c: char| c == ';' || c == ',' || c.is_whitespace())
@@ -130,6 +132,7 @@ fn evidence_ids(evidence: &str) -> Vec<String> {
         .map(|piece| {
             piece
                 .strip_prefix('D')
+                .map(|rest| rest.strip_prefix(':').unwrap_or(rest))
                 .and_then(|rest| rest.split_once(':'))
                 .and_then(|(session, turn)| {
                     Some(format!(
@@ -462,4 +465,15 @@ async fn locomo_evidence_with_and_without_links() {
             statistics::compare(&by_conversation[0][category], &by_conversation[1][category])
         );
     }
+}
+
+/// Every malformed id the pinned file holds that names a real turn is
+/// recovered, and one that names none is left to fail the existence check.
+#[test]
+fn evidence_ids_recover_upstreams_malformed_ids() {
+    assert_eq!(evidence_ids("D8:6; D9:17"), ["D8:6", "D9:17"]);
+    assert_eq!(evidence_ids("D9:1 D4:4 D4:6"), ["D9:1", "D4:4", "D4:6"]);
+    assert_eq!(evidence_ids("D30:05"), ["D30:5"]);
+    assert_eq!(evidence_ids("D:11:26"), ["D11:26"]);
+    assert_eq!(evidence_ids("D"), ["D"]);
 }
