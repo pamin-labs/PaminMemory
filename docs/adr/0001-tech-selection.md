@@ -2848,7 +2848,10 @@ and hardware acceptance work remains in progress.
   fastest remaining viable accelerator, mixed or optimized-CPU plan, and retry
   the repaired plan after revalidation. Execution failures, invalid/non-finite
   tensors and resource exhaustion still require a viable fallback; index
-  encoding changes retain their migration/reindex contract.
+  encoding changes retain their migration/reindex contract. A provider that
+  cannot register (its library or a dependency is missing) is not a
+  candidate and is re-probed every five minutes without reloading a model,
+  while one that registers but fails later is retried by a full reload.
 - Every CPU compute path must consider SIMD, including preprocessing,
   postprocessing, vector/numeric operations and scoring. Reuse existing
   optimized kernels; preserve scalar execution when hardware/operations or
