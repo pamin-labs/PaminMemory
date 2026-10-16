@@ -325,10 +325,14 @@ const EVAL_NOT_IDENTITY: [(&str, &str); 6] = [
 
 /// Environment reads in the evaluation tests whose name is not a literal at
 /// the read, with where the names come from.
-const EVAL_INDIRECT: [(&str, &str); 7] = [
+const EVAL_INDIRECT: [(&str, &str); 8] = [
     (
         "pamin-engine/tests/harness/mod.rs: std::env::var(var)",
         "dataset_dir's variable, a literal at every dataset_dir call",
+    ),
+    (
+        "pamin-engine/tests/locomo.rs: std::env::var_os(name)",
+        "PAMIN_RERANK_DEPTH, PAMIN_RERANK_MAX_TOKENS and PAMIN_SEARCH_EFFORT, asserted unset",
     ),
     (
         "pamin-index/tests/prepared.rs: std::env::var(ARM)",

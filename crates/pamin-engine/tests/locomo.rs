@@ -88,6 +88,15 @@ const DEPTHS: Depths = Depths {
     graph: 2,
 };
 
+/// Runtime overrides the product reads on every search, outside `Depths`:
+/// the rerank shortlist, its token cap, and the vector search's width. A run
+/// with one set is a sweep, not the search `pamin search` ships.
+const TUNING: [&str; 3] = [
+    "PAMIN_RERANK_DEPTH",
+    "PAMIN_RERANK_MAX_TOKENS",
+    "PAMIN_SEARCH_EFFORT",
+];
+
 /// LOCOMO's adversarial category, whose evidence is the trap.
 const ADVERSARIAL: usize = 5;
 
@@ -415,6 +424,12 @@ async fn locomo_evidence_with_and_without_links() {
         (shipped.channel, shipped.graph),
         "DEPTHS must be what `pamin search` ships"
     );
+    for name in TUNING {
+        assert!(
+            std::env::var_os(name).is_none(),
+            "{name} is set, so this would not be the shipped search; unset it"
+        );
+    }
     let conversations = load();
     let (named, profile) = harness::profile();
     let home = std::env::var("PAMIN_EVAL_HOME").ok();
