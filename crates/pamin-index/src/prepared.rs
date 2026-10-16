@@ -217,8 +217,10 @@ pub(crate) fn load_path(download: &impl Download, cache_dir: &Path) -> Result<Pa
     let root = cache_dir.join("prepared");
     if !wanted() {
         let fetched = download.fetch()?;
-        if let Some((recorded, _)) = record(download, &root) {
-            recorded.restore(&fetched);
+        if let Some(recorded) = record(download, &root) {
+            recorded
+                .source
+                .restore(&fetched, recorded.digest.as_deref());
         }
         return Ok(fetched);
     }
@@ -241,10 +243,12 @@ pub(crate) fn load_path(download: &impl Download, cache_dir: &Path) -> Result<Pa
                 )),
                 None => error,
             })?;
-            // Of any revision: a hub blob is named by its content, so a
-            // fetch that is the same file as the record's keys as it did.
-            if let Some((recorded, _)) = record(download, &root) {
-                recorded.restore(&fetched);
+            // Of any revision: a fetch whose bytes are the record's keys as
+            // the removed file did.
+            if let Some(recorded) = record(download, &root) {
+                recorded
+                    .source
+                    .restore(&fetched, recorded.digest.as_deref());
             }
             fetched
         }
@@ -403,23 +407,41 @@ fn found(source: &Source, root: &Path) -> Option<PathBuf> {
 /// writing it again. Otherwise a new copy is written, and its record
 /// replaces this one, which removes the old copy (see [`release`]).
 fn recorded(download: &impl Download, root: &Path) -> Option<Source> {
-    let (source, revision) = record(download, root)?;
-    (revision.as_deref() == Some(download.revision().as_str())).then_some(source)
+    let record = record(download, root)?;
+    (record.revision.as_deref() == Some(download.revision().as_str())).then_some(record.source)
 }
 
-/// The record [`release`] wrote for `download`, of whichever revision, and
-/// the revision it names, if it names one.
-fn record(download: &impl Download, root: &Path) -> Option<(Source, Option<String>)> {
+/// What [`release`] recorded of a removed download.
+struct Record {
+    source: Source,
+    /// The revision it was read at, if the record names one.
+    revision: Option<String>,
+    /// The SHA-256 of its bytes, if the record names one.
+    digest: Option<String>,
+}
+
+/// The record [`release`] wrote for `download`, of whichever revision.
+fn record(download: &impl Download, root: &Path) -> Option<Record> {
     let record = std::fs::read_to_string(root.join(record_name(download))).ok()?;
-    let revision = record
-        .lines()
-        .find_map(|line| line.strip_prefix(REVISION))
-        .map(str::to_string);
-    Some((Source::parse(&record)?, revision))
+    let line = |prefix: &str| {
+        record
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix))
+            .map(str::to_string)
+    };
+    Some(Record {
+        source: Source::parse(&record)?,
+        revision: line(REVISION),
+        digest: line(DIGEST),
+    })
 }
 
 /// The record line naming the revision a copy was written from.
 const REVISION: &str = "revision ";
+
+/// The record line naming the SHA-256 of the download a copy was written
+/// from.
+const DIGEST: &str = "sha256 ";
 
 /// The record's file name: the label, readable, with nothing a path would
 /// split on.
@@ -931,7 +953,7 @@ impl Source {
     /// The first three metadata lines and cache key stay compatible with old records.
     fn record_with_digest(&self, source: &Path) -> Result<String> {
         Ok(format!(
-            "{}sha256 {}\n",
+            "{}{DIGEST}{}\n",
             self.record(),
             source_digest(source)?
         ))
@@ -948,18 +970,26 @@ impl Source {
     }
 
     /// Gives a fresh download of this source this source's modification time,
-    /// so it keys exactly as the removed file did.
+    /// so it keys exactly as the removed file did -- only when its bytes are
+    /// the ones the record's `digest` names.
     ///
-    /// A hub blob is named by its content, so the same name and length is the
-    /// same file, and the time is the only thing the download changed. Left
-    /// changed, every copy of the model would stop fitting -- including those
-    /// of another runtime or CPU sharing the directory, which would then fetch
-    /// and write again in turn, each undoing the other. A different file --
-    /// the repository moved on -- is left as it is and keys as new.
-    fn restore(&self, fetched: &Path) {
+    /// Left changed, every copy of the model would stop fitting -- including
+    /// those of another runtime or CPU sharing the directory, which would
+    /// then fetch and write again in turn, each undoing the other. The name
+    /// and length alone do not say it is the same file: a hub blob is named
+    /// by its content, but where symlinks are unavailable the hub client
+    /// moves the blob into the snapshot under the file's own name, so a
+    /// moved ref's weights of the same length look like the old ones. Their
+    /// old time would key them as the old copy. A different file, or a
+    /// record with no digest to check against, is left as it is and keys as
+    /// new. That costs one read of the download per fetch.
+    fn restore(&self, fetched: &Path, digest: Option<&str>) {
         let restored = (|| -> Result<bool> {
             let now = Self::of(fetched)?;
             if now.name != self.name || now.length != self.length || now.modified == self.modified {
+                return Ok(false);
+            }
+            if digest != Some(source_digest(fetched)?.as_str()) {
                 return Ok(false);
             }
             let at = std::time::UNIX_EPOCH
@@ -1247,6 +1277,42 @@ mod tests {
         release(&hub, &cache);
         assert!(!new.exists(), "the replaced, unheld copy is still on disk");
         assert!(newest.exists() && copy.exists());
+    }
+
+    /// Where symlinks are unavailable, the hub client moves a blob into the
+    /// snapshot under the file's own name, so a moved ref's weights can have
+    /// the old file's name and length. They are not given the old file's
+    /// time, which would key them as its copy, unless their bytes are the
+    /// ones the record names.
+    #[test]
+    fn same_named_same_length_weights_are_not_keyed_as_the_old_copy() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let model = tiny_model();
+        let hub = Hub::new(dir.path(), &model);
+        let cache = dir.path().join("models");
+        let copy = load_path(&hub, &cache).expect("the first load");
+        load(&copy);
+        release(&hub, &cache);
+
+        // Another weight, the same length.
+        let raw: Vec<u8> = (0..32 * 32)
+            .flat_map(|at| (at as f32 / 1024.0).to_le_bytes())
+            .collect();
+        let weights = model
+            .windows(raw.len())
+            .position(|window| window == raw.as_slice())
+            .expect("the weight's bytes");
+        let mut other = model.clone();
+        other[weights + 4] ^= 0x01;
+        assert_eq!(other.len(), model.len());
+        std::fs::write(&hub.origin, &other).expect("the new revision's weights");
+        let blob = hub.blob.borrow().file_name().expect("a name").to_owned();
+        hub.moved("someone/model@decaf", &blob.to_string_lossy());
+
+        let new = load_path(&hub, &cache).expect("a load of the new revision");
+        assert_eq!(hub.fetches.get(), 2);
+        assert_ne!(new, copy, "the new weights were keyed as the old copy");
+        load(&new);
     }
 
     /// A record written before records named a revision cannot say which
