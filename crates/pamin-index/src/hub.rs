@@ -9,10 +9,19 @@ use std::path::{Path, PathBuf};
 use crate::error::{IndexError, Result};
 
 /// One model repository on the hub, cached under a workspace's model directory.
+///
+/// Pinned to one commit for its whole life: the one the requested revision's
+/// ref names when it is opened, or, before anything is cached, the one the
+/// first download resolves it to. Every file is then read and fetched at that
+/// commit, so a load whose tokenizer is fetched after its weights cannot
+/// take the two from different commits when `refs/main` moves in between,
+/// and [`revision`](Self::revision) names the commit everything came from.
 pub(crate) struct Repository {
-    repo: hf_hub::api::sync::ApiRepo,
+    api: hf_hub::api::sync::Api,
     name: String,
     revision: String,
+    /// The commit every file is read at, once known.
+    pinned: std::sync::OnceLock<String>,
     cache_dir: PathBuf,
 }
 
@@ -37,20 +46,53 @@ impl Repository {
         if let Ok(endpoint) = std::env::var("HF_ENDPOINT") {
             builder = builder.with_endpoint(endpoint);
         }
-        let repo = builder
+        let api = builder
             .build()
-            .map_err(|error| IndexError::Engine(format!("reaching the model hub: {error}")))?
-            .repo(hf_hub::Repo::with_revision(
-                name.to_string(),
-                hf_hub::RepoType::Model,
-                revision.to_string(),
-            ));
-        Ok(Self {
-            repo,
+            .map_err(|error| IndexError::Engine(format!("reaching the model hub: {error}")))?;
+        let repository = Self {
+            api,
             name: name.to_string(),
             revision: revision.to_string(),
+            pinned: std::sync::OnceLock::new(),
             cache_dir,
-        })
+        };
+        repository.pin();
+        Ok(repository)
+    }
+
+    /// This repository's directory in the cache.
+    fn root(&self) -> PathBuf {
+        self.cache_dir
+            .join(format!("models--{}", self.name.replace('/', "--")))
+    }
+
+    /// Pins the commit the requested revision's ref names now, if it names
+    /// one and nothing is pinned yet.
+    fn pin(&self) {
+        if self.pinned.get().is_some() {
+            return;
+        }
+        let resolved = std::fs::read_to_string(self.root().join("refs").join(&self.revision));
+        if let Ok(commit) = resolved {
+            let _ = self.pinned.set(commit.trim().to_string());
+        }
+    }
+
+    /// The commit files are read at: the pinned one, or the requested
+    /// revision before any is.
+    fn at(&self) -> &str {
+        self.pin();
+        self.pinned.get().map_or(&self.revision, String::as_str)
+    }
+
+    /// Where `file` is on disk at [`at`](Self::at), without asking the hub.
+    fn cached(&self, file: &str) -> Option<PathBuf> {
+        self.pin();
+        match self.pinned.get() {
+            Some(commit) => Some(self.root().join("snapshots").join(commit).join(file))
+                .filter(|entry| entry.exists()),
+            None => cached_at(&self.cache_dir, &self.name, &self.revision, file),
+        }
     }
 
     /// Process-local validation keys track the cached snapshot, not just a
@@ -65,18 +107,12 @@ impl Repository {
         )
     }
 
-    /// `name@commit`: the requested revision resolved through the cache's
-    /// ref -- the commit `refs/main` points to -- or the revision itself
-    /// when no ref names it, as for a pinned commit or before a download.
+    /// `name@commit`: the commit this repository is pinned to -- what the
+    /// requested revision's ref, `refs/main`, named when it was opened or
+    /// when the first download resolved it -- or the requested revision
+    /// itself before anything is cached.
     pub(crate) fn revision(&self) -> String {
-        let resolved = std::fs::read_to_string(
-            self.cache_dir
-                .join(format!("models--{}", self.name.replace('/', "--")))
-                .join("refs")
-                .join(&self.revision),
-        )
-        .unwrap_or_else(|_| self.revision.clone());
-        format!("{}@{}", self.name, resolved.trim())
+        format!("{}@{}", self.name, self.at())
     }
 
     /// The local path of one of the repository's files, downloading it first
@@ -86,13 +122,35 @@ impl Repository {
             Ok(lock) => lock,
             // Read-only caches remain usable. No download is started without
             // the transaction, and cleanup also refuses if it cannot lock.
-            Err(error) => {
-                return cached_at(&self.cache_dir, &self.name, &self.revision, file).ok_or(error);
-            }
+            Err(error) => return self.cached(file).ok_or(error),
         };
-        self.repo.get(file).map_err(|error| {
-            IndexError::Engine(format!("fetching {file} from {}: {error}", self.name))
-        })
+        if let Some(entry) = self.cached(file) {
+            return Ok(entry);
+        }
+        let commit = self.at().to_string();
+        // A fetch at a commit leaves a ref named by that commit, which
+        // [`File::remove`] would take for a pinned revision sharing the
+        // snapshot; one this fetch made for the requested branch's commit
+        // goes again.
+        let own = self.root().join("refs").join(&commit);
+        let made = commit != self.revision && !own.exists();
+        let fetched = self
+            .api
+            .repo(hf_hub::Repo::with_revision(
+                self.name.clone(),
+                hf_hub::RepoType::Model,
+                commit.clone(),
+            ))
+            .get(file)
+            .map_err(|error| {
+                IndexError::Engine(format!("fetching {file} from {}: {error}", self.name))
+            });
+        if made {
+            let _ = std::fs::remove_file(&own);
+        }
+        let fetched = fetched?;
+        self.pin();
+        Ok(fetched)
     }
 
     /// hf-hub releases its blob lock before linking the snapshot. In our
@@ -148,12 +206,7 @@ impl crate::prepared::Download for File<'_> {
     }
 
     fn on_disk(&self) -> Option<PathBuf> {
-        cached_at(
-            self.cache_dir,
-            &self.repository.name,
-            &self.repository.revision,
-            self.file,
-        )
+        self.repository.cached(self.file)
     }
 
     fn fetch(&self) -> Result<PathBuf> {
@@ -314,21 +367,29 @@ mod tests {
         (entry, blob)
     }
 
-    /// A revision is what the ref resolved to, so a moved `refs/main` is a
-    /// different revision under the same name.
+    /// A revision is the commit the ref resolves to, pinned once it does: a
+    /// ref that moves afterwards changes neither the revision nor which
+    /// snapshot the repository's files are read from.
     #[test]
-    fn the_revision_is_the_commit_the_ref_resolves_to() {
+    fn the_revision_is_the_commit_the_ref_resolved_to_and_stays_pinned() {
         let dir = tempfile::tempdir().expect("temp dir");
         let repository = Repository::open(dir.path(), NAME).expect("open");
         assert_eq!(repository.revision(), "someone/model@main");
-        downloaded(dir.path());
+        let (entry, _) = downloaded(dir.path());
         assert_eq!(repository.revision(), "someone/model@c0ffee");
         std::fs::write(
             dir.path().join("models--someone--model/refs/main"),
             "decaf\n",
         )
         .expect("move the ref");
-        assert_eq!(repository.revision(), "someone/model@decaf");
+        assert_eq!(repository.revision(), "someone/model@c0ffee");
+        assert_eq!(repository.get(FILE).expect("the pinned file"), entry);
+        assert_eq!(repository.file(dir.path(), FILE).on_disk(), Some(entry));
+
+        // Opened after the move, a repository pins the new commit.
+        let reopened = Repository::open(dir.path(), NAME).expect("open");
+        assert_eq!(reopened.revision(), "someone/model@decaf");
+        assert!(reopened.file(dir.path(), FILE).on_disk().is_none());
     }
 
     /// Removing takes the entry and the blob both: a blob left behind is the
