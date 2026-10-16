@@ -8,15 +8,22 @@
 //! measures, and all it measures -- an answer's correctness is the Python
 //! comparison under `benchmarks/`, which needs a model to read and to judge.
 //!
-//! **Two projects per conversation, paired.** Each conversation is written
-//! twice: `flat`, every turn an independent memory, which is how the flat
-//! benchmark arm ingests it; and `linked`, the same memories with consecutive
-//! turns of a session joined by an explicit `related_to` edge, which is what
-//! the ledger arm does with `pamin link`. The topic names are dialogue ids, so
-//! mention derivation finds nothing in either and the only edges are those
-//! links. Every question is asked of both, so each row is a per-question
-//! comparison of the same search with and without the graph having anything
-//! to walk -- the graph channel's worth on this corpus, not a guess at it.
+//! **One project per conversation, searched two ways.** Each conversation is
+//! written once, every turn a memory, with consecutive turns of a session
+//! joined by an explicit `related_to` edge, which is what the ledger arm does
+//! with `pamin link`. The topic names are dialogue ids, so mention derivation
+//! finds nothing and the only edges are those links. Every question is asked
+//! twice of that one project: with the shipped fusion, and with the graph
+//! channel taken out, which is what a project without the links -- the flat
+//! benchmark arm -- can find. Each row is a per-question comparison of the
+//! same search with and without the graph -- the graph channel's worth on
+//! this corpus, not a guess at it.
+//!
+//! One project rather than a flat one beside a linked one, because two
+//! projects built apart are not the same corpus twice: each gives its topics
+//! fresh ids, fusion breaks ties by topic id, and so two independently built
+//! projects can order a tie differently with no graph involved. Both arms
+//! here read the same index and the same ids.
 //!
 //! **Scored by category.** LOCOMO's categories are reported separately and
 //! never summed. Adversarial questions (category 5) are left out: their
@@ -57,7 +64,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::process::Command;
 
-use pamin_core::EdgeKind;
+use pamin_core::{Channel, EdgeKind, Fusion};
 use pamin_engine::{Depths, Engine};
 use pamin_index::{Access, Rerank, VectorIndex};
 use pamin_store::Workspace;
@@ -370,33 +377,30 @@ async fn locomo_evidence_with_and_without_links() {
         (None, None) => unreachable!("one of the two is always set"),
     };
 
-    // [flat, linked], by category; each question in the same order on both.
+    // [without the graph, with it], by category; each question in the same
+    // order on both.
     let mut scores: [BTreeMap<String, Scores>; 2] = Default::default();
-    // [flat, linked], by category: each conversation's mean nDCG, the unit the
-    // paired test is run over.
+    // [without the graph, with it], by category: each conversation's mean
+    // nDCG, the unit the paired test is run over.
     let mut by_conversation: [BTreeMap<String, Vec<f64>>; 2] = Default::default();
     let mut questions = 0usize;
     let mut linked_edges = 0usize;
     for conversation in &conversations {
         let digest = corpus_digest(conversation);
-        let mut engines = Vec::new();
-        for side in ["flat", "linked"] {
-            let engine = Engine::open(
-                &workspace,
-                &format!(
-                    "locomo-{named}-{}-{side}-{digest}",
-                    conversation.id.to_lowercase()
-                ),
-                profile,
-                VectorIndex::default(),
-                Access::ReadWrite,
-            )
-            .await
-            .expect("open the engine");
-            write(&engine, conversation).await;
-            engines.push(engine);
-        }
-        linked_edges += link(&engines[1], conversation).await;
+        let engine = Engine::open(
+            &workspace,
+            &format!(
+                "locomo-{named}-{}-linked-{digest}",
+                conversation.id.to_lowercase()
+            ),
+            profile,
+            VectorIndex::default(),
+            Access::ReadWrite,
+        )
+        .await
+        .expect("open the engine");
+        write(&engine, conversation).await;
+        linked_edges += link(&engine, conversation).await;
 
         let before: [BTreeMap<String, usize>; 2] = std::array::from_fn(|side| {
             scores[side]
@@ -406,9 +410,19 @@ async fn locomo_evidence_with_and_without_links() {
         });
         for question in &conversation.questions {
             questions += 1;
-            for (side, engine) in engines.iter().enumerate() {
+            let fusions = [
+                Fusion::default().without(Channel::Graph),
+                Fusion::default(),
+            ];
+            for (side, fusion) in fusions.into_iter().enumerate() {
                 let hits = engine
-                    .search_reranked(&question.text, RECALL_AT as u32, DEPTHS, Rerank::default())
+                    .search_reranked_with(
+                        &question.text,
+                        RECALL_AT as u32,
+                        DEPTHS,
+                        Rerank::default(),
+                        fusion,
+                    )
                     .await
                     .expect("search");
                 let ranked: Vec<String> = hits.into_iter().map(|hit| hit.topic).collect();
@@ -440,10 +454,7 @@ async fn locomo_evidence_with_and_without_links() {
         );
     }
     assert!(questions > 0, "no question could be graded");
-    assert!(
-        linked_edges > 0,
-        "the linked projects have no edges to walk"
-    );
+    assert!(linked_edges > 0, "the projects have no edges to walk");
 
     println!(
         "\n  LOCOMO evidence retrieval, {named}, shipped search, {} conversations, \
@@ -451,17 +462,17 @@ async fn locomo_evidence_with_and_without_links() {
         conversations.len()
     );
     println!(
-        "  category        queries   flat nDCG@{NDCG_AT}  recall@{RECALL_AT}   linked nDCG@{NDCG_AT}  recall@{RECALL_AT}   paired nDCG@{NDCG_AT} by conversation"
+        "  category        queries   no graph nDCG@{NDCG_AT}  recall@{RECALL_AT}   graph nDCG@{NDCG_AT}  recall@{RECALL_AT}   paired nDCG@{NDCG_AT} by conversation"
     );
-    for (category, flat) in &scores[0] {
-        let linked = &scores[1][category];
+    for (category, without) in &scores[0] {
+        let with = &scores[1][category];
         println!(
-            "  {category:<14}  {:>7}   {:>14.4}  {:>9.4}   {:>16.4}  {:>9.4}   {}",
-            flat.queries,
-            flat.mean_ndcg(),
-            flat.mean_recall(),
-            linked.mean_ndcg(),
-            linked.mean_recall(),
+            "  {category:<14}  {:>7}   {:>18.4}  {:>9.4}   {:>15.4}  {:>9.4}   {}",
+            without.queries,
+            without.mean_ndcg(),
+            without.mean_recall(),
+            with.mean_ndcg(),
+            with.mean_recall(),
             statistics::compare(&by_conversation[0][category], &by_conversation[1][category])
         );
     }
