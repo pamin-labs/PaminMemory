@@ -192,8 +192,13 @@ search finds something new.
   phrasing brings back mostly the same topics (say, four of the five),
   the ranking is not the problem and a third phrasing will land there too.
   Switch to a path that does not rank:
-  - `grep` for an exact string you expect the answer to contain;
-  - `neighbors` from the best topic you found.
+  - `grep` for an exact string you expect the answer to contain. It searches
+    every version ever written, superseded ones included, so `read` the topic
+    named in a hit's `source` and answer from it only if the current version
+    still says so;
+  - `neighbors --depth 1` from the best topic you found, with `--kind` to
+    narrow it. The default depth is two and nothing caps how many it returns,
+    which on a well-connected topic can be most of the project.
 
   `topics` is not one of them: it merges name matches with the same ranked
   search, unreranked, so only its name matches are new evidence. Use it to see
