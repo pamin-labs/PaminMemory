@@ -596,15 +596,24 @@ pub struct PlanUse {
     pub revision: String,
 }
 
-/// The plans `model` has run on, oldest first; the last is the one it runs
-/// on now. A model loaded without a plan is reported on its device.
+/// The plans `model` has run on, each once, in the order first seen except
+/// that the last is the one it runs on now. A model loaded without a plan is
+/// reported on its device.
 pub(crate) fn plans_of(model: &impl RuntimeModel, device: Device) -> Vec<PlanUse> {
-    let plan = model.runtime_plan();
-    let mut history = plan.history.clone();
-    let now = current_use(model, device);
-    if history.last() != Some(&now) {
-        history.push(now);
-    }
+    with_last(
+        model.runtime_plan().history.clone(),
+        current_use(model, device),
+    )
+}
+
+/// `history` with `plan` moved or added to the end, so each plan appears
+/// once: a model that keeps falling back between the same two plans -- a
+/// revalidation that fails on the real input every few minutes -- keeps a
+/// history of two, which still says it fell back, rather than one that
+/// grows with every attempt.
+fn with_last(mut history: Vec<PlanUse>, plan: PlanUse) -> Vec<PlanUse> {
+    history.retain(|seen| *seen != plan);
+    history.push(plan);
     history
 }
 
@@ -823,11 +832,7 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
                     // fell back says so.
                     let history = plans_of(model, *device);
                     let now = current_use(&active, selected);
-                    let plan = active.runtime_plan_mut();
-                    plan.history = history;
-                    if plan.history.last() != Some(&now) {
-                        plan.history.push(now);
-                    }
+                    active.runtime_plan_mut().history = with_last(history, now);
                     *model = active;
                     *device = selected;
                 }
@@ -895,11 +900,7 @@ fn remember_attempt<T: RuntimeModel>(model: &mut T, device: Device, attempted: O
     let Some(attempted) = attempted else {
         return;
     };
-    let mut history = plans_of(model, device);
-    if history.last() != Some(&attempted) {
-        history.push(attempted);
-    }
-    model.runtime_plan_mut().history = history;
+    model.runtime_plan_mut().history = with_last(plans_of(model, device), attempted);
 }
 
 fn retain_fallback<T: RuntimeModel, R>(
@@ -2321,7 +2322,43 @@ mod tests {
             .into_iter()
             .map(|plan| plan.target)
             .collect();
-        assert_eq!(targets, ["cpu", "cuda", "cpu"]);
+        assert_eq!(targets, ["cuda", "cpu"]);
+    }
+
+    /// A fallback that fails its revalidation again and again keeps one
+    /// entry per plan, not one per attempt.
+    #[test]
+    fn repeated_revalidation_failures_keep_a_bounded_history() {
+        let root = tempfile::tempdir().unwrap();
+        let start = std::time::Instant::now();
+        let mut model = RuntimeFixture::new(42, "cpu");
+        let mut device = Device::Cpu;
+        for attempt in 0..20u32 {
+            let now = start + RUNTIME_RETRY * (2 * attempt + 1);
+            model.plan.retry_at = Some(now);
+            let (answer, replaced) = retry_model_at(
+                &mut model,
+                &mut device,
+                root.path(),
+                now,
+                |candidate, selected| {
+                    if selected == Device::Cpu {
+                        Ok(candidate.value)
+                    } else {
+                        Err(IndexError::Engine("actual shape fails".into()))
+                    }
+                },
+                || Ok((RuntimeFixture::new(0, "cuda"), Device::Cuda)),
+            )
+            .unwrap();
+            assert_eq!((answer, replaced, device), (42, false, Device::Cpu));
+        }
+        let targets: Vec<String> = plans_of(&model, device)
+            .into_iter()
+            .map(|plan| plan.target)
+            .collect();
+        assert_eq!(targets, ["cuda", "cpu"]);
+        assert!(model.plan.history.len() <= 2, "{:?}", model.plan.history);
     }
 
     #[test]
