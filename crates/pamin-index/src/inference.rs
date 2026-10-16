@@ -1356,32 +1356,53 @@ fn read_plan(path: &Path, key: &str, plans: &[(Device, Target)]) -> Option<Cache
     read_plan_shaped(path, key, plans, None)
 }
 
+/// Whether the plan file at `path` would be read back by a load whose key
+/// it is named by -- `<fingerprint of the key>.json`, as plans are kept --
+/// as far as a reader without that load's candidate targets can tell: it
+/// parses, names the fingerprint its name does, has not expired and holds
+/// usable references. For an evaluation to say whether a run found its plan
+/// calibrated or calibrated it, by the rules the load itself applies.
+pub fn plan_is_usable(path: &Path) -> bool {
+    let Some(named) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        return false;
+    };
+    read_disk_plan(path)
+        .is_some_and(|saved| saved.fingerprint == named && usable(&saved, unix_seconds()))
+}
+
+/// The plan record at `path`, if it is one: not oversized, and whole.
+fn read_disk_plan(path: &Path) -> Option<DiskPlan> {
+    if std::fs::metadata(path).ok()?.len() > 1_048_576 {
+        return None;
+    }
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+/// What a saved plan must hold to be used at `now`, whatever its key: an
+/// unexpired deadline no further than a day off, valid references, and
+/// references at all for an accelerator.
+fn usable(saved: &DiskPlan, now: u64) -> bool {
+    saved.expires > now
+        && saved.expires <= now + 86400
+        && valid_references(&saved.references)
+        && (saved.target == Device::Cpu.name()
+            || saved.references.vectors.is_some()
+            || saved.references.queries.is_some()
+            || saved.references.scores.is_some())
+}
+
 fn read_plan_shaped(
     path: &Path,
     key: &str,
     plans: &[(Device, Target)],
     shape: Option<ReferenceShape>,
 ) -> Option<CachedPlan> {
-    if std::fs::metadata(path).ok()?.len() > 1_048_576 {
-        return None;
-    }
-    let saved: DiskPlan = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    let saved = read_disk_plan(path)?;
     let now = unix_seconds();
     if shape.is_some_and(|shape| !shape.accepts(&saved.references)) {
         return None;
     }
-    if saved.fingerprint != fingerprint(key)
-        || saved.expires <= now
-        || saved.expires > now + 86400
-        || !valid_references(&saved.references)
-    {
-        return None;
-    }
-    if saved.target != Device::Cpu.name()
-        && saved.references.vectors.is_none()
-        && saved.references.queries.is_none()
-        && saved.references.scores.is_none()
-    {
+    if saved.fingerprint != fingerprint(key) || !usable(&saved, now) {
         return None;
     }
     let (device, target) = if saved.target == Device::Cpu.name() {
@@ -2550,6 +2571,34 @@ mod tests {
                 .saturating_duration_since(std::time::Instant::now())
                 <= RUNTIME_RETRY
         );
+    }
+
+    /// A plan file is usable as a load would read it: named by its own
+    /// fingerprint, whole and unexpired.
+    #[test]
+    fn a_plan_file_is_usable_only_as_a_load_would_read_it() {
+        let root = tempfile::tempdir().unwrap();
+        let key = "usable-plan";
+        let path = root.path().join(format!("{}.json", fingerprint(key)));
+        let mut plan = CachedPlan::fresh(Device::Cpu, vec![cpu()].into(), false);
+        plan.references.scores = Some(vec![0.0; 4]);
+        write_plan(&path, key, &plan).unwrap();
+        assert!(plan_is_usable(&path));
+        assert!(read_plan(&path, key, &[]).is_some());
+
+        let renamed = root.path().join(format!("{}.json", fingerprint("another")));
+        std::fs::copy(&path, &renamed).unwrap();
+        assert!(!plan_is_usable(&renamed), "named by another key");
+
+        let whole = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &whole[..whole.len() / 2]).unwrap();
+        assert!(!plan_is_usable(&path), "truncated");
+
+        let mut expired: DiskPlan = serde_json::from_slice(&whole).unwrap();
+        expired.expires = unix_seconds() - 1;
+        std::fs::write(&path, serde_json::to_vec(&expired).unwrap()).unwrap();
+        assert!(!plan_is_usable(&path), "expired");
+        assert!(read_plan(&path, key, &[]).is_none());
     }
 
     #[test]

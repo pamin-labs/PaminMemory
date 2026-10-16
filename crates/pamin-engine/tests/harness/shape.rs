@@ -1189,12 +1189,14 @@ impl Shape {
         };
         let downloaded = names(models, |name| name.starts_with("models--"));
         let prepared = names(&models.join("prepared"), |name| name.ends_with(".source"));
-        let plans = names(&models.join("compute-plans-v1"), |name| {
-            name.ends_with(".json")
-        });
+        // Only plans a load would accept (`pamin_index::plan_is_usable`): an
+        // expired or broken one is calibrated again, as if it were absent.
+        let directory = models.join("compute-plans-v1");
+        let plans = names(&directory, |name| name.ends_with(".json"));
         self.plans_before.get_or_insert_with(BTreeSet::new).extend(
             plans
                 .iter()
+                .filter(|name| pamin_index::plan_is_usable(&directory.join(name)))
                 .filter_map(|name| name.strip_suffix(".json"))
                 .map(str::to_string),
         );
@@ -2067,7 +2069,8 @@ mod tests {
     }
 
     /// What was on disk before the models loaded is observed, and a plan
-    /// calibrated before the run is told from one the run calibrated.
+    /// calibrated before the run is told from one the run calibrated -- an
+    /// expired plan file counting as none, as the load treats it.
     #[test]
     fn warmth_is_observed_from_the_model_directory() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -2082,14 +2085,23 @@ mod tests {
         std::fs::create_dir_all(models.join("models--someone--model")).unwrap();
         std::fs::create_dir_all(models.join("prepared")).unwrap();
         std::fs::write(models.join("prepared/someone--model.source"), "").unwrap();
-        std::fs::create_dir_all(models.join("compute-plans-v1")).unwrap();
-        std::fs::write(
-            models
-                .join("compute-plans-v1")
-                .join(format!("{}.json", "1".repeat(64))),
-            "{}",
-        )
-        .unwrap();
+        // A plan a load would use, and one it would not: expired.
+        let plans = models.join("compute-plans-v1");
+        std::fs::create_dir_all(&plans).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        for (digit, expires) in [("1", now + 3600), ("2", now - 1)] {
+            let fingerprint = digit.repeat(64);
+            let plan = serde_json::json!({
+                "fingerprint": fingerprint,
+                "target": "cpu",
+                "expires": expires,
+                "references": {"vectors": null, "queries": null, "scores": null},
+            });
+            std::fs::write(plans.join(format!("{fingerprint}.json")), plan.to_string()).unwrap();
+        }
         let mut shape = observe();
         assert_eq!(
             shape.warmth,
