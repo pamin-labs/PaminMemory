@@ -1874,14 +1874,15 @@ async fn search_reaches_across_languages() {
         "XQuAD-R needs named passages; run pamin reindex for an older workspace"
     );
     println!("  index passage: named");
-    let written = write_corpus(&engine, &corpus).await;
-    shape.indexed(
+    harness::index(
+        &mut shape,
         "primary",
         &engine,
         workspace.root(),
-        written,
         corpus.sentences.len(),
-    );
+    )
+    .await;
+    write_corpus(&engine, &corpus).await;
     let documents = engine.indexed_documents().expect("count documents") as usize;
     assert_eq!(
         documents,
@@ -3434,14 +3435,13 @@ async fn context(
     );
 }
 
-/// Writes every sentence that is not already a topic, then runs the queue;
-/// how many it wrote.
+/// Writes every sentence that is not already a topic, then runs the queue.
 ///
 /// Each sentence is its own topic, named by its key. The key is deliberately
 /// unlike anything in the text: mention derivation looks for topic names inside
 /// content, and a corpus whose sentences named each other would measure the
 /// graph channel on relationships the dataset does not assert.
-async fn write_corpus(engine: &Engine, corpus: &Corpus) -> usize {
+async fn write_corpus(engine: &Engine, corpus: &Corpus) {
     let mut written = 0;
 
     for sentence in &corpus.sentences {
@@ -3479,5 +3479,4 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) -> usize {
             started.elapsed().as_secs_f64()
         );
     }
-    written
 }

@@ -1504,6 +1504,14 @@ impl Engine {
         self.models.counted(tier)
     }
 
+    /// Loads the embedding model now, if it is not loaded yet, rather than at
+    /// the first write or search that needs it -- so a caller can ask
+    /// [`providers`](Self::providers) which plan will embed what it is about
+    /// to write. Blocking: call it off the async runtime.
+    pub fn load_embedder(&self) -> std::result::Result<(), pamin_index::IndexError> {
+        self.embedding().map(drop)
+    }
+
     /// Every execution plan each model this engine has used ran on, by role:
     /// `embedding`, `embedding secondary` for a profile with a second vector
     /// model, and `reranking <tier>` for each tier this process has loaded --

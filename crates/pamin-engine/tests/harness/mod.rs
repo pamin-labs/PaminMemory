@@ -82,6 +82,26 @@ pub async fn write_absent(
     true
 }
 
+/// Hands `engine`'s index to `shape` under `label` before the run writes
+/// any of its `total` documents (see `Shape::indexed`): loads the embedder,
+/// so the producer that will embed them is known, and counts what the index
+/// already holds.
+pub async fn index(
+    shape: &mut shape::Shape,
+    label: &str,
+    engine: &Engine,
+    workspace: &std::path::Path,
+    total: usize,
+) {
+    let loading = engine.clone();
+    tokio::task::spawn_blocking(move || loading.load_embedder())
+        .await
+        .expect("the embedder load panicked")
+        .expect("load the embedding model");
+    let found = engine.indexed_documents().expect("count documents") as usize;
+    shape.indexed(label, engine, workspace, found, total);
+}
+
 /// Runs the cascade until nothing is owed, and fails if anything still is.
 pub async fn drain(engine: &Engine) -> Drained {
     let drained = engine

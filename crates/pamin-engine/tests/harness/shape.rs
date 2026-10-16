@@ -689,8 +689,12 @@ struct Indexed {
     producer: Box<dyn Fn() -> Option<String> + Send>,
     /// Where the producer that built the index is kept.
     stamp: PathBuf,
-    written: usize,
+    /// Documents the index held before this run wrote any.
+    found: usize,
     total: usize,
+    /// The stamp this run's producer writes, as it was before the run wrote
+    /// anything; set by [`Shape::begin_index`].
+    start: Option<String>,
 }
 
 /// Everything that tells one run's record from another's, serialised
@@ -1227,37 +1231,65 @@ impl Shape {
         warmth
     }
 
-    /// The search index `engine` scores, under `label`: `written` of its
-    /// `total` documents were written by this run, the rest found there.
+    /// The search index `engine` scores, under `label`, before this run
+    /// writes to it: it holds `found` of the corpus's `total` documents.
+    /// `engine`'s embedder must be loaded (`Engine::load_embedder`), so the
+    /// producer that will embed what the run writes is known.
     ///
-    /// Checked once the providers are known, against the embedding producer
-    /// that built it -- plans, model revisions, runtime settings and build,
-    /// as a vector cache is named (`harness::vectors`), and the commit -- kept
-    /// beside the index under `workspace`. An index this run built whole is
-    /// stamped with the run's producer. One it reused or resumed must carry
-    /// the run's stamp, or the run is not canonical: its document vectors
-    /// may come from another plan than its query vectors. Deleting the
-    /// project rebuilds it.
+    /// The index is bound to the embedding producer that built it -- plans,
+    /// model revisions, runtime settings and build, as a vector cache is
+    /// named (`harness::vectors`) -- and the commit, in a stamp kept beside
+    /// it under `workspace`. An empty index is stamped now, before anything
+    /// is written, so a build that is interrupted resumes under its stamp.
+    /// One that holds documents must carry the run's stamp, or the run is
+    /// not canonical: its document vectors may come from another plan than
+    /// its query vectors. Deleting the project rebuilds it. A run that is not
+    /// canonical removes the stamp and writes none.
     pub fn indexed(
         &mut self,
         label: &str,
         engine: &pamin_engine::Engine,
         workspace: &Path,
-        written: usize,
+        found: usize,
         total: usize,
     ) {
         let stamp = workspace
             .join("index")
             .join(format!("{}.eval-producer", engine.project));
         let engine = engine.clone();
-        self.indexes.retain(|index| index.label != label);
-        self.indexes.push(Indexed {
+        self.begin_index(Indexed {
             label: label.to_string(),
             producer: Box::new(move || super::vectors::index_producer(&engine)),
             stamp,
-            written,
+            found,
             total,
+            start: None,
         });
+    }
+
+    /// What a stamp holds for `producer`: it, and the commit -- what an
+    /// index holds beyond its vectors, the mention graph and the passages,
+    /// is derived by code outside the inference build the producer names.
+    fn stamp_for(&self, producer: &str) -> String {
+        format!("{producer}\ncommit={}", self.source.commit)
+    }
+
+    /// Stamps an empty index before it is written, or removes the stamp
+    /// for a run that is not canonical, and keeps the index to check.
+    fn begin_index(&mut self, mut index: Indexed) {
+        index.start = (index.producer)().map(|producer| self.stamp_for(&producer));
+        if self.source.noncanonical.is_some() {
+            let _ = std::fs::remove_file(&index.stamp);
+        } else if index.found == 0
+            && let Some(start) = &index.start
+        {
+            let _ = std::fs::create_dir_all(index.stamp.parent().expect("a parent"));
+            let partial = index.stamp.with_extension("partial");
+            let _ = std::fs::write(&partial, start)
+                .and_then(|()| std::fs::rename(&partial, &index.stamp));
+        }
+        self.indexes.retain(|kept| kept.label != index.label);
+        self.indexes.push(index);
     }
 
     /// Checks each index against its stamp (see [`indexed`](Self::indexed)),
@@ -1273,36 +1305,40 @@ impl Shape {
         let mut lines = Vec::new();
         let mut reasons = Vec::new();
         for index in &self.indexes {
-            let state = match index.written {
-                0 => "reused",
-                written if written == index.total => "built",
+            let state = match index.found {
+                0 => "built",
+                found if found >= index.total => "reused",
                 _ => "resumed",
             };
             let Some(producer) = (index.producer)() else {
                 lines.push(format!("{}: {state}, no embedder loaded", index.label));
                 continue;
             };
-            // The commit too: what an index holds beyond its vectors -- the
-            // mention graph, the passages -- is derived by code outside
-            // the inference build the producer names.
-            let now = format!("{producer}\ncommit={}", self.source.commit);
-            if state == "built" && self.source.noncanonical.is_some() {
-                // Built by a run that cannot vouch for its source -- a dirty
-                // build names its clean HEAD -- so it is stamped by nobody,
-                // and the next canonical run builds it again.
+            let now = self.stamp_for(&producer);
+            if self.source.noncanonical.is_some() {
+                // A run that cannot vouch for its source -- a dirty build
+                // names its clean HEAD -- vouches for no index either.
                 let _ = std::fs::remove_file(&index.stamp);
                 lines.push(format!(
-                    "{}: built by {}, not stamped: the run is not canonical",
+                    "{}: {state} by {}, not stamped: the run is not canonical",
                     index.label,
                     short(&now)
                 ));
                 continue;
             }
-            if state == "built" {
-                let _ = std::fs::create_dir_all(index.stamp.parent().expect("a parent"));
-                let partial = index.stamp.with_extension("partial");
-                let _ = std::fs::write(&partial, &now)
-                    .and_then(|()| std::fs::rename(&partial, &index.stamp));
+            if index.start.as_deref() != Some(now.as_str()) {
+                // What it wrote was embedded by more than one producer.
+                let _ = std::fs::remove_file(&index.stamp);
+                lines.push(format!(
+                    "{}: {state}, producer changed during the run to {}",
+                    index.label,
+                    short(&now)
+                ));
+                reasons.push(format!(
+                    "{} index written by more than one embedding producer",
+                    index.label
+                ));
+                continue;
             }
             let stamped = std::fs::read_to_string(&index.stamp).ok();
             if stamped.as_deref() == Some(now.as_str()) {
@@ -2030,75 +2066,97 @@ mod tests {
         assert_eq!(build(&["a", "b"]), build(&["b", "a"]));
     }
 
-    /// An index this run built is stamped with its producer; one it reused
-    /// is vouched for only by the same stamp, and otherwise keeps the run
-    /// from being canonical.
+    /// An index is stamped before it is first written, so a build that is
+    /// interrupted resumes under its stamp; an index that holds documents
+    /// is vouched for only by the run's own stamp; and a run that is not
+    /// canonical, or whose producer changed while it wrote, leaves none.
     #[test]
-    fn a_reused_index_needs_the_run_s_producer() {
+    fn an_index_is_vouched_for_only_by_its_own_stamp() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
         let dir = tempfile::tempdir().expect("temp dir");
         let stamp = dir.path().join("index").join("p.eval-producer");
-        let index = |producer: &'static str, written: usize| Indexed {
+        let index = |producer: &'static str, found: usize| Indexed {
             label: "primary".into(),
             producer: Box::new(move || Some(producer.to_string())),
             stamp: stamp.clone(),
-            written,
+            found,
             total: 4,
+            start: None,
         };
-        let check_at = |commit: &str, indexes: Vec<Indexed>| {
+        // One run: published at `commit`, canonical or not, its index begun
+        // before writing; and, unless interrupted, checked at the end.
+        let run = |commit: &str, dirty: bool, indexed: Indexed, finished: bool| {
             let mut shape = Shape::new("test", String::new(), None);
             shape.source.commit = commit.into();
-            shape.indexes = indexes;
-            shape.check_indexes()
+            shape.source.noncanonical = dirty.then(|| "dirty build".to_string());
+            shape.begin_index(indexed);
+            finished.then(|| shape.check_indexes())
         };
-        let check = |indexes: Vec<Indexed>| check_at("a", indexes);
+        let stamped = || std::fs::read_to_string(&stamp).ok();
 
-        let (unstamped, reasons) = check(vec![index("plan=cpu@a", 0)]);
-        assert_eq!(reasons.len(), 1, "{unstamped:?}");
-        assert!(unstamped[0].contains("reused by unknown"), "{unstamped:?}");
+        // Unstamped documents from before: not vouched for.
+        let (lines, reasons) = run("a", false, index("plan=cpu@a", 2), true).unwrap();
+        assert_eq!(reasons.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("resumed by unknown"), "{lines:?}");
 
-        let (built, reasons) = check(vec![index("plan=cpu@a", 4)]);
-        assert!(reasons.is_empty(), "{built:?}");
-        assert!(built[0].starts_with("primary: built by "), "{built:?}");
-        assert_eq!(
-            std::fs::read_to_string(&stamp).unwrap(),
-            "plan=cpu@a\ncommit=a"
-        );
+        // A build interrupted before it finished is stamped already, and
+        // its resumption and every reuse after it are vouched for.
+        assert!(run("a", false, index("plan=cpu@a", 0), false).is_none());
+        assert_eq!(stamped().as_deref(), Some("plan=cpu@a\ncommit=a"));
+        let (lines, reasons) = run("a", false, index("plan=cpu@a", 2), true).unwrap();
+        assert!(reasons.is_empty(), "{lines:?}");
+        assert!(lines[0].starts_with("primary: resumed by "), "{lines:?}");
+        let (lines, reasons) = run("a", false, index("plan=cpu@a", 4), true).unwrap();
+        assert!(reasons.is_empty(), "{lines:?}");
+        assert!(lines[0].starts_with("primary: reused by "), "{lines:?}");
 
-        let (reused, reasons) = check(vec![index("plan=cpu@a", 0)]);
-        assert!(reasons.is_empty(), "{reused:?}");
-        assert_eq!(reused[0].replace("reused", "built"), built[0]);
-
-        // Another plan's queries over the same index: not vouched for, and
-        // the stamp is left naming who built it.
-        let (moved, reasons) = check(vec![index("plan=cuda@b", 2)]);
+        // Another plan, or another commit, resuming it: not vouched for,
+        // and the stamp still names who built it.
+        let (_, reasons) = run("a", false, index("plan=cuda@b", 2), true).unwrap();
         assert_eq!(
             reasons,
-            ["primary index built by another embedding producer"],
-            "{moved:?}"
+            ["primary index built by another embedding producer"]
         );
-        assert_eq!(
-            std::fs::read_to_string(&stamp).unwrap(),
-            "plan=cpu@a\ncommit=a"
-        );
-
-        // Built at another commit, whose code derived the rest of it.
-        let (_, reasons) = check_at("b", vec![index("plan=cpu@a", 0)]);
+        let (_, reasons) = run("b", false, index("plan=cpu@a", 4), true).unwrap();
         assert_eq!(reasons.len(), 1);
+        assert_eq!(stamped().as_deref(), Some("plan=cpu@a\ncommit=a"));
 
-        // Rebuilt by a dirty build, which names the same clean commit: the
-        // old stamp goes and no new one is written, so a canonical run over
-        // it is not vouched for.
-        let dirty = {
-            let mut shape = Shape::new("test", String::new(), None);
-            shape.source.commit = "a".into();
-            shape.source.noncanonical = Some("dirty build".into());
-            shape.indexes = vec![index("plan=cpu@a", 4)];
-            shape.check_indexes()
+        // A producer that changed while the run wrote: stamp removed.
+        let moved = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&moved);
+        let changing = Indexed {
+            producer: Box::new(move || {
+                Some(
+                    if flag.load(Ordering::SeqCst) {
+                        "plan=cpu@a"
+                    } else {
+                        "plan=cuda@b"
+                    }
+                    .into(),
+                )
+            }),
+            ..index("", 0)
         };
-        assert!(dirty.1.is_empty(), "{dirty:?}");
-        assert!(dirty.0[0].contains("not stamped"), "{dirty:?}");
-        assert!(!stamp.exists(), "a dirty build's index was stamped");
-        let (_, reasons) = check(vec![index("plan=cpu@a", 0)]);
+        let mut shape = Shape::new("test", String::new(), None);
+        shape.source.commit = "a".into();
+        shape.begin_index(changing);
+        moved.store(true, Ordering::SeqCst);
+        let (_, reasons) = shape.check_indexes();
+        assert_eq!(
+            reasons,
+            ["primary index written by more than one embedding producer"]
+        );
+        assert_eq!(stamped(), None);
+
+        // Built by a dirty build, which names the same clean commit: no
+        // stamp, so a canonical run over it is not vouched for.
+        assert!(run("a", false, index("plan=cpu@a", 0), true).is_some());
+        let (lines, reasons) = run("a", true, index("plan=cpu@a", 0), true).unwrap();
+        assert!(reasons.is_empty(), "{lines:?}");
+        assert!(lines[0].contains("not stamped"), "{lines:?}");
+        assert_eq!(stamped(), None, "a dirty build's index was stamped");
+        let (_, reasons) = run("a", false, index("plan=cpu@a", 4), true).unwrap();
         assert_eq!(reasons.len(), 1, "a dirty build's index was vouched for");
     }
 
