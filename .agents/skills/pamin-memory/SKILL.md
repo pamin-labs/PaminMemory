@@ -189,7 +189,7 @@ search finds something new.
   topic's full current content; do not `read` it again. `read` is for its
   earlier versions and the source span a claim came from.
 - **Rephrase at most once, and never to the same place.** If the second
-  phrasing brings back mostly the same topics (say, eight of the first ten),
+  phrasing brings back mostly the same topics (say, four of the five),
   the ranking is not the problem and a third phrasing will land there too.
   Switch to a path that does not rank:
   - `grep` for an exact string you expect the answer to contain;
