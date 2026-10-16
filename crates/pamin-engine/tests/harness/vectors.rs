@@ -1,16 +1,19 @@
 //! A corpus's vectors, embedded once and kept on disk between runs.
 //!
 //! The cache is reused only by the producer that wrote it: the embedder's
-//! plans, as a record names them ([`shape::provider`]), and the build
+//! plans, as a record names them ([`shape::provider`]), the model revision
+//! each plan ran ([`pamin_index::PlanUse::revision`]), and the build
 //! ([`shape::build_digest`]), written into the file's header. It was named
 //! by the model and the corpus alone, so vectors embedded on one device or
-//! one build were scored as another's. A cache from any other producer is
-//! embedded again and written over.
+//! one build were scored as another's; and a plan's hash does not follow a
+//! moved `refs/main` on a fresh download, so without the revision the old
+//! weights' vectors were scored as the new ones'. A cache from any other
+//! producer is embedded again and written over.
 
 use std::io::Write as _;
 use std::path::Path;
 
-use pamin_index::Embedder;
+use pamin_index::{Embedder, PlanUse};
 
 use super::shape;
 
@@ -27,14 +30,18 @@ pub struct Embedded {
 
 /// Who embeds with `embedder` now: its plans and the build, one per line.
 pub fn producer(embedder: &Embedder) -> String {
-    let mut lines: Vec<String> = embedder
-        .plans()
-        .iter()
-        .map(|plan| format!("plan={}", shape::provider(plan)))
-        .collect();
-    for plan in embedder.secondary_plans().into_iter().flatten() {
-        lines.push(format!("secondary={}", shape::provider(&plan)));
-    }
+    let secondary = embedder.secondary_plans().unwrap_or_default();
+    lines(&embedder.plans(), &secondary)
+}
+
+/// [`producer`]'s lines for these primary and secondary plans: each plan
+/// with the model revision it ran, then the build.
+fn lines(plans: &[PlanUse], secondary: &[PlanUse]) -> String {
+    let line = |kind: &str, plan: &PlanUse| {
+        format!("{kind}={} model={}", shape::provider(plan), plan.revision)
+    };
+    let mut lines: Vec<String> = plans.iter().map(|plan| line("plan", plan)).collect();
+    lines.extend(secondary.iter().map(|plan| line("secondary", plan)));
     lines.push(format!("build={}", shape::build_digest()));
     lines.join("\n")
 }
@@ -183,5 +190,24 @@ mod tests {
         // The headerless format this replaced names no producer.
         std::fs::write(&path, &file[header(ours).len()..]).unwrap();
         assert!(read(&path, ours, 2, 2).is_empty());
+    }
+
+    /// The same plans over a moved `refs/main` are another producer, so
+    /// the old weights' vectors are embedded again rather than reused.
+    #[test]
+    fn a_moved_model_revision_is_another_producer() {
+        let plan = |revision: &str| PlanUse {
+            target: "cpu".into(),
+            plan: "a".repeat(64),
+            stable: true,
+            revision: revision.into(),
+        };
+        let old = lines(&[plan("someone/model@c0ffee")], &[]);
+        assert_ne!(old, lines(&[plan("someone/model@decaf")], &[]));
+        assert_ne!(
+            lines(&[plan("someone/model@c0ffee")], &[plan("other/model@1")]),
+            lines(&[plan("someone/model@c0ffee")], &[plan("other/model@2")])
+        );
+        assert!(old.contains("model=someone/model@c0ffee"), "{old}");
     }
 }
