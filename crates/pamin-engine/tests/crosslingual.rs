@@ -1657,7 +1657,7 @@ fn the_model_reaches_across_languages() {
     );
 
     let home = eval_home();
-    shape.observe_models(&home.join("models"));
+    shape.observe_models(&home.join("models"), profile, &[]);
     let embedder = harness::shape::owned(
         Embedder::load(profile, &home.join("models")).expect("load the embedding model"),
     );
@@ -1852,7 +1852,11 @@ async fn search_reaches_across_languages() {
     println!("  index embedding identity: {embedding_id}");
     let project = xquad_project_name(&named, &corpus.fingerprint(), &embedding_id);
     println!("  index project: {project}");
-    shape.observe_models(&workspace.root().join("models"));
+    shape.observe_models(
+        &workspace.root().join("models"),
+        profile,
+        &[Rerank::Fast, Rerank::Accurate],
+    );
     let engine = Engine::open(
         &workspace,
         &project,
