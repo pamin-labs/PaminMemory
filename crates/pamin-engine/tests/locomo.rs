@@ -69,8 +69,8 @@ use std::process::Command;
 use pamin_core::{Channel, EdgeKind, Fusion};
 use pamin_engine::{Depths, Engine, Models};
 use pamin_index::{Access, Profile, Rerank, VectorIndex};
-use pamin_store::{Connections, Database, Workspace};
 use pamin_store::graph::{self, EdgeClaim};
+use pamin_store::{Connections, Database, Workspace};
 use scoring::{NDCG_AT, RECALL_AT, Scores};
 use sha2::{Digest, Sha256};
 
@@ -115,15 +115,31 @@ struct Turn {
 }
 
 struct Question {
+    /// `<sample id>:qa<position in its qa list>`, as the shape records it.
+    id: String,
     text: String,
     category: String,
     evidence: HashSet<String>,
+}
+
+/// A question the dataset asks and this harness does not score.
+struct Excluded {
+    id: String,
+    category: String,
+    reason: &'static str,
 }
 
 struct Conversation {
     id: String,
     turns: Vec<Turn>,
     questions: Vec<Question>,
+    excluded: Vec<Excluded>,
+}
+
+/// What a run read, and how much of the file it is.
+struct Loaded {
+    conversations: Vec<Conversation>,
+    selection: String,
 }
 
 /// A dialogue id as a topic name: `D1:3` becomes `D1_3`, the way the Python
@@ -164,7 +180,7 @@ fn evidence_ids(evidence: &str) -> Vec<String> {
         .collect()
 }
 
-fn load() -> Vec<Conversation> {
+fn load() -> Loaded {
     let dir = harness::dataset_dir("LOCOMO_DIR", "locomo");
     std::fs::create_dir_all(&dir)
         .unwrap_or_else(|error| panic!("creating {}: {error}", dir.display()));
@@ -179,7 +195,7 @@ fn load() -> Vec<Conversation> {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(samples.len());
-    samples
+    let conversations = samples
         .iter()
         .take(wanted)
         .map(|sample| {
@@ -231,43 +247,96 @@ fn load() -> Vec<Conversation> {
             }
 
             let known: HashSet<&str> = turns.iter().map(|turn| turn.topic.as_str()).collect();
-            let questions = sample["qa"]
-                .as_array()
-                .expect("qa")
-                .iter()
-                .filter_map(|qa| {
-                    let category = qa["category"].as_u64()? as usize;
-                    if category == ADVERSARIAL {
-                        return None;
-                    }
-                    // A question none of whose evidence names a turn that
-                    // exists, even after `evidence_ids` recovers what it can,
-                    // cannot be graded and is left out.
-                    let evidence: HashSet<String> = qa["evidence"]
-                        .as_array()?
-                        .iter()
-                        .filter_map(|id| id.as_str())
-                        .flat_map(evidence_ids)
-                        .map(|id| topic_of(&id))
-                        .filter(|topic| known.contains(topic.as_str()))
-                        .collect();
-                    if evidence.is_empty() {
-                        return None;
-                    }
-                    Some(Question {
-                        text: qa["question"].as_str()?.to_string(),
-                        category: CATEGORY.get(category.checked_sub(1)?)?.to_string(),
-                        evidence,
-                    })
-                })
-                .collect();
+            let mut questions = Vec::new();
+            let mut excluded = Vec::new();
+            for (at, qa) in qa_of(sample).iter().enumerate() {
+                let question_id = format!("{id}:qa{at}");
+                let number = qa["category"].as_u64().expect("a question's category") as usize;
+                let category = CATEGORY
+                    .get(number.wrapping_sub(1))
+                    .unwrap_or_else(|| panic!("{question_id}: unknown category {number}"))
+                    .to_string();
+                let mut exclude = |reason| {
+                    excluded.push(Excluded {
+                        id: question_id.clone(),
+                        category: category.clone(),
+                        reason,
+                    });
+                };
+                if number == ADVERSARIAL {
+                    exclude("adversarial: its evidence is the trap, and abstaining is the answer");
+                    continue;
+                }
+                // A question none of whose evidence names a turn that
+                // exists, even after `evidence_ids` recovers what it can,
+                // cannot be graded.
+                let evidence: HashSet<String> = qa["evidence"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|id| id.as_str())
+                    .flat_map(evidence_ids)
+                    .map(|id| topic_of(&id))
+                    .filter(|topic| known.contains(topic.as_str()))
+                    .collect();
+                if evidence.is_empty() {
+                    exclude("no evidence id names a turn of this conversation");
+                    continue;
+                }
+                questions.push(Question {
+                    id: question_id.clone(),
+                    text: qa["question"]
+                        .as_str()
+                        .unwrap_or_else(|| panic!("{question_id}: no question"))
+                        .to_string(),
+                    category,
+                    evidence,
+                });
+            }
             Conversation {
                 id,
                 turns,
                 questions,
+                excluded,
             }
         })
-        .collect()
+        .collect();
+    Loaded {
+        conversations,
+        selection: format!(
+            "the first {} of {} conversations in file order, every question",
+            wanted.min(samples.len()),
+            samples.len()
+        ),
+    }
+}
+
+/// A conversation's questions, in file order.
+fn qa_of(sample: &serde_json::Value) -> &[serde_json::Value] {
+    sample["qa"].as_array().expect("qa")
+}
+
+/// What a run asks: every turn of every conversation, every question with
+/// its evidence, and every question left out with why. See
+/// [`harness::shape`].
+fn shape(loaded: &Loaded) -> harness::shape::Shape {
+    let mut shape = harness::shape::Shape::new("locomo", loaded.selection.clone(), None);
+    for conversation in &loaded.conversations {
+        for turn in &conversation.turns {
+            shape.document(&[&conversation.id, &turn.topic, &turn.session, &turn.record]);
+        }
+        for question in &conversation.questions {
+            let mut evidence: Vec<&str> = question.evidence.iter().map(String::as_str).collect();
+            evidence.sort_unstable();
+            let mut fields = vec![question.text.as_str()];
+            fields.extend(evidence);
+            shape.query(&[&question.category], &question.id, &fields);
+        }
+        for excluded in &conversation.excluded {
+            shape.exclude(&[&excluded.category], &excluded.id, excluded.reason);
+        }
+    }
+    shape
 }
 
 /// What a conversation's projects hold: every topic, record and session, in
@@ -430,8 +499,13 @@ async fn locomo_evidence_with_and_without_links() {
             "{name} is set, so this would not be the shipped search; unset it"
         );
     }
-    let conversations = load();
+    let loaded = load();
     let (named, profile) = harness::profile();
+    // Published before anything is indexed, so a run that dies still said
+    // what it was asked.
+    let mut shape = shape(&loaded);
+    shape.publish("locomo_evidence_with_and_without_links", &named);
+    let conversations = &loaded.conversations;
     let home = std::env::var("PAMIN_EVAL_HOME").ok();
     let scratch = home
         .is_none()
@@ -458,7 +532,9 @@ async fn locomo_evidence_with_and_without_links() {
     let mut by_conversation: [BTreeMap<String, Vec<f64>>; 2] = Default::default();
     let mut questions = 0usize;
     let mut linked_edges = 0usize;
-    for conversation in &conversations {
+    const TABLES: [&str; 2] = ["without the graph", "with the graph"];
+    harness::shape::tables(TABLES);
+    for conversation in conversations {
         let digest = corpus_digest(conversation);
         let engine = Engine::attached(
             database.clone(),
@@ -485,6 +561,7 @@ async fn locomo_evidence_with_and_without_links() {
             conversation.id
         );
         linked_edges += link(&engine, conversation).await;
+        shape.ran_on(harness::shape::engines(&[("primary", &engine)]));
 
         let before: [BTreeMap<String, usize>; 2] = std::array::from_fn(|side| {
             scores[side]
@@ -494,11 +571,9 @@ async fn locomo_evidence_with_and_without_links() {
         });
         for question in &conversation.questions {
             questions += 1;
-            let fusions = [
-                Fusion::default().without(Channel::Graph),
-                Fusion::default(),
-            ];
+            let fusions = [Fusion::default().without(Channel::Graph), Fusion::default()];
             for (side, fusion) in fusions.into_iter().enumerate() {
+                harness::shape::table(TABLES[side]);
                 let hits = engine
                     .search_reranked_with(
                         &question.text,
@@ -510,6 +585,7 @@ async fn locomo_evidence_with_and_without_links() {
                     .await
                     .expect("search");
                 let ranked: Vec<String> = hits.into_iter().map(|hit| hit.topic).collect();
+                harness::shape::tally(&question.category, &question.id);
                 scores[side]
                     .entry(question.category.clone())
                     .or_default()
@@ -531,10 +607,11 @@ async fn locomo_evidence_with_and_without_links() {
             }
         }
         println!(
-            "  {}: {} turns, {} questions",
+            "  {}: {} turns, {} questions, {} excluded",
             conversation.id,
             conversation.turns.len(),
-            conversation.questions.len()
+            conversation.questions.len(),
+            conversation.excluded.len()
         );
     }
     assert!(questions > 0, "no question could be graded");
