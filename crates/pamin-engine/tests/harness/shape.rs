@@ -1224,7 +1224,7 @@ impl Shape {
     ///
     /// Checked once the providers are known, against the embedding producer
     /// that built it -- plans, model revisions, runtime settings and build,
-    /// as a vector cache is named (`harness::vectors`) -- which is kept
+    /// as a vector cache is named (`harness::vectors`), and the commit -- kept
     /// beside the index under `workspace`. An index this run built whole is
     /// stamped with the run's producer. One it reused or resumed must carry
     /// the run's stamp, or the run is not canonical: its document vectors
@@ -1270,10 +1270,14 @@ impl Shape {
                 written if written == index.total => "built",
                 _ => "resumed",
             };
-            let Some(now) = (index.producer)() else {
+            let Some(producer) = (index.producer)() else {
                 lines.push(format!("{}: {state}, no embedder loaded", index.label));
                 continue;
             };
+            // The commit too: what an index holds beyond its vectors -- the
+            // mention graph, the passages -- is derived by code outside
+            // the inference build the producer names.
+            let now = format!("{producer}\ncommit={}", self.source.commit);
             if state == "built" {
                 let _ = std::fs::create_dir_all(index.stamp.parent().expect("a parent"));
                 let partial = index.stamp.with_extension("partial");
@@ -2020,11 +2024,13 @@ mod tests {
             written,
             total: 4,
         };
-        let check = |indexes: Vec<Indexed>| {
+        let check_at = |commit: &str, indexes: Vec<Indexed>| {
             let mut shape = Shape::new("test", String::new(), None);
+            shape.source.commit = commit.into();
             shape.indexes = indexes;
             shape.check_indexes()
         };
+        let check = |indexes: Vec<Indexed>| check_at("a", indexes);
 
         let (unstamped, reasons) = check(vec![index("plan=cpu@a", 0)]);
         assert_eq!(reasons.len(), 1, "{unstamped:?}");
@@ -2033,7 +2039,10 @@ mod tests {
         let (built, reasons) = check(vec![index("plan=cpu@a", 4)]);
         assert!(reasons.is_empty(), "{built:?}");
         assert!(built[0].starts_with("primary: built by "), "{built:?}");
-        assert_eq!(std::fs::read_to_string(&stamp).unwrap(), "plan=cpu@a");
+        assert_eq!(
+            std::fs::read_to_string(&stamp).unwrap(),
+            "plan=cpu@a\ncommit=a"
+        );
 
         let (reused, reasons) = check(vec![index("plan=cpu@a", 0)]);
         assert!(reasons.is_empty(), "{reused:?}");
@@ -2047,7 +2056,14 @@ mod tests {
             ["primary index built by another embedding producer"],
             "{moved:?}"
         );
-        assert_eq!(std::fs::read_to_string(&stamp).unwrap(), "plan=cpu@a");
+        assert_eq!(
+            std::fs::read_to_string(&stamp).unwrap(),
+            "plan=cpu@a\ncommit=a"
+        );
+
+        // Built at another commit, whose code derived the rest of it.
+        let (_, reasons) = check_at("b", vec![index("plan=cpu@a", 0)]);
+        assert_eq!(reasons.len(), 1);
     }
 
     /// What was on disk before the models loaded is observed, and a plan
