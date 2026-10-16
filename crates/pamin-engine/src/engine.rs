@@ -230,6 +230,26 @@ pub struct Engine {
     /// the project being evicted from the registry -- the claims lapse and the
     /// work comes round again.
     unflushed: Arc<Mutex<Vec<jobs::Job>>>,
+    /// Held by an index sync from reading the states it owes until the index
+    /// has them, so two syncs of one topic cannot cross.
+    ///
+    /// They can be running at once: re-queueing a topic clears the claim of a
+    /// sync already reading it (`jobs::enqueue`), and another drain on this
+    /// engine claims the row again. Each reads the ledger when it starts, so
+    /// the one that read the older state could write last. Skipping a
+    /// document the index already holds made that easy to reach -- the newer
+    /// sync found the old text still there, completed without waiting on the
+    /// model, and the older one then wrote over it with the row gone -- but a
+    /// sync that wrote every state was exposed too, whenever the older one
+    /// reached the index after the newer one's pass. Read and write under one
+    /// lock and the last sync to run read the ledger last.
+    ///
+    /// Not the model's lock or the index's: a sync that removes a document
+    /// needs neither the model nor its load, and the index's is held by every
+    /// search and must not wait out a forward pass. Taken before both, and
+    /// only by the cascade's index syncs, which already run one pass at a
+    /// time on the model's lock.
+    pub(crate) syncing: Arc<tokio::sync::Mutex<()>>,
     /// The longest topic name in this project, in tokens, as far as this
     /// process has seen.
     ///
@@ -798,6 +818,7 @@ impl Engine {
             segmenter: index.segmenter(),
             widest_name: Arc::default(),
             unflushed: Arc::default(),
+            syncing: Arc::default(),
             index: Arc::new(Mutex::new(index)),
             dir,
             access,
@@ -1082,6 +1103,12 @@ impl Engine {
     /// topic the index is already current on, would otherwise pay a forward
     /// pass to write the vector that is there. Every document written records
     /// the plan that embedded it, which is what the next sync compares.
+    ///
+    /// The caller holds [`Engine::syncing`] from reading `states` until this
+    /// returns. Skipping a held state is writing it at the moment of the
+    /// check rather than after a pass, so nothing else may write the same
+    /// topic in between -- and a sync of the same topic that read an older
+    /// state is exactly such a write.
     pub(crate) async fn index_states(&self, states: &[TopicState]) -> Result<()> {
         if states.is_empty() {
             return Ok(());
