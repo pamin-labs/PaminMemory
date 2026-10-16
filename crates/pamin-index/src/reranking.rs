@@ -997,7 +997,9 @@ impl Reranker {
     /// the active `PAMIN_RERANK_BATCH_TOKENS` and `PAMIN_RERANK_BATCH`, and
     /// the planner `rank` runs. For an evaluation replaying its passes; the
     /// pairs already in the score cache are still planned, as `rank` plans
-    /// them before it looks them up.
+    /// them before it looks them up. On the CPU, where the passes of a call
+    /// run side by side, they start longest first and overlap, so no order of
+    /// one after another is the one they ran in.
     pub fn plan(&self, lengths: &[usize]) -> Vec<Vec<usize>> {
         let (budget, most) = self.model.batch_limits(batch_tokens(), batch());
         plan_positions(lengths, budget, most, |length| {
@@ -1448,8 +1450,10 @@ type Scored = Result<(Vec<Vec<f32>>, u64)>;
 /// Through [`Encoder::run_each`], so on the CPU the batches of one call run
 /// side by side, one thread a pass, longest first: the plan is shortest
 /// first, and the longest pass started last would be the one the others
-/// wait for. The time is of the passes alone: the sessions they run on are
-/// loaded before it starts. Measured through `Reranker::rank` on four cores (ONNX Runtime
+/// wait for. Run one after another -- on an accelerator, or at one thread --
+/// they keep the plan's order, the order [`Reranker::plan`] reports. The time
+/// is of the passes alone: the sessions they run on are loaded before it
+/// starts. Measured through `Reranker::rank` on four cores (ONNX Runtime
 /// 1.28, Xeon with AMX), 100 calls of 30 uncached pairs, two runs each:
 /// `accurate` from a median of 2,105 and 2,163 ms a call to 1,212 and 1,269,
 /// `fast` from 491 and 496 ms to 222 and 250, every score bit-identical. The
@@ -1457,11 +1461,18 @@ type Scored = Result<(Vec<Vec<f32>>, u64)>;
 /// 115 MB for `fast`, in proportional set size.
 fn forward(model: &mut Encoder, batches: Vec<Vec<Encoding>>) -> Scored {
     let counts: Vec<usize> = batches.iter().map(Vec::len).collect();
-    model.ready(batches.len())?;
+    let longest_first = model.ready(batches.len())? > 1;
+    let batches = if longest_first {
+        batches.into_iter().rev().collect()
+    } else {
+        batches
+    };
     let start = Instant::now();
-    let mut scores = model.run_each(batches.into_iter().rev().collect(), first_column)?;
+    let mut scores = model.run_each(batches, first_column)?;
     let forward_us = start.elapsed().as_micros() as u64;
-    scores.reverse();
+    if longest_first {
+        scores.reverse();
+    }
     for (scores, count) in scores.iter().zip(counts) {
         if scores.len() != count {
             return Err(IndexError::Engine(format!(
