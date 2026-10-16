@@ -619,6 +619,13 @@ fn current_use(model: &impl RuntimeModel, device: Device) -> PlanUse {
     }
 }
 
+/// The plan `model` runs on now, or `None` for a model loaded without one --
+/// whose [`PlanUse`] names only a device, and so says nothing of the build,
+/// settings or libraries that produced its output.
+pub(crate) fn planned_use(model: &impl RuntimeModel, device: Device) -> Option<PlanUse> {
+    (!model.runtime_plan().identity.is_empty()).then(|| current_use(model, device))
+}
+
 pub(crate) trait RuntimeModel {
     fn runtime_plan(&self) -> &RuntimePlan;
     fn runtime_plan_mut(&mut self) -> &mut RuntimePlan;

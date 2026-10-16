@@ -124,18 +124,28 @@ pub(crate) fn off_the_runtime<T>(work: impl FnOnce() -> T) -> T {
 }
 
 /// Which of these documents the index does not already hold with exactly this
-/// text, and so still has to be embedded and written.
+/// text, embedded under `encoding`, and so still has to be embedded and
+/// written.
 ///
-/// Compares the text alone, while a vector may be embedded from the topic's
-/// name as well ([`pamin_index::Passage`]). That is sound because a topic's
-/// name never changes once it is created; if renaming is ever added, a rename
-/// has to invalidate this, or a renamed topic keeps the vector of its old name.
+/// `encoding` is what the model would embed them under now
+/// ([`pamin_index::Embedder::encoding`]), so a vector another execution
+/// provider or plan produced is embedded again, as it was before this check
+/// existed, rather than kept beside queries this plan embeds. With no
+/// encoding to compare, nothing is held.
+///
+/// Compares the text, while a vector may be embedded from the topic's name as
+/// well ([`pamin_index::Passage`]). That is sound because a topic's name never
+/// changes once it is created; if renaming is ever added, a rename has to
+/// invalidate this, or a renamed topic keeps the vector of its old name.
 ///
 /// An index that cannot answer -- a document missing a vector it should have,
 /// or a failed read -- is treated as holding nothing, so every state is written
 /// as it was before this check existed, which also repairs that document.
-fn unheld(index: &dyn Projection, wanted: &[(TopicId, &str)]) -> Vec<bool> {
-    match index.holds(wanted) {
+fn unheld(index: &dyn Projection, wanted: &[(TopicId, &str)], encoding: Option<&str>) -> Vec<bool> {
+    let Some(encoding) = encoding else {
+        return vec![true; wanted.len()];
+    };
+    match index.holds(wanted, encoding) {
         Ok(held) => held.into_iter().map(|held| !held).collect(),
         Err(error) => {
             tracing::warn!(%error, "could not read the index back; writing every state");
@@ -999,13 +1009,20 @@ impl Engine {
             .pop()
             .expect("one passage for one state");
         off_the_runtime(|| {
-            let embedding = self.embedding()?.encode_passage(&passage)?;
-            self.index().upsert_vectors(&[(
-                state.topic_id,
-                &state.content,
-                embedding.primary.as_slice(),
-                embedding.secondary.as_deref(),
-            )])
+            let mut embedder = self.embedding()?;
+            let embedding = embedder.encode_passage(&passage)?;
+            // Read after the pass, so it names the plan that ran it even when
+            // the pass itself moved the model to another.
+            let encoding = embedder.encoding();
+            self.index().upsert_encoded(
+                &[(
+                    state.topic_id,
+                    &state.content,
+                    embedding.primary.as_slice(),
+                    embedding.secondary.as_deref(),
+                )],
+                encoding.as_deref(),
+            )
         })?;
         Ok(())
     }
@@ -1058,32 +1075,41 @@ impl Engine {
     /// each per state, which is the other saving and the reason this is one
     /// closure rather than a loop over the single-state form.
     ///
-    /// A state whose document the index already holds with exactly this text
-    /// is skipped before anything is encoded (see [`unheld`]). A topic that
-    /// went from A to B and back to A before its coalesced sync drained, or a
-    /// sync re-run for a topic the index is already current on, would
-    /// otherwise pay a forward pass to write the vector that is there.
+    /// A state whose document the index already holds with exactly this text,
+    /// embedded under the plan the model runs on now, is skipped before
+    /// anything is encoded (see [`unheld`]). A topic that went from A to B and
+    /// back to A before its coalesced sync drained, or a sync re-run for a
+    /// topic the index is already current on, would otherwise pay a forward
+    /// pass to write the vector that is there. Every document written records
+    /// the plan that embedded it, which is what the next sync compares.
     pub(crate) async fn index_states(&self, states: &[TopicState]) -> Result<()> {
-        let wanted: Vec<(TopicId, &str)> = states
-            .iter()
-            .map(|state| (state.topic_id, state.content.as_str()))
-            .collect();
-        let unheld = off_the_runtime(|| unheld(&**self.index(), &wanted));
-        let states: Vec<TopicState> = states
-            .iter()
-            .zip(unheld)
-            .filter(|(_, unheld)| *unheld)
-            .map(|(state, _)| state.clone())
-            .collect();
         if states.is_empty() {
             return Ok(());
         }
-        let states = states.as_slice();
-
         let passages = self.passages(states).await?;
-        let contents: Vec<&str> = passages.iter().map(String::as_str).collect();
         off_the_runtime(|| {
-            let embeddings = self.embedding()?.encode_passages(&contents)?;
+            // The model before the index, as everywhere. Loaded even when
+            // every state turns out held: which plan it runs on is the
+            // question the check asks.
+            let mut embedder = self.embedding()?;
+            let wanted: Vec<(TopicId, &str)> = states
+                .iter()
+                .map(|state| (state.topic_id, state.content.as_str()))
+                .collect();
+            let unheld = unheld(&**self.index(), &wanted, embedder.encoding().as_deref());
+            let (states, contents): (Vec<&TopicState>, Vec<&str>) = states
+                .iter()
+                .zip(&passages)
+                .zip(unheld)
+                .filter(|(_, unheld)| *unheld)
+                .map(|((state, passage), _)| (state, passage.as_str()))
+                .unzip();
+            if states.is_empty() {
+                return Ok(());
+            }
+
+            let embeddings = embedder.encode_passages(&contents)?;
+            let encoding = embedder.encoding();
             let documents: Vec<VectorDocument<'_>> = states
                 .iter()
                 .zip(&embeddings)
@@ -1096,7 +1122,7 @@ impl Engine {
                     )
                 })
                 .collect();
-            self.index().upsert_vectors(&documents)
+            self.index().upsert_encoded(&documents, encoding.as_deref())
         })?;
         Ok(())
     }
@@ -2104,10 +2130,11 @@ impl Engine {
             // either way, and what the batch saves is everything around it.
             for batch in missing.chunks(REINDEX_BATCH) {
                 let texts: Vec<&str> = batch.iter().map(|(_, passage)| *passage).collect();
-                let embeddings = embedder
+                let model = embedder
                     .as_mut()
-                    .expect("the model is loaded whenever a vector is missing")
-                    .encode_passages(&texts)?;
+                    .expect("the model is loaded whenever a vector is missing");
+                let embeddings = model.encode_passages(&texts)?;
+                let encoding = model.encoding();
                 let documents: Vec<_> = batch
                     .iter()
                     .zip(&embeddings)
@@ -2120,7 +2147,7 @@ impl Engine {
                         )
                     })
                     .collect();
-                index.upsert_vectors(&documents)?;
+                index.upsert_encoded(&documents, encoding.as_deref())?;
             }
             index.flush()?;
             // A rebuild is the one point where building the vector graph is
@@ -3191,6 +3218,9 @@ mod tests {
     fn a_topic_back_where_the_index_left_it_is_not_embedded_again() {
         use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
 
+        /// One plan throughout, so the skip is the only thing that differs.
+        const PLAN: &str = "cpu:plan";
+
         for profile in [Profile::Speed, Profile::DualAccuracy] {
             let open = |dir: &std::path::Path| {
                 ProjectionIndex::open(
@@ -3250,7 +3280,7 @@ mod tests {
                     .collect();
                 let absent: Vec<TopicId> = absent.iter().map(|(topic, _)| *topic).collect();
 
-                let unheld = super::unheld(&skipping, &wanted);
+                let unheld = super::unheld(&skipping, &wanted, Some(PLAN));
                 let needed: Vec<(TopicId, &str)> = wanted
                     .iter()
                     .zip(&unheld)
@@ -3276,7 +3306,7 @@ mod tests {
                             (*topic, *text, primary.as_slice(), secondary.as_deref())
                         })
                         .collect();
-                    index.upsert_vectors(&documents).expect("write");
+                    index.upsert_encoded(&documents, Some(PLAN)).expect("write");
                     index.delete(&absent).expect("delete");
                     index.flush().expect("flush");
                 }
@@ -3308,6 +3338,54 @@ mod tests {
         }
     }
 
+    /// A vector another plan embedded is embedded again, whatever its text.
+    ///
+    /// The premise the skip rests on is that writing the state again would
+    /// write the vector that is there, and that holds only for the plan that
+    /// produced it: the CPU's int8 export and an accelerator's do not agree to
+    /// the bit. So the same text under another plan, under no plan, or stored
+    /// with nothing recorded -- written before this was, or lent by a rebuild
+    /// -- is not held. Comparing the text alone passes the first and the last.
+    #[test]
+    fn a_vector_from_another_plan_is_embedded_again() {
+        use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let index = ProjectionIndex::open(
+            dir.path(),
+            &dir.path().join("legacy"),
+            Profile::Speed,
+            VectorIndex::default(),
+            Access::ReadWrite,
+            0,
+        )
+        .expect("open index");
+        let (cpu, unrecorded) = (TopicId::new(), TopicId::new());
+        let vector = vec![0.1; Profile::Speed.dimensions() as usize];
+        index
+            .upsert_encoded(&[(cpu, "alpha", vector.as_slice(), None)], Some("cpu:one"))
+            .expect("write");
+        index
+            .upsert_vectors(&[(unrecorded, "alpha", vector.as_slice(), None)])
+            .expect("write");
+        index.flush().expect("flush");
+
+        let wanted = [(cpu, "alpha"), (unrecorded, "alpha")];
+        assert_eq!(
+            super::unheld(&index, &wanted, Some("cpu:one")),
+            [false, true]
+        );
+        assert_eq!(
+            super::unheld(&index, &wanted, Some("cuda:two")),
+            [true, true]
+        );
+        assert_eq!(
+            super::unheld(&index, &wanted, Some("cpu:two")),
+            [true, true]
+        );
+        assert_eq!(super::unheld(&index, &wanted, None), [true, true]);
+    }
+
     /// A write the index has buffered and not yet flushed is already held.
     #[test]
     fn a_buffered_write_is_already_held() {
@@ -3325,12 +3403,13 @@ mod tests {
         .expect("open index");
         let topic = TopicId::new();
         let vector = vec![0.1; Profile::Speed.dimensions() as usize];
+        let plan = Some("cpu:plan");
         index
-            .upsert_vectors(&[(topic, "alpha", vector.as_slice(), None)])
+            .upsert_encoded(&[(topic, "alpha", vector.as_slice(), None)], plan)
             .expect("write");
-        assert_eq!(super::unheld(&index, &[(topic, "alpha")]), [false]);
-        assert_eq!(super::unheld(&index, &[(topic, "Alpha")]), [true]);
+        assert_eq!(super::unheld(&index, &[(topic, "alpha")], plan), [false]);
+        assert_eq!(super::unheld(&index, &[(topic, "Alpha")], plan), [true]);
         index.delete(&[topic]).expect("delete");
-        assert_eq!(super::unheld(&index, &[(topic, "alpha")]), [true]);
+        assert_eq!(super::unheld(&index, &[(topic, "alpha")], plan), [true]);
     }
 }

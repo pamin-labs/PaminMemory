@@ -229,6 +229,30 @@ impl Embedder {
             .map(|(model, device)| crate::inference::plans_of(model, *device))
     }
 
+    /// What produces the vectors this embeds now, for an index to record
+    /// beside each one: every model's current execution plan, as its
+    /// [`crate::PlanUse`] names it -- the target and the hash of the full plan
+    /// key it was selected under.
+    ///
+    /// Two vectors of one text are interchangeable only when this is the
+    /// same for both: the CPU runs the int8 export and an accelerator another,
+    /// and their outputs are not bit-identical. `None` when a model runs on no
+    /// plan, whose identity would name a device and nothing that produced the
+    /// numbers, so nothing can be shown to match it.
+    pub fn encoding(&self) -> Option<String> {
+        let primary = crate::inference::planned_use(&self.model, self.device)?;
+        Some(match &self.secondary {
+            None => format!("{}:{}", primary.target, primary.plan),
+            Some((model, device)) => {
+                let secondary = crate::inference::planned_use(model, *device)?;
+                format!(
+                    "{}:{}+{}:{}",
+                    primary.target, primary.plan, secondary.target, secondary.plan
+                )
+            }
+        })
+    }
+
     pub fn profile(&self) -> Profile {
         self.profile
     }
