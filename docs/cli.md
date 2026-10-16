@@ -97,7 +97,14 @@ file, which the runtime maps from disk instead of copying onto the heap: the
 `accurate` reranker holds 271 MB of live memory rather than 822, the `accuracy`
 embedder 272 rather than 824, with scores and vectors bit-identical (see
 [measured.md](measured.md)). Those are a model as loaded: the sessions it runs
-side by side (above) hold memory of their own on top. Most of what was left was the tokenizer's
+side by side (above) hold memory of their own on top, and for the `accurate`
+reranker that is the larger part. Measured through `pamin search` on four
+cores over 3,230 memories, running a rerank's batches side by side took the
+search server from 2,117 MB peak resident to 4,677, and from 855 MB of
+anonymous memory at the end of the run to 1,876 (proportional set size
+1,726 MB to 2,808). The resident figure counts the shared data file once for
+each session; the anonymous figure is what the sessions hold of their own.
+Most of what was left was the tokenizer's
 vocabulary, which the embedder and every reranker share. It is now held in a
 compact layout: with both loaded, the two hold 47 MiB of anonymous memory after
 use, where the previous layout held 314 MiB in the same measurement (and
