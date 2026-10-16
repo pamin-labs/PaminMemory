@@ -201,8 +201,9 @@ search finds something new.
     which on a well-connected topic can be most of the project.
 
   `topics` is not one of them: it merges name matches with the same ranked
-  search, unreranked, so only its name matches are new evidence. Use it to see
-  what the workspace calls things.
+  search, unreranked. But it returns twenty by default against `search`'s
+  five, so a content hit you have not already seen is new evidence too, as is
+  any name match. It also shows what the workspace calls things.
 - **After two searches and a `grep` miss, stop and say what you tried.**
   Report that those probes found nothing, not that the memory does not exist:
   `grep` matches one exact literal, case-sensitive unless you pass `-i`, and
