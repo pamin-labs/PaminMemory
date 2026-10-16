@@ -721,14 +721,24 @@ fn joint_session(
     device: crate::inference::Device,
     providers: impl Into<crate::inference::Target>,
 ) -> Result<Encoder> {
+    let mut download = None;
     if device == crate::inference::Device::Cpu {
-        let copy = crate::prepared::load_path(weights, cache_dir)?;
-        let tokenizer = crate::tokenizer::load(repository, JOINT_MAX_TOKENS)?;
-        return Encoder::side_by_side(copy, crate::inference::budget()?, tokenizer)
-            .map_err(|error| error.context("loading embedding model"));
+        let path = crate::prepared::load_path(weights, cache_dir)?;
+        // Side by side only over a mapped copy, whose weights the sessions
+        // share. Over the download it falls back to, each session would copy
+        // them onto the heap, so that loads the one session it did before.
+        if crate::prepared::is_copy(&path, cache_dir) {
+            let tokenizer = crate::tokenizer::load(repository, JOINT_MAX_TOKENS)?;
+            return Encoder::side_by_side(path, crate::inference::budget()?, tokenizer)
+                .map_err(|error| error.context("loading embedding model"));
+        }
+        download = Some(path);
     }
     let encoder = Encoder::load(
-        || repository.get(JOINT_FILE),
+        || match download {
+            Some(path) => Ok(path),
+            None => repository.get(JOINT_FILE),
+        },
         repository,
         JOINT_MAX_TOKENS,
         providers,

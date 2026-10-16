@@ -269,6 +269,12 @@ pub(crate) fn load_path(download: &impl Download, cache_dir: &Path) -> Result<Pa
     }
 }
 
+/// Whether `path`, from [`load_path`], is a mapped copy rather than the
+/// download it fell back to, whose weights a session copies onto the heap.
+pub(crate) fn is_copy(path: &Path, cache_dir: &Path) -> bool {
+    path.starts_with(cache_dir.join("prepared"))
+}
+
 /// Removes `download` from disk once a copy of it has loaded, keeping a
 /// record of what it was.
 ///
@@ -1136,6 +1142,7 @@ mod tests {
         let copy = load_path(&hub, &cache).expect("the first load");
         assert_eq!(hub.fetches.get(), 1);
         assert!(copy.starts_with(&root), "loaded {copy:?}, not a copy");
+        assert!(is_copy(&copy, &cache));
         assert!(
             hub.on_disk().is_some(),
             "the download went before the copy had loaded"
@@ -1196,6 +1203,10 @@ mod tests {
         let cache = dir.path().join("models");
 
         let loaded = load_path(&hub, &cache).expect("fall back");
+        assert!(
+            !is_copy(&loaded, &cache),
+            "the download it fell back to is taken for a copy"
+        );
         assert_eq!(Some(loaded), hub.on_disk());
         release(&hub, &cache);
         assert!(
