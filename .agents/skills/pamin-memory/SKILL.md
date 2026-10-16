@@ -204,13 +204,14 @@ search finds something new.
   search, unreranked. But it returns twenty by default against `search`'s
   five, so a content hit you have not already seen is new evidence too, as is
   any name match. It also shows what the workspace calls things.
-- **After two searches and a `grep` miss, stop and say what you tried.**
-  Report that those probes found nothing, not that the memory does not exist:
-  `grep` matches one exact literal, case-sensitive unless you pass `-i`, and
-  `search` returns five results by default, so differently worded or
-  lower-ranked memories can still be there. More searching rarely changes
-  that, and an answer built from the closest near-miss is worse than an honest
-  "I searched for X and Y and found nothing".
+- **After two searches, a `grep` miss and a one-hop `neighbors` from the best
+  topic, stop and say what you tried.** Skip `neighbors` only when no hit is
+  related to the question. Report that those probes found nothing, not that
+  the memory does not exist: `grep` matches one exact literal, case-sensitive
+  unless you pass `-i`, and `search` returns five results by default, so
+  differently worded or lower-ranked memories can still be there. An answer
+  built from the closest near-miss is worse than an honest "I searched for X
+  and Y and found nothing".
 
 ## Relationships
 
