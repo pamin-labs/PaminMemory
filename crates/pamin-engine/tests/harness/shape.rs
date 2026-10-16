@@ -1280,6 +1280,18 @@ impl Shape {
             // mention graph, the passages -- is derived by code outside
             // the inference build the producer names.
             let now = format!("{producer}\ncommit={}", self.source.commit);
+            if state == "built" && self.source.noncanonical.is_some() {
+                // Built by a run that cannot vouch for its source -- a dirty
+                // build names its clean HEAD -- so it is stamped by nobody,
+                // and the next canonical run builds it again.
+                let _ = std::fs::remove_file(&index.stamp);
+                lines.push(format!(
+                    "{}: built by {}, not stamped: the run is not canonical",
+                    index.label,
+                    short(&now)
+                ));
+                continue;
+            }
             if state == "built" {
                 let _ = std::fs::create_dir_all(index.stamp.parent().expect("a parent"));
                 let partial = index.stamp.with_extension("partial");
@@ -2066,6 +2078,22 @@ mod tests {
         // Built at another commit, whose code derived the rest of it.
         let (_, reasons) = check_at("b", vec![index("plan=cpu@a", 0)]);
         assert_eq!(reasons.len(), 1);
+
+        // Rebuilt by a dirty build, which names the same clean commit: the
+        // old stamp goes and no new one is written, so a canonical run over
+        // it is not vouched for.
+        let dirty = {
+            let mut shape = Shape::new("test", String::new(), None);
+            shape.source.commit = "a".into();
+            shape.source.noncanonical = Some("dirty build".into());
+            shape.indexes = vec![index("plan=cpu@a", 4)];
+            shape.check_indexes()
+        };
+        assert!(dirty.1.is_empty(), "{dirty:?}");
+        assert!(dirty.0[0].contains("not stamped"), "{dirty:?}");
+        assert!(!stamp.exists(), "a dirty build's index was stamped");
+        let (_, reasons) = check(vec![index("plan=cpu@a", 0)]);
+        assert_eq!(reasons.len(), 1, "a dirty build's index was vouched for");
     }
 
     /// What was on disk before the models loaded is observed, and a plan
