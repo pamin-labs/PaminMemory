@@ -94,16 +94,10 @@ pub fn embed(
     batch: usize,
 ) -> Embedded {
     let producer = producer(embedder);
-    let mut vectors = read(path, &producer, width, texts.len());
+    let mut vectors = resume(path, &producer, width, texts.len());
     let reused = vectors.len() / width;
     if reused > 0 {
         println!("  reusing {reused} embedded texts");
-    } else {
-        // Nothing of this producer's to keep: start the file over.
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("the cache directory");
-        }
-        std::fs::write(path, header(&producer)).expect("write the vector cache");
     }
 
     let started = std::time::Instant::now();
@@ -142,6 +136,31 @@ pub fn embed(
         reused,
         producer,
     }
+}
+
+/// The whole vectors `producer` already wrote to the cache at `path`, with
+/// the file cut to exactly them; or a new file of this producer's when
+/// there are none to keep.
+///
+/// Cut, because an interrupted append can leave part of a vector after the
+/// last whole one: [`read`] skips it, but a resumed run appending after it
+/// would shift every later vector's floats, and the next run would read
+/// them back under a valid header.
+fn resume(path: &Path, producer: &str, width: usize, most: usize) -> Vec<f32> {
+    let vectors = read(path, producer, width, most);
+    if vectors.is_empty() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("the cache directory");
+        }
+        std::fs::write(path, header(producer)).expect("write the vector cache");
+    } else {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .and_then(|file| file.set_len((header(producer).len() + vectors.len() * 4) as u64))
+            .unwrap_or_else(|error| panic!("cutting {} to whole vectors: {error}", path.display()));
+    }
+    vectors
 }
 
 fn append(path: &Path, bytes: &[u8]) {
@@ -190,6 +209,41 @@ mod tests {
         // The headerless format this replaced names no producer.
         std::fs::write(&path, &file[header(ours).len()..]).unwrap();
         assert!(read(&path, ours, 2, 2).is_empty());
+    }
+
+    /// A resumed cache whose last append was cut off partway through a
+    /// vector reads back, after more are appended, exactly what an
+    /// uninterrupted one does.
+    #[test]
+    fn a_resume_after_a_partial_vector_appends_on_a_whole_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vectors.f32");
+        let producer = "plan=cpu@aaaaaaaaaaaaaaaa\nbuild=b";
+        let bytes = |values: &[f32]| -> Vec<u8> {
+            values
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect()
+        };
+        let mut file = header(producer);
+        file.extend(bytes(&[1.0, 0.0]));
+        file.extend(&bytes(&[0.0, 1.0])[..6]);
+        std::fs::write(&path, &file).unwrap();
+
+        assert_eq!(resume(&path, producer, 2, 3), [1.0, 0.0]);
+        append(&path, &bytes(&[0.0, 1.0, 0.6, 0.8]));
+        assert_eq!(
+            read(&path, producer, 2, 3),
+            [1.0, 0.0, 0.0, 1.0, 0.6, 0.8],
+            "the resumed vectors are shifted"
+        );
+
+        // Nothing of this producer's: the file starts over with its header.
+        assert!(resume(&path, "plan=cuda@cccccccccccccccc\nbuild=b", 2, 3).is_empty());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            header("plan=cuda@cccccccccccccccc\nbuild=b")
+        );
     }
 
     /// The same plans over a moved `refs/main` are another producer, so
