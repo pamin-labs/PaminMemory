@@ -1657,6 +1657,7 @@ fn the_model_reaches_across_languages() {
     );
 
     let home = eval_home();
+    shape.observe_models(&home.join("models"));
     let embedder = harness::shape::owned(
         Embedder::load(profile, &home.join("models")).expect("load the embedding model"),
     );
@@ -1851,6 +1852,7 @@ async fn search_reaches_across_languages() {
     println!("  index embedding identity: {embedding_id}");
     let project = xquad_project_name(&named, &corpus.fingerprint(), &embedding_id);
     println!("  index project: {project}");
+    shape.observe_models(&workspace.root().join("models"));
     let engine = Engine::open(
         &workspace,
         &project,
@@ -1868,7 +1870,14 @@ async fn search_reaches_across_languages() {
         "XQuAD-R needs named passages; run pamin reindex for an older workspace"
     );
     println!("  index passage: named");
-    write_corpus(&engine, &corpus).await;
+    let written = write_corpus(&engine, &corpus).await;
+    shape.indexed(
+        "primary",
+        &engine,
+        workspace.root(),
+        written,
+        corpus.sentences.len(),
+    );
     let documents = engine.indexed_documents().expect("count documents") as usize;
     assert_eq!(
         documents,
@@ -3421,13 +3430,14 @@ async fn context(
     );
 }
 
-/// Writes every sentence that is not already a topic, then runs the queue.
+/// Writes every sentence that is not already a topic, then runs the queue;
+/// how many it wrote.
 ///
 /// Each sentence is its own topic, named by its key. The key is deliberately
 /// unlike anything in the text: mention derivation looks for topic names inside
 /// content, and a corpus whose sentences named each other would measure the
 /// graph channel on relationships the dataset does not assert.
-async fn write_corpus(engine: &Engine, corpus: &Corpus) {
+async fn write_corpus(engine: &Engine, corpus: &Corpus) -> usize {
     let mut written = 0;
 
     for sentence in &corpus.sentences {
@@ -3465,4 +3475,5 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) {
             started.elapsed().as_secs_f64()
         );
     }
+    written
 }
