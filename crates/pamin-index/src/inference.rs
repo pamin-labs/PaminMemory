@@ -584,14 +584,16 @@ pub(crate) struct RuntimePlan {
 /// (`npu:<provider>:<id>`, or the device's name), the sha256 of the full plan
 /// key it was selected under -- model, build, settings, threads, cores,
 /// runtime, host, CPU features, provider libraries and CUDA inventory and
-/// selection -- and whether that plan is stable across processes (a
+/// selection -- whether that plan is stable across processes (a
 /// DirectML adapter ordinal or an NPU id is not, so such plans are never
-/// persisted either).
+/// persisted either), and the model it ran as `repository@commit`, the
+/// commit the cache's ref resolved to once the files were fetched.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PlanUse {
     pub target: String,
     pub plan: String,
     pub stable: bool,
+    pub revision: String,
 }
 
 /// The plans `model` has run on, oldest first; the last is the one it runs
@@ -616,12 +618,15 @@ fn current_use(model: &impl RuntimeModel, device: Device) -> PlanUse {
             plan.identity.clone()
         },
         stable: plan.identity.is_empty() || plan.stable,
+        revision: model.revision().to_string(),
     }
 }
 
 pub(crate) trait RuntimeModel {
     fn runtime_plan(&self) -> &RuntimePlan;
     fn runtime_plan_mut(&mut self) -> &mut RuntimePlan;
+    /// The model's `repository@commit`, for [`PlanUse::revision`].
+    fn revision(&self) -> &str;
 }
 
 impl<T: RuntimeModel> RuntimeModel for Box<T> {
@@ -630,6 +635,9 @@ impl<T: RuntimeModel> RuntimeModel for Box<T> {
     }
     fn runtime_plan_mut(&mut self) -> &mut RuntimePlan {
         (**self).runtime_plan_mut()
+    }
+    fn revision(&self) -> &str {
+        (**self).revision()
     }
 }
 
@@ -2026,6 +2034,9 @@ mod tests {
         }
         fn runtime_plan_mut(&mut self) -> &mut RuntimePlan {
             &mut self.plan
+        }
+        fn revision(&self) -> &str {
+            "fixture@0"
         }
     }
 
