@@ -933,7 +933,7 @@ impl Reranker {
             .map(|document| pair_key(query, document))
             .collect();
         let scores = loop {
-            if crate::inference::needs_revalidation(&self.model) {
+            if crate::inference::needs_revalidation(&mut self.model) {
                 self.scores.invalidate();
             }
             let limits = self.model.batch_limits(batch_tokens(), batch());

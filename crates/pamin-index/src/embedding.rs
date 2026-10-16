@@ -190,7 +190,7 @@ impl Embedder {
     /// flight beside it -- so `reindex` and the cascade agree, and the same
     /// corpus written twice indexes to the same thing.
     fn revalidate(&mut self) {
-        if crate::inference::needs_revalidation(&self.model) {
+        if crate::inference::needs_revalidation(&mut self.model) {
             self.remembered = Queries::default();
         }
     }

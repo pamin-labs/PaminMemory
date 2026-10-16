@@ -587,6 +587,11 @@ pub(crate) struct RuntimePlan {
     namespace: String,
     target: String,
     retry_at: Option<std::time::Instant>,
+    /// Targets whose providers did not register when this model was
+    /// selected -- a missing library, not a failure of a running device --
+    /// and when to ask again. Asking is [`register`], not a reload.
+    awaiting: Vec<String>,
+    probe_at: Option<std::time::Instant>,
     restore_target: Option<String>,
     /// The sha256 of the full plan key this model was selected under -- the
     /// key holds paths, so only its hash leaves this module.
@@ -756,12 +761,36 @@ fn runtime_retry(
 /// Expired fallbacks must reach a real model call even when the request is
 /// cached. Loading/replacement is deferred to retry_model, which publishes
 /// a replacement only after the caller's complete operation succeeds.
-pub(crate) fn needs_revalidation<T: RuntimeModel>(model: &T) -> bool {
-    needs_revalidation_at(model, std::time::Instant::now())
+pub(crate) fn needs_revalidation<T: RuntimeModel>(model: &mut T) -> bool {
+    needs_revalidation_at(model, std::time::Instant::now(), registers_now)
 }
 
-fn needs_revalidation_at<T: RuntimeModel>(model: &T, now: std::time::Instant) -> bool {
-    model.runtime_plan().retry_at.is_some_and(|at| at <= now)
+/// Whether the target `id` names is still discovered and now registers.
+fn registers_now(id: &str) -> bool {
+    accelerators()
+        .into_iter()
+        .any(|(device, target)| target_identity(device, &target) == id && register(&target).is_ok())
+}
+
+/// The one gate for both a cache invalidation and a reload. A target that
+/// could not register is asked again every [`RUNTIME_RETRY`] without loading
+/// anything; only when one registers does the full reload and calibration
+/// become due, so measured speed still chooses the plan.
+fn needs_revalidation_at<T: RuntimeModel>(
+    model: &mut T,
+    now: std::time::Instant,
+    registers: impl Fn(&str) -> bool,
+) -> bool {
+    let plan = model.runtime_plan_mut();
+    if plan.probe_at.is_some_and(|at| at <= now) {
+        plan.probe_at = Some(now + RUNTIME_RETRY);
+        let registered = plan.awaiting.iter().find(|id| registers(id));
+        tracing::debug!(plan = %plan.identity, awaiting = ?plan.awaiting, registered = ?registered, "probed unregistered compute targets");
+        if registered.is_some() {
+            plan.retry_at = earlier_deadline(plan.retry_at, Some(now));
+        }
+    }
+    plan.retry_at.is_some_and(|at| at <= now)
 }
 
 /// Retry complete owned results transactionally. An expired healthy fallback
@@ -778,6 +807,7 @@ pub(crate) fn retry_model<T: RuntimeModel, R>(
         device,
         cache_dir,
         std::time::Instant::now,
+        registers_now,
         operation,
         reload,
     )
@@ -792,7 +822,15 @@ fn retry_model_at<T: RuntimeModel, R>(
     operation: impl FnMut(&mut T, Device) -> Result<R>,
     reload: impl FnMut() -> Result<(T, Device)>,
 ) -> Result<(R, bool)> {
-    retry_model_with_clock(model, device, cache_dir, || now, operation, reload)
+    retry_model_with_clock(
+        model,
+        device,
+        cache_dir,
+        || now,
+        |_| false,
+        operation,
+        reload,
+    )
 }
 
 fn retry_model_with_clock<T: RuntimeModel, R>(
@@ -800,11 +838,12 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
     device: &mut Device,
     cache_dir: &Path,
     mut clock: impl FnMut() -> std::time::Instant,
+    registers: impl Fn(&str) -> bool,
     mut operation: impl FnMut(&mut T, Device) -> Result<R>,
     mut reload: impl FnMut() -> Result<(T, Device)>,
 ) -> Result<(R, bool)> {
     let now = clock();
-    let revalidating = needs_revalidation_at(model, now);
+    let revalidating = needs_revalidation_at(model, now, registers);
     let mut failed_devices = Vec::new();
     let mut replacement = None;
     if revalidating {
@@ -991,6 +1030,38 @@ pub(crate) fn measured<T: RuntimeModel>(
     cache_dir: &Path,
     references: &std::cell::RefCell<References>,
     shape: ReferenceShape,
+    load: impl FnMut(Device, Target, bool) -> Result<T>,
+    evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
+) -> Result<(T, Device)> {
+    measured_with(
+        accelerators(),
+        register,
+        identity,
+        cache_dir,
+        references,
+        shape,
+        load,
+        evaluate,
+    )
+}
+
+/// Registers `target`'s providers on an empty builder: the first step of
+/// [`session`], loading no model. A provider whose library or one of its
+/// dependencies is missing fails here, before any calibration. For CUDA with
+/// `libcublasLt` missing, one calibration's three failed attempts were about
+/// 0.1 ms apart in a server log; the probe itself has not been timed.
+fn register(target: &Target) -> Result<()> {
+    options(target.clone()).map(drop)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn measured_with<T: RuntimeModel>(
+    discovered: Vec<(Device, Target)>,
+    register: impl Fn(&Target) -> Result<()>,
+    identity: &str,
+    cache_dir: &Path,
+    references: &std::cell::RefCell<References>,
+    shape: ReferenceShape,
     mut load: impl FnMut(Device, Target, bool) -> Result<T>,
     evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
 ) -> Result<(T, Device)> {
@@ -1010,7 +1081,6 @@ pub(crate) fn measured<T: RuntimeModel>(
         ort::info(),
         threads()
     );
-    let discovered = accelerators();
     let target_ids: Vec<_> = discovered
         .iter()
         .map(|(device, target)| target_identity(*device, target))
@@ -1022,18 +1092,9 @@ pub(crate) fn measured<T: RuntimeModel>(
         std::time::Instant::now(),
     );
     let blocked = snapshot.blocked;
-    let load = |device, target: Target, validated| -> Result<T> {
-        let target_id = target_identity(device, &target);
-        let mut model = load(device, target, validated)?;
-        *model.runtime_plan_mut() = RuntimePlan {
-            namespace: namespace.clone(),
-            target: target_id,
-            retry_at: blocked.as_ref().map(|(at, _)| *at),
-            restore_target: blocked.as_ref().map(|(_, target)| target.clone()),
-            ..RuntimePlan::default()
-        };
-        Ok(model)
-    };
+    // A target that cannot register is no candidate, and not a transient
+    // failure that would reload every model to find out again.
+    let mut awaiting = Vec::new();
     let plans: Vec<_> = discovered
         .into_iter()
         .filter(|(device, target)| {
@@ -1041,7 +1102,29 @@ pub(crate) fn measured<T: RuntimeModel>(
                 .unavailable
                 .contains(&target_identity(*device, target))
         })
+        .filter(|(device, target)| match register(target) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(device = device.name(), stage = "registration", %error, "compute candidate unavailable");
+                awaiting.push(target_identity(*device, target));
+                false
+            }
+        })
         .collect();
+    let load = |device, target: Target, validated| -> Result<T> {
+        let target_id = target_identity(device, &target);
+        let mut model = load(device, target, validated)?;
+        *model.runtime_plan_mut() = RuntimePlan {
+            namespace: namespace.clone(),
+            target: target_id,
+            retry_at: blocked.as_ref().map(|(at, _)| *at),
+            probe_at: (!awaiting.is_empty()).then(|| std::time::Instant::now() + RUNTIME_RETRY),
+            awaiting: awaiting.clone(),
+            restore_target: blocked.as_ref().map(|(_, target)| target.clone()),
+            ..RuntimePlan::default()
+        };
+        Ok(model)
+    };
     if plans.is_empty() {
         let directory = cache_dir.join("compute-plans-v1");
         if directory.is_dir() {
@@ -2204,8 +2287,12 @@ mod tests {
         let mut model = RuntimeFixture::new(0, "cpu");
         model.plan.retry_at = Some(now + RUNTIME_RETRY);
         let mut device = Device::Cpu;
-        assert!(!needs_revalidation_at(&model, now));
-        assert!(needs_revalidation_at(&model, now + RUNTIME_RETRY));
+        assert!(!needs_revalidation_at(&mut model, now, |_| false));
+        assert!(needs_revalidation_at(
+            &mut model,
+            now + RUNTIME_RETRY,
+            |_| false
+        ));
         let mut attempts = 0;
         let (answer, replaced) = retry_model_at(
             &mut model,
@@ -2223,7 +2310,11 @@ mod tests {
         assert_eq!(attempts, 1);
         assert!(replaced);
         assert_eq!(device, Device::Npu);
-        assert!(!needs_revalidation_at(&model, now + RUNTIME_RETRY * 2));
+        assert!(!needs_revalidation_at(
+            &mut model,
+            now + RUNTIME_RETRY * 2,
+            |_| false
+        ));
     }
 
     /// A model that fell back keeps the plan it failed on in its history,
@@ -2627,6 +2718,7 @@ mod tests {
             &mut device,
             root.path(),
             || clock.get(),
+            |_| false,
             |_, device| {
                 if device == Device::Cuda {
                     clock.set(observed);
@@ -2679,6 +2771,7 @@ mod tests {
             &mut device,
             root.path(),
             || clock.get(),
+            |_| false,
             |candidate, _| {
                 if candidate.value == 42 {
                     Ok(42)
@@ -2711,6 +2804,7 @@ mod tests {
             &mut device,
             root.path(),
             || clock.get(),
+            |_| false,
             |_, _| {
                 clock.set(later);
                 Ok(42)
