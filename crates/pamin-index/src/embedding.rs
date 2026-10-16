@@ -469,7 +469,23 @@ fn primary_model(
                     profile.dimensions() as usize,
                 )
             })?;
-            let vectors = profile_vectors(profile, model, device, &fixtures)?;
+            // BGE-M3 runs one text a pass, so its fixtures go one at a time on
+            // the query's session: through `run_each` together they would load
+            // its side sessions on a model that may only ever answer queries.
+            let vectors = if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
+                let mut vectors = Vec::new();
+                for fixture in &fixtures {
+                    vectors.extend(profile_vectors(
+                        profile,
+                        model,
+                        device,
+                        std::slice::from_ref(fixture),
+                    )?);
+                }
+                vectors
+            } else {
+                profile_vectors(profile, model, device, &fixtures)?
+            };
             check_vectors(
                 vectors,
                 &mut reference.vectors,
@@ -721,14 +737,24 @@ fn joint_session(
     device: crate::inference::Device,
     providers: impl Into<crate::inference::Target>,
 ) -> Result<Encoder> {
+    let mut download = None;
     if device == crate::inference::Device::Cpu {
-        let copy = crate::prepared::load_path(weights, cache_dir)?;
-        let tokenizer = crate::tokenizer::load(repository, JOINT_MAX_TOKENS)?;
-        return Encoder::side_by_side(copy, crate::inference::budget()?, tokenizer)
-            .map_err(|error| error.context("loading embedding model"));
+        let path = crate::prepared::load_path(weights, cache_dir)?;
+        // Side by side only over a mapped copy, whose weights the sessions
+        // share. Over the download it falls back to, each session would copy
+        // them onto the heap, so that loads the one session it did before.
+        if crate::prepared::is_copy(&path, cache_dir) {
+            let tokenizer = crate::tokenizer::load(repository, JOINT_MAX_TOKENS)?;
+            return Encoder::side_by_side(path, crate::inference::budget()?, tokenizer)
+                .map_err(|error| error.context("loading embedding model"));
+        }
+        download = Some(path);
     }
     let encoder = Encoder::load(
-        || repository.get(JOINT_FILE),
+        || match download {
+            Some(path) => Ok(path),
+            None => repository.get(JOINT_FILE),
+        },
         repository,
         JOINT_MAX_TOKENS,
         providers,
@@ -1287,6 +1313,11 @@ mod tests {
         );
         let mut embedder = Embedder::load(Profile::Accuracy, &cache).expect("load the model");
         assert_eq!(embedder.device(), crate::inference::Device::Cpu);
+        assert_eq!(
+            embedder.model.side_by_side_sessions(),
+            0,
+            "loading, calibration included, loaded side sessions"
+        );
         let long = "migration rollback ".repeat(300);
         let texts = [
             "deployment rollback",

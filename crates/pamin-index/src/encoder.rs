@@ -206,7 +206,8 @@ impl Encoder {
     ///
     /// On [`session`](Self::session) one after another, unless the model was
     /// loaded [`side_by_side`](Self::side_by_side) and there is more than one
-    /// batch: then as many passes at once as the inference budget allows, each
+    /// batch and more than one thread in the inference budget: then as many
+    /// passes at once as the budget allows, each
     /// on a session of one intra-op thread taking the next batch when it
     /// finishes one. A pass hands each of the graph's nodes to its threads and
     /// waits for them, and on a short input that hand-off is most of the pass;
@@ -225,8 +226,13 @@ impl Encoder {
         batches: Vec<Vec<Encoding>>,
         read: impl Fn(SessionOutputs<'_>) -> Result<T> + Sync,
     ) -> Result<Vec<T>> {
+        let wanted = match &self.side_by_side {
+            Some(_) => crate::inference::budget()?.min(batches.len()),
+            None => 1,
+        };
         let (model, sessions) = match &mut self.side_by_side {
-            Some((model, sessions)) if batches.len() > 1 => (model, sessions),
+            // One pass at a time gains nothing on a session of its own.
+            Some((model, sessions)) if wanted > 1 => (model, sessions),
             _ => {
                 return batches
                     .into_iter()
@@ -234,7 +240,6 @@ impl Encoder {
                     .collect();
             }
         };
-        let wanted = crate::inference::budget()?.min(batches.len());
         while sessions.len() < wanted {
             sessions.push(crate::inference::cpu_session(model, 1)?);
         }
