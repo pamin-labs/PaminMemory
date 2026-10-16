@@ -807,6 +807,7 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
         }
     }
     loop {
+        let trying = replacement.is_some();
         let (active, selected) = match &mut replacement {
             Some((active, selected)) => (active, *selected),
             None => (&mut *model, *device),
@@ -833,8 +834,13 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
                 return Ok((result, replaced));
             }
             Err(error) => {
+                // A replacement that ran the input and failed is dropped
+                // below; the place keeps its plan, as it keeps one that
+                // succeeded, so a run that tried it says so.
+                let attempted = trying.then(|| current_use(&*active, selected));
                 if selected == Device::Cpu {
                     if revalidating && replacement.is_some() {
+                        remember_attempt(model, *device, attempted);
                         return retain_fallback(model, *device, &mut clock, &mut operation);
                     }
                     return Err(error);
@@ -842,6 +848,7 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
                 let target = active.runtime_plan().target.clone();
                 if failed_devices.contains(&target) {
                     if revalidating {
+                        remember_attempt(model, *device, attempted);
                         return retain_fallback(model, *device, &mut clock, &mut operation);
                     }
                     return Err(error);
@@ -854,6 +861,7 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
                     model.runtime_plan_mut().restore_target = Some(failed_devices[0].clone());
                 }
                 model.runtime_plan_mut().retry_at = Some(now + RUNTIME_RETRY);
+                remember_attempt(model, *device, attempted);
                 drop(replacement.take());
                 let (mut active, selected) = match reload() {
                     Ok(plan) => plan,
@@ -879,6 +887,19 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
             }
         }
     }
+}
+
+/// Adds a discarded replacement's plan to `model`'s history, after the plans
+/// `model` itself ran on.
+fn remember_attempt<T: RuntimeModel>(model: &mut T, device: Device, attempted: Option<PlanUse>) {
+    let Some(attempted) = attempted else {
+        return;
+    };
+    let mut history = plans_of(model, device);
+    if history.last() != Some(&attempted) {
+        history.push(attempted);
+    }
+    model.runtime_plan_mut().history = history;
 }
 
 fn retain_fallback<T: RuntimeModel, R>(
@@ -2294,6 +2315,13 @@ mod tests {
         assert_eq!(model.value, 42);
         assert_eq!(device, Device::Cpu);
         assert_eq!(model.plan.retry_at, Some(now + RUNTIME_RETRY));
+        // The accelerator it tried and dropped is still in the history, so
+        // a record of the run does not read as CPU-only.
+        let targets: Vec<String> = plans_of(&model, device)
+            .into_iter()
+            .map(|plan| plan.target)
+            .collect();
+        assert_eq!(targets, ["cpu", "cuda", "cpu"]);
     }
 
     #[test]
