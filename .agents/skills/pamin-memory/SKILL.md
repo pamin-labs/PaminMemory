@@ -170,10 +170,13 @@ measure from outside. If you want more control over retrieval, use `grep`,
 
 ### When to stop searching
 
-Every `search` at the default tier costs more than a second and a page of
-results in your context. The 1522 ms in the table above was measured at twenty
-reranked candidates; the default now reranks thirty, and `docs/measured.md`
-records slower medians on busier machines. A second search pays off only when
+Every `search` at the default tier costs a reranking pass and a page of
+results in your context. On a four-core CPU that is more than a second: the
+1522 ms in the table above was measured when the reranker saw twenty
+candidates, it now sees a head of thirty plus up to thirty more that only the
+graph found, and `docs/measured.md` records slower medians on busier machines.
+On Apple silicon, where the reranker runs on CoreML, `docs/measured.md` records
+a whole-search p50 of 0.48 s and p95 of 0.81 s. A second search pays off only when
 it can find something the first could not. The rules below are a heuristic for
 spending that cost; no agent-task measurement yet shows how often a repeat
 search finds something new.
