@@ -53,8 +53,10 @@
 //! | `LOCOMO_CONVERSATIONS` | read only the first this many conversations |
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
 //!
-//! Projects are named after a digest of the records and links they hold, so a
-//! reused `PAMIN_EVAL_HOME` never scores a corpus built by older code or data.
+//! Projects are named after a digest of the records and links they hold, and
+//! of the execution provider and model revision that embedded them, so a
+//! reused `PAMIN_EVAL_HOME` never scores a corpus built by older code or data,
+//! or embedded on another provider or by other weights.
 
 mod harness;
 mod scoring;
@@ -66,7 +68,7 @@ use std::process::Command;
 
 use pamin_core::{Channel, EdgeKind, Fusion};
 use pamin_engine::{Depths, Engine, Models};
-use pamin_index::{Access, Rerank, VectorIndex};
+use pamin_index::{Access, Profile, Rerank, VectorIndex};
 use pamin_store::{Connections, Database, Workspace};
 use pamin_store::graph::{self, EdgeClaim};
 use scoring::{NDCG_AT, RECALL_AT, Scores};
@@ -311,6 +313,54 @@ fn fetch(path: &Path) {
     std::fs::rename(&partial, path).expect("name the downloaded file");
 }
 
+/// What embeds this run's documents, as a project name carries it: the first
+/// twelve hex digits of a SHA-256 over each embedding plan's role, execution
+/// provider and model revision (`repository@commit`).
+///
+/// A reused `PAMIN_EVAL_HOME` keeps the vectors an earlier run wrote, and
+/// `write_absent` skips every topic it finds. Without this, a run on another
+/// provider -- `PAMIN_DEVICE=auto` on another machine -- or after the hub's
+/// `main` moved would search old document vectors with new query vectors.
+/// The models load lazily, so an empty project is searched once to load the
+/// embedder before any project is named.
+async fn embedded_by(
+    database: &Database,
+    models: &Models,
+    workspace: &Workspace,
+    named: &str,
+    profile: Profile,
+) -> String {
+    let probe = Engine::attached(
+        database.clone(),
+        models,
+        workspace,
+        &format!("locomo-{named}-models"),
+        profile,
+        VectorIndex::default(),
+        Access::ReadWrite,
+    )
+    .await
+    .expect("open the model probe");
+    // An empty project still embeds the query, which loads the embedder.
+    probe
+        .search_fused("which model", 1, DEPTHS, Fusion::default())
+        .await
+        .expect("load the embedder");
+    let mut plans: Vec<String> = probe
+        .providers()
+        .into_iter()
+        .filter(|(role, _)| role.starts_with("embedding"))
+        .map(|(role, plan)| format!("{role}={}@{}", plan.target, plan.revision))
+        .collect();
+    plans.sort();
+    plans.dedup();
+    assert!(!plans.is_empty(), "the probe search loaded no embedder");
+    for plan in &plans {
+        println!("  embedded by {plan}");
+    }
+    format!("{:x}", Sha256::digest(plans.join("\n").as_bytes()))[..12].to_string()
+}
+
 async fn write(engine: &Engine, conversation: &Conversation) {
     for turn in &conversation.turns {
         harness::write_absent(
@@ -383,6 +433,7 @@ async fn locomo_evidence_with_and_without_links() {
         .await
         .expect("open the database");
     let models = Models::in_workspace(&workspace);
+    let by = embedded_by(&database, &models, &workspace, &named, profile).await;
 
     // [without the graph, with it], by category; each question in the same
     // order on both.
@@ -399,7 +450,7 @@ async fn locomo_evidence_with_and_without_links() {
             &models,
             &workspace,
             &format!(
-                "locomo-{named}-{}-linked-{digest}",
+                "locomo-{named}-{}-{digest}-{by}",
                 conversation.id.to_lowercase()
             ),
             profile,
