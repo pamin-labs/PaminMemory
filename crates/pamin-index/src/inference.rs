@@ -2317,6 +2317,145 @@ mod tests {
         ));
     }
 
+    /// A target that could not register is asked again every retry period
+    /// without loading anything; the full reload runs once it registers.
+    #[test]
+    fn unregistered_target_is_probed_without_reloading() {
+        use std::cell::Cell;
+        let root = tempfile::tempdir().unwrap();
+        let now = std::time::Instant::now();
+        let mut model = RuntimeFixture::new(0, "cpu");
+        model.plan.awaiting = vec!["cuda".into()];
+        model.plan.probe_at = Some(now);
+        let mut device = Device::Cpu;
+        let (probes, loads, registered) = (Cell::new(0), Cell::new(0), Cell::new(false));
+        let registers = |id: &str| {
+            assert_eq!(id, "cuda");
+            probes.set(probes.get() + 1);
+            registered.get()
+        };
+        let reload = || {
+            loads.set(loads.get() + 1);
+            Ok((RuntimeFixture::new(1, "cuda"), Device::Cuda))
+        };
+        for step in 0..4 {
+            let at = now + RUNTIME_RETRY * step;
+            let (_, replaced) = retry_model_with_clock(
+                &mut model,
+                &mut device,
+                root.path(),
+                || at,
+                registers,
+                |model, _| Ok(model.value),
+                reload,
+            )
+            .unwrap();
+            assert!(!replaced);
+            assert_eq!(model.plan.probe_at, Some(at + RUNTIME_RETRY));
+            assert!(model.plan.retry_at.is_none());
+        }
+        assert_eq!(
+            (probes.get(), loads.get()),
+            (4, 0),
+            "a failed registration probe reloaded the model"
+        );
+        registered.set(true);
+        let (answer, replaced) = retry_model_with_clock(
+            &mut model,
+            &mut device,
+            root.path(),
+            || now + RUNTIME_RETRY * 4,
+            registers,
+            |model, _| Ok(model.value),
+            reload,
+        )
+        .unwrap();
+        assert_eq!((answer, replaced, loads.get()), (1, true, 1));
+        assert_eq!(device, Device::Cuda);
+    }
+
+    /// The probe gates only unregistered targets: a due transient retry
+    /// still reloads although the probe says nothing registers.
+    #[test]
+    fn due_retry_reloads_despite_a_failed_probe() {
+        let root = tempfile::tempdir().unwrap();
+        let now = std::time::Instant::now();
+        let mut model = RuntimeFixture::new(0, "cpu");
+        model.plan.awaiting = vec!["cuda".into()];
+        model.plan.probe_at = Some(now);
+        model.plan.retry_at = Some(now);
+        let mut device = Device::Cpu;
+        let mut loads = 0;
+        let (answer, replaced) = retry_model_with_clock(
+            &mut model,
+            &mut device,
+            root.path(),
+            || now,
+            |_| false,
+            |model, _| Ok(model.value),
+            || {
+                loads += 1;
+                Ok((RuntimeFixture::new(1, "cpu"), Device::Cpu))
+            },
+        )
+        .unwrap();
+        assert_eq!((answer, replaced, loads), (1, true, 1));
+    }
+
+    /// The bug's host shape: CUDA is discovered but its library cannot load.
+    /// That loads CPU once and sets no reload deadline, only a probe.
+    #[test]
+    fn cpu_only_measured_sets_no_reload_deadline() {
+        let root = tempfile::tempdir().unwrap();
+        let references = std::cell::RefCell::new(References::default());
+        let mut loads = Vec::new();
+        let (mut model, device) = measured_with(
+            vec![(Device::Cuda, vec![cpu()].into())],
+            |_| Err(IndexError::Engine("libcublasLt.so.13: cannot open".into())),
+            "fixture",
+            root.path(),
+            &references,
+            ReferenceShape::default(),
+            |device, _, _| {
+                loads.push(device);
+                Ok(RuntimeFixture::new(0, "unset"))
+            },
+            |_, _| panic!("a target that cannot register was calibrated"),
+        )
+        .unwrap();
+        assert_eq!((loads, device), (vec![Device::Cpu], Device::Cpu));
+        assert!(model.plan.retry_at.is_none(), "a reload was scheduled");
+        assert_eq!(model.plan.awaiting, vec!["cuda".to_string()]);
+        assert!(model.plan.probe_at.is_some());
+        let later = std::time::Instant::now() + RUNTIME_RETRY * 2;
+        assert!(!needs_revalidation_at(&mut model, later, |_| false));
+        assert!(needs_revalidation_at(
+            &mut model,
+            later + RUNTIME_RETRY,
+            |_| true
+        ));
+    }
+
+    /// The probe has to answer as [`session`] would, or it could keep a
+    /// target waiting that a reload would have used. Reaching the model
+    /// closure proves the session's registration passed.
+    #[test]
+    fn registration_probe_matches_session_registration() {
+        let discovered = accelerators();
+        assert!(
+            gpu_providers().is_empty() || !discovered.is_empty(),
+            "no accelerator target was discovered (is PAMIN_DEVICE=cpu set?), so this compares nothing"
+        );
+        const REACHED: &str = "sentinel: registration passed";
+        for (device, target) in discovered {
+            let reached = matches!(
+                session(target.clone(), || Err(IndexError::Engine(REACHED.into()))),
+                Err(IndexError::Engine(message)) if message == REACHED
+            );
+            assert_eq!(register(&target).is_ok(), reached, "{}", device.name());
+        }
+    }
+
     /// A model that fell back keeps the plan it failed on in its history,
     /// so a record of the run names both.
     #[test]
