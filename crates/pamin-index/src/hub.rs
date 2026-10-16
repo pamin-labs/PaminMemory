@@ -143,6 +143,10 @@ impl crate::prepared::Download for File<'_> {
         }
     }
 
+    fn revision(&self) -> String {
+        self.repository.revision()
+    }
+
     fn on_disk(&self) -> Option<PathBuf> {
         cached_at(
             self.cache_dir,
