@@ -256,8 +256,18 @@ const DEPTHS: Depths = Depths {
 /// vectors: 0.6420 / 0.8997 cross-lingual and 0.7925 / 0.9571 same-language.
 /// The nDCG floors leave about 0.07 and the recall floors 0.06-0.10 of margin.
 /// They detect a weaker model without fitting the threshold to one run.
-const MODEL_FLOORS: &[(&str, f64, f64)] =
-    &[("cross_lingual", 0.57, 0.80), ("same_language", 0.72, 0.90)];
+///
+/// Re-measured with `single_target` on all 1,190 queries, CPU execution
+/// provider, at commit 245290c, 2026-10-16, on a shared 4-vCPU Xeon:
+/// 0.6335 / 0.8981 cross-lingual, 0.7929 / 0.9546 same-language and
+/// 0.5560 / 0.9067 single-target. The single-target floors leave 0.0760 and
+/// 0.0967: measured less 0.07 rounded down, as the other nDCG floors are,
+/// and the cross-lingual recall margin.
+const MODEL_FLOORS: &[(&str, f64, f64)] = &[
+    ("cross_lingual", 0.57, 0.80),
+    ("same_language", 0.72, 0.90),
+    ("single_target", 0.48, 0.81),
+];
 
 // ---------------------------------------------------------------------------
 // The corpus
@@ -1756,8 +1766,8 @@ const SEARCH_FLOORS: &[(&str, f64, f64)] = &[
 /// The least the reranker must be worth, in cross-lingual nDCG@10.
 ///
 /// A ranking floor alone can pass with the reranker switched off. On the
-/// corrected XQuAD-R key the shipped full-head pass scores 0.7268
-/// cross-lingually, a measured gain of 0.0895 over fusion alone. A 0.04
+/// corrected XQuAD-R key the shipped full-head pass scores 0.7231
+/// cross-lingually, a measured gain of 0.0897 over fusion alone. A 0.04
 /// floor catches a missing pass while leaving margin for small changes. This
 /// is this corpus's comparison, not a claim that reranking always helps.
 const RERANK_IS_WORTH: f64 = 0.040;
