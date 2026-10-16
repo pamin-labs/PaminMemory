@@ -681,6 +681,18 @@ pub struct Shape {
     hardware: Hardware,
 }
 
+/// The stamp of a build begun by `producer` and not yet finished.
+fn pending(producer: &str) -> String {
+    format!("pending\n{producer}")
+}
+
+/// Replaces the stamp at `path` with `stamp` whole.
+fn write_stamp(path: &Path, stamp: &str) {
+    let _ = std::fs::create_dir_all(path.parent().expect("a parent"));
+    let partial = path.with_extension("partial");
+    let _ = std::fs::write(&partial, stamp).and_then(|()| std::fs::rename(&partial, path));
+}
+
 /// A search index a run scored, as [`Shape::indexed`] registered it.
 struct Indexed {
     label: String,
@@ -1274,9 +1286,16 @@ impl Shape {
         format!("{producer}\ncommit={}", self.source.commit)
     }
 
-    /// Stamps an empty index before it is written; removes the stamp for a
-    /// run that is not canonical, or before writing into an index another
-    /// producer stamped; and keeps the index to check.
+    /// Marks an empty index pending before it is written; removes the stamp
+    /// for a run that is not canonical, or before writing into an index
+    /// that is not this run's own pending build; and keeps the index to
+    /// check.
+    ///
+    /// A pending stamp vouches for nothing: the embedder can fall back to
+    /// another plan between the start and the end of a build, and a build
+    /// interrupted after that holds vectors from both. Only
+    /// [`check_indexes`](Self::check_indexes), at the end of a build that
+    /// began empty under one producer and kept it, makes the stamp vouch.
     fn begin_index(&mut self, mut index: Indexed) {
         index.start = (index.producer)().map(|producer| self.stamp_for(&producer));
         if self.source.noncanonical.is_some() {
@@ -1284,16 +1303,13 @@ impl Shape {
         } else if index.found == 0
             && let Some(start) = &index.start
         {
-            let _ = std::fs::create_dir_all(index.stamp.parent().expect("a parent"));
-            let partial = index.stamp.with_extension("partial");
-            let _ = std::fs::write(&partial, start)
-                .and_then(|()| std::fs::rename(&partial, &index.stamp));
+            write_stamp(&index.stamp, &pending(start));
         } else if index.found < index.total
-            && std::fs::read_to_string(&index.stamp).ok() != index.start
+            && std::fs::read_to_string(&index.stamp).ok() != index.start.as_deref().map(pending)
         {
-            // About to write into an index another producer stamped: the
-            // stamp goes first, so an interruption cannot leave this run's
-            // documents vouched for by that producer.
+            // About to write into an index stamped otherwise: the stamp
+            // goes first, so an interruption cannot leave this run's
+            // documents vouched for by it.
             let _ = std::fs::remove_file(&index.stamp);
         }
         self.indexes.retain(|kept| kept.label != index.label);
@@ -1301,6 +1317,7 @@ impl Shape {
     }
 
     /// Checks each index against its stamp (see [`indexed`](Self::indexed)),
+    /// making a pending stamp vouch at the end of the build that wrote it,
     /// returning a line each and why the run cannot be canonical, if any
     /// cannot be vouched for.
     fn check_indexes(&self) -> (Vec<String>, Vec<String>) {
@@ -1349,8 +1366,24 @@ impl Shape {
                 continue;
             }
             let stamped = std::fs::read_to_string(&index.stamp).ok();
-            if stamped.as_deref() == Some(now.as_str()) {
+            if index.found == 0 && stamped.as_deref() == Some(pending(&now).as_str()) {
+                // Built whole from empty by one producer: now it vouches.
+                write_stamp(&index.stamp, &now);
                 lines.push(format!("{}: {state} by {}", index.label, short(&now)));
+            } else if index.found >= index.total && stamped.as_deref() == Some(now.as_str()) {
+                lines.push(format!("{}: {state} by {}", index.label, short(&now)));
+            } else if index.found > 0 && index.found < index.total {
+                // What the interrupted session wrote is not recorded by
+                // producer, so a fallback during it cannot be ruled out.
+                lines.push(format!(
+                    "{}: {state} by {}, its earlier documents unverified",
+                    index.label,
+                    short(&now)
+                ));
+                reasons.push(format!(
+                    "{} index resumed from an interrupted build",
+                    index.label
+                ));
             } else {
                 lines.push(format!(
                     "{}: {state} by {}, run by {}",
@@ -1358,10 +1391,16 @@ impl Shape {
                     stamped.as_deref().map_or("unknown".into(), short),
                     short(&now)
                 ));
-                reasons.push(format!(
-                    "{} index built by another embedding producer",
-                    index.label
-                ));
+                reasons.push(
+                    if stamped.is_some_and(|stamp| stamp.starts_with("pending\n")) {
+                        format!(
+                            "{} index finished by resuming an interrupted build",
+                            index.label
+                        )
+                    } else {
+                        format!("{} index built by another embedding producer", index.label)
+                    },
+                );
             }
         }
         (lines, reasons)
@@ -2074,10 +2113,12 @@ mod tests {
         assert_eq!(build(&["a", "b"]), build(&["b", "a"]));
     }
 
-    /// An index is stamped before it is first written, so a build that is
-    /// interrupted resumes under its stamp; an index that holds documents
-    /// is vouched for only by the run's own stamp; and a run that is not
-    /// canonical, or whose producer changed while it wrote, leaves none.
+    /// An index is stamped pending before it is first written and vouched
+    /// for only once the build that began it empty finishes under one
+    /// producer; an interrupted build -- which may have fallen back to
+    /// another plan before it stopped -- is never vouched for, resumed or
+    /// reused; and a run that is not canonical, or whose producer changed
+    /// while it wrote, leaves no stamp.
     #[test]
     fn an_index_is_vouched_for_only_by_its_own_stamp() {
         use std::sync::Arc;
@@ -2105,16 +2146,51 @@ mod tests {
 
         // Unstamped documents from before: not vouched for.
         let (lines, reasons) = run("a", false, index("plan=cpu@a", 2), true).unwrap();
-        assert_eq!(reasons.len(), 1, "{lines:?}");
-        assert!(lines[0].contains("resumed by unknown"), "{lines:?}");
+        assert_eq!(
+            reasons,
+            ["primary index resumed from an interrupted build"],
+            "{lines:?}"
+        );
 
-        // A build interrupted before it finished is stamped already, and
-        // its resumption and every reuse after it are vouched for.
-        assert!(run("a", false, index("plan=cpu@a", 0), false).is_none());
-        assert_eq!(stamped().as_deref(), Some("plan=cpu@a\ncommit=a"));
+        // A build interrupted before it finished is stamped pending, which
+        // vouches for nothing: it may have fallen back to another plan
+        // before it stopped -- from A to B here -- and its documents do not
+        // say which.
+        let fallen = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&fallen);
+        let falling = Indexed {
+            producer: Box::new(move || {
+                Some(
+                    if flag.load(Ordering::SeqCst) {
+                        "plan=cuda@b"
+                    } else {
+                        "plan=cpu@a"
+                    }
+                    .into(),
+                )
+            }),
+            ..index("", 0)
+        };
+        assert!(run("a", false, falling, false).is_none());
+        fallen.store(true, Ordering::SeqCst);
+        assert_eq!(stamped().as_deref(), Some("pending\nplan=cpu@a\ncommit=a"));
         let (lines, reasons) = run("a", false, index("plan=cpu@a", 2), true).unwrap();
+        assert_eq!(
+            reasons,
+            ["primary index resumed from an interrupted build"],
+            "{lines:?}"
+        );
+        let (_, reasons) = run("a", false, index("plan=cpu@a", 4), true).unwrap();
+        assert_eq!(
+            reasons,
+            ["primary index finished by resuming an interrupted build"]
+        );
+
+        // Built whole from empty by one producer: vouched for, and so is
+        // every reuse after it.
+        let (lines, reasons) = run("a", false, index("plan=cpu@a", 0), true).unwrap();
         assert!(reasons.is_empty(), "{lines:?}");
-        assert!(lines[0].starts_with("primary: resumed by "), "{lines:?}");
+        assert_eq!(stamped().as_deref(), Some("plan=cpu@a\ncommit=a"));
         let (lines, reasons) = run("a", false, index("plan=cpu@a", 4), true).unwrap();
         assert!(reasons.is_empty(), "{lines:?}");
         assert!(lines[0].starts_with("primary: reused by "), "{lines:?}");
@@ -2130,7 +2206,7 @@ mod tests {
         // for by the first producer, then or after.
         assert!(run("a", false, index("plan=cuda@b", 2), false).is_none());
         assert_eq!(stamped(), None, "a mixed index kept the first stamp");
-        let (_, reasons) = run("a", false, index("plan=cpu@a", 3), true).unwrap();
+        let (_, reasons) = run("a", false, index("plan=cpu@a", 4), true).unwrap();
         assert_eq!(
             reasons,
             ["primary index built by another embedding producer"],
