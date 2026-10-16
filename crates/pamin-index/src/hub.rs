@@ -102,15 +102,32 @@ impl Repository {
     }
 
     /// Process-local validation keys track the cached snapshot, not just a
-    /// moving model name. Before a first download the requested revision is
-    /// used; a newly resolved snapshot causes one fresh calibration.
+    /// moving model name: the commit the repository is pinned to.
+    ///
+    /// Before the ref resolves -- a first download, or a repository whose ref
+    /// was deleted while its compute plans were kept -- there is no commit to
+    /// name, and `name@main` would find a plan another revision calibrated:
+    /// its target, and a CPU winner taken without validation. The identity is
+    /// then this load's own, so no persisted plan matches it and the model is
+    /// calibrated; the next process, the ref resolved, keys by the commit.
     pub(crate) fn identity(&self, cache_dir: &Path) -> String {
         let root = cache_root(cache_dir);
+        let revision = if self.resolved() {
+            self.revision()
+        } else {
+            format!("{}:unresolved:{}", self.revision(), uuid::Uuid::now_v7())
+        };
         format!(
-            "{}:{}",
-            self.revision(),
+            "{revision}:{}",
             root.canonicalize().unwrap_or(root).display()
         )
+    }
+
+    /// Whether files are read at a known commit: one pinned from the ref,
+    /// or a requested revision that is itself a commit id.
+    fn resolved(&self) -> bool {
+        self.pin();
+        self.pinned.get().is_some() || is_commit(&self.revision)
     }
 
     /// `name@commit`: the commit this repository is pinned to -- what the
@@ -441,6 +458,39 @@ mod tests {
         repository.pin_fetched(&entry);
         assert_eq!(repository.revision(), format!("someone/model@{OLD}"));
         assert_eq!(repository.get(FILE).expect("the pinned file"), entry);
+    }
+
+    /// A plan key names the pinned commit; with the ref absent -- deleted
+    /// with the compute plans kept -- it is the load's own, so a plan
+    /// another revision calibrated under `main` is never found.
+    #[test]
+    fn an_unresolved_revision_keys_no_persisted_plan() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        downloaded(dir.path());
+        let pinned = Repository::open(dir.path(), NAME).expect("open");
+        let resolved = pinned.identity(dir.path());
+        assert!(
+            resolved.starts_with(&format!("someone/model@{OLD}:")),
+            "{resolved}"
+        );
+        assert_eq!(resolved, pinned.identity(dir.path()), "a pinned key moved");
+
+        std::fs::remove_file(dir.path().join("models--someone--model/refs/main"))
+            .expect("delete the ref");
+        let unresolved = Repository::open(dir.path(), NAME).expect("open");
+        let first = unresolved.identity(dir.path());
+        assert_ne!(first, resolved);
+        assert_ne!(first, unresolved.identity(dir.path()));
+        assert_ne!(
+            first,
+            Repository::open(dir.path(), NAME)
+                .expect("open")
+                .identity(dir.path())
+        );
+
+        // A requested commit is resolved without a ref.
+        let at = Repository::open_at(dir.path(), NAME, OLD).expect("open");
+        assert_eq!(at.identity(dir.path()), at.identity(dir.path()));
     }
 
     /// An empty or cut-short ref names no commit, so nothing is pinned: the
