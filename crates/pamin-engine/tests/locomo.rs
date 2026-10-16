@@ -32,6 +32,16 @@
 //! `benchmarks/datasets/locomo.py`). Rewarding retrieval of that turn would
 //! score the trap as the key.
 //!
+//! Questions whose evidence is miscited are left out too. The locomo-audit
+//! project checked every non-adversarial question of this pinned file and
+//! lists 57 (`WRONG_CITATION`) whose answer is right but whose cited turns do
+//! not hold it -- often the line asking rather than the one answering, or
+//! the turn beside the right one. Grading those would reward retrieving the
+//! wrong turn and penalise the right one. Its list is fetched pinned to a
+//! commit and checked against its SHA-256, and each entry must name the
+//! question the dataset asks at that position. Every excluded question is
+//! recorded in the run's shape with its reason.
+//!
 //! **Significance is tested per conversation.** Every question of one
 //! conversation shares its corpus, index and graph, so the questions are not
 //! independent units. The paired test runs over each conversation's mean
@@ -39,7 +49,8 @@
 //! that is the honest reading, not a defect of the test.
 //!
 //! **Licence.** LOCOMO is CC BY-NC 4.0 (Maharana et al., ACL 2024). It is
-//! fetched at run time from the authors' repository, not vendored.
+//! fetched at run time from the authors' repository, not vendored. So is the
+//! audit's list (`dial481/locomo-audit`), under the same licence.
 //!
 //! ## Running it
 //!
@@ -49,7 +60,7 @@
 //!
 //! | variable | what it does |
 //! |---|---|
-//! | `LOCOMO_DIR` | where `locomo10.json` is cached, instead of fetching it |
+//! | `LOCOMO_DIR` | where `locomo10.json` and `locomo-audit-errors.json` are cached, instead of fetching them |
 //! | `LOCOMO_CONVERSATIONS` | read only the first this many conversations |
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
 //!
@@ -79,6 +90,15 @@ const DATA: &str = "https://raw.githubusercontent.com/snap-research/locomo/3eb6f
 
 /// SHA-256 of `locomo10.json` at that commit; a cached copy must match it too.
 const DATA_SHA256: &str = "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4";
+
+/// locomo-audit's list of this file's annotation errors, pinned to a commit.
+const AUDIT: &str = "https://raw.githubusercontent.com/dial481/locomo-audit/9493fb4b4af4256ed17a18e8fd0b3cfdeec29539/errors.json";
+
+/// SHA-256 of `errors.json` at that commit.
+const AUDIT_SHA256: &str = "f298ef46263fada20688a1d672be37d4f488c6da3b19343eea55ae5c1b5fe55e";
+
+/// How many questions of the whole file that list finds miscited.
+const MISCITED: usize = 57;
 
 /// What the product's `pamin search` asks for by default. A constant because
 /// the rule replay sizes a constant from it; the test asserts it still equals
@@ -185,11 +205,14 @@ fn load() -> Loaded {
     std::fs::create_dir_all(&dir)
         .unwrap_or_else(|error| panic!("creating {}: {error}", dir.display()));
     let path = dir.join("locomo10.json");
-    download(&path);
+    download(&path, DATA, DATA_SHA256);
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
     let samples: Vec<serde_json::Value> = serde_json::from_str(&text)
         .unwrap_or_else(|error| panic!("parsing {}: {error}", path.display()));
+    let audit = dir.join("locomo-audit-errors.json");
+    download(&audit, AUDIT, AUDIT_SHA256);
+    let miscited = miscited(&audit, &samples);
 
     let wanted = std::env::var("LOCOMO_CONVERSATIONS")
         .ok()
@@ -198,7 +221,8 @@ fn load() -> Loaded {
     let conversations = samples
         .iter()
         .take(wanted)
-        .map(|sample| {
+        .enumerate()
+        .map(|(position, sample)| {
             let id = sample["sample_id"].as_str().expect("sample_id").to_string();
             let conversation = sample["conversation"].as_object().expect("conversation");
             let mut sessions: Vec<(u32, &str)> = conversation
@@ -267,6 +291,10 @@ fn load() -> Loaded {
                     exclude("adversarial: its evidence is the trap, and abstaining is the answer");
                     continue;
                 }
+                if miscited.contains(&(position, at)) {
+                    exclude("miscited: locomo-audit finds its evidence does not hold the answer");
+                    continue;
+                }
                 // A question none of whose evidence names a turn that
                 // exists, even after `evidence_ids` recovers what it can,
                 // cannot be graded.
@@ -311,6 +339,52 @@ fn load() -> Loaded {
     }
 }
 
+/// The questions locomo-audit's list at `path` finds miscited
+/// (`WRONG_CITATION`), as (conversation, question) positions in the file.
+/// Each entry must name the question `samples` asks at its position, so a
+/// list that does not describe this file fails rather than excluding the
+/// wrong questions.
+fn miscited(path: &Path, samples: &[serde_json::Value]) -> HashSet<(usize, usize)> {
+    let text = std::fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+    let errors: Vec<serde_json::Value> = serde_json::from_str(&text)
+        .unwrap_or_else(|error| panic!("parsing {}: {error}", path.display()));
+    let found: HashSet<(usize, usize)> = errors
+        .iter()
+        .filter(|error| error["error_type"] == "WRONG_CITATION")
+        .map(|error| {
+            let id = error["question_id"].as_str().expect("an audit entry's id");
+            let (conversation, at) = id
+                .strip_prefix("locomo_")
+                .and_then(|rest| rest.split_once("_qa"))
+                .and_then(|(conversation, at)| {
+                    Some((
+                        conversation.parse::<usize>().ok()?,
+                        at.parse::<usize>().ok()?,
+                    ))
+                })
+                .unwrap_or_else(|| panic!("unreadable audit id {id}"));
+            let asked = samples
+                .get(conversation)
+                .and_then(|sample| qa_of(sample).get(at))
+                .and_then(|qa| qa["question"].as_str());
+            assert_eq!(
+                asked,
+                error["question"].as_str(),
+                "audit entry {id} is not the question the dataset asks there"
+            );
+            (conversation, at)
+        })
+        .collect();
+    assert_eq!(
+        found.len(),
+        MISCITED,
+        "{} is not the pinned audit",
+        path.display()
+    );
+    found
+}
+
 /// A conversation's questions, in file order.
 fn qa_of(sample: &serde_json::Value) -> &[serde_json::Value] {
     sample["qa"].as_array().expect("qa")
@@ -352,12 +426,12 @@ fn corpus_digest(conversation: &Conversation) -> String {
     format!("{:x}", hash.finalize())[..12].to_string()
 }
 
-/// Fetches the file if it is not already cached, through `curl` for the reason
-/// the other harnesses give, under a partial name renamed on success, and
-/// checks it is the pinned release either way.
-fn download(path: &Path) {
+/// Fetches `url` to `path` if it is not already cached, through `curl` for
+/// the reason the other harnesses give, under a partial name renamed on
+/// success, and checks it is the pinned release either way.
+fn download(path: &Path, url: &str, sha256: &str) {
     if !path.exists() {
-        fetch(path);
+        fetch(path, url);
     }
     let actual = format!(
         "{:x}",
@@ -368,25 +442,26 @@ fn download(path: &Path) {
     );
     assert_eq!(
         actual,
-        DATA_SHA256,
-        "{} is not the pinned LOCOMO release; remove it to fetch {DATA}",
+        sha256,
+        "{} is not the pinned release; remove it to fetch {url}",
         path.display()
     );
 }
 
-fn fetch(path: &Path) {
+fn fetch(path: &Path, url: &str) {
     let partial = path.with_extension("part");
     let status = Command::new("curl")
         .args(["-sSLf", "--max-time", "300", "-o"])
         .arg(&partial)
-        .arg(DATA)
+        .arg(url)
         .status();
     assert!(
         matches!(status, Ok(status) if status.success()),
-        "could not fetch {DATA}\n\
-         The dataset is not vendored: LOCOMO is CC BY-NC 4.0 and this fetches it\n\
-         at run time. Make `curl` and raw.githubusercontent.com reachable, or\n\
-         point LOCOMO_DIR at a directory holding locomo10.json."
+        "could not fetch {url}\n\
+         The dataset and its audit are not vendored: both are CC BY-NC 4.0 and\n\
+         this fetches them at run time. Make `curl` and\n\
+         raw.githubusercontent.com reachable, or point LOCOMO_DIR at a\n\
+         directory holding locomo10.json and locomo-audit-errors.json."
     );
     std::fs::rename(&partial, path).expect("name the downloaded file");
 }
