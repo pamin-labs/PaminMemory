@@ -176,15 +176,11 @@ pub struct Embedder {
 }
 
 impl Embedder {
-    /// Loads the model, downloading it on first use.
-    ///
-    /// The model is fetched lazily rather than bundled: it is larger than the
-    /// binary by an order of magnitude, and a user who never searches should
-    /// not pay for it.
     /// Whether `profile`'s weights for the CPU are on disk already, as
     /// [`crate::Reranker::is_downloaded`] says of a reranker: the download,
     /// or the mapped copy that replaced it (see `crate::prepared`) -- and,
-    /// for a profile with a second vector model, its weights too.
+    /// for a profile with a second vector model, its weights and the derived
+    /// graph its load runs (see `crate::pplx`).
     pub fn is_downloaded(profile: Profile, cache_dir: &std::path::Path) -> bool {
         let primary = primary_repository(profile, cache_dir).is_ok_and(|repository| {
             if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
@@ -198,15 +194,15 @@ impl Embedder {
                 })
             }
         });
-        let secondary = profile != Profile::DualAccuracy
-            || complementary_repository(cache_dir).is_ok_and(|repository| {
-                COMPLEMENTARY_FILES.iter().all(|file| {
-                    crate::prepared::Download::on_disk(&repository.file(cache_dir, file)).is_some()
-                })
-            });
+        let secondary = profile != Profile::DualAccuracy || complementary_ready(cache_dir);
         primary && secondary
     }
 
+    /// Loads the model, downloading it on first use.
+    ///
+    /// The model is fetched lazily rather than bundled: it is larger than the
+    /// binary by an order of magnitude, and a user who never searches should
+    /// not pay for it.
     pub fn load(profile: Profile, cache_dir: &std::path::Path) -> Result<Self> {
         let (model, device) = primary_model(profile, cache_dir)?;
         let secondary = if profile == Profile::DualAccuracy {
@@ -782,6 +778,18 @@ const COMPLEMENTARY_FILES: [&str; 2] = [
     "onnx/model_quantized.onnx",
     "onnx/model_quantized.onnx_data",
 ];
+
+/// Whether the second vector model loads from disk alone: both files
+/// downloaded, and the derived graph `crate::pplx::prepare` loads written.
+fn complementary_ready(cache: &std::path::Path) -> bool {
+    complementary_repository(cache).is_ok_and(|repository| {
+        let on_disk =
+            |file: &str| crate::prepared::Download::on_disk(&repository.file(cache, file));
+        on_disk(COMPLEMENTARY_FILES[1]).is_some()
+            && on_disk(COMPLEMENTARY_FILES[0])
+                .is_some_and(|graph| crate::pplx::is_ready(&graph, cache))
+    })
+}
 
 fn complementary(cache: &std::path::Path) -> Result<(Encoder, crate::inference::Device)> {
     let repository = complementary_repository(cache)?;
@@ -1405,6 +1413,41 @@ mod tests {
     }
 
     use super::*;
+
+    /// The second vector model is on disk only with the derived graph its
+    /// load runs: its downloads alone still leave the rewrite to do.
+    #[test]
+    fn the_second_model_needs_its_derived_graph() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let cache = dir.path();
+        let commit = "2c4d510dd4a732063c31a0f70193e35067b51fd8";
+        let repository = cache.join("models--perplexity-ai--pplx-embed-v1-0.6b");
+        std::fs::create_dir_all(repository.join("refs")).expect("refs");
+        std::fs::write(repository.join("refs").join(commit), commit).expect("the ref");
+        let snapshot = repository.join("snapshots").join(commit);
+        for (file, bytes) in COMPLEMENTARY_FILES.iter().zip([&b"graph"[..], b"weights"]) {
+            let path = snapshot.join(file);
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("the snapshot");
+            std::fs::write(path, bytes).expect("a download");
+        }
+        assert!(
+            !complementary_ready(cache),
+            "downloads without the derived graph"
+        );
+
+        let graph = snapshot.join(COMPLEMENTARY_FILES[0]);
+        let derived = cache
+            .join("pplx-int8-v1")
+            .join(crate::prepared::source_digest(&graph).expect("digest"));
+        std::fs::create_dir_all(&derived).expect("the derived directory");
+        std::fs::write(derived.join("model.onnx"), b"rewritten").expect("the graph");
+        assert!(
+            !complementary_ready(cache),
+            "a derived graph without its weights"
+        );
+        std::fs::write(derived.join("model_quantized.onnx_data"), b"weights").expect("weights");
+        assert!(complementary_ready(cache));
+    }
 
     /// A model is on disk only if a load would read it there: an empty
     /// repository directory left by a failed fetch, or a prepared-copy record
