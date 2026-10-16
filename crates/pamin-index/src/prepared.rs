@@ -892,11 +892,26 @@ fn write(source: &Path, into: &Path) -> Result<()> {
 /// for a hub download that is the blob, named by the hash of its content --
 /// with its length and modification time, so a file replaced in place under
 /// the same name is a different source.
+///
+/// A file whose name is not a content hash -- where symlinks are
+/// unavailable the hub client moves the blob into the snapshot under the
+/// file's own name -- is named by its SHA-256 as well: a moved ref's weights
+/// can have the old file's name, length and time on a filesystem with coarse
+/// times, and would key as the old copy. That costs one read of the file
+/// per load on that path only; a blob's name already is its digest.
 #[derive(Debug, PartialEq, Eq)]
 struct Source {
     name: String,
     length: u64,
     modified: u128,
+    /// The content's SHA-256, for a source not named by it.
+    digest: Option<String>,
+}
+
+/// Whether a file named `name` is named by its content, as a hub blob is:
+/// a git object id (40 hex digits) or an LFS SHA-256 (64).
+fn content_named(name: &str) -> bool {
+    matches!(name.len(), 40 | 64) && name.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 impl Source {
@@ -908,13 +923,20 @@ impl Source {
             .ok()
             .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
             .map_or(0, |since| since.as_nanos());
+        let name = resolved
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let digest = if content_named(&name) {
+            None
+        } else {
+            Some(source_digest(&resolved)?)
+        };
         Ok(Self {
-            name: resolved
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            name,
             length: metadata.len(),
             modified,
+            digest,
         })
     }
 
@@ -927,10 +949,13 @@ impl Source {
     /// alone is longer than some filesystems allow a name to be.
     fn key(&self) -> (String, String) {
         let described = format!(
-            "source {} {} bytes modified {}; runtime 1.{} {}; {} {}; {LEVEL:?}",
+            "source {} {} bytes modified {}{}; runtime 1.{} {}; {} {}; {LEVEL:?}",
             self.name,
             self.length,
             self.modified,
+            self.digest
+                .as_ref()
+                .map_or(String::new(), |digest| format!(" sha256 {digest}")),
             ort::MINOR_VERSION,
             ort::info(),
             std::env::consts::ARCH,
@@ -952,21 +977,35 @@ impl Source {
     /// Preserve byte provenance before release deletes the original file.
     /// The first three metadata lines and cache key stay compatible with old records.
     fn record_with_digest(&self, source: &Path) -> Result<String> {
-        Ok(format!(
-            "{}{DIGEST}{}\n",
-            self.record(),
-            source_digest(source)?
-        ))
+        let digest = match &self.digest {
+            Some(digest) => digest.clone(),
+            None => source_digest(source)?,
+        };
+        Ok(format!("{}{DIGEST}{digest}\n", self.record()))
     }
 
     fn parse(record: &str) -> Option<Self> {
         let mut lines = record.lines();
-        let source = Self {
-            name: lines.next()?.to_string(),
-            length: lines.next()?.parse().ok()?,
-            modified: lines.next()?.parse().ok()?,
+        let name = lines.next()?.to_string();
+        let length = lines.next()?.parse().ok()?;
+        let modified = lines.next()?.parse().ok()?;
+        // A source not named by its content is keyed by the digest its
+        // record names; a record without one cannot find its copy.
+        let digest = if content_named(&name) {
+            None
+        } else {
+            Some(
+                lines
+                    .find_map(|line| line.strip_prefix(DIGEST))?
+                    .to_string(),
+            )
         };
-        (!source.name.is_empty()).then_some(source)
+        (!name.is_empty()).then_some(Self {
+            name,
+            length,
+            modified,
+            digest,
+        })
     }
 
     /// Gives a fresh download of this source this source's modification time,
@@ -989,7 +1028,11 @@ impl Source {
             if now.name != self.name || now.length != self.length || now.modified == self.modified {
                 return Ok(false);
             }
-            if digest != Some(source_digest(fetched)?.as_str()) {
+            let fetched_digest = match &now.digest {
+                Some(digest) => digest.clone(),
+                None => source_digest(fetched)?,
+            };
+            if digest != Some(fetched_digest.as_str()) {
                 return Ok(false);
             }
             let at = std::time::UNIX_EPOCH
@@ -1279,6 +1322,46 @@ mod tests {
         assert!(newest.exists() && copy.exists());
     }
 
+    /// A source named by its content keys by its name as before, without
+    /// reading it; one that is not -- a hub file moved into its snapshot
+    /// where symlinks are unavailable -- keys by its SHA-256 too, so two
+    /// files with one name, length and time but other bytes are two copies.
+    #[test]
+    fn a_source_not_named_by_its_content_is_keyed_by_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let file = |path: &Path, bytes: &[u8]| {
+            std::fs::create_dir_all(path.parent().expect("a parent")).unwrap();
+            std::fs::write(path, bytes).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(at)
+                .unwrap();
+            Source::of(path).unwrap()
+        };
+
+        let blob = file(&dir.path().join("blobs").join("a".repeat(64)), b"weights");
+        assert_eq!(blob.digest, None, "a blob was read to key it");
+        assert!(!blob.key().1.contains("sha256"), "{}", blob.key().1);
+
+        let old = file(&dir.path().join("old/model.onnx"), b"weights");
+        let new = file(&dir.path().join("new/model.onnx"), b"wEights");
+        assert_eq!(
+            (&old.name, old.length, old.modified),
+            (&new.name, new.length, new.modified)
+        );
+        assert_ne!(old.key().0, new.key().0, "other bytes keyed as one copy");
+
+        // Its record keys as it does, and one without the digest finds no
+        // copy rather than one of other bytes.
+        let path = dir.path().join("old/model.onnx");
+        let recorded = Source::parse(&old.record_with_digest(&path).unwrap()).unwrap();
+        assert_eq!(recorded.key().0, old.key().0);
+        assert_eq!(Source::parse(&old.record()), None);
+    }
+
     /// Where symlinks are unavailable, the hub client moves a blob into the
     /// snapshot under the file's own name, so a moved ref's weights can have
     /// the old file's name and length. They are not given the old file's
@@ -1516,8 +1599,9 @@ mod tests {
             .unwrap()
             .set_times(std::fs::FileTimes::new().set_modified(modified))
             .unwrap();
-        assert_eq!(Source::of(&path).unwrap(), identity);
-        let after = identity.record_with_digest(&path).unwrap();
+        let replaced = Source::of(&path).unwrap();
+        assert_ne!(replaced.key().0, identity.key().0);
+        let after = replaced.record_with_digest(&path).unwrap();
         assert_ne!(before.lines().nth(3), after.lines().nth(3));
         assert_eq!(
             after.lines().nth(3).unwrap(),
@@ -1539,7 +1623,8 @@ mod tests {
         assert_ne!(key(&one), key(&other));
 
         let source = Source::of(&one).expect("describe");
-        assert_eq!(Source::parse(&source.record()), Some(source));
+        let record = source.record_with_digest(&one).expect("record");
+        assert_eq!(Source::parse(&record), Some(source));
         assert_eq!(Source::parse("name\nnot a length\n1\n"), None);
     }
 
@@ -1720,11 +1805,12 @@ mod tests {
     #[test]
     fn the_copy_a_record_points_at_stays_and_other_keys_go() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let source = Source::of(&not_a_model(dir.path())).expect("describe the source");
+        let model = not_a_model(dir.path());
+        let source = Source::of(&model).expect("describe the source");
         let root = dir.path().join("prepared");
         std::fs::create_dir_all(&root).expect("the copies' directory");
         let record = root.join("someone--model--onnx--model.onnx.source");
-        std::fs::write(&record, source.record()).expect("the record");
+        std::fs::write(&record, source.record_with_digest(&model).unwrap()).expect("the record");
         let now = SystemTime::now();
         let long_ago = now - 60 * DAY;
 
