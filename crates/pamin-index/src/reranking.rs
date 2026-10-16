@@ -2647,8 +2647,13 @@ mod tests {
             })
             .collect();
         for tier in [Rerank::Fast, Rerank::Accurate] {
-            let (mut model, device) = load_model(tier, &cache).expect("load the reranker");
-            assert_eq!(device, Device::Cpu);
+            // On the CPU directly: `load_model` may calibrate onto an
+            // accelerator, which runs no batches side by side.
+            std::fs::create_dir_all(&cache).expect("create the model cache");
+            let repository =
+                Repository::open(&cache, tier.repository()).expect("open the repository");
+            let mut model = cpu_model(tier, &repository, &cache, vec![crate::inference::cpu()])
+                .expect("load the reranker");
             let encodings = model
                 .encode(
                     documents
