@@ -65,9 +65,9 @@ use std::path::Path;
 use std::process::Command;
 
 use pamin_core::{Channel, EdgeKind, Fusion};
-use pamin_engine::{Depths, Engine};
+use pamin_engine::{Depths, Engine, Models};
 use pamin_index::{Access, Rerank, VectorIndex};
-use pamin_store::Workspace;
+use pamin_store::{Connections, Database, Workspace};
 use pamin_store::graph::{self, EdgeClaim};
 use scoring::{NDCG_AT, RECALL_AT, Scores};
 use sha2::{Digest, Sha256};
@@ -376,6 +376,13 @@ async fn locomo_evidence_with_and_without_links() {
         (None, Some(dir)) => Workspace::at(dir.path()),
         (None, None) => unreachable!("one of the two is always set"),
     };
+    // One database and one model registry for every conversation, as a
+    // resident server holds them: `Engine::open` makes a registry of its own,
+    // which reloaded the weights for each conversation.
+    let database = Database::open(&workspace, Connections::PerCommand)
+        .await
+        .expect("open the database");
+    let models = Models::in_workspace(&workspace);
 
     // [without the graph, with it], by category; each question in the same
     // order on both.
@@ -387,7 +394,9 @@ async fn locomo_evidence_with_and_without_links() {
     let mut linked_edges = 0usize;
     for conversation in &conversations {
         let digest = corpus_digest(conversation);
-        let engine = Engine::open(
+        let engine = Engine::attached(
+            database.clone(),
+            &models,
             &workspace,
             &format!(
                 "locomo-{named}-{}-linked-{digest}",
