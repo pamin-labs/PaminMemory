@@ -37,6 +37,28 @@ pub fn producer(embedder: &Embedder) -> String {
     lines(&embedder.plans(), &secondary, &shape::runtime_settings())
 }
 
+/// Who embeds with `engine`'s embedder now, as [`producer`] names an
+/// embedder: what a search index the engine writes is built by. `None`
+/// while its embedder has not loaded.
+pub fn index_producer(engine: &pamin_engine::Engine) -> Option<String> {
+    let providers = engine.providers();
+    let plans = |role: &str| -> Vec<PlanUse> {
+        providers
+            .iter()
+            .filter(|(of, _)| of == role)
+            .map(|(_, plan)| plan.clone())
+            .collect()
+    };
+    let primary = plans("embedding");
+    (!primary.is_empty()).then(|| {
+        lines(
+            &primary,
+            &plans("embedding secondary"),
+            &shape::runtime_settings(),
+        )
+    })
+}
+
 /// [`producer`]'s lines for these primary and secondary plans: each plan
 /// with the model revision it ran, then the build, then each setting.
 fn lines(plans: &[PlanUse], secondary: &[PlanUse], settings: &[String]) -> String {

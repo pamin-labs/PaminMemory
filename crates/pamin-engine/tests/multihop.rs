@@ -583,6 +583,7 @@ async fn search_answers_questions_that_take_several_steps() {
     };
 
     let project = format!("musique-{named}-{}", corpus.fingerprint());
+    shape.observe_models(&workspace.root().join("models"));
     let engine = Engine::open(
         &workspace,
         &project,
@@ -596,7 +597,7 @@ async fn search_answers_questions_that_take_several_steps() {
     if std::env::var("CHANNELS").is_ok() {
         assert_eq!(engine.passage(), pamin_index::Passage::Named);
     }
-    write_corpus(&engine, &corpus).await;
+    write_corpus(&engine, &corpus, &mut shape, "primary", &workspace).await;
     if std::env::var("CHANNELS").is_ok() {
         assert_eq!(engine.passage(), pamin_index::Passage::Named);
         assert_eq!(
@@ -630,7 +631,7 @@ async fn search_answers_questions_that_take_several_steps() {
             ("primary", &engine),
             ("named", &other),
         ]));
-        write_corpus(&other, &corpus).await;
+        write_corpus(&other, &corpus, &mut shape, "named", &workspace).await;
         assert_eq!(
             engine.passage(),
             pamin_index::Passage::Content,
@@ -716,6 +717,13 @@ async fn search_answers_questions_that_take_several_steps() {
             ("primary", &engine),
             ("entities", &entities),
         ]));
+        shape.indexed(
+            "entities",
+            &entities,
+            workspace.root(),
+            0,
+            corpus.memories.len(),
+        );
         reach(&entities, &corpus, "with shared names").await;
         return;
     }
@@ -903,7 +911,16 @@ async fn search_answers_questions_that_take_several_steps() {
     }
 }
 
-async fn write_corpus(engine: &Engine, corpus: &Corpus) {
+/// Writes every memory not already a topic and runs the queue, then hands
+/// the index to `shape` under `label` with how much of it this run wrote
+/// (see `Shape::indexed`).
+async fn write_corpus(
+    engine: &Engine,
+    corpus: &Corpus,
+    shape: &mut Shape,
+    label: &str,
+    workspace: &Workspace,
+) {
     let mut written = 0usize;
     for memory in &corpus.memories {
         if !harness::write_absent(
@@ -926,6 +943,13 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) {
     if written > 0 {
         println!("  wrote {written} of {} memories", corpus.memories.len());
     }
+    shape.indexed(
+        label,
+        engine,
+        workspace.root(),
+        written,
+        corpus.memories.len(),
+    );
 }
 
 /// Edges from the names a memory's text shares with another's, priced against
@@ -1000,7 +1024,7 @@ async fn entities(
         ("primary", base),
         ("entities", &engine),
     ]));
-    write_corpus(&engine, corpus).await;
+    write_corpus(&engine, corpus, shape, "entities", workspace).await;
 
     let names: Vec<HashSet<String>> = corpus
         .memories

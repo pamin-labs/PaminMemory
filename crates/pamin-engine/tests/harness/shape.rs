@@ -662,8 +662,35 @@ pub struct Shape {
     /// Vectors the run read from a cache rather than embedding, from
     /// [`cached`](Self::cached).
     caches: Vec<String>,
+    /// What was on disk before the models loaded, from
+    /// [`observe_models`](Self::observe_models).
+    warmth: Vec<String>,
+    /// The execution plans calibrated and kept on disk before the models
+    /// loaded, by plan hash, if [`observe_models`](Self::observe_models)
+    /// looked.
+    plans_before: Option<BTreeSet<String>>,
+    /// Per role, whether its plan was calibrated before the run or by it,
+    /// read with the providers.
+    calibration: Vec<String>,
+    /// The search indexes the run scored, from [`indexed`](Self::indexed),
+    /// each checked against who embedded it once the providers are known.
+    indexes: Vec<Indexed>,
+    /// What those checks found, `label: state by producer`.
+    indexed: Vec<String>,
     /// The machine, read at `publish`; accelerators once `providers` are.
     hardware: Hardware,
+}
+
+/// A search index a run scored, as [`Shape::indexed`] registered it.
+struct Indexed {
+    label: String,
+    /// The run's embedding producer now (see `harness::vectors`), or `None`
+    /// while its embedder has not loaded.
+    producer: Box<dyn Fn() -> Option<String> + Send>,
+    /// Where the producer that built the index is kept.
+    stamp: PathBuf,
+    written: usize,
+    total: usize,
 }
 
 /// Everything that tells one run's record from another's, serialised
@@ -704,6 +731,15 @@ struct Identity {
     /// `harness::vectors`). A run that embedded everything itself says so
     /// too, with nothing reused.
     caches: Vec<String>,
+    /// Which model downloads and prepared copies were on disk before the
+    /// models loaded: a run that downloads or prepares a model times that
+    /// too, and a rerun over a warm home is another condition.
+    warmth: Vec<String>,
+    /// `label: built|resumed|reused by producer`: each search index the run
+    /// scored, and the digest of the embedding producer it was built by --
+    /// a reused index's document vectors are not the current plan's merely
+    /// because its queries are.
+    indexes: Vec<String>,
     build: Build,
     hardware: Hardware,
 }
@@ -1068,6 +1104,11 @@ impl Shape {
             providers: Vec::new(),
             models: Vec::new(),
             caches: Vec::new(),
+            warmth: Vec::new(),
+            plans_before: None,
+            calibration: Vec::new(),
+            indexes: Vec::new(),
+            indexed: Vec::new(),
             hardware: Hardware::default(),
         }
     }
@@ -1130,6 +1171,134 @@ impl Shape {
             .push(format!("{file}: {reused}/{total} from {producer}"));
     }
 
+    /// Observes, before any model loads from `models`, which repositories
+    /// are downloaded there and which prepared copies are recorded -- so a
+    /// run that fetched or prepared a model, and paid for it in its timings,
+    /// is not taken for one that found them. Observed, not declared.
+    pub fn observe_models(&mut self, models: &Path) {
+        let names = |dir: &Path, keep: fn(&str) -> bool| -> Vec<String> {
+            let mut names: Vec<String> = std::fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| keep(name))
+                .collect();
+            names.sort();
+            names
+        };
+        let downloaded = names(models, |name| name.starts_with("models--"));
+        let prepared = names(&models.join("prepared"), |name| name.ends_with(".source"));
+        let plans = names(&models.join("compute-plans-v1"), |name| {
+            name.ends_with(".json")
+        });
+        self.plans_before.get_or_insert_with(BTreeSet::new).extend(
+            plans
+                .iter()
+                .filter_map(|name| name.strip_suffix(".json"))
+                .map(str::to_string),
+        );
+        for (what, found) in [("downloaded", downloaded), ("prepared", prepared)] {
+            let line = if found.is_empty() {
+                format!("{what}: none")
+            } else {
+                format!("{what}: {}", found.join(", "))
+            };
+            if !self.warmth.contains(&line) {
+                self.warmth.push(line);
+            }
+        }
+    }
+
+    /// What was on disk before the models loaded, and per role whether its
+    /// execution plan was calibrated then or by this run: a run that
+    /// calibrates times the calibration too.
+    fn observed_warmth(&self) -> Vec<String> {
+        let mut warmth = self.warmth.clone();
+        warmth.extend(self.calibration.iter().cloned());
+        warmth
+    }
+
+    /// The search index `engine` scores, under `label`: `written` of its
+    /// `total` documents were written by this run, the rest found there.
+    ///
+    /// Checked once the providers are known, against the embedding producer
+    /// that built it -- plans, model revisions, runtime settings and build,
+    /// as a vector cache is named (`harness::vectors`) -- which is kept
+    /// beside the index under `workspace`. An index this run built whole is
+    /// stamped with the run's producer. One it reused or resumed must carry
+    /// the run's stamp, or the run is not canonical: its document vectors
+    /// may come from another plan than its query vectors. Deleting the
+    /// project rebuilds it.
+    pub fn indexed(
+        &mut self,
+        label: &str,
+        engine: &pamin_engine::Engine,
+        workspace: &Path,
+        written: usize,
+        total: usize,
+    ) {
+        let stamp = workspace
+            .join("index")
+            .join(format!("{}.eval-producer", engine.project));
+        let engine = engine.clone();
+        self.indexes.retain(|index| index.label != label);
+        self.indexes.push(Indexed {
+            label: label.to_string(),
+            producer: Box::new(move || super::vectors::index_producer(&engine)),
+            stamp,
+            written,
+            total,
+        });
+    }
+
+    /// Checks each index against its stamp (see [`indexed`](Self::indexed)),
+    /// returning a line each and why the run cannot be canonical, if any
+    /// cannot be vouched for.
+    fn check_indexes(&self) -> (Vec<String>, Vec<String>) {
+        let short = |producer: &str| -> String {
+            Sha256::digest(producer.as_bytes())[..8]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect()
+        };
+        let mut lines = Vec::new();
+        let mut reasons = Vec::new();
+        for index in &self.indexes {
+            let state = match index.written {
+                0 => "reused",
+                written if written == index.total => "built",
+                _ => "resumed",
+            };
+            let Some(now) = (index.producer)() else {
+                lines.push(format!("{}: {state}, no embedder loaded", index.label));
+                continue;
+            };
+            if state == "built" {
+                let _ = std::fs::create_dir_all(index.stamp.parent().expect("a parent"));
+                let partial = index.stamp.with_extension("partial");
+                let _ = std::fs::write(&partial, &now)
+                    .and_then(|()| std::fs::rename(&partial, &index.stamp));
+            }
+            let stamped = std::fs::read_to_string(&index.stamp).ok();
+            if stamped.as_deref() == Some(now.as_str()) {
+                lines.push(format!("{}: {state} by {}", index.label, short(&now)));
+            } else {
+                lines.push(format!(
+                    "{}: {state} by {}, run by {}",
+                    index.label,
+                    stamped.as_deref().map_or("unknown".into(), short),
+                    short(&now)
+                ));
+                reasons.push(format!(
+                    "{} index built by another embedding producer",
+                    index.label
+                ));
+            }
+        }
+        (lines, reasons)
+    }
+
     /// Asks the probe, if there is one, and keeps its answer with `loaded`
     /// as `engine/role=provider` lines and `engine/role=repository@commit`
     /// model lines; whether there was a probe to ask.
@@ -1146,6 +1315,22 @@ impl Shape {
         for loaded in &self.loaded {
             plans.extend(loaded());
         }
+        if let Some(before) = &self.plans_before {
+            let mut calibration: Vec<String> = plans
+                .iter()
+                .map(|(role, plan)| {
+                    let when = if before.contains(&plan.plan) {
+                        "before the run"
+                    } else {
+                        "by the run"
+                    };
+                    format!("calibrated {role}={}: {when}", provider(plan))
+                })
+                .collect();
+            calibration.sort();
+            calibration.dedup();
+            self.calibration = calibration;
+        }
         let mut models: Vec<String> = plans
             .iter()
             .map(|(role, plan)| format!("{role}={}", plan.revision))
@@ -1159,7 +1344,9 @@ impl Shape {
             .collect();
         providers.sort();
         providers.dedup();
-        for reason in plan_reasons(&providers) {
+        let (indexed, unvouched) = self.check_indexes();
+        self.indexed = indexed;
+        for reason in plan_reasons(&providers).into_iter().chain(unvouched) {
             let noncanonical = self.source.noncanonical.get_or_insert_with(String::new);
             if !noncanonical.split("; ").any(|known| known == reason) {
                 if !noncanonical.is_empty() {
@@ -1555,6 +1742,8 @@ impl Shape {
             providers: self.providers.clone(),
             models: self.models.clone(),
             caches: self.caches.clone(),
+            warmth: self.observed_warmth(),
+            indexes: self.indexed.clone(),
             build: Build::compiled(),
             hardware: self.hardware.clone(),
         }
@@ -1603,6 +1792,8 @@ impl Shape {
             "settings": self.settings,
             "providers": self.providers,
             "models": self.models,
+            "warmth": self.observed_warmth(),
+            "indexes": self.indexed,
             "identity": self.identity(),
             "identity_sha256_12": self.identity().short(),
             "corpus_sha256": self.digest(),
@@ -1813,6 +2004,101 @@ mod tests {
         assert_ne!(build(&["2hop"]), build(&["3hop"]));
         assert_ne!(build(&["a"]), build(&["a", "b"]));
         assert_eq!(build(&["a", "b"]), build(&["b", "a"]));
+    }
+
+    /// An index this run built is stamped with its producer; one it reused
+    /// is vouched for only by the same stamp, and otherwise keeps the run
+    /// from being canonical.
+    #[test]
+    fn a_reused_index_needs_the_run_s_producer() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let stamp = dir.path().join("index").join("p.eval-producer");
+        let index = |producer: &'static str, written: usize| Indexed {
+            label: "primary".into(),
+            producer: Box::new(move || Some(producer.to_string())),
+            stamp: stamp.clone(),
+            written,
+            total: 4,
+        };
+        let check = |indexes: Vec<Indexed>| {
+            let mut shape = Shape::new("test", String::new(), None);
+            shape.indexes = indexes;
+            shape.check_indexes()
+        };
+
+        let (unstamped, reasons) = check(vec![index("plan=cpu@a", 0)]);
+        assert_eq!(reasons.len(), 1, "{unstamped:?}");
+        assert!(unstamped[0].contains("reused by unknown"), "{unstamped:?}");
+
+        let (built, reasons) = check(vec![index("plan=cpu@a", 4)]);
+        assert!(reasons.is_empty(), "{built:?}");
+        assert!(built[0].starts_with("primary: built by "), "{built:?}");
+        assert_eq!(std::fs::read_to_string(&stamp).unwrap(), "plan=cpu@a");
+
+        let (reused, reasons) = check(vec![index("plan=cpu@a", 0)]);
+        assert!(reasons.is_empty(), "{reused:?}");
+        assert_eq!(reused[0].replace("reused", "built"), built[0]);
+
+        // Another plan's queries over the same index: not vouched for, and
+        // the stamp is left naming who built it.
+        let (moved, reasons) = check(vec![index("plan=cuda@b", 2)]);
+        assert_eq!(
+            reasons,
+            ["primary index built by another embedding producer"],
+            "{moved:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&stamp).unwrap(), "plan=cpu@a");
+    }
+
+    /// What was on disk before the models loaded is observed, and a plan
+    /// calibrated before the run is told from one the run calibrated.
+    #[test]
+    fn warmth_is_observed_from_the_model_directory() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let models = dir.path();
+        let observe = || {
+            let mut shape = Shape::new("test", String::new(), None);
+            shape.observe_models(models);
+            shape
+        };
+        assert_eq!(observe().warmth, ["downloaded: none", "prepared: none"]);
+
+        std::fs::create_dir_all(models.join("models--someone--model")).unwrap();
+        std::fs::create_dir_all(models.join("prepared")).unwrap();
+        std::fs::write(models.join("prepared/someone--model.source"), "").unwrap();
+        std::fs::create_dir_all(models.join("compute-plans-v1")).unwrap();
+        std::fs::write(
+            models
+                .join("compute-plans-v1")
+                .join(format!("{}.json", "1".repeat(64))),
+            "{}",
+        )
+        .unwrap();
+        let mut shape = observe();
+        assert_eq!(
+            shape.warmth,
+            [
+                "downloaded: models--someone--model",
+                "prepared: someone--model.source"
+            ]
+        );
+        shape.ran_on(|| {
+            vec![
+                ("embedding".to_string(), used("cpu", "1", REVISION)),
+                ("reranking".to_string(), used("cpu", "2", REVISION)),
+            ]
+        });
+        assert!(shape.resolve_providers(false));
+        assert_eq!(
+            shape.observed_warmth()[2..],
+            [
+                format!(
+                    "calibrated embedding=cpu@{}: before the run",
+                    "1".repeat(16)
+                ),
+                format!("calibrated reranking=cpu@{}: by the run", "2".repeat(16)),
+            ]
+        );
     }
 
     /// A git object id: 40 lowercase hex digits under SHA-1, 64 under
@@ -2158,6 +2444,8 @@ mod tests {
                 format!("reranking accurate={REVISION}"),
             ],
             caches: Vec::new(),
+            warmth: vec!["downloaded: none".into(), "prepared: none".into()],
+            indexes: Vec::new(),
             build: Build {
                 inference: "f".repeat(64),
                 cargo: vec!["CARGO_CFG_TARGET_FEATURE=fxsr,sse,sse2".into()],
@@ -2221,6 +2509,12 @@ mod tests {
             ("caches", |id| {
                 id.caches
                     .push("xquad.f32: 0/10 from 0123456789abcdef".into())
+            }),
+            ("warmth", |id| {
+                id.warmth[0] = "downloaded: models--someone--model".into()
+            }),
+            ("indexes", |id| {
+                id.indexes.push("primary: reused by 01234567".into())
             }),
             ("hardware.cpu", |id| id.hardware.cpu.push('x')),
             ("hardware.logical_cores", |id| {
