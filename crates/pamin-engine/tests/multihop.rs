@@ -721,13 +721,14 @@ async fn search_answers_questions_that_take_several_steps() {
             ("primary", &engine),
             ("entities", &entities),
         ]));
-        shape.indexed(
+        harness::index(
+            &mut shape,
             "entities",
             &entities,
             workspace.root(),
-            0,
             corpus.memories.len(),
-        );
+        )
+        .await;
         reach(&entities, &corpus, "with shared names").await;
         return;
     }
@@ -915,9 +916,8 @@ async fn search_answers_questions_that_take_several_steps() {
     }
 }
 
-/// Writes every memory not already a topic and runs the queue, then hands
-/// the index to `shape` under `label` with how much of it this run wrote
-/// (see `Shape::indexed`).
+/// Hands the index to `shape` under `label` (see `harness::index`), then
+/// writes every memory not already a topic and runs the queue.
 async fn write_corpus(
     engine: &Engine,
     corpus: &Corpus,
@@ -925,6 +925,14 @@ async fn write_corpus(
     label: &str,
     workspace: &Workspace,
 ) {
+    harness::index(
+        shape,
+        label,
+        engine,
+        workspace.root(),
+        corpus.memories.len(),
+    )
+    .await;
     let mut written = 0usize;
     for memory in &corpus.memories {
         if !harness::write_absent(
@@ -947,13 +955,6 @@ async fn write_corpus(
     if written > 0 {
         println!("  wrote {written} of {} memories", corpus.memories.len());
     }
-    shape.indexed(
-        label,
-        engine,
-        workspace.root(),
-        written,
-        corpus.memories.len(),
-    );
 }
 
 /// Edges from the names a memory's text shares with another's, priced against
