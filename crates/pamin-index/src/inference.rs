@@ -903,6 +903,21 @@ fn remember_attempt<T: RuntimeModel>(model: &mut T, device: Device, attempted: O
     model.runtime_plan_mut().history = with_last(plans_of(model, device), attempted);
 }
 
+/// The machine a plan is selected on, as every plan's identity names it: the
+/// cores this process may use, the runtime, the host and the CPU features
+/// kernels are chosen by. A CPU-only plan is named by it too, so two hosts
+/// running one binary from one path are two plans, as their vectors can
+/// differ.
+fn machine() -> String {
+    format!(
+        "cores:{:?}|runtime:{}|host:{}|features:{:?}",
+        std::thread::available_parallelism(),
+        ort::info(),
+        host_identity(),
+        crate::prepared::features()
+    )
+}
+
 fn retain_fallback<T: RuntimeModel, R>(
     model: &mut T,
     device: Device,
@@ -1062,7 +1077,7 @@ pub(crate) fn measured<T: RuntimeModel>(
         let mut load = load;
         return load(Device::Cpu, vec![cpu()].into(), false).map(|mut model| {
             let plan = model.runtime_plan_mut();
-            plan.identity = fingerprint(&format!("cpu-only|{}", plan.namespace));
+            plan.identity = fingerprint(&format!("cpu-only|{}|{}", plan.namespace, machine()));
             plan.stable = true;
             (model, Device::Cpu)
         });
@@ -1095,13 +1110,10 @@ pub(crate) fn measured<T: RuntimeModel>(
     let cuda_inventory = cuda.then(cuda_identity).flatten();
     let cuda_settings = CUDA_SELECTION.map(|name| (name, std::env::var_os(name)));
     let key = format!(
-        "persistent-plan-v6|executable:{executable:?}|build:{}|{identity}|{signature:?}|{settings:?}|threads:{:?}|cores:{:?}|runtime:{}|host:{}|features:{:?}|libraries:{libraries:?}|cuda:{cuda_inventory:?}|cuda-settings:{cuda_settings:?}",
+        "persistent-plan-v6|executable:{executable:?}|build:{}|{identity}|{signature:?}|{settings:?}|threads:{:?}|{}|libraries:{libraries:?}|cuda:{cuda_inventory:?}|cuda-settings:{cuda_settings:?}",
         env!("PAMIN_INFERENCE_BUILD"),
         threads(),
-        std::thread::available_parallelism(),
-        ort::info(),
-        host_identity(),
-        crate::prepared::features()
+        machine(),
     );
     let cache = PLANS.get_or_init(Default::default);
     // Only hashes and fixed-fixture outputs reach disk; the full key can
@@ -2323,6 +2335,22 @@ mod tests {
             .map(|plan| plan.target)
             .collect();
         assert_eq!(targets, ["cuda", "cpu"]);
+    }
+
+    /// A CPU-only plan is named by the machine as an accelerator plan's
+    /// persistent key is: its host, CPU features and cores.
+    #[test]
+    fn a_cpu_only_plan_names_the_machine() {
+        let named = machine();
+        assert!(named.contains(host_identity()), "{named}");
+        assert!(
+            named.contains(&format!("{:?}", crate::prepared::features())),
+            "{named}"
+        );
+        assert!(
+            named.contains(&format!("{:?}", std::thread::available_parallelism())),
+            "{named}"
+        );
     }
 
     /// A fallback that fails its revalidation again and again keeps one
