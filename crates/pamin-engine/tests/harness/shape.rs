@@ -377,6 +377,35 @@ fn settings(set: impl IntoIterator<Item = (String, String)>) -> Vec<String> {
     settings
 }
 
+/// This process's environment, lossily as text, for [`settings`].
+fn environment() -> impl Iterator<Item = (String, String)> {
+    std::env::vars_os().map(|(name, value)| {
+        (
+            name.to_string_lossy().into_owned(),
+            value.to_string_lossy().into_owned(),
+        )
+    })
+}
+
+/// The [`settings`] set now that can change what a model computes: all of
+/// them but the harnesses' own knobs ([`EVAL_SETTINGS`]), which choose what
+/// a run asks, not what a text embeds to. A cache of model output is named
+/// by these, so a thread count or a runtime option that changes how a
+/// reduction rounds is the same list a record is named by.
+pub fn runtime_settings() -> Vec<String> {
+    runtime(settings(environment()))
+}
+
+fn runtime(settings: Vec<String>) -> Vec<String> {
+    settings
+        .into_iter()
+        .filter(|line| {
+            let name = line.split_once('=').map_or(line.as_str(), |(name, _)| name);
+            !EVAL_SETTINGS.contains(&name)
+        })
+        .collect()
+}
+
 /// The arm's name in a record's file name: `shipped` when nothing is set,
 /// else a short hash of [`settings`], which can hold paths and run long. The
 /// settings themselves are printed and recorded in full.
@@ -1230,13 +1259,7 @@ impl Shape {
     /// replacing this one's.
     pub fn publish(&mut self, test: &str, profile: &str) {
         let digest = self.digest();
-        let set = std::env::vars_os().map(|(name, value)| {
-            (
-                name.to_string_lossy().into_owned(),
-                value.to_string_lossy().into_owned(),
-            )
-        });
-        self.settings = settings(set);
+        self.settings = settings(environment());
         let arm = arm(&self.settings);
         self.run = [test.to_string(), profile.to_string(), arm.clone()];
         let name = self.name.clone();
@@ -2638,6 +2661,28 @@ mod tests {
         assert_eq!(
             settings([("PAMIN_DEVICE".to_string(), "cpu".to_string())]),
             ["PAMIN_DEVICE=cpu"]
+        );
+        // What a model computes is named by the native libraries' settings
+        // and the product's, not by the harness's own knobs.
+        let set = |name: &str, value: &str| (name.to_string(), value.to_string());
+        assert_eq!(
+            runtime(settings([
+                set("OMP_NUM_THREADS", "1"),
+                set("MKL_NUM_THREADS", "2"),
+                set("OPENBLAS_NUM_THREADS", "3"),
+                set("ORT_LOGGING", "x"),
+                set("PAMIN_DEVICE", "cpu"),
+                set("PAMIN_EVAL_HOME", "/data"),
+                set("XQUAD_ALL_QUERIES", "1"),
+                set("MUSIQUE_SAMPLE", "60"),
+            ])),
+            [
+                "MKL_NUM_THREADS=2",
+                "OMP_NUM_THREADS=1",
+                "OPENBLAS_NUM_THREADS=3",
+                "ORT_LOGGING=x",
+                "PAMIN_DEVICE=cpu",
+            ]
         );
         // Named by every harness, though no harness lists it.
         let ungated = named(&[("SIGNIFICANCE_GATE", "off")]);

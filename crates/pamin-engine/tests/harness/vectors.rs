@@ -3,7 +3,9 @@
 //! The cache is reused only by the producer that wrote it: the embedder's
 //! plans, as a record names them ([`shape::provider`]), the model revision
 //! each plan ran ([`pamin_index::PlanUse::revision`]), and the build
-//! ([`shape::build_digest`]), written into the file's header. It was named
+//! ([`shape::build_digest`]), and the settings that can change what the
+//! model computes ([`shape::runtime_settings`]), written into the file's
+//! header. It was named
 //! by the model and the corpus alone, so vectors embedded on one device or
 //! one build were scored as another's; and a plan's hash does not follow a
 //! moved `refs/main` on a fresh download, so without the revision the old
@@ -28,21 +30,23 @@ pub struct Embedded {
     pub producer: String,
 }
 
-/// Who embeds with `embedder` now: its plans and the build, one per line.
+/// Who embeds with `embedder` now: its plans, the build and the settings
+/// it runs under, one per line.
 pub fn producer(embedder: &Embedder) -> String {
     let secondary = embedder.secondary_plans().unwrap_or_default();
-    lines(&embedder.plans(), &secondary)
+    lines(&embedder.plans(), &secondary, &shape::runtime_settings())
 }
 
 /// [`producer`]'s lines for these primary and secondary plans: each plan
-/// with the model revision it ran, then the build.
-fn lines(plans: &[PlanUse], secondary: &[PlanUse]) -> String {
+/// with the model revision it ran, then the build, then each setting.
+fn lines(plans: &[PlanUse], secondary: &[PlanUse], settings: &[String]) -> String {
     let line = |kind: &str, plan: &PlanUse| {
         format!("{kind}={} model={}", shape::provider(plan), plan.revision)
     };
     let mut lines: Vec<String> = plans.iter().map(|plan| line("plan", plan)).collect();
     lines.extend(secondary.iter().map(|plan| line("secondary", plan)));
     lines.push(format!("build={}", shape::build_digest()));
+    lines.extend(settings.iter().map(|setting| format!("setting={setting}")));
     lines.join("\n")
 }
 
@@ -349,12 +353,39 @@ mod tests {
             stable: true,
             revision: revision.into(),
         };
-        let old = lines(&[plan("someone/model@c0ffee")], &[]);
-        assert_ne!(old, lines(&[plan("someone/model@decaf")], &[]));
+        let old = lines(&[plan("someone/model@c0ffee")], &[], &[]);
+        assert_ne!(old, lines(&[plan("someone/model@decaf")], &[], &[]));
         assert_ne!(
-            lines(&[plan("someone/model@c0ffee")], &[plan("other/model@1")]),
-            lines(&[plan("someone/model@c0ffee")], &[plan("other/model@2")])
+            lines(
+                &[plan("someone/model@c0ffee")],
+                &[plan("other/model@1")],
+                &[]
+            ),
+            lines(
+                &[plan("someone/model@c0ffee")],
+                &[plan("other/model@2")],
+                &[]
+            )
         );
         assert!(old.contains("model=someone/model@c0ffee"), "{old}");
+    }
+
+    /// Another thread count for the native kernels is another producer: a
+    /// reduction split another way can round differently.
+    #[test]
+    fn a_native_setting_is_another_producer() {
+        let plan = PlanUse {
+            target: "cpu".into(),
+            plan: "a".repeat(64),
+            stable: true,
+            revision: "someone/model@c0ffee".into(),
+        };
+        let with = |setting: &str| lines(std::slice::from_ref(&plan), &[], &[setting.into()]);
+        assert_ne!(with("OMP_NUM_THREADS=1"), with("OMP_NUM_THREADS=4"));
+        assert_ne!(
+            with("OMP_NUM_THREADS=1"),
+            lines(std::slice::from_ref(&plan), &[], &[])
+        );
+        assert!(with("MKL_NUM_THREADS=2").contains("setting=MKL_NUM_THREADS=2"));
     }
 }
