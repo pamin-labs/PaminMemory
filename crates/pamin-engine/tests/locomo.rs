@@ -25,6 +25,15 @@
 //! projects can order a tie differently with no graph involved. Both arms
 //! here read the same index and the same ids.
 //!
+//! **What it calls, and at what limit.** `Engine::search_reranked_with`, the
+//! function `pamin search` reaches, at the shipped depths, reranker tier and
+//! fusion, but asked for [`RECALL_AT`] results rather than the CLI's default
+//! `--limit 5`, so that recall at that depth can be read. The limit is more
+//! than a cut: the rerank pass runs only when a candidate it may move sits
+//! above the limit, so the first five here need not be the five `pamin
+//! search` prints. This is the shipped search path measured wider than a user
+//! sees it, and says nothing on its own about the visible five.
+//!
 //! **Scored by category.** LOCOMO's categories are reported separately and
 //! never summed. Adversarial questions (category 5) are left out: their
 //! `evidence` names the tempting wrong-speaker turn, not a turn holding the
@@ -571,7 +580,7 @@ async fn locomo_evidence_with_and_without_links() {
     for name in TUNING {
         assert!(
             std::env::var_os(name).is_none(),
-            "{name} is set, so this would not be the shipped search; unset it"
+            "{name} is set, so this would not be the shipped search path; unset it"
         );
     }
     let loaded = load();
@@ -693,8 +702,8 @@ async fn locomo_evidence_with_and_without_links() {
     assert!(linked_edges > 0, "the projects have no edges to walk");
 
     println!(
-        "\n  LOCOMO evidence retrieval, {named}, shipped search, {} conversations, \
-         {questions} questions, {linked_edges} links",
+        "\n  LOCOMO evidence retrieval, {named}, the shipped search path at limit {RECALL_AT} \
+         (`pamin search` shows 5), {} conversations, {questions} questions, {linked_edges} links",
         conversations.len()
     );
     println!(
