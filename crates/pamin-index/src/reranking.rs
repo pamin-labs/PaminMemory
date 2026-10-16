@@ -1123,6 +1123,34 @@ impl Reranker {
     }
 }
 
+/// `tier` on the CPU.
+///
+/// The file the hub serves is copied onto the heap whole; the prepared copy
+/// is mapped instead -- see `crate::prepared` for what that saves -- and the
+/// download removed once the copy has loaded. Over the copy, loaded side by
+/// side, so that the batches of one call run at once (see [`forward`]). Over
+/// the download `prepared::load_path` falls back to, each single-threaded
+/// session would hold the weights on the heap again, so that loads the one
+/// session it did before side-by-side batches.
+fn cpu_model(
+    tier: Rerank,
+    repository: &Repository,
+    cache_dir: &Path,
+    providers: impl Into<crate::inference::Target>,
+) -> Result<Encoder> {
+    let weights = repository.file(cache_dir, tier.onnx(Device::Cpu));
+    let path = crate::prepared::load_path(&weights, cache_dir)?;
+    let encoder = if crate::prepared::is_copy(&path, cache_dir) {
+        let tokenizer = crate::tokenizer::load(repository, max_tokens())?;
+        Encoder::side_by_side(path, crate::inference::budget()?, tokenizer)
+    } else {
+        Encoder::load(|| Ok(path), repository, max_tokens(), providers)
+    }
+    .map_err(|error| error.context("loading the reranker"))?;
+    crate::prepared::release(&weights, cache_dir);
+    Ok(encoder)
+}
+
 /// Keep the ordering proof first. Accurate also times long candidates, so
 /// maximum-length execution affects selection rather than only compatibility.
 fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
@@ -1131,19 +1159,8 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
     let repository = Repository::open(cache_dir, tier.repository())?;
 
     let session = |device: Device, providers, _validated: bool| -> Result<Encoder> {
-        let weights = repository.file(cache_dir, tier.onnx(device));
         if device == Device::Cpu {
-            // The file the hub serves is copied onto the heap whole; on the
-            // CPU, the prepared copy is mapped instead -- see
-            // `crate::prepared` for what that saves -- and the download
-            // removed once the copy has loaded. Loaded side by side, so that
-            // the batches of one call run at once (see `forward`).
-            let copy = crate::prepared::load_path(&weights, cache_dir)?;
-            let tokenizer = crate::tokenizer::load(&repository, max_tokens())?;
-            let encoder = Encoder::side_by_side(copy, crate::inference::budget()?, tokenizer)
-                .map_err(|error| error.context("loading the reranker"))?;
-            crate::prepared::release(&weights, cache_dir);
-            return Ok(encoder);
+            return cpu_model(tier, &repository, cache_dir, providers);
         }
         let model = || match device {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
