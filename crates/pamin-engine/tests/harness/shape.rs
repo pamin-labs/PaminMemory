@@ -1274,8 +1274,9 @@ impl Shape {
         format!("{producer}\ncommit={}", self.source.commit)
     }
 
-    /// Stamps an empty index before it is written, or removes the stamp
-    /// for a run that is not canonical, and keeps the index to check.
+    /// Stamps an empty index before it is written; removes the stamp for a
+    /// run that is not canonical, or before writing into an index another
+    /// producer stamped; and keeps the index to check.
     fn begin_index(&mut self, mut index: Indexed) {
         index.start = (index.producer)().map(|producer| self.stamp_for(&producer));
         if self.source.noncanonical.is_some() {
@@ -1287,6 +1288,13 @@ impl Shape {
             let partial = index.stamp.with_extension("partial");
             let _ = std::fs::write(&partial, start)
                 .and_then(|()| std::fs::rename(&partial, &index.stamp));
+        } else if index.found < index.total
+            && std::fs::read_to_string(&index.stamp).ok() != index.start
+        {
+            // About to write into an index another producer stamped: the
+            // stamp goes first, so an interruption cannot leave this run's
+            // documents vouched for by that producer.
+            let _ = std::fs::remove_file(&index.stamp);
         }
         self.indexes.retain(|kept| kept.label != index.label);
         self.indexes.push(index);
@@ -2111,16 +2119,23 @@ mod tests {
         assert!(reasons.is_empty(), "{lines:?}");
         assert!(lines[0].starts_with("primary: reused by "), "{lines:?}");
 
-        // Another plan, or another commit, resuming it: not vouched for,
+        // Another commit reusing it whole writes nothing: not vouched for,
         // and the stamp still names who built it.
-        let (_, reasons) = run("a", false, index("plan=cuda@b", 2), true).unwrap();
-        assert_eq!(
-            reasons,
-            ["primary index built by another embedding producer"]
-        );
         let (_, reasons) = run("b", false, index("plan=cpu@a", 4), true).unwrap();
         assert_eq!(reasons.len(), 1);
         assert_eq!(stamped().as_deref(), Some("plan=cpu@a\ncommit=a"));
+
+        // Another plan resuming it, interrupted before the end: the stamp
+        // went before anything was written, so nothing it wrote is vouched
+        // for by the first producer, then or after.
+        assert!(run("a", false, index("plan=cuda@b", 2), false).is_none());
+        assert_eq!(stamped(), None, "a mixed index kept the first stamp");
+        let (_, reasons) = run("a", false, index("plan=cpu@a", 3), true).unwrap();
+        assert_eq!(
+            reasons,
+            ["primary index built by another embedding producer"],
+            "a mixed index was vouched for"
+        );
 
         // A producer that changed while the run wrote: stamp removed.
         let moved = Arc::new(AtomicBool::new(false));
