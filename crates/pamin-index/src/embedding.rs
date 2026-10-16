@@ -469,7 +469,23 @@ fn primary_model(
                     profile.dimensions() as usize,
                 )
             })?;
-            let vectors = profile_vectors(profile, model, device, &fixtures)?;
+            // BGE-M3 runs one text a pass, so its fixtures go one at a time on
+            // the query's session: through `run_each` together they would load
+            // its side sessions on a model that may only ever answer queries.
+            let vectors = if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
+                let mut vectors = Vec::new();
+                for fixture in &fixtures {
+                    vectors.extend(profile_vectors(
+                        profile,
+                        model,
+                        device,
+                        std::slice::from_ref(fixture),
+                    )?);
+                }
+                vectors
+            } else {
+                profile_vectors(profile, model, device, &fixtures)?
+            };
             check_vectors(
                 vectors,
                 &mut reference.vectors,
@@ -1297,6 +1313,11 @@ mod tests {
         );
         let mut embedder = Embedder::load(Profile::Accuracy, &cache).expect("load the model");
         assert_eq!(embedder.device(), crate::inference::Device::Cpu);
+        assert_eq!(
+            embedder.model.side_by_side_sessions(),
+            0,
+            "loading, calibration included, loaded side sessions"
+        );
         let long = "migration rollback ".repeat(300);
         let texts = [
             "deployment rollback",
