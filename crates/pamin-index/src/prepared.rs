@@ -183,6 +183,9 @@ static HELD: Mutex<BTreeMap<PathBuf, File>> = Mutex::new(BTreeMap::new());
 pub(crate) trait Download {
     /// `repository/file`, which names the file's record and its log lines.
     fn label(&self) -> String;
+    /// `repository@commit`: the revision the repository's ref resolves to
+    /// now, which a record names so that a copy is found only for it.
+    fn revision(&self) -> String;
     /// The file, if it is on disk, without asking the hub.
     fn on_disk(&self) -> Option<PathBuf>;
     /// The file, downloaded first if it is not on disk.
@@ -305,9 +308,36 @@ pub(crate) fn release(download: &impl Download, cache_dir: &Path) {
             return Ok(None);
         }
         let record = root.join(record_name(download));
+        // The copy the record named until now: another revision's, once the
+        // ref has moved, which nothing loads for this model again.
+        let replaced = std::fs::read_to_string(&record)
+            .ok()
+            .and_then(|old| Source::parse(&old))
+            .map(|old| old.key().0)
+            .filter(|old| *old != key);
         let partial = record.with_extension("source.partial");
-        std::fs::write(&partial, identity.record_with_digest(&source)?)?;
+        std::fs::write(
+            &partial,
+            format!(
+                "{}{REVISION}{}\n",
+                identity.record_with_digest(&source)?,
+                download.revision()
+            ),
+        )?;
         std::fs::rename(&partial, &record)?;
+        // Removed now unless a process holds it, rather than after
+        // [`UNUSED_FOR`]: two weeks of a second copy per moved model.
+        if let Some(old) = replaced
+            && let Err(error) = collect_one(
+                &root,
+                &root.join(&old),
+                &current(&root),
+                SystemTime::now(),
+                true,
+            )
+        {
+            tracing::warn!(copy = old, %error, "could not remove a replaced revision's mapped copy");
+        }
         Ok(download.remove()?.then_some(identity.length))
     })();
     match released {
@@ -358,10 +388,27 @@ fn found(source: &Source, root: &Path) -> Option<PathBuf> {
     find(root, &source.key().0).map(graph)
 }
 
-/// What a removed download was, as [`release`] recorded it.
+/// What a removed download was, as [`release`] recorded it, if it was of
+/// the revision the repository's ref resolves to now.
+///
+/// The record is named by the file, not the revision, so once `refs/main`
+/// moves, the copy it finds holds the old weights while everything else the
+/// model reads -- its tokenizer -- follows the new ref. A record of another
+/// revision is therefore not this load's: the new revision is fetched and
+/// written into a copy of its own, and its record replaces this one, which
+/// leaves the old copy to [`collect`]. A record written before records named
+/// a revision is taken as it always was.
 fn recorded(download: &impl Download, root: &Path) -> Option<Source> {
-    Source::parse(&std::fs::read_to_string(root.join(record_name(download))).ok()?)
+    let record = std::fs::read_to_string(root.join(record_name(download))).ok()?;
+    let revision = record.lines().find_map(|line| line.strip_prefix(REVISION));
+    if revision.is_some_and(|revision| revision != download.revision()) {
+        return None;
+    }
+    Source::parse(&record)
 }
+
+/// The record line naming the revision a copy was written from.
+const REVISION: &str = "revision ";
 
 /// The record's file name: the label, readable, with nothing a path would
 /// split on.
@@ -534,7 +581,7 @@ fn collect(root: &Path, now: SystemTime) {
     let current = current(root);
     for entry in entries.flatten() {
         let path = entry.path();
-        if let Err(error) = collect_one(root, &path, &current, now) {
+        if let Err(error) = collect_one(root, &path, &current, now, false) {
             tracing::warn!(copy = %path.display(), %error, "could not remove an unused mapped copy");
         }
     }
@@ -554,11 +601,14 @@ fn current(root: &Path) -> BTreeSet<String> {
         .collect()
 }
 
+/// `superseded`: the copy's record now names another revision, so it goes
+/// as soon as no process holds it, without waiting [`UNUSED_FOR`].
 fn collect_one(
     root: &Path,
     path: &Path,
     current: &BTreeSet<String>,
     now: SystemTime,
+    superseded: bool,
 ) -> std::io::Result<()> {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return Ok(());
@@ -571,7 +621,8 @@ fn collect_one(
         && key
             .bytes()
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
-    if !is_key || !path.is_dir() || (!partial && (current.contains(key) || !unused(path, now))) {
+    let idle = |path: &Path| superseded || unused(path, now);
+    if !is_key || !path.is_dir() || (!partial && (current.contains(key) || !idle(path))) {
         return Ok(());
     }
 
@@ -585,7 +636,7 @@ fn collect_one(
         return std::fs::remove_dir_all(path);
     }
     // Again under the lock: a load may have stamped it since.
-    if !unused(path, now) {
+    if !idle(path) {
         return Ok(());
     }
     let aside = root.join(format!("{key}.partial"));
@@ -596,7 +647,8 @@ fn collect_one(
     std::fs::remove_dir_all(&aside)?;
     tracing::info!(
         copy = %path.display(),
-        "removed a mapped copy this runtime and CPU do not load, which nothing had loaded for two weeks"
+        superseded,
+        "removed a mapped copy this runtime and CPU do not load, which nothing holds"
     );
     Ok(())
 }
@@ -1003,6 +1055,7 @@ mod tests {
         blob: PathBuf,
         online: Cell<bool>,
         fetches: Cell<usize>,
+        revision: std::cell::RefCell<String>,
     }
 
     impl Hub {
@@ -1014,6 +1067,7 @@ mod tests {
                 blob: dir.join("models").join("blobs").join("0123abcd"),
                 online: Cell::new(true),
                 fetches: Cell::new(0),
+                revision: std::cell::RefCell::new("someone/model@c0ffee".into()),
             }
         }
     }
@@ -1021,6 +1075,10 @@ mod tests {
     impl Download for Hub {
         fn label(&self) -> String {
             "someone/model/onnx/model.onnx".into()
+        }
+
+        fn revision(&self) -> String {
+            self.revision.borrow().clone()
         }
 
         fn on_disk(&self) -> Option<PathBuf> {
@@ -1119,6 +1177,53 @@ mod tests {
     fn load(path: &Path) {
         crate::inference::session(vec![crate::inference::cpu()], || Ok(path.to_path_buf()))
             .unwrap_or_else(|error| panic!("load {}: {error}", path.display()));
+    }
+
+    /// A copy is found by its record only for the revision it was written
+    /// from: once the ref moves, the new revision is fetched and written
+    /// rather than the old weights loaded under the new ref's name.
+    #[test]
+    fn a_moved_ref_does_not_load_the_old_revision_s_copy() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let hub = Hub::new(dir.path(), &tiny_model());
+        let cache = dir.path().join("models");
+        let copy = load_path(&hub, &cache).expect("the first load");
+        load(&copy);
+        release(&hub, &cache);
+        assert!(hub.on_disk().is_none());
+        let record = std::fs::read_to_string(cache.join("prepared").join(record_name(&hub)))
+            .expect("the record");
+        assert!(
+            record.ends_with("revision someone/model@c0ffee\n"),
+            "{record}"
+        );
+
+        hub.online.set(false);
+        assert_eq!(load_path(&hub, &cache).expect("the same revision"), copy);
+        *hub.revision.borrow_mut() = "someone/model@decaf".into();
+        assert!(!is_ready(&hub, &cache), "the old revision's copy is ready");
+        assert!(
+            load_path(&hub, &cache).is_err(),
+            "the old revision's copy loaded under the new ref"
+        );
+        hub.online.set(true);
+        let new = load_path(&hub, &cache).expect("a load of the new revision");
+        assert_eq!(hub.fetches.get(), 2, "the new revision was not fetched");
+
+        // A replaced revision's copy goes as soon as its record names
+        // another revision -- unless a process holds it, as this one holds
+        // the first copy, which then waits for the usual sweep.
+        load(&new);
+        release(&hub, &cache);
+        assert!(copy.exists(), "a held copy was removed");
+        held().remove(new.parent().expect("the copy's directory"));
+        *hub.revision.borrow_mut() = "someone/model@beef".into();
+        let newest = load_path(&hub, &cache).expect("a load of the next revision");
+        assert_eq!(hub.fetches.get(), 3, "the next revision was not fetched");
+        load(&newest);
+        release(&hub, &cache);
+        assert!(!new.exists(), "the replaced, unheld copy is still on disk");
+        assert!(newest.exists() && copy.exists());
     }
 
     /// The download's whole life: written into a copy and removed, the copy
