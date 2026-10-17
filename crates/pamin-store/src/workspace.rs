@@ -116,6 +116,20 @@ pub struct LocalServer {
     pub password: String,
     pub database: String,
     pub installation_dir: PathBuf,
+    /// The store settings the cluster was started with, so a caller asking
+    /// for others restarts it rather than reusing it. `None` in a record
+    /// written before this was kept, which no request matches.
+    #[serde(default)]
+    pub started_with: Option<StartedWith>,
+}
+
+/// What a cluster was started with from [`crate::StoreSettings`]. The path as
+/// the operating system's own string, so a path that is not UTF-8 is
+/// recorded, and compared, byte for byte.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartedWith {
+    pub jit: bool,
+    pub postgres_dir: Option<std::ffi::OsString>,
 }
 
 impl LocalServer {
