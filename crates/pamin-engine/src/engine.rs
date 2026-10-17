@@ -1186,8 +1186,7 @@ impl Engine {
                 return Ok(());
             }
 
-            let embeddings = embedder.encode_passages(&contents)?;
-            let encoding = embedder.encoding();
+            let (embeddings, encoding) = embedder.encode_passages(&contents)?;
             let documents: Vec<VectorDocument<'_>> = states
                 .iter()
                 .zip(&embeddings)
@@ -2234,8 +2233,7 @@ impl Engine {
                 let model = embedder
                     .as_mut()
                     .expect("the model is loaded whenever a vector is missing");
-                let embeddings = model.encode_passages(&texts)?;
-                let encoding = model.encoding();
+                let (embeddings, encoding) = model.encode_passages(&texts)?;
                 let documents: Vec<_> = batch
                     .iter()
                     .zip(&embeddings)
