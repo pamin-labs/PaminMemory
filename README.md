@@ -144,7 +144,7 @@ a bill.
 
 ## Quickstart
 
-No Docker. No API key. No configuration. `init` provisions a local PostgreSQL for you, and the embedding model downloads the first time you search.
+No Docker. No API key. No configuration. `init` provisions a local PostgreSQL for you. The embedding model downloads on the first write, and the reranker on the first search.
 
 ```bash
 cargo install --path crates/pamin-cli
