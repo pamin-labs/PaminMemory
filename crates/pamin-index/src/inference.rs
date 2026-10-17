@@ -655,6 +655,21 @@ fn same_plan(a: &PlanUse, b: &PlanUse) -> bool {
     (&a.target, &a.plan, a.stable, &a.revision) == (&b.target, &b.plan, b.stable, &b.revision)
 }
 
+/// The plans `model` has run on, oldest first, with the one it runs on now
+/// where it first ran -- added at the end if new, its origin updated if
+/// not -- for a history that goes on after it. Unlike [`plans_of`], this
+/// does not move the current plan to the end, so a fallback from it, then
+/// from another, then a recovery records the three in the order they ran.
+fn ran_on(model: &impl RuntimeModel, device: Device) -> Vec<PlanUse> {
+    let mut history = model.runtime_plan().history.clone();
+    let now = current_use(model, device);
+    match history.iter_mut().find(|seen| same_plan(seen, &now)) {
+        Some(seen) => seen.origin = now.origin,
+        None => history.push(now),
+    }
+    history
+}
+
 fn current_use(model: &impl RuntimeModel, device: Device) -> PlanUse {
     let plan = model.runtime_plan();
     PlanUse {
@@ -873,7 +888,7 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
                 if let Some((mut active, selected)) = replacement {
                     // The place keeps every plan it ran on, so a run that
                     // fell back says so.
-                    let history = plans_of(model, *device);
+                    let history = ran_on(model, *device);
                     let now = current_use(&active, selected);
                     active.runtime_plan_mut().history = with_last(history, now);
                     *model = active;
@@ -943,7 +958,7 @@ fn remember_attempt<T: RuntimeModel>(model: &mut T, device: Device, attempted: O
     let Some(attempted) = attempted else {
         return;
     };
-    model.runtime_plan_mut().history = with_last(plans_of(model, device), attempted);
+    model.runtime_plan_mut().history = with_last(ran_on(model, device), attempted);
 }
 
 /// The machine a plan is selected on, as every plan's identity names it: the
@@ -2388,9 +2403,10 @@ mod tests {
     }
 
     /// A recovery that fails on a second accelerator before the CPU runs
-    /// the input keeps every plan it ran on, the dropped one too.
+    /// the input keeps every plan it ran on, the dropped one too, in the
+    /// order they ran: the first accelerator, the second, then the CPU.
     #[test]
-    fn a_fallback_through_two_accelerators_keeps_each() {
+    fn a_fallback_through_two_accelerators_keeps_each_in_order() {
         let root = tempfile::tempdir().unwrap();
         let now = std::time::Instant::now();
         let mut model = RuntimeFixture::new(1, "cuda");
@@ -2419,13 +2435,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!((answer, replaced, device), (3, true, Device::Cpu));
-        let mut targets: Vec<String> = plans_of(&model, device)
+        let targets: Vec<String> = plans_of(&model, device)
             .into_iter()
             .map(|plan| plan.target)
             .collect();
-        assert_eq!(targets.pop().as_deref(), Some("cpu"));
-        targets.sort();
-        assert_eq!(targets, ["cuda", "npu"]);
+        assert_eq!(targets, ["cuda", "npu", "cpu"]);
     }
 
     /// A plan read from its file that expires and is recalibrated to the
