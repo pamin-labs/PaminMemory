@@ -255,17 +255,23 @@ fn child(arm: &str, cache: &Path) {
 
     match arm {
         "write-embedder" => {
-            Embedder::load(cache).expect("load the embedder");
+            Embedder::load(cache, &pamin_index::InferenceSettings::from_environment())
+                .expect("load the embedder");
         }
         "write-accurate" => {
-            Reranker::load(cache).expect("load the reranker");
+            Reranker::load(cache, &pamin_index::InferenceSettings::from_environment())
+                .expect("load the reranker");
         }
         "old" | "new" => {
             let before = anonymous();
             let started = Instant::now();
             let (mut embed, mut rank): (Embed, Rank) = if arm == "new" {
-                let mut embedder = Embedder::load(cache).expect("load the embedder");
-                let mut reranker = Reranker::load(cache).expect("load the reranker");
+                let mut embedder =
+                    Embedder::load(cache, &pamin_index::InferenceSettings::from_environment())
+                        .expect("load the embedder");
+                let mut reranker =
+                    Reranker::load(cache, &pamin_index::InferenceSettings::from_environment())
+                        .expect("load the reranker");
                 assert_eq!(reranker.device(), Device::Cpu, "the copy is for the CPU");
                 (
                     Box::new(move |texts| embedder.embed_passages(texts).expect("embed").concat()),

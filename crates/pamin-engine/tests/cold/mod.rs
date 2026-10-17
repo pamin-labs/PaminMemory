@@ -390,7 +390,10 @@ fn parts(models: &std::path::Path, [query, other]: [&str; 2]) -> Vec<(&'static s
 
     let mut embedder = None;
     time("parts: load the embedder", &mut || {
-        embedder = Some(Embedder::load(models).expect("load the embedder"));
+        embedder = Some(
+            Embedder::load(models, &pamin_index::InferenceSettings::from_environment())
+                .expect("load the embedder"),
+        );
     });
     let mut embedder = embedder.expect("loaded");
     time("parts: first query embedding", &mut || {
@@ -408,7 +411,10 @@ fn parts(models: &std::path::Path, [query, other]: [&str; 2]) -> Vec<(&'static s
     let documents: Vec<&str> = documents.iter().map(String::as_str).collect();
     let mut reranker = None;
     time("parts: load the reranker", &mut || {
-        reranker = Some(Reranker::load(models).expect("load the reranker"));
+        reranker = Some(
+            Reranker::load(models, &pamin_index::InferenceSettings::from_environment())
+                .expect("load the reranker"),
+        );
     });
     let mut reranker = reranker.expect("loaded");
     time("parts: first rerank pass", &mut || {
@@ -423,8 +429,14 @@ fn parts(models: &std::path::Path, [query, other]: [&str; 2]) -> Vec<(&'static s
     let mut both = None;
     time("parts: load both at once", &mut || {
         both = Some(std::thread::scope(|scope| {
-            let embedder = scope.spawn(|| Embedder::load(models).expect("embedder"));
-            let reranker = scope.spawn(|| Reranker::load(models).expect("reranker"));
+            let embedder = scope.spawn(|| {
+                Embedder::load(models, &pamin_index::InferenceSettings::from_environment())
+                    .expect("embedder")
+            });
+            let reranker = scope.spawn(|| {
+                Reranker::load(models, &pamin_index::InferenceSettings::from_environment())
+                    .expect("reranker")
+            });
             (
                 embedder.join().expect("the embedder's load panicked"),
                 reranker.join().expect("the reranker's load panicked"),

@@ -14,7 +14,9 @@ fn accelerated_embeddings_preserve_the_embedding_space() {
         let models = std::path::PathBuf::from(
             std::env::var_os("PAMIN_TEST_MODEL_CACHE").expect("the parent supplies a cache"),
         );
-        let mut model = Embedder::load(&models).expect("embedding model");
+        let mut model =
+            Embedder::load(&models, &pamin_index::InferenceSettings::from_environment())
+                .expect("embedding model");
         if std::env::var("PAMIN_DEVICE").as_deref() == Ok("cpu") {
             assert_eq!(model.device(), Device::Cpu);
         } else {

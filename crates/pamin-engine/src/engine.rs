@@ -300,6 +300,8 @@ struct Rebuilding {
 #[derive(Clone)]
 pub struct Models {
     dir: std::path::PathBuf,
+    /// How the models load: device, threads, mapped copies, batching.
+    inference: Arc<pamin_index::InferenceSettings>,
     loaded: Arc<Mutex<Option<Held<Embedder>>>>,
     /// The same arrangement for the one reranker, while it is loaded.
     ///
@@ -360,6 +362,7 @@ impl Models {
     pub fn in_workspace(workspace: &Workspace) -> Self {
         Self {
             dir: workspace.root().join("models"),
+            inference: Arc::new(pamin_index::InferenceSettings::from_environment()),
             loaded: Arc::default(),
             reranker: Arc::default(),
         }
@@ -382,7 +385,7 @@ impl Models {
             return Ok(Arc::clone(embedder));
         }
 
-        let embedder = Arc::new(Mutex::new(Embedder::load(&self.dir)?));
+        let embedder = Arc::new(Mutex::new(Embedder::load(&self.dir, &self.inference)?));
         *loaded = Some((Instant::now(), Arc::clone(&embedder)));
         Ok(embedder)
     }
@@ -402,7 +405,7 @@ impl Models {
             return Ok(Arc::clone(reranker));
         }
 
-        let reranker = Arc::new(Mutex::new(Reranker::load(&self.dir)?));
+        let reranker = Arc::new(Mutex::new(Reranker::load(&self.dir, &self.inference)?));
         *held = Some((Instant::now(), Arc::clone(&reranker)));
         Ok(reranker)
     }
@@ -432,8 +435,8 @@ impl Models {
     /// arm measured them at 1,300 ms together, against 1,089 and 977 alone.
     pub fn warm(&self) -> Result<(), pamin_index::IndexError> {
         std::thread::scope(|scope| {
-            let reranker =
-                Reranker::is_downloaded(&self.dir).then(|| scope.spawn(|| self.reranker()));
+            let reranker = Reranker::is_downloaded(&self.dir, &self.inference)
+                .then(|| scope.spawn(|| self.reranker()));
             let embedder = self.embedder();
             let reranker =
                 reranker.map(|loading| loading.join().expect("a reranker load panicked"));
@@ -2638,6 +2641,7 @@ mod tests {
 
         let models = super::Models {
             dir: std::path::PathBuf::new(),
+            inference: std::sync::Arc::default(),
             loaded: std::sync::Arc::default(),
             reranker: std::sync::Arc::default(),
         };

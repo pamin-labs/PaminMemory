@@ -372,8 +372,11 @@ impl Priced {
     /// `models` is the workspace's model cache, where the shipped tier's
     /// reranker is loaded from.
     pub fn new(models: &std::path::Path) -> Self {
-        let reranker =
-            pamin_index::Reranker::load(models).expect("load the shipped reranker for its planner");
+        let reranker = pamin_index::Reranker::load(
+            models,
+            &pamin_index::InferenceSettings::from_environment(),
+        )
+        .expect("load the shipped reranker for its planner");
         let mut rules = rules();
         let shortlist = std::env::var("SHORTLIST_OUT").ok().map(|path| {
             std::io::BufWriter::new(

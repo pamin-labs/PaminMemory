@@ -34,7 +34,11 @@ fn the_reranker_puts_the_relevant_document_first() {
     let unrelated = "The office coffee machine is descaled on the first Monday \
                      of each month.";
 
-    let mut reranker = Reranker::load(&dir.path().join("models")).expect("load the reranker");
+    let mut reranker = Reranker::load(
+        &dir.path().join("models"),
+        &pamin_index::InferenceSettings::from_environment(),
+    )
+    .expect("load the reranker");
 
     // Both orders, because a model whose output is being read off the
     // wrong axis would pass one of them by luck. Passing both means the
@@ -96,7 +100,9 @@ fn every_device_orders_like_the_cpu() {
         .unwrap_or_else(|| temporary.path().join("models"));
 
     if let Some(output) = std::env::var_os("PAMIN_RERANK_TEST_OUTPUT") {
-        let mut model = Reranker::load(&models).expect("load reranker");
+        let mut model =
+            Reranker::load(&models, &pamin_index::InferenceSettings::from_environment())
+                .expect("load reranker");
         if let Ok(expected) = std::env::var("PAMIN_EXPECT_DEVICE") {
             assert_eq!(
                 model.device().name(),
@@ -180,7 +186,8 @@ fn coreml_buckets_preserve_partial_batches_and_work() {
     let cache = std::env::var_os("PAMIN_TEST_MODEL_CACHE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| temporary.path().join("models"));
-    let mut model = Reranker::load(&cache).expect("load accurate model");
+    let mut model = Reranker::load(&cache, &pamin_index::InferenceSettings::from_environment())
+        .expect("load accurate model");
     assert_eq!(
         model.device(),
         pamin_index::Device::CoreMl,

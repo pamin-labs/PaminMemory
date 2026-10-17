@@ -633,8 +633,11 @@ async fn report_tiers(engine: &Engine, queries: &[Query]) {
 async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query]) {
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
-    let mut model =
-        pamin_index::Reranker::load(&workspace.root().join("models")).expect("load the reranker");
+    let mut model = pamin_index::Reranker::load(
+        &workspace.root().join("models"),
+        &pamin_index::InferenceSettings::from_environment(),
+    )
+    .expect("load the reranker");
 
     let labels = reranking::context_labels();
     let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
