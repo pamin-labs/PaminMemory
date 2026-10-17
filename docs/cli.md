@@ -758,7 +758,7 @@ instead spans a factor of infinity inside one channel, which inverts that — an
 measurably so. A plain weighted sum of standardised scores scores higher on
 nDCG@10 in three of four groups and takes XQuAD-R's cross-lingual `recall@50`
 from 0.8960 to 0.7765. Nothing recovers a memory that was never returned, so
-that trade is declined; `[ADR 0001](adr/0001-tech-selection.md)` has both
+that trade is declined; [ADR 0001](adr/0001-tech-selection.md) has both
 tables.
 
 The two lexical channels carry an eighth of a weight each because at full
