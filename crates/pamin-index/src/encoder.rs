@@ -38,7 +38,7 @@ pub(crate) struct Encoder {
     /// The graph [`run_each`](Self::run_each) loads its single-threaded
     /// session from, and that session once it has been loaded; `None` runs
     /// every text on [`session`](Self::session).
-    side_by_side: Option<(PathBuf, Option<Session>)>,
+    side_by_side: Option<(PathBuf, Option<SharedCpuSession>)>,
     /// The most passes [`run_each`](Self::run_each) has had running at once.
     #[cfg(test)]
     most_at_once: usize,
@@ -232,7 +232,15 @@ impl Encoder {
             return Ok(1);
         }
         if shared.is_none() {
-            *shared = Some(crate::inference::cpu_session(model, 1)?);
+            // The shared session only saves time, and `session` still runs
+            // every batch: one that will not load leaves the passes to it.
+            match SharedCpuSession::load(model) {
+                Ok(session) => *shared = Some(session),
+                Err(error) => {
+                    tracing::warn!(%error, "could not load the side-by-side session");
+                    return Ok(1);
+                }
+            }
         }
         Ok(wanted)
     }
@@ -474,23 +482,67 @@ fn native_shape(length: usize) -> (usize, usize) {
     }
 }
 
+/// The one session [`run_shared`] runs from several threads at once: loaded
+/// on ONNX Runtime's CPU execution provider alone, with every node of the
+/// graph assigned to it.
+///
+/// Concurrent `Run` is safe on some execution providers and not on others,
+/// so this type is the only way onto the concurrent path, and it admits the
+/// CPU alone. ONNX Runtime documents `Run` as callable from several threads
+/// on one session (`InferenceSession::Run` in
+/// `onnxruntime/core/session/inference_session.h`), and an execution provider
+/// that cannot take that says so through `ConcurrentRunSupported`, for which
+/// ONNX Runtime then serializes `Run` itself (XNNPACK, WebGPU, WebNN, JS in
+/// 1.28). DirectML does not declare it and documents that only one thread may
+/// call `Run` at a time; CUDA and TensorRT have concurrency reports against
+/// them. None of those may reach this type: [`load`](Self::load) builds the
+/// session from the CPU provider alone and refuses it unless ONNX Runtime
+/// assigned every node to that provider.
+struct SharedCpuSession(Session);
+
+impl SharedCpuSession {
+    fn load(model: &std::path::Path) -> Result<Self> {
+        let session = crate::inference::cpu_session(model, 1)?;
+        cpu_alone(&crate::inference::assigned_providers(&session)?)?;
+        Ok(Self(session))
+    }
+}
+
+/// Whether `assigned`, a session's node count by execution provider, puts
+/// every node on the CPU provider. An empty assignment is refused too: it
+/// means ONNX Runtime recorded none, not that there was nothing to assign.
+fn cpu_alone(assigned: &std::collections::BTreeMap<String, usize>) -> Result<()> {
+    if assigned.is_empty() {
+        return Err(failed(&"a shared session recorded no provider assignment"));
+    }
+    match assigned
+        .iter()
+        .find(|(provider, nodes)| *provider != "CPUExecutionProvider" && **nodes > 0)
+    {
+        Some((provider, _)) => Err(failed(&format!(
+            "a shared session assigned nodes to {provider}, not the CPU alone"
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// One forward pass over `feed` on `session`, which other threads may be
 /// running at the same moment, as [`Session::run`] would make it.
 ///
 /// `ort` runs a session only through `&mut`: its author does not trust ONNX
-/// Runtime's `Run` from several threads, and says so in `ort`'s source. ONNX
-/// Runtime documents it as safe (`InferenceSession::Run` in
-/// `onnxruntime/core/session/inference_session.h`: "Multiple threads are
-/// allowed to run this function"), and [`Encoder::run_each`] calls this only
-/// on a session it loaded on the CPU alone, of one intra-op thread, so that
-/// every pass runs on the thread that asked for it. So this is `Run` itself,
-/// through ONNX Runtime's C API, called on a shared session -- the call the
-/// `ort` crate makes, without the exclusive borrow it puts in front of it.
+/// Runtime's `Run` from several threads, naming "certain EP allocators or
+/// statistics trackers" in `ort`'s source, and recommends a session per
+/// thread. Here the session is a [`SharedCpuSession`] -- the CPU provider
+/// alone, its arena off, no profiling -- of one intra-op thread, so that every
+/// pass runs on the thread that asked for it. So this is `Run` itself, through
+/// ONNX Runtime's C API, called on a shared session -- the call the `ort`
+/// crate makes, without the exclusive borrow it puts in front of it.
 fn run_shared(
-    session: &Session,
+    session: &SharedCpuSession,
     feed: &[(Cow<'static, str>, SessionInputValue<'static>)],
 ) -> Result<Outputs> {
     use ort::AsPointer;
+    let session = &session.0;
     let names = |names: &mut dyn Iterator<Item = &str>| -> Result<Vec<CString>> {
         names
             .map(|name| CString::new(name).map_err(|error| failed(&error)))
@@ -503,7 +555,8 @@ fn run_shared(
     let values: Vec<_> = feed.iter().map(|(_, value)| value.ptr()).collect();
     let mut fetched = vec![std::ptr::null_mut(); outputs.len()];
     // SAFETY: the session is live for the call, and ONNX Runtime allows `Run`
-    // on it from several threads at once (see above). Every name is a
+    // on it from several threads at once on the CPU provider, the only one a
+    // `SharedCpuSession` admits (see above). Every name is a
     // NUL-terminated string and every input a live value, all outliving the
     // call; `fetched` has a slot for each output name, which `Run` fills.
     let status = unsafe {
@@ -589,6 +642,41 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Only a session whose every node is on the CPU provider may be run from
+    /// several threads at once.
+    #[test]
+    fn only_the_cpu_alone_reaches_the_shared_session() {
+        let assigned = |entries: &[(&str, usize)]| {
+            entries
+                .iter()
+                .map(|(provider, nodes)| (provider.to_string(), *nodes))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        assert!(cpu_alone(&assigned(&[("CPUExecutionProvider", 900)])).is_ok());
+        assert!(cpu_alone(&assigned(&[])).is_err(), "nothing recorded");
+        for other in [
+            "DmlExecutionProvider",
+            "CUDAExecutionProvider",
+            "CoreMLExecutionProvider",
+            "TensorrtExecutionProvider",
+            "XnnpackExecutionProvider",
+        ] {
+            assert!(
+                cpu_alone(&assigned(&[("CPUExecutionProvider", 10), (other, 1)])).is_err(),
+                "{other} reached the shared session"
+            );
+        }
+    }
+
+    /// A real graph loaded for sharing records its nodes on the CPU provider,
+    /// so the guard above admits it rather than refusing every model.
+    #[test]
+    fn a_cpu_graph_loads_as_a_shared_session() {
+        let model = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/coreml-normalization.onnx");
+        SharedCpuSession::load(&model).expect("a CPU graph is admitted");
     }
 
     #[test]
