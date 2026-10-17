@@ -497,6 +497,32 @@ impl Models {
         )
     }
 
+    /// The passes the reranker loaded at `tier` makes over `documents` for
+    /// `query` (see [`Reranker::plan`]), or `None` if this process has not
+    /// loaded that tier. Never loads one. The handle is cloned out from under
+    /// the registry lock first, as in [`counted`](Self::counted).
+    fn passes(
+        &self,
+        tier: Rerank,
+        query: &str,
+        documents: &[&str],
+    ) -> Option<Result<Vec<Vec<usize>>, pamin_index::IndexError>> {
+        let held = {
+            let rerankers = self
+                .rerankers
+                .lock()
+                .expect("the reranker registry lock is poisoned");
+            let (_, reranker) = rerankers.get(&tier)?;
+            Arc::clone(reranker)
+        };
+        let reranker = held.lock().expect("the reranker lock is poisoned");
+        Some(
+            reranker
+                .lengths(query, documents)
+                .map(|lengths| reranker.plan(&lengths)),
+        )
+    }
+
     /// The execution plans of every reranker this process has loaded, as
     /// `reranking <tier>`, in tier-name order. Handles are cloned out from
     /// under the registry lock first, as in [`counted`](Self::counted).
@@ -1545,6 +1571,24 @@ impl Engine {
     /// totals for the loaded model and are lost when an idle tier is released.
     pub fn reranked(&self, tier: Rerank) -> Option<pamin_index::Reranked> {
         self.models.counted(tier)
+    }
+
+    /// The passes this engine's reranker at `tier` would make over
+    /// `documents` for `query`, in the order it runs them -- its own planner,
+    /// at the execution target it is on now -- or `None` if this process has
+    /// not loaded that tier. Never loads one.
+    ///
+    /// Nothing in the product calls it. An evaluation replaying the passes a
+    /// search ran asks the engine's reranker rather than loading a second
+    /// copy of the model for its tokenizer and limits.
+    #[doc(hidden)]
+    pub fn rerank_passes(
+        &self,
+        tier: Rerank,
+        query: &str,
+        documents: &[&str],
+    ) -> Option<std::result::Result<Vec<Vec<usize>>, pamin_index::IndexError>> {
+        self.models.passes(tier, query, documents)
     }
 
     /// Loads the embedding model now, if it is not loaded yet, rather than at
@@ -2808,6 +2852,24 @@ mod tests {
         preloads.start(|| {});
         assert_eq!(preloads.0.lock().unwrap().len(), 1);
         preloads.settle().await;
+    }
+
+    /// Planning a replay's passes asks only a reranker already loaded: with
+    /// none, it answers `None` and loads nothing, so an evaluation that
+    /// plans through it holds one reranker model, the one the engine loaded.
+    #[test]
+    fn planning_passes_never_loads_a_reranker() {
+        let models = super::Models {
+            dir: std::path::PathBuf::from("/nonexistent/pamin-models"),
+            loaded: std::sync::Arc::default(),
+            rerankers: std::sync::Arc::default(),
+        };
+        assert!(
+            models
+                .passes(Rerank::Accurate, "query", &["one", "two"])
+                .is_none()
+        );
+        assert!(models.rerankers.lock().unwrap().is_empty());
     }
 
     #[test]
