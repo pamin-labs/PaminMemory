@@ -14,8 +14,9 @@
 //! with `pamin link`. The topic names are dialogue ids, so mention derivation
 //! finds nothing and the only edges are those links. Every question is asked
 //! twice of that one project: with the shipped fusion, and with the graph
-//! channel taken out, which is what a project without the links -- the flat
-//! benchmark arm -- can find. Each row is a per-question comparison of the
+//! channel taken out and not walked (graph depth 0, so the reranker is shown
+//! no graph seed either), which is what a project without the links -- the
+//! flat benchmark arm -- can find. Each row is a per-question comparison of the
 //! same search with and without the graph -- the graph channel's worth on
 //! this corpus, not a guess at it.
 //!
@@ -667,19 +668,33 @@ async fn locomo_evidence_with_and_without_links() {
         });
         for question in &conversation.questions {
             questions += 1;
-            let fusions = [Fusion::default().without(Channel::Graph), Fusion::default()];
-            for (side, fusion) in fusions.into_iter().enumerate() {
+            // Without the graph, nothing walks it: a zero fusion weight alone
+            // still recalls the graph and shows the reranker each reached
+            // candidate's seed, so the links would still move the ranking.
+            let arms = [
+                (
+                    Depths { graph: 0, ..DEPTHS },
+                    Fusion::default().without(Channel::Graph),
+                ),
+                (DEPTHS, Fusion::default()),
+            ];
+            for (side, (depths, fusion)) in arms.into_iter().enumerate() {
                 harness::shape::table(TABLES[side]);
                 let hits = engine
                     .search_reranked_with(
                         &question.text,
                         RECALL_AT as u32,
-                        DEPTHS,
+                        depths,
                         Rerank::default(),
                         fusion,
                     )
                     .await
                     .expect("search");
+                assert!(
+                    side == 1 || hits.iter().all(|hit| hit.seed.is_none()),
+                    "{}: the arm without the graph still used it",
+                    question.id
+                );
                 let ranked: Vec<String> = hits.into_iter().map(|hit| hit.topic).collect();
                 harness::shape::tally(&question.category, &question.id);
                 scores[side]
