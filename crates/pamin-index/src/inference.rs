@@ -580,6 +580,9 @@ pub(crate) struct RuntimePlan {
     /// Every plan this model's place has run on, oldest first: a model a
     /// failure or a revalidation replaced hands its history on.
     history: Vec<PlanUse>,
+    /// Whether this plan was chosen among measured candidates (see
+    /// [`PlanUse::calibrated`]); false for a CPU-only selection.
+    calibrated: bool,
 }
 
 /// One execution plan a model ran on: its target as plans are keyed
@@ -596,6 +599,12 @@ pub struct PlanUse {
     pub plan: String,
     pub stable: bool,
     pub revision: String,
+    /// Whether the plan was chosen among accelerator candidates by
+    /// calibration, in this process or by a persisted record of one. False
+    /// when there was nothing to calibrate -- the CPU alone was selectable,
+    /// as with `PAMIN_DEVICE=cpu` or no accelerator found -- and for a model
+    /// loaded without a plan.
+    pub calibrated: bool,
 }
 
 /// The plans `model` has run on, each once, in the order first seen except
@@ -630,6 +639,7 @@ fn current_use(model: &impl RuntimeModel, device: Device) -> PlanUse {
         },
         stable: plan.identity.is_empty() || plan.stable,
         revision: model.revision().to_string(),
+        calibrated: !plan.identity.is_empty() && plan.calibrated,
     }
 }
 
@@ -1019,6 +1029,29 @@ pub(crate) fn measured<T: RuntimeModel>(
     cache_dir: &Path,
     references: &std::cell::RefCell<References>,
     shape: ReferenceShape,
+    load: impl FnMut(Device, Target, bool) -> Result<T>,
+    evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
+) -> Result<(T, Device)> {
+    measured_among(
+        accelerators(),
+        identity,
+        cache_dir,
+        references,
+        shape,
+        load,
+        evaluate,
+    )
+}
+
+/// [`measured`] over these `discovered` accelerators: none, as
+/// [`accelerators`] finds under `PAMIN_DEVICE=cpu` or on a machine without
+/// one, selects the CPU without measuring anything.
+fn measured_among<T: RuntimeModel>(
+    discovered: Vec<(Device, Target)>,
+    identity: &str,
+    cache_dir: &Path,
+    references: &std::cell::RefCell<References>,
+    shape: ReferenceShape,
     mut load: impl FnMut(Device, Target, bool) -> Result<T>,
     evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
 ) -> Result<(T, Device)> {
@@ -1038,7 +1071,6 @@ pub(crate) fn measured<T: RuntimeModel>(
         ort::info(),
         threads()
     );
-    let discovered = accelerators();
     let target_ids: Vec<_> = discovered
         .iter()
         .map(|(device, target)| target_identity(*device, target))
@@ -1058,6 +1090,7 @@ pub(crate) fn measured<T: RuntimeModel>(
             target: target_id,
             retry_at: blocked.as_ref().map(|(at, _)| *at),
             restore_target: blocked.as_ref().map(|(_, target)| target.clone()),
+            calibrated: true,
             ..RuntimePlan::default()
         };
         Ok(model)
@@ -1081,6 +1114,8 @@ pub(crate) fn measured<T: RuntimeModel>(
             let plan = model.runtime_plan_mut();
             plan.identity = fingerprint(&format!("cpu-only|{}|{}", plan.namespace, machine()));
             plan.stable = true;
+            // Nothing was measured: the CPU was the only candidate.
+            plan.calibrated = false;
             (model, Device::Cpu)
         });
     }
@@ -2442,6 +2477,38 @@ mod tests {
             named.contains(&format!("{:?}", std::thread::available_parallelism())),
             "{named}"
         );
+    }
+
+    /// With no accelerator to try -- `PAMIN_DEVICE=cpu`, or none found --
+    /// the CPU is selected without measuring anything, and its plan says it
+    /// was not calibrated; nor is a model loaded without a plan.
+    #[test]
+    fn a_cpu_only_selection_is_not_calibrated() {
+        let root = tempfile::tempdir().unwrap();
+        let references = std::cell::RefCell::new(References::default());
+        let (model, device) = measured_among(
+            Vec::new(),
+            "cpu-only-test",
+            root.path(),
+            &references,
+            ReferenceShape {
+                vectors: None,
+                queries: None,
+                scores: None,
+            },
+            |_, _, _| Ok(RuntimeFixture::new(1, "cpu")),
+            |_: &mut RuntimeFixture<i32>, _| -> Result<std::time::Duration> {
+                panic!("nothing is measured when the CPU is the only candidate")
+            },
+        )
+        .unwrap();
+        assert_eq!(device, Device::Cpu);
+        let used = current_use(&model, device);
+        assert_ne!(used.plan, "unplanned");
+        assert!(!used.calibrated, "{used:?}");
+
+        let unplanned = current_use(&RuntimeFixture::new(1, "cpu"), Device::Cpu);
+        assert!(!unplanned.calibrated);
     }
 
     /// A fallback that fails its revalidation again and again keeps one

@@ -1453,6 +1453,11 @@ impl Shape {
             let mut calibration: Vec<String> = plans
                 .iter()
                 .map(|(role, plan)| {
+                    // As the load says: a plan chosen with nothing to
+                    // measure -- the CPU alone -- was not calibrated at all.
+                    if !plan.calibrated {
+                        return format!("cpu-only {role}={}: no calibration", provider(plan));
+                    }
                     let when = if before.contains(&plan.plan) {
                         "before the run"
                     } else {
@@ -2499,6 +2504,14 @@ mod tests {
             vec![
                 ("embedding".to_string(), used("cpu", "1", REVISION)),
                 ("reranking".to_string(), used("cpu", "2", REVISION)),
+                // Selected with nothing to measure, as under PAMIN_DEVICE=cpu.
+                (
+                    "secondary".to_string(),
+                    pamin_index::PlanUse {
+                        calibrated: false,
+                        ..used("cpu", "3", REVISION)
+                    },
+                ),
             ]
         });
         assert!(shape.resolve_providers(false));
@@ -2510,6 +2523,7 @@ mod tests {
                     "1".repeat(16)
                 ),
                 format!("calibrated reranking=cpu@{}: by the run", "2".repeat(16)),
+                format!("cpu-only secondary=cpu@{}: no calibration", "3".repeat(16)),
             ]
         );
     }
@@ -2835,6 +2849,7 @@ mod tests {
             plan: digit.repeat(64),
             stable: true,
             revision: revision.into(),
+            calibrated: true,
         }
     }
 
