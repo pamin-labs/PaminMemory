@@ -2194,28 +2194,41 @@ pub(crate) fn accelerators(settings: &crate::InferenceSettings) -> Vec<(Device, 
 /// Retain registered libraries for the environment/session lifetime. Paths
 /// are explicit because vendor plugin installation differs by platform.
 ///
-/// Registered once a process, from the libraries the first caller names: a
-/// process runs with one set of settings, so every later caller names the
-/// same ones.
+/// Each library is registered the first time any caller names it, and kept
+/// by path: a caller naming a library no earlier caller did gets it
+/// registered, rather than finding the set fixed by whoever came first. A
+/// path that is relative, or failed to register, is recorded too, so it is
+/// warned about once rather than on every call.
 fn register_plugins(
     environment: &std::sync::Arc<ort::environment::Environment>,
     libraries: &[PathBuf],
 ) {
-    static LIBRARIES: std::sync::OnceLock<Vec<ort::ep::ExecutionProviderLibrary>> =
-        std::sync::OnceLock::new();
-    LIBRARIES.get_or_init(|| {
-        libraries.iter()
-            .enumerate().filter_map(|(index, path)| {
-                if !path.is_absolute() {
-                    tracing::warn!(path = %path.display(), "execution-provider library must be absolute");
-                    return None;
+    static REGISTERED: std::sync::Mutex<
+        std::collections::BTreeMap<PathBuf, Option<ort::ep::ExecutionProviderLibrary>>,
+    > = std::sync::Mutex::new(std::collections::BTreeMap::new());
+    let mut registered = REGISTERED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for path in libraries {
+        if registered.contains_key(path) {
+            continue;
+        }
+        let library = if !path.is_absolute() {
+            tracing::warn!(path = %path.display(), "execution-provider library must be absolute");
+            None
+        } else {
+            // Named by the order of registration, which no two share.
+            let name = format!("pamin-plugin-{}", registered.len());
+            match environment.register_ep_library(name, path) {
+                Ok(library) => Some(library),
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "execution-provider library unavailable");
+                    None
                 }
-                match environment.register_ep_library(format!("pamin-plugin-{index}"), path) {
-                    Ok(library) => Some(library),
-                    Err(error) => { tracing::warn!(path = %path.display(), %error, "execution-provider library unavailable"); None }
-                }
-            }).collect()
-    });
+            }
+        };
+        registered.insert(path.clone(), library);
+    }
 }
 
 fn gpu_providers() -> Vec<(Device, ExecutionProviderDispatch)> {
