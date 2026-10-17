@@ -2398,6 +2398,40 @@ mod tests {
         );
     }
 
+    /// Code that sets the environment for an experimental arm takes the
+    /// turn itself when its test holds none -- a comparison run from a test
+    /// with no evaluation and no model-loading turn -- and reuses its
+    /// thread's turn when it does, rather than waiting on itself; and it
+    /// waits while another thread holds it.
+    #[test]
+    fn an_environment_arm_takes_the_turn_it_needs() {
+        use super::super::{environment_turn, holds_turn, load_models};
+        let (taken, waiting) = std::sync::mpsc::channel();
+        let held = load_models();
+        let unheld = std::thread::spawn(move || {
+            // No turn of its own: it waits for one, then holds it.
+            let turn = environment_turn();
+            taken.send(()).expect("say it took the turn");
+            let holding = turn.is_some() && holds_turn();
+            // Holding it, it takes no second one.
+            let nested = environment_turn().is_none();
+            drop(turn);
+            (holding, nested, holds_turn())
+        });
+        assert!(
+            waiting
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "the environment was set while another thread held the turn"
+        );
+        assert!(environment_turn().is_none(), "the holder waited on itself");
+        drop(held);
+        assert_eq!(
+            unheld.join().expect("the other thread"),
+            (true, true, false)
+        );
+    }
+
     /// A run whose model loads fetched or prepared anything is cold, one
     /// whose loads found everything in place is warm, and a plan
     /// calibrated before the run is told from one the run calibrated -- an
