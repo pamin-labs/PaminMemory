@@ -1706,7 +1706,12 @@ impl Engine {
                 ),
                 ChannelResults::new(
                     Channel::Vector,
-                    index.recall_vector(&embedding, depths.channel)?,
+                    index.recall_vector_at(
+                        &embedding,
+                        depths.channel,
+                        pamin_core::env::positive("PAMIN_SEARCH_EFFORT")
+                            .unwrap_or(pamin_index::projection::SEARCH_EFFORT),
+                    )?,
                 ),
             ];
             Ok::<_, pamin_index::IndexError>(lists)

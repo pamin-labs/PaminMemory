@@ -701,7 +701,12 @@ impl Engine {
                 let index = self.index();
                 Ok((index.document_count()?, index.vector_index_completeness()?))
             })?;
-        Ok(pamin_index::vector_index_lags(documents, completeness))
+        Ok(pamin_index::vector_index_lags(
+            documents,
+            completeness,
+            pamin_core::env::positive("PAMIN_UNINDEXED_BUDGET")
+                .unwrap_or(pamin_index::projection::UNINDEXED_BUDGET),
+        ))
     }
 
     /// Compacts the index, and builds a graph over any segment that sealed.
