@@ -72,8 +72,18 @@ impl Repository {
     /// would read every file from a snapshot that is not there for the rest
     /// of the process: the requested revision is fetched instead, as it is
     /// before anything is cached.
+    ///
+    /// A requested commit is pinned as itself, with or without a ref: its
+    /// snapshot is named by it. A fetch by a moving ref leaves the snapshot
+    /// and removes the ref named by the commit it made ([`get`](Self::get)),
+    /// and the hub client finds a cached file only through a ref, so asking
+    /// it would fetch -- offline, fail -- a file already on disk.
     fn pin(&self) {
         if self.pinned.get().is_some() {
+            return;
+        }
+        if is_commit(&self.revision) {
+            let _ = self.pinned.set(self.revision.clone());
             return;
         }
         let resolved = std::fs::read_to_string(self.root().join("refs").join(&self.revision));
@@ -543,6 +553,27 @@ mod tests {
         // A requested commit is resolved without a ref.
         let at = Repository::open_at(dir.path(), NAME, OLD).expect("open");
         assert_eq!(at.identity(dir.path()), at.identity(dir.path()));
+    }
+
+    /// A commit's snapshot is read without a ref named by the commit: the
+    /// one a fetch by `main` leaves has none, and the hub client cannot find
+    /// a file without one. Offline -- no endpoint answers here -- the file
+    /// on disk is the answer, not a fetch.
+    #[test]
+    fn a_requested_commit_reads_its_snapshot_without_a_ref() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (entry, _) = downloaded(dir.path());
+        let refs = dir.path().join("models--someone--model/refs");
+        assert!(!refs.join(OLD).exists());
+        let at = Repository::open_at(dir.path(), NAME, OLD).expect("open");
+        assert_eq!(at.revision(), format!("someone/model@{OLD}"));
+        assert_eq!(at.file(dir.path(), FILE).on_disk(), Some(entry.clone()));
+        assert_eq!(at.get(FILE).expect("the cached file"), entry);
+
+        // Not a file the snapshot lacks, nor another commit's.
+        assert!(at.file(dir.path(), "tokenizer.json").on_disk().is_none());
+        let other = Repository::open_at(dir.path(), NAME, NEW).expect("open");
+        assert!(other.file(dir.path(), FILE).on_disk().is_none());
     }
 
     /// A ref the hub names anew before a fetch is recorded, so a cache whose
