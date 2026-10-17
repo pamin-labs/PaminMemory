@@ -184,11 +184,15 @@ search finds something new.
 
 - **Before searching again, name what is missing.** List the facts the
   question needs, then check them against the results you already have. Stop
-  when each one is backed by a hit. A fact missing from those results is
-  missing from one page of five, not from memory, so take it to the rules
-  below rather than concluding it is not there. A hit already carries its
-  topic's full current content; do not `read` it again. `read` is for its
-  earlier versions and the source span a claim came from.
+  when each one is backed by a hit whose `valid_from` and `valid_to` cover the
+  time the question asks about: now, unless it names another time. An absent
+  bound is open. `search` returns a topic's current state without checking
+  that interval, so a hit can state a fact that has lapsed or not yet begun. A
+  fact missing from those results is missing from one page of five, not from
+  memory, so take it to the rules below rather than concluding it is not
+  there. A hit already carries its topic's full current content; do not `read`
+  it again. `read` is for its earlier versions and the source span a claim
+  came from.
 - **Rephrase at most once, and never to the same place.** If the second
   phrasing brings back mostly the same topics (say, four of the five),
   the ranking is not the problem and a third phrasing will land there too.
@@ -196,18 +200,27 @@ search finds something new.
   - `grep` for an exact string you expect the answer to contain. It searches
     every version ever written, superseded ones included, so `read` the topic
     named in a hit's `source` and answer from it only if the current version
-    still says so;
+    still says so. A hit whose `filter_decision` is `filtered` was held by the
+    sensory filter: if it was the topic's first write there is no topic to
+    `read`, and if not, the current version never took it in. Such a hit is
+    the only record of what was written, so use it, saying it was recorded
+    but never promoted to a memory;
   - `neighbors --depth 1` from the best topic you found, with `--kind` to
     narrow it. The default depth is two and nothing caps how many it returns,
-    which on a well-connected topic can be most of the project.
+    which on a well-connected topic can be most of the project. It lists
+    topics and edges, not what they say, so `read` each neighbour that looks
+    relevant before ruling it out.
 
   `topics` is not one of them: it merges name matches with the same ranked
   search, unreranked. But it returns twenty by default against `search`'s
   five, so a content hit you have not already seen is new evidence too, as is
   any name match. It also shows what the workspace calls things.
-- **After two searches, a `grep` miss and a one-hop `neighbors` from the best
-  topic, stop and say what you tried.** Skip `neighbors` only when no hit is
-  related to the question. Report that those probes found nothing, not that
+- **After two searches, a `grep` that found nothing usable and a one-hop
+  `neighbors` from the best topic, stop and say what you tried.** A `grep`
+  found nothing usable when it missed, or when the current version of every
+  topic it hit no longer says what matched. Read the neighbours that look
+  relevant before stopping, and skip `neighbors` only when no hit is related
+  to the question. Report that those probes found nothing, not that
   the memory does not exist: `grep` matches one exact literal, case-sensitive
   unless you pass `-i`, and `search` returns five results by default, so
   differently worded or lower-ranked memories can still be there. An answer
