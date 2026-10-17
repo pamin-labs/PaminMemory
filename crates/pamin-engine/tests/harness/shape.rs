@@ -662,9 +662,12 @@ pub struct Shape {
     /// Vectors the run read from a cache rather than embedding, from
     /// [`cached`](Self::cached).
     caches: Vec<String>,
-    /// What was on disk before the models loaded, from
-    /// [`observe_models`](Self::observe_models).
-    warmth: Vec<String>,
+    /// What model loads in this process had fetched and prepared when
+    /// [`observe_models`](Self::observe_models) first looked, before the
+    /// models loaded.
+    activity_before: Option<pamin_index::LoadActivity>,
+    /// Reads those counts: `LoadActivity::now`, or a test's own.
+    activity: fn() -> pamin_index::LoadActivity,
     /// The execution plans calibrated and kept on disk before the models
     /// loaded, by plan hash, if [`observe_models`](Self::observe_models)
     /// looked.
@@ -747,9 +750,10 @@ struct Identity {
     /// `harness::vectors`). A run that embedded everything itself says so
     /// too, with nothing reused.
     caches: Vec<String>,
-    /// Which model downloads and prepared copies were on disk before the
-    /// models loaded: a run that downloads or prepares a model times that
-    /// too, and a rerun over a warm home is another condition.
+    /// Whether the model loads fetched or prepared anything, and how much,
+    /// and per role whether its plan was calibrated before the run: a run
+    /// that downloads, prepares or calibrates times that too, and a rerun
+    /// over a warm home is another condition.
     warmth: Vec<String>,
     /// `label: built|resumed|reused by producer`: each search index the run
     /// scored, and the digest of the embedding producer it was built by --
@@ -1120,7 +1124,8 @@ impl Shape {
             providers: Vec::new(),
             models: Vec::new(),
             caches: Vec::new(),
-            warmth: Vec::new(),
+            activity_before: None,
+            activity: pamin_index::LoadActivity::now,
             plans_before: None,
             calibration: Vec::new(),
             indexes: Vec::new(),
@@ -1187,36 +1192,15 @@ impl Shape {
             .push(format!("{file}: {reused}/{total} from {producer}"));
     }
 
-    /// Observes, before any model loads from `models`, whether each model
-    /// the run may load -- `profile`'s embedder and each of `tiers` -- is on
-    /// disk as a load would read it (`Embedder::is_downloaded`,
-    /// `Reranker::is_downloaded`: the download, or a usable prepared copy),
-    /// and which calibrated plans a load would accept. A run that fetched or
-    /// prepared a model, and paid for it in its timings, is not taken for
-    /// one that found them. Observed, not declared.
-    pub fn observe_models(
-        &mut self,
-        models: &Path,
-        profile: pamin_index::Profile,
-        tiers: &[pamin_index::Rerank],
-    ) {
-        let state = |ready: bool| if ready { "on disk" } else { "not on disk" };
-        let mut lines = vec![format!(
-            "embedding {}: {}",
-            profile.model_id(),
-            state(pamin_index::Embedder::is_downloaded(profile, models))
-        )];
-        for tier in tiers {
-            lines.push(format!(
-                "reranking {}: {}",
-                tier.name(),
-                state(pamin_index::Reranker::is_downloaded(*tier, models))
-            ));
-        }
-        for line in lines {
-            if !self.warmth.contains(&line) {
-                self.warmth.push(line);
-            }
+    /// Observes, before any model loads from `models`, what loads in this
+    /// process have fetched and prepared so far, and which calibrated plans
+    /// a load would accept. At the end, what the loads fetched and prepared
+    /// since -- tokenizer files, accelerator exports, mapped copies,
+    /// rewritten graphs and all -- says whether the run paid for them in
+    /// its timings: the outcome of the loads, not a prediction of it.
+    pub fn observe_models(&mut self, models: &Path) {
+        if self.activity_before.is_none() {
+            self.activity_before = Some((self.activity)());
         }
         // Only plans a load would accept (`pamin_index::plan_is_usable`): an
         // expired or broken one is calibrated again, as if it were absent.
@@ -1234,11 +1218,26 @@ impl Shape {
             .extend(plans);
     }
 
-    /// What was on disk before the models loaded, and per role whether its
-    /// execution plan was calibrated then or by this run: a run that
-    /// calibrates times the calibration too.
+    /// What the model loads fetched and prepared since
+    /// [`observe_models`](Self::observe_models) looked, and per role whether
+    /// its execution plan was calibrated before the run or by it: a run
+    /// that downloads, prepares or calibrates times that too.
     fn observed_warmth(&self) -> Vec<String> {
-        let mut warmth = self.warmth.clone();
+        let mut warmth: Vec<String> = self
+            .activity_before
+            .map(|before| {
+                let done = (self.activity)().since(before);
+                if done == pamin_index::LoadActivity::default() {
+                    "models: warm: nothing fetched or prepared".to_string()
+                } else {
+                    format!(
+                        "models: cold: fetched {} / prepared {}",
+                        done.fetched, done.prepared
+                    )
+                }
+            })
+            .into_iter()
+            .collect();
         warmth.extend(self.calibration.iter().cloned());
         warmth
     }
@@ -2299,41 +2298,49 @@ mod tests {
         );
     }
 
-    /// What was on disk before the models loaded is observed as a load
-    /// would find it, and a plan
+    /// A run whose model loads fetched or prepared anything is cold, one
+    /// whose loads found everything in place is warm, and a plan
     /// calibrated before the run is told from one the run calibrated -- an
     /// expired plan file counting as none, as the load treats it.
     #[test]
-    fn warmth_is_observed_from_the_model_directory() {
+    fn warmth_is_observed_from_the_loads() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static FETCHED: AtomicU64 = AtomicU64::new(0);
+        fn activity() -> pamin_index::LoadActivity {
+            pamin_index::LoadActivity {
+                fetched: FETCHED.load(Ordering::SeqCst),
+                prepared: 0,
+            }
+        }
         let dir = tempfile::tempdir().expect("temp dir");
         let models = dir.path();
         let observe = || {
             let mut shape = Shape::new("test", String::new(), None);
-            shape.observe_models(
-                models,
-                pamin_index::Profile::Accuracy,
-                &[pamin_index::Rerank::Fast],
-            );
+            shape.activity = activity;
+            shape.observe_models(models);
             shape
         };
-        let cold = [
-            format!(
-                "embedding {}: not on disk",
-                pamin_index::Profile::Accuracy.model_id()
-            ),
-            "reranking fast: not on disk".to_string(),
-        ];
-        assert_eq!(observe().warmth, cold);
+        // A load that fetches: cold.
+        let first = observe();
+        FETCHED.fetch_add(2, Ordering::SeqCst);
+        assert_eq!(
+            first.observed_warmth(),
+            ["models: cold: fetched 2 / prepared 0"]
+        );
+        // A second load, finding what the first fetched: warm.
+        assert_eq!(
+            observe().observed_warmth(),
+            ["models: warm: nothing fetched or prepared"]
+        );
+        // Loads are counted from the first look, not a later one.
+        let mut shape = observe();
+        FETCHED.fetch_add(1, Ordering::SeqCst);
+        shape.observe_models(models);
+        assert_eq!(
+            shape.observed_warmth(),
+            ["models: cold: fetched 1 / prepared 0"]
+        );
 
-        // A repository directory a failed fetch left, and a record whose
-        // copy is gone, are not a model on disk.
-        std::fs::create_dir_all(models.join("models--gpahal--bge-m3-onnx-int8")).unwrap();
-        std::fs::create_dir_all(models.join("prepared")).unwrap();
-        std::fs::write(
-            models.join("prepared/gpahal--bge-m3-onnx-int8--model_quantized.onnx.source"),
-            "model_quantized.onnx\n1\n1\n",
-        )
-        .unwrap();
         // A plan a load would use, and one it would not: expired.
         let plans = models.join("compute-plans-v1");
         std::fs::create_dir_all(&plans).unwrap();
@@ -2352,7 +2359,6 @@ mod tests {
             std::fs::write(plans.join(format!("{fingerprint}.json")), plan.to_string()).unwrap();
         }
         let mut shape = observe();
-        assert_eq!(shape.warmth, cold);
         shape.ran_on(|| {
             vec![
                 ("embedding".to_string(), used("cpu", "1", REVISION)),
@@ -2361,7 +2367,7 @@ mod tests {
         });
         assert!(shape.resolve_providers(false));
         assert_eq!(
-            shape.observed_warmth()[2..],
+            shape.observed_warmth()[1..],
             [
                 format!(
                     "calibrated embedding=cpu@{}: before the run",
@@ -2715,7 +2721,7 @@ mod tests {
                 format!("reranking accurate={REVISION}"),
             ],
             caches: Vec::new(),
-            warmth: vec!["embedding m: not on disk".into()],
+            warmth: vec!["models: cold: fetched 1 / prepared 0".into()],
             indexes: Vec::new(),
             build: Build {
                 inference: "f".repeat(64),
@@ -2781,7 +2787,9 @@ mod tests {
                 id.caches
                     .push("xquad.f32: 0/10 from 0123456789abcdef".into())
             }),
-            ("warmth", |id| id.warmth[0] = "embedding m: on disk".into()),
+            ("warmth", |id| {
+                id.warmth[0] = "models: warm: nothing fetched or prepared".into()
+            }),
             ("indexes", |id| {
                 id.indexes.push("primary: reused by 01234567".into())
             }),

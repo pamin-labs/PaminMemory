@@ -295,6 +295,7 @@ pub(crate) fn fixed_coreml(
     recover_coreml_cache(&cache)?;
     let reused = cache.join("ready").is_file();
     if !reused {
+        crate::activity::prepared();
         reset_coreml_cache(&cache)?;
     }
     let load = || -> Result<Session> {
@@ -352,6 +353,7 @@ fn publish_coreml_cache(cache: &Path) -> Result<()> {
 
 #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), test))]
 fn rebuild_coreml_cache<T>(cache: &Path, load: impl FnOnce() -> Result<T>) -> Result<T> {
+    crate::activity::prepared();
     let previous = cache.with_extension("previous");
     std::fs::rename(cache, &previous)?;
     std::fs::create_dir_all(cache)?;
