@@ -347,17 +347,20 @@ pub(crate) fn release(download: &impl Download, cache_dir: &Path) {
         // it, rather than after [`UNUSED_FOR`] (two weeks of a second copy
         // per moved model), and its record with it; a held copy keeps its
         // record, so the revision holding it still finds it.
+        //
+        // Except a record of this copy: another revision whose weights are
+        // these -- only its tokenizer or configuration changed, or it is
+        // pinned beside a moving ref -- loads this copy too, and finds it
+        // offline only through its own record. Only one naming no revision
+        // is replaced by this one, since no load finds a copy through it.
         for other in records(download, &root) {
             if other == record {
                 continue;
             }
-            let Some(old) = std::fs::read_to_string(&other)
-                .ok()
-                .and_then(|old| Source::parse(&old))
-                .map(|old| old.key().0)
-            else {
+            let Some(old) = read_record(&other) else {
                 continue;
             };
+            let (revision, old) = (old.revision, old.source.key().0);
             let copy = root.join(&old);
             if old != key
                 && let Err(error) =
@@ -365,7 +368,7 @@ pub(crate) fn release(download: &impl Download, cache_dir: &Path) {
             {
                 tracing::warn!(copy = old, %error, "could not remove a replaced revision's mapped copy");
             }
-            if old == key || !copy.exists() {
+            if !copy.exists() || (old == key && revision.is_none()) {
                 let _ = std::fs::remove_file(&other);
             }
         }
@@ -1609,6 +1612,39 @@ mod tests {
             load_path(&hub, &cache).expect("the second, offline"),
             second
         );
+        assert_eq!(hub.fetches.get(), fetches);
+    }
+
+    /// A revision whose weights are another's -- only its tokenizer or
+    /// configuration changed, so both name one blob and one copy -- does
+    /// not take the other's record with it when it releases: the other
+    /// revision, loaded pinned and offline, still finds the copy.
+    #[test]
+    fn revisions_sharing_one_copy_keep_their_records() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let hub = Hub::new(dir.path(), &tiny_model());
+        let cache = dir.path().join("models");
+        let copy = load_path(&hub, &cache).expect("the first revision");
+        load(&copy);
+        release(&hub, &cache);
+        assert!(hub.on_disk().is_none());
+
+        // The ref moves to a commit with the same weights: the same blob.
+        hub.moved("someone/model@decaf", "0123abcd");
+        let same = load_path(&hub, &cache).expect("the second revision");
+        assert_eq!(same, copy, "the same weights were written again");
+        load(&same);
+        release(&hub, &cache);
+        assert!(hub.on_disk().is_none());
+        let records = records(&hub, &cache.join("prepared"));
+        assert_eq!(records.len(), 2, "{records:?}");
+
+        hub.online.set(false);
+        let fetches = hub.fetches.get();
+        assert_eq!(load_path(&hub, &cache).expect("the second, offline"), copy);
+        hub.moved("someone/model@c0ffee", "0123abcd");
+        assert!(is_ready(&hub, &cache), "the first revision lost its record");
+        assert_eq!(load_path(&hub, &cache).expect("the first, offline"), copy);
         assert_eq!(hub.fetches.get(), fetches);
     }
 
