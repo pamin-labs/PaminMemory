@@ -1396,13 +1396,12 @@ async fn compare_efforts(engine: &Engine, corpus: &Corpus, efforts: &str) {
     // The environment is set only holding the turn (see
     // `harness::ModelsTurn`).
     let _turn = harness::environment_turn();
+    // Dropped before the turn, panicking or not.
+    let effort_knob = harness::KnobSweep::claim("PAMIN_SEARCH_EFFORT");
     for (name, route) in &routes {
         let mut baseline: Option<Scores> = None;
         for effort in &efforts {
-            // SAFETY: this thread holds the turn (taken above), and every
-            // other test that reads the environment for its settings waits
-            // for it.
-            unsafe { std::env::set_var("PAMIN_SEARCH_EFFORT", effort) };
+            effort_knob.set(effort);
             let started = std::time::Instant::now();
             let scores = run(engine, corpus, clone_route(route)).await;
             let seconds = started.elapsed().as_secs_f64();
@@ -1421,7 +1420,6 @@ async fn compare_efforts(engine: &Engine, corpus: &Corpus, efforts: &str) {
             }
         }
     }
-    unsafe { std::env::remove_var("PAMIN_SEARCH_EFFORT") };
 }
 
 fn clone_route(route: &Route) -> Route {

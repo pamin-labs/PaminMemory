@@ -106,6 +106,51 @@ impl Drop for ModelsTurn {
     }
 }
 
+/// A `PAMIN_` knob an arm sweeps through the process environment --
+/// `PAMIN_RERANK_DEPTH` for depth variants, `PAMIN_SEARCH_EFFORT` for the
+/// effort sweep -- claimed holding the turn.
+///
+/// A value the caller set is refused: it would name the record while no
+/// pass ran under it. Dropped, panicking or not, the guard unsets the
+/// knob, and it is dropped before the turn it was claimed under, so no
+/// later evaluation reads a pass's value as its own setting. Every sweep
+/// sets its knob through one of these; none sets the environment itself.
+pub struct KnobSweep {
+    name: &'static str,
+}
+
+impl KnobSweep {
+    /// Claims `name` for a sweep. This thread must hold the turn.
+    pub fn claim(name: &'static str) -> Self {
+        assert!(holds_turn(), "a sweep sets {name} only holding the turn");
+        assert!(
+            std::env::var_os(name).is_none(),
+            "this arm sets {name} itself: unset it for this run"
+        );
+        Self { name }
+    }
+
+    /// Sets the knob to `value` for the passes that follow.
+    pub fn set(&self, value: &str) {
+        // SAFETY: claimed holding the turn, which this guard is dropped
+        // before; every test that reads the environment for its settings
+        // waits for the turn.
+        unsafe { std::env::set_var(self.name, value) };
+    }
+
+    /// Unsets the knob, for a pass under the shipped value.
+    pub fn unset(&self) {
+        // SAFETY: as for `set`.
+        unsafe { std::env::remove_var(self.name) };
+    }
+}
+
+impl Drop for KnobSweep {
+    fn drop(&mut self) {
+        self.unset();
+    }
+}
+
 /// The profile the floors were measured against, and the product default.
 pub const DEFAULT_PROFILE: &str = "accuracy";
 
@@ -204,6 +249,32 @@ pub async fn drain(engine: &Engine) -> Drained {
 
 #[cfg(test)]
 mod tests {
+    /// Each sweep's knob is refused when the caller set it, and a sweep that
+    /// panics mid-pass leaves no value behind.
+    #[test]
+    fn a_knob_sweep_refuses_a_set_value_and_unsets_its_own() {
+        let _turn = super::environment_turn();
+        for name in ["PAMIN_RERANK_DEPTH", "PAMIN_SEARCH_EFFORT"] {
+            let before = std::env::var_os(name);
+            // SAFETY: this thread holds the turn.
+            unsafe { std::env::set_var(name, "30") };
+            assert!(std::panic::catch_unwind(|| super::KnobSweep::claim(name)).is_err());
+            unsafe { std::env::remove_var(name) };
+
+            let swept = std::panic::catch_unwind(|| {
+                let sweep = super::KnobSweep::claim(name);
+                sweep.set("15");
+                panic!("a search failed mid-pass");
+            });
+            assert!(swept.is_err());
+            assert_eq!(std::env::var_os(name), None, "{name}");
+            if let Some(before) = before {
+                // SAFETY: as above.
+                unsafe { std::env::set_var(name, before) };
+            }
+        }
+    }
+
     /// The turn waits for another process holding the evaluation home's --
     /// simulated by a second lock on the same file, which conflicts just as
     /// another process's would -- and is taken once that one lets go.
