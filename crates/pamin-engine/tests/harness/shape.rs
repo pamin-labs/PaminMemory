@@ -266,7 +266,7 @@ const NOT_IDENTITY: [(&str, &str); 6] = [
 /// that is set names the record, whichever harness reads it, so no harness
 /// keeps a list of its own that can miss one.
 /// `every_evaluation_read_is_classified` holds the tests to this.
-const EVAL_SETTINGS: [&str; 27] = [
+const EVAL_SETTINGS: [&str; 28] = [
     "AT_LIMIT",
     "CALIBRATE",
     "CHANNELS",
@@ -280,6 +280,7 @@ const EVAL_SETTINGS: [&str; 27] = [
     "GATE",
     "GRAPHS",
     "LABELS",
+    "LOCOMO_CONVERSATIONS",
     "MEMORY",
     "MIRACL_MAX_DOCS",
     "MUSIQUE_QUESTIONS",
@@ -298,7 +299,7 @@ const EVAL_SETTINGS: [&str; 27] = [
 
 /// Variables the evaluation tests read that change nothing a record is
 /// named by, with why.
-const EVAL_NOT_IDENTITY: [(&str, &str); 5] = [
+const EVAL_NOT_IDENTITY: [(&str, &str); 6] = [
     ("CHANNELS_OUT", "where a table is written"),
     (
         "ESCI_DIR",
@@ -306,6 +307,10 @@ const EVAL_NOT_IDENTITY: [(&str, &str); 5] = [
     ),
     (
         "LAREQA_DIR",
+        "where a dataset is; what it holds is the corpus digest",
+    ),
+    (
+        "LOCOMO_DIR",
         "where a dataset is; what it holds is the corpus digest",
     ),
     (
@@ -320,7 +325,7 @@ const EVAL_NOT_IDENTITY: [(&str, &str); 5] = [
 
 /// Environment reads in the evaluation tests whose name is not a literal at
 /// the read, with where the names come from.
-const EVAL_INDIRECT: [(&str, &str); 8] = [
+const EVAL_INDIRECT: [(&str, &str); 9] = [
     (
         "pamin-engine/tests/harness/mod.rs: std::env::var(var)",
         "dataset_dir's variable, a literal at every dataset_dir call",
@@ -328,6 +333,10 @@ const EVAL_INDIRECT: [(&str, &str); 8] = [
     (
         "pamin-engine/tests/harness/mod.rs: std::env::var_os(name)",
         "KnobSweep's knob, a literal at every KnobSweep::claim call, checked unset",
+    ),
+    (
+        "pamin-engine/tests/locomo.rs: std::env::var_os(name)",
+        "PAMIN_RERANK_DEPTH, PAMIN_RERANK_MAX_TOKENS and PAMIN_SEARCH_EFFORT, asserted unset",
     ),
     (
         "pamin-index/tests/prepared.rs: std::env::var(ARM)",
