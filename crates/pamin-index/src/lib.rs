@@ -55,4 +55,4 @@ pub use projection::{
 pub use reranking::{Ranked, Reranked, Reranker};
 pub use reshape::{Held, Reshape, Reshaped};
 pub use segmentation::{Segmenter, detect_language};
-pub use settings::{DeviceChoice, InferenceSettings, RerankSettings};
+pub use settings::{DeviceChoice, InferenceSettings, RerankSettings, spelled_path, spelled_paths};

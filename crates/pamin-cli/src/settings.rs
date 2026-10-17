@@ -346,9 +346,9 @@ impl Server {
         let postgres_dir = flag_postgres.clone().or(file_postgres.clone());
         pick(
             "postgres_dir",
-            flag_postgres.as_deref().map(spelled),
+            flag_postgres.as_deref().map(pamin_index::spelled_path),
             given("postgres_dir"),
-            file_postgres.as_deref().map(spelled),
+            file_postgres.as_deref().map(pamin_index::spelled_path),
             "none (installs its own)".to_string(),
         );
 
@@ -529,63 +529,14 @@ fn anchored(path: &Path, base: Option<&Path>) -> Result<PathBuf> {
 /// A list of libraries as a setting's value. An empty list is `none` however
 /// it was reached, so `ep_libraries = []` and no setting at all compare equal.
 ///
-/// Otherwise a JSON array of the paths, which is what a running server's
-/// value is compared by: joined with a separator, one library whose path
-/// holds that separator would read as two, and a server would answer a
-/// client asking for other libraries than it registered.
+/// Otherwise [`pamin_index::spelled_paths`], which is what a running server's
+/// value is compared by, so a separator inside a path or a byte that is not
+/// UTF-8 cannot make two lists of libraries one.
 fn libraries(paths: &[PathBuf]) -> String {
     if paths.is_empty() {
         return "none".to_string();
     }
-    let paths: Vec<String> = paths.iter().map(|path| spelled(path)).collect();
-    serde_json::to_string(&paths).expect("a list of strings serializes")
-}
-
-/// `path` as a setting's value: as written when it is UTF-8, and losslessly
-/// when it is not, since the value is what a running server is compared by
-/// and `display` would spell every byte it cannot decode as the same U+FFFD.
-///
-/// On Unix a byte that is not UTF-8 is `\xNN`, and so that no UTF-8 path can
-/// spell the same, a backslash is `\\` -- a backslash being the one change
-/// to how a UTF-8 path is spelled. On Windows a path is UTF-16, and a unit
-/// that does not decode is `<NNNN>`: `<` cannot be in a Windows path, so a
-/// path that decodes cannot spell the same and nothing needs escaping.
-fn spelled(path: &Path) -> String {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        let mut out = String::new();
-        for chunk in path.as_os_str().as_bytes().utf8_chunks() {
-            out.push_str(&chunk.valid().replace('\\', "\\\\"));
-            for byte in chunk.invalid() {
-                out.push_str(&format!("\\x{byte:02x}"));
-            }
-        }
-        out
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        spelled_wide(path.as_os_str().encode_wide())
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        path.display().to_string()
-    }
-}
-
-/// A Windows path's UTF-16 `units` as [`spelled`] spells them: decoded, and
-/// each unpaired surrogate as `<NNNN>`. The unit named is the one the decoder
-/// refused, not the one at the same position: a surrogate pair is two units
-/// and one character, so counting positions goes out of step after one.
-#[cfg(any(windows, test))]
-fn spelled_wide(units: impl IntoIterator<Item = u16>) -> String {
-    char::decode_utf16(units)
-        .map(|decoded| match decoded {
-            Ok(character) => character.to_string(),
-            Err(error) => format!("<{:04x}>", error.unpaired_surrogate()),
-        })
-        .collect()
+    pamin_index::spelled_paths(paths)
 }
 
 fn read(path: &Path) -> Result<File> {
@@ -756,7 +707,8 @@ mod tests {
     }
 
     /// Paths that differ only in bytes that are not UTF-8 are different
-    /// settings, and a UTF-8 path is spelled as written.
+    /// settings. How a path is spelled is `pamin_index::spelled_path`'s, and
+    /// tested there.
     #[cfg(unix)]
     #[test]
     fn a_path_that_is_not_utf8_is_compared_byte_for_byte() {
@@ -764,14 +716,6 @@ mod tests {
         let path = |bytes: &[u8]| PathBuf::from(std::ffi::OsStr::from_bytes(bytes));
         let x80 = path(b"/opt/ep-\x80.so");
         let x81 = path(b"/opt/ep-\x81.so");
-        assert_eq!(spelled(&x80), "/opt/ep-\\x80.so");
-        assert_ne!(spelled(&x80), spelled(&x81));
-        assert_ne!(libraries(std::slice::from_ref(&x80)), libraries(&[x81]));
-        // Spelled as written, but for a backslash, which is escaped so that
-        // no UTF-8 path spells what a byte that is not UTF-8 does.
-        assert_eq!(spelled(Path::new("/opt/ép.so")), "/opt/ép.so");
-        assert_ne!(spelled(&path(br"/opt/ep-\x80.so")), spelled(&x80));
-
         let root = tempfile::tempdir().unwrap();
         let resolve_with = |library: &PathBuf, prefix: &PathBuf| {
             let matches = Test::command()
@@ -787,24 +731,10 @@ mod tests {
             Server::resolve(root.path(), &parsed.server, &matches).unwrap()
         };
         let one = resolve_with(&x80, &x80);
-        let other = resolve_with(&path(b"/opt/ep-\x81.so"), &path(b"/opt/ep-\x81.so"));
+        let other = resolve_with(&x81, &x81);
         let message = one.mismatch(&other.asked()).expect("a mismatch");
         assert!(message.contains("ep_libraries"), "{message}");
         assert!(message.contains("postgres_dir"), "{message}");
-    }
-
-    /// Each unpaired surrogate is spelled as itself, after a surrogate pair
-    /// as anywhere else.
-    #[test]
-    fn a_windows_path_spells_the_surrogate_it_could_not_decode() {
-        let grin = [0xD83D, 0xDE00];
-        let after = |unit: u16| spelled_wide(grin.into_iter().chain([unit]));
-        assert_eq!(after(0xD800), "😀<d800>");
-        assert_eq!(after(0xDE00), "😀<de00>");
-        assert_ne!(after(0xD800), after(0xDE00));
-        assert_eq!(spelled_wide([0xDC00, 0x61]), "<dc00>a");
-        assert_eq!(spelled_wide([0x61, 0xD83D]), "a<d83d>");
-        assert_eq!(spelled_wide("C:\\ep.dll".encode_utf16()), "C:\\ep.dll");
     }
 
     /// `ep_libraries = []` is the same setting as none at all, so a server

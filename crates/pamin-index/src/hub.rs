@@ -117,9 +117,11 @@ impl Repository {
         } else {
             format!("{}:unresolved:{}", self.revision(), uuid::Uuid::now_v7())
         };
+        // Spelled losslessly: two cache roots that differ only in bytes
+        // that are not UTF-8 are two caches, and their plans are their own.
         format!(
             "{revision}:{}",
-            root.canonicalize().unwrap_or(root).display()
+            crate::spelled_path(&root.canonicalize().unwrap_or(root))
         )
     }
 
