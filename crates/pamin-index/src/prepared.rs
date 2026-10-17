@@ -1438,9 +1438,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let hub = Hub::new(dir.path(), &tiny_model());
         let cache = dir.path().join("models");
-        let copy = load_path(&hub, &cache).expect("the first load");
+        let copy =
+            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("the first load");
         load(&copy);
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         assert!(hub.on_disk().is_none());
         let record = std::fs::read_to_string(cache.join("prepared").join(record_name(&hub)))
             .expect("the record");
@@ -1450,29 +1451,38 @@ mod tests {
         );
 
         hub.online.set(false);
-        assert_eq!(load_path(&hub, &cache).expect("the same revision"), copy);
+        assert_eq!(
+            load_path(&hub, &cache, &crate::InferenceSettings::default())
+                .expect("the same revision"),
+            copy
+        );
         hub.moved("someone/model@decaf", "4567cdef");
-        assert!(!is_ready(&hub, &cache), "the old revision's copy is ready");
         assert!(
-            load_path(&hub, &cache).is_err(),
+            !is_ready(&hub, &cache, &crate::InferenceSettings::default()),
+            "the old revision's copy is ready"
+        );
+        assert!(
+            load_path(&hub, &cache, &crate::InferenceSettings::default()).is_err(),
             "the old revision's copy loaded under the new ref"
         );
         hub.online.set(true);
-        let new = load_path(&hub, &cache).expect("a load of the new revision");
+        let new = load_path(&hub, &cache, &crate::InferenceSettings::default())
+            .expect("a load of the new revision");
         assert_eq!(hub.fetches.get(), 2, "the new revision was not fetched");
 
         // A replaced revision's copy goes as soon as its record names
         // another revision -- unless a process holds it, as this one holds
         // the first copy, which then waits for the usual sweep.
         load(&new);
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         assert!(copy.exists(), "a held copy was removed");
         held().remove(new.parent().expect("the copy's directory"));
         hub.moved("someone/model@beef", "89abef01");
-        let newest = load_path(&hub, &cache).expect("a load of the next revision");
+        let newest = load_path(&hub, &cache, &crate::InferenceSettings::default())
+            .expect("a load of the next revision");
         assert_eq!(hub.fetches.get(), 3, "the next revision was not fetched");
         load(&newest);
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         assert!(!new.exists(), "the replaced, unheld copy is still on disk");
         assert!(newest.exists() && copy.exists());
     }
@@ -1528,9 +1538,10 @@ mod tests {
         let model = tiny_model();
         let hub = Hub::new(dir.path(), &model);
         let cache = dir.path().join("models");
-        let copy = load_path(&hub, &cache).expect("the first load");
+        let copy =
+            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("the first load");
         load(&copy);
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
 
         // Another weight, the same length.
         let raw: Vec<u8> = (0..32 * 32)
@@ -1547,7 +1558,8 @@ mod tests {
         let blob = hub.blob.borrow().file_name().expect("a name").to_owned();
         hub.moved("someone/model@decaf", &blob.to_string_lossy());
 
-        let new = load_path(&hub, &cache).expect("a load of the new revision");
+        let new = load_path(&hub, &cache, &crate::InferenceSettings::default())
+            .expect("a load of the new revision");
         assert_eq!(hub.fetches.get(), 2);
         assert_ne!(new, copy, "the new weights were keyed as the old copy");
         load(&new);
@@ -1562,9 +1574,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let hub = Hub::new(dir.path(), &tiny_model());
         let cache = dir.path().join("models");
-        let copy = load_path(&hub, &cache).expect("the first load");
+        let copy =
+            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("the first load");
         load(&copy);
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         let path = cache.join("prepared").join(record_name(&hub));
         let record = std::fs::read_to_string(&path).expect("the record");
         let legacy: String = record
@@ -1579,16 +1592,22 @@ mod tests {
         std::fs::remove_file(&path).expect("no record of this revision");
 
         hub.online.set(false);
-        assert!(!is_ready(&hub, &cache), "an unverified copy is ready");
         assert!(
-            load_path(&hub, &cache).is_err(),
+            !is_ready(&hub, &cache, &crate::InferenceSettings::default()),
+            "an unverified copy is ready"
+        );
+        assert!(
+            load_path(&hub, &cache, &crate::InferenceSettings::default()).is_err(),
             "an unverified copy loaded"
         );
         hub.online.set(true);
-        assert_eq!(load_path(&hub, &cache).expect("a verified load"), copy);
+        assert_eq!(
+            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("a verified load"),
+            copy
+        );
         assert_eq!(hub.fetches.get(), 2);
         load(&copy);
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         assert_eq!(std::fs::read_to_string(&path).expect("the record"), record);
         assert!(
             !old.exists(),
@@ -1605,25 +1624,32 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let hub = Hub::new(dir.path(), &tiny_model());
         let cache = dir.path().join("models");
-        let first = load_path(&hub, &cache).expect("the first revision");
+        let first = load_path(&hub, &cache, &crate::InferenceSettings::default())
+            .expect("the first revision");
         load(&first);
         hub.moved("someone/model@decaf", "4567cdef");
-        let second = load_path(&hub, &cache).expect("the second revision");
+        let second = load_path(&hub, &cache, &crate::InferenceSettings::default())
+            .expect("the second revision");
         load(&second);
         // Both downloads are on disk and both copies are held, as in two
         // processes loading at once; the second revision releases first.
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         hub.moved("someone/model@c0ffee", "0123abcd");
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         let records = records(&hub, &cache.join("prepared"));
         assert_eq!(records.len(), 2, "{records:?}");
 
         hub.online.set(false);
         let fetches = hub.fetches.get();
-        assert_eq!(load_path(&hub, &cache).expect("the first, offline"), first);
+        assert_eq!(
+            load_path(&hub, &cache, &crate::InferenceSettings::default())
+                .expect("the first, offline"),
+            first
+        );
         hub.moved("someone/model@decaf", "4567cdef");
         assert_eq!(
-            load_path(&hub, &cache).expect("the second, offline"),
+            load_path(&hub, &cache, &crate::InferenceSettings::default())
+                .expect("the second, offline"),
             second
         );
         assert_eq!(hub.fetches.get(), fetches);
