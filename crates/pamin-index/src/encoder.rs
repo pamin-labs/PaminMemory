@@ -236,13 +236,30 @@ impl Encoder {
         batches: Vec<Vec<Encoding>>,
         read: impl Fn(SessionOutputs<'_>) -> Result<T> + Sync,
     ) -> Result<Vec<T>> {
-        let wanted = match &self.side_by_side {
+        let mut wanted = match &self.side_by_side {
             Some(_) => crate::inference::budget()?.min(batches.len()),
             None => 1,
         };
-        let (model, sessions) = match &mut self.side_by_side {
+        if let Some((model, sessions)) = &mut self.side_by_side
+            && wanted > 1
+        {
+            while sessions.len() < wanted {
+                // A side session only saves time, and `session` still runs
+                // every batch: one that will not load leaves the passes to
+                // those that did.
+                match crate::inference::cpu_session(model, 1) {
+                    Ok(session) => sessions.push(session),
+                    Err(error) => {
+                        tracing::warn!(%error, loaded = sessions.len(), "could not load a side-by-side session");
+                        wanted = sessions.len();
+                        break;
+                    }
+                }
+            }
+        }
+        let sessions = match &mut self.side_by_side {
             // One pass at a time gains nothing on a session of its own.
-            Some((model, sessions)) if wanted > 1 => (model, sessions),
+            Some((_, sessions)) if wanted > 1 => sessions,
             _ => {
                 return batches
                     .into_iter()
@@ -250,9 +267,6 @@ impl Encoder {
                     .collect();
             }
         };
-        while sessions.len() < wanted {
-            sessions.push(crate::inference::cpu_session(model, 1)?);
-        }
         let (tokenizer, token_type_ids) = (&self.tokenizer, self.token_type_ids);
         let pending = &std::sync::Mutex::new(batches.into_iter().enumerate());
         let read = &read;
