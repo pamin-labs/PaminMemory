@@ -1366,7 +1366,16 @@ impl Shape {
                 continue;
             }
             let stamped = std::fs::read_to_string(&index.stamp).ok();
-            if index.found == 0 && stamped.as_deref() == Some(pending(&now).as_str()) {
+            if index.found == 0 && std::thread::panicking() {
+                // A run that failed may have failed before its build was
+                // done -- after the documents, before the edges derived from
+                // them -- so a pending stamp stays pending.
+                lines.push(format!(
+                    "{}: {state} by {}, not stamped: the run failed",
+                    index.label,
+                    short(&now)
+                ));
+            } else if index.found == 0 && stamped.as_deref() == Some(pending(&now).as_str()) {
                 // Built whole from empty by one producer: now it vouches.
                 write_stamp(&index.stamp, &now);
                 lines.push(format!("{}: {state} by {}", index.label, short(&now)));
@@ -1393,10 +1402,7 @@ impl Shape {
                 ));
                 reasons.push(
                     if stamped.is_some_and(|stamp| stamp.starts_with("pending\n")) {
-                        format!(
-                            "{} index finished by resuming an interrupted build",
-                            index.label
-                        )
+                        format!("{} index left pending by an unfinished build", index.label)
                     } else {
                         format!("{} index built by another embedding producer", index.label)
                     },
@@ -2183,7 +2189,7 @@ mod tests {
         let (_, reasons) = run("a", false, index("plan=cpu@a", 4), true).unwrap();
         assert_eq!(
             reasons,
-            ["primary index finished by resuming an interrupted build"]
+            ["primary index left pending by an unfinished build"]
         );
 
         // Built whole from empty by one producer: vouched for, and so is
@@ -2249,6 +2255,48 @@ mod tests {
         assert_eq!(stamped(), None, "a dirty build's index was stamped");
         let (_, reasons) = run("a", false, index("plan=cpu@a", 4), true).unwrap();
         assert_eq!(reasons.len(), 1, "a dirty build's index was vouched for");
+    }
+
+    /// A run that fails after building an index -- its documents written,
+    /// what is derived from them perhaps not -- leaves the stamp pending,
+    /// so no later run vouches for what it left.
+    #[test]
+    fn a_failed_run_leaves_its_index_pending() {
+        struct Failing(Shape);
+        impl Drop for Failing {
+            fn drop(&mut self) {
+                self.0.check_indexes();
+            }
+        }
+        let dir = tempfile::tempdir().expect("temp dir");
+        let stamp = dir.path().join("index").join("p.eval-producer");
+        let index = |found: usize| Indexed {
+            label: "primary".into(),
+            producer: Box::new(|| Some("plan=cpu@a".into())),
+            stamp: stamp.clone(),
+            found,
+            total: 4,
+            start: None,
+        };
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut shape = Shape::new("test", String::new(), None);
+            shape.source.commit = "a".into();
+            shape.begin_index(index(0));
+            let _failing = Failing(shape);
+            panic!("deriving the edges failed after every document was indexed");
+        }));
+        assert!(failed.is_err());
+        let pending = std::fs::read_to_string(&stamp).ok();
+        assert_eq!(pending.as_deref(), Some("pending\nplan=cpu@a\ncommit=a"));
+
+        let mut shape = Shape::new("test", String::new(), None);
+        shape.source.commit = "a".into();
+        shape.begin_index(index(4));
+        let (_, reasons) = shape.check_indexes();
+        assert_eq!(
+            reasons,
+            ["primary index left pending by an unfinished build"]
+        );
     }
 
     /// What was on disk before the models loaded is observed as a load
