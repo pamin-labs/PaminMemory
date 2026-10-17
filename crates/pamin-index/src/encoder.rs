@@ -167,6 +167,11 @@ impl Encoder {
         Ok(())
     }
 
+    /// Whether [`run_each`](Self::run_each) runs passes side by side: the CPU.
+    pub(crate) fn runs_side_by_side(&self) -> bool {
+        self.side_by_side.is_some()
+    }
+
     pub(crate) fn batch_limits(&self, budget: usize, most: usize) -> (usize, usize) {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if self.fixed.is_some() {

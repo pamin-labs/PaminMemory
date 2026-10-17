@@ -82,8 +82,9 @@ between the layers of one pass is the other way to divide them, and which wins
 is a property of the machine rather than of this program -- so it is a setting
 whose default is what the library already did. Stored texts of BGE-M3 divide
 them the other way on the CPU: each pass has one thread, and this many passes
-run at once, as do the batches of one rerank. A BGE-M3 query, and a rerank of
-one batch, still get one pass of this many threads.
+run at once, as do the passes of one rerank, one pair each when this is more
+than one (at one, a pass takes up to four pairs). A BGE-M3 query, and a rerank
+of a single pass, still get one pass of this many threads.
 
 On the CPU, the first load of a model writes a copy of it into
 `models/prepared/`, and every load after that reads the copy. The copy is the
