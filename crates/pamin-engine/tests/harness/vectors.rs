@@ -176,6 +176,10 @@ fn embed_with<M>(
     // The batch too: each call pads to its longest text, and another padded
     // shape can round another way.
     let named = format!("{embedding}\ninput={}\nbatch={batch}", input_digest(texts));
+    // One writer at a time, across processes: held from reading what is
+    // there to the last append, so no other run appends between them or
+    // reads this one's batches as its own positions.
+    let _writing = lock(path);
     let mut vectors = resume(path, &named, width, texts.len());
     let reused = vectors.len() / width;
     if reused > 0 {
@@ -260,6 +264,25 @@ fn resume(path: &Path, producer: &str, width: usize, most: usize) -> Vec<f32> {
             .unwrap_or_else(|error| panic!("cutting {} to whole vectors: {error}", path.display()));
     }
     vectors
+}
+
+/// An exclusive lock on the cache at `path`, held while the file is in use.
+fn lock(path: &Path) -> std::fs::File {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("the cache directory");
+    }
+    let mut name = path.as_os_str().to_owned();
+    name.push(".lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&name)
+        .unwrap_or_else(|error| panic!("opening {}: {error}", Path::new(&name).display()));
+    file.lock()
+        .unwrap_or_else(|error| panic!("locking {}: {error}", path.display()));
+    file
 }
 
 fn append(path: &Path, bytes: &[u8]) {
@@ -434,6 +457,40 @@ mod tests {
             0,
             "batches of one read batches of two"
         );
+    }
+
+    /// Two runs writing one cache take turns: one holding it is not read or
+    /// appended to by another until it is done.
+    #[test]
+    fn writers_to_one_cache_take_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vectors.f32");
+        let held = lock(&path);
+        let (done, waiting) = std::sync::mpsc::channel();
+        let other = std::thread::spawn({
+            let path = path.clone();
+            move || {
+                let embedded = embed_with(
+                    &mut (),
+                    |_: &()| "plan=cpu@a".to_string(),
+                    |_: &mut (), chunk: &[&str]| chunk.iter().map(|_| vec![1.0, 0.0]).collect(),
+                    &path,
+                    &["a", "b"],
+                    2,
+                    1,
+                );
+                done.send(()).expect("say it is done");
+                embedded.vectors.len()
+            }
+        });
+        assert!(
+            waiting
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "a run wrote the cache while another held it"
+        );
+        drop(held);
+        assert_eq!(other.join().expect("the other run"), 4);
     }
 
     /// A cache holds the vectors of one input, in one order: the same
