@@ -877,7 +877,8 @@ and through `Engine::search_reranked` over copies of one index no group's
 nDCG@10 moved significantly: XQuAD-R cross-lingual −0.0001, same-language
 −0.0012, single-target −0.0013 (1,190 queries each), MuSiQue 2-hop +0.0040 (its first 200 questions). The
 table and figures, and the conditions, are at `CPU_BATCH` in the same file.
-Accelerators still group up to four pairs within 512 padded tokens.
+Accelerators, and a CPU with an inference budget of one thread, where passes
+cannot overlap, still group up to four pairs within 512 padded tokens.
 
 **Truncating at 192 or 384 tokens rather than 256 was measured, and neither
 ships.** In the same runs, each limit paired against 256 with the new batching:

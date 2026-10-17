@@ -383,7 +383,9 @@ const BATCH: usize = 4;
 ///
 /// Rankings move -- about a third of top-fives -- but no group significantly,
 /// and recall@50 is unchanged. On an accelerator nothing has measured one
-/// pair a pass, so [`BATCH`] stays there.
+/// pair a pass, so [`BATCH`] stays there; nor on a CPU whose inference budget
+/// is one thread, where the passes cannot overlap and thirty singleton passes
+/// would run one after another -- that case keeps [`BATCH`], as before.
 const CPU_BATCH: usize = 1;
 
 /// How much the model reads at once, and how long a candidate. See [`tuned`].
@@ -391,17 +393,26 @@ fn batch_tokens() -> usize {
     tuned("PAMIN_RERANK_BATCH_TOKENS", BATCH_TOKENS)
 }
 
-/// The most pairs a pass of `model` takes: [`CPU_BATCH`] on the CPU, where
-/// the passes of one rerank run side by side, and [`BATCH`] on an accelerator.
+/// The most pairs a pass of `model` takes. See [`batch_on`].
 fn batch(model: &Encoder) -> usize {
-    batch_on(model.runs_side_by_side())
+    batch_on(model.runs_side_by_side(), side_by_side_budget())
 }
 
-fn batch_on(side_by_side: bool) -> usize {
+/// `PAMIN_RERANK_BATCH`, or by default [`CPU_BATCH`] where passes run side by
+/// side and more than one can run at once -- the budget `Encoder::run_each`
+/// divides them over -- and [`BATCH`] otherwise: on an accelerator, and on a
+/// CPU with a budget of one thread.
+fn batch_on(side_by_side: bool, budget: usize) -> usize {
+    let overlap = side_by_side && budget > 1;
     tuned(
         "PAMIN_RERANK_BATCH",
-        if side_by_side { CPU_BATCH } else { BATCH },
+        if overlap { CPU_BATCH } else { BATCH },
     )
+}
+
+/// The inference budget, as `Encoder::run_each` reads it; one if unreadable.
+fn side_by_side_budget() -> usize {
+    crate::inference::budget().unwrap_or(1)
 }
 
 fn max_tokens() -> usize {
@@ -481,7 +492,8 @@ fn onnx(device: Device) -> &'static str {
 
 /// The key the reranker's execution plans are measured and cached under.
 fn plan_key(repository: &str, maximum_tokens: usize, batch_tokens: usize) -> String {
-    let (cpu, accelerator) = (batch_on(true), batch_on(false));
+    let cpu = batch_on(true, side_by_side_budget());
+    let accelerator = batch_on(false, side_by_side_budget());
     format!("reranker-v4:{TIER}:{repository}:{maximum_tokens}:{cpu}/{accelerator}:{batch_tokens}")
 }
 
@@ -2618,14 +2630,29 @@ mod tests {
             plan_key("onnx-community/bge-reranker-v2-m3-ONNX@abc", 256, 512),
             format!(
                 "reranker-v4:accurate:onnx-community/bge-reranker-v2-m3-ONNX@abc:256:{}/{}:512",
-                batch_on(true),
-                batch_on(false)
+                batch_on(true, side_by_side_budget()),
+                batch_on(false, side_by_side_budget())
             )
         );
         assert_ne!(
             plan_key("r@abc", 256, 512),
             "reranker-v3:accurate:r@abc:256:4:512"
         );
+    }
+
+    /// One pair a pass only where passes can overlap: side by side with a
+    /// budget above one thread. A one-thread CPU budget and an accelerator
+    /// keep [`BATCH`].
+    #[test]
+    fn one_pair_a_pass_only_when_passes_can_overlap() {
+        if std::env::var_os("PAMIN_RERANK_BATCH").is_some() {
+            return; // an explicit override is the answer at every budget
+        }
+        assert_eq!(batch_on(true, 4), CPU_BATCH);
+        assert_eq!(batch_on(true, 2), CPU_BATCH);
+        assert_eq!(batch_on(true, 1), BATCH);
+        assert_eq!(batch_on(false, 4), BATCH);
+        assert_eq!(batch_on(false, 1), BATCH);
     }
 
     /// Every pair lands in exactly one batch, in order, and no batch pads
