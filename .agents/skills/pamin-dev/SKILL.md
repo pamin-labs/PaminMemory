@@ -291,7 +291,9 @@ retrieval. They were wrong about the box.
   starting a second measurement beside it. The reasoning was "quality scores do
   not depend on CPU contention, so these can share the machine", which is true
   and beside the point: each server holds a model and an index, 3.6 GB at
-  13,014 documents and 7.2 GB at 131,924, and two of them do not fit. Before
+  13,014 documents and 7.2 GB at 131,924 as measured then (with the
+  since-removed `fast` reranker loaded too, and before models were mapped from
+  a prepared copy), and two of them do not fit. Before
   running anything beside a measurement, price it in memory.
 - **Count the servers, and count them again after.** `pamin search` starts a
   server when none is listening. A harness that spawns `pamin serve` and then
