@@ -620,7 +620,9 @@ verified current headline measurement.
 
 The resident server caches logits for complete ordered batches within one
 loaded model and tokenizer. With the INT8 export, a pair's score can depend on
-its neighbours and padding, so the cache includes every query/memory pair in
+its neighbours and padding when a pass holds more than one pair -- on an
+accelerator, or on a CPU with an inference budget of one thread; on a
+multi-core CPU a pass is one pair, so a score is the pair's own. The cache includes every query/memory pair in
 order, including duplicates, and both the logical and physical batch shapes.
 Changed contexts are scored again, so earlier searches do not change the
 result of scoring the same final candidate list. An identical batch avoids a
