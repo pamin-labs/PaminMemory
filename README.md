@@ -419,12 +419,13 @@ filesystem. Dropping a column and deleting rows stop a database growing and let
 it reuse what it holds; only `VACUUM FULL` makes an existing file smaller, and
 nothing here runs one.
 
-**Write latency has been attributed only coarsely.** Retrieval is divided into
-four stages and published; the write path has two figures beside its 30.1 ms
-total: [measured.md](docs/measured.md) puts most of that on the `fsync` a
-durable append owes, and one `remember`, the ledger insert, at about 1.9 ms.
-Nothing finer has been taken, so there is little to say about which part of it
-a round trip would remove.
+**Write latency has not been attributed.** Retrieval is divided into four
+stages and published. The write path has two unrelated figures: a historical
+30.1 ms for a whole `pamin write`, taken on an earlier build, and a component
+figure of about 1.9 ms for one `Engine::remember` driven by a scratch harness
+([measured.md](docs/measured.md)). They come from different builds and layers,
+so they are not a breakdown of each other, and nothing here says which part of
+a write a round trip would remove.
 
 **Resident memory has been attributed once, by stage.** On MIRACL's 131,924
 passages, [measured.md](docs/measured.md) puts the index first, at 3,283 MB of
