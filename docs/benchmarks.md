@@ -470,7 +470,8 @@ conditions it holds fixed, and how each is asserted, are in its README.
 Three of the arms are Påmin Memory at different settings, because the first
 question about any gain is whether it came from the thing you changed:
 
-- **`pamin`** — `pamin import` and `pamin search` at the default `--limit 10`.
+- **`pamin`** — `pamin import` and `pamin search` at the harness's default
+  `--limit 10` (the CLI's own default is 5).
 - **`pamin-wide`** — the same, at `--limit 30`. Nothing else differs, so what
   separates it from `pamin` is the size of the shortlist and nothing else.
 - **`pamin-ledger`** — each session imported under its own `--valid-from` and
