@@ -3,6 +3,7 @@
 //! Everything here is derived data. Losing it costs a reindex, not a migration,
 //! which is what makes a pre-1.0 index engine an acceptable dependency.
 
+mod activity;
 mod attention;
 #[cfg(test)]
 mod build_profile;
@@ -26,6 +27,7 @@ mod tokenizer;
 #[cfg(target_os = "windows")]
 mod winml;
 
+pub use activity::LoadActivity;
 pub use descriptors::raise_open_file_limit;
 pub use embedding::{Embedder, Encoded, Profile};
 pub use error::{IndexError, Result};

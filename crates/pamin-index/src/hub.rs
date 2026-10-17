@@ -172,6 +172,7 @@ impl Repository {
             let _ = std::fs::remove_file(&own);
         }
         let fetched = fetched?;
+        crate::activity::fetched();
         self.pin_fetched(&fetched);
         Ok(fetched)
     }

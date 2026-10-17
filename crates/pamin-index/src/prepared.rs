@@ -481,8 +481,12 @@ fn prepare(source: &Path, root: &Path) -> Result<PathBuf> {
     exclusive.lock()?;
     let graph = match settled(&done) {
         Some(settled) => settled,
-        None if copy.exists() => fuse(&done),
+        None if copy.exists() => {
+            crate::activity::prepared();
+            fuse(&done)
+        }
         None => {
+            crate::activity::prepared();
             let partial = root.join(format!("{key}.partial"));
             if partial.exists() {
                 std::fs::remove_dir_all(&partial)?;
@@ -1545,8 +1549,11 @@ mod tests {
         std::fs::create_dir_all(&partial).expect("make a partial directory");
         std::fs::write(partial.join(MODEL), b"half a model").expect("half-write it");
 
+        let before = crate::LoadActivity::now();
         assert!(prepare(&source, &root).is_err());
         assert!(!partial.exists(), "the crashed writer's files survived");
+        // Counted as preparing: the load did the work, if not to the end.
+        assert!(crate::LoadActivity::now().prepared > before.prepared);
     }
 
     /// A complete copy is used as found, without writing another.

@@ -583,11 +583,7 @@ async fn search_answers_questions_that_take_several_steps() {
     };
 
     let project = format!("musique-{named}-{}", corpus.fingerprint());
-    shape.observe_models(
-        &workspace.root().join("models"),
-        profile,
-        &[Rerank::Fast, Rerank::Accurate],
-    );
+    shape.observe_models(&workspace.root().join("models"));
     let engine = Engine::open(
         &workspace,
         &project,
