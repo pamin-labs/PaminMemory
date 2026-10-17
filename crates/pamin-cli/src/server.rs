@@ -160,11 +160,18 @@ async fn maintain(session: Arc<Session>) {
                 seconds = flush.elapsed().as_secs_f64(),
                 "flush stage finished"
             );
+            // Only between requests. An `optimize` seals the segment being
+            // written and lexical scores are per segment (BM25 statistics), so
+            // compacting mid-import split the same corpus wherever the tick
+            // landed and gave different top-5s from identical vectors. The
+            // first quiet tick after an import compacts all it wrote.
             let upkeep = Instant::now();
-            match engine.maintain().await {
-                Ok(true) => tracing::debug!("ran index upkeep"),
-                Ok(false) => {}
-                Err(error) => tracing::warn!(%error, "index upkeep failed"),
+            if session.is_quiet() {
+                match engine.maintain().await {
+                    Ok(true) => tracing::debug!("ran index upkeep"),
+                    Ok(false) => {}
+                    Err(error) => tracing::warn!(%error, "index upkeep failed"),
+                }
             }
             tracing::debug!(
                 ?key,
@@ -173,8 +180,15 @@ async fn maintain(session: Arc<Session>) {
             );
             // Beside the loop rather than in it: a reshape takes minutes, and
             // every other project's flushes wait on this loop -- a claim held
-            // past its lease is replayed.
-            reshapes.consider(&key, engine);
+            // past its lease is replayed. Only between requests too, for the
+            // reason upkeep is: a reshape sizes its sibling from the documents
+            // held when it starts and optimizes it before applying what was
+            // written meanwhile, so one started mid-import would put segment
+            // boundaries wherever the tick landed. One skipped here records
+            // nothing, so the next quiet tick considers it afresh.
+            if session.is_quiet() {
+                reshapes.consider(&key, engine);
+            }
         }
 
         // The engines above are dropped by now, so a project that has gone
