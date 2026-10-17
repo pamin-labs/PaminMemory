@@ -2681,6 +2681,23 @@ mod tests {
         }
     }
 
+    /// Two plugin libraries whose paths differ only in bytes that are not
+    /// UTF-8 key different plans and quarantines: a failure in one does not
+    /// send a caller of the other to the CPU.
+    #[cfg(unix)]
+    #[test]
+    fn byte_distinct_library_paths_key_distinct_dispatch() {
+        use std::os::unix::ffi::OsStrExt;
+        let library = |bytes: &[u8]| crate::InferenceSettings {
+            ep_libraries: vec![std::ffi::OsStr::from_bytes(bytes).into()],
+            ..crate::InferenceSettings::default()
+        };
+        assert_ne!(
+            dispatch_identity(&library(b"/opt/ep-\x80.so")),
+            dispatch_identity(&library(b"/opt/ep-\x81.so"))
+        );
+    }
+
     /// A recovery that fails on a second accelerator before the CPU runs
     /// the input keeps every plan it ran on, the dropped one too, in the
     /// order they ran: the first accelerator, the second, then the CPU.
