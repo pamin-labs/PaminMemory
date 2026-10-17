@@ -1133,6 +1133,9 @@ fn the_index_rebuilds_from_postgres(cli: &Cli) {
 /// one process to reason about, got the server anyway and nothing said so.
 /// `PAMIN_RERANK` chose a reranking tier until there was one reranker; set to
 /// `off`, ignoring it would charge a reranker to somebody who turned it off.
+/// The settings that became flags are refused the same way, naming the flag:
+/// `PAMIN_INFERENCE_THREADS=2` ignored would be a server running with more
+/// threads than its operator set.
 ///
 /// Not ignored, and it needs no workspace: the refusal comes before anything
 /// is provisioned, which is also asserted, and before a server is started.
@@ -1144,6 +1147,8 @@ fn a_removed_setting_is_refused_rather_than_ignored() {
         ("PAMIN_NO_SERVER", ["1", "0"]),
         ("PAMIN_PROFILE", ["accuracy", "speed"]),
         ("PAMIN_RERANK", ["off", "accurate"]),
+        ("PAMIN_INFERENCE_THREADS", ["2", "1"]),
+        ("PAMIN_RERANK_DEPTH", ["20", "30"]),
     ] {
         for value in values {
             let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
@@ -1156,7 +1161,8 @@ fn a_removed_setting_is_refused_rather_than_ignored() {
             assert!(!output.status.success(), "{name}={value} should be refused");
             let error = String::from_utf8_lossy(&output.stderr);
             assert!(
-                error.contains(name) && error.contains("removed"),
+                error.contains(name)
+                    && (error.contains("removed") || error.contains("replaced by `")),
                 "{name}={value} refused without saying why: {error:?}"
             );
         }
