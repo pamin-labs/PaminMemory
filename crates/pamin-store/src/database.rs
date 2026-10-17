@@ -13,7 +13,7 @@ use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 
 use crate::error::Result;
-use crate::workspace::{LocalServer, Workspace};
+use crate::workspace::{LocalServer, StartedWith, Workspace};
 
 /// The database name created inside the embedded cluster.
 const DATABASE: &str = "pamin";
@@ -95,6 +95,15 @@ impl Database {
         settings: &StoreSettings,
     ) -> Result<Self> {
         let running = match workspace.read_server()? {
+            Some(existing) if listening(existing.port) && !reusable(&existing, settings) => {
+                // Started with other store settings -- by an earlier run, or
+                // by a server that exited and left its cluster up -- which
+                // apply only when the cluster starts. Reusing it would run
+                // with what it has while this caller recorded what it asked.
+                tracing::info!("restarting the cluster, started with other store settings");
+                stop(workspace).await?;
+                None
+            }
             Some(existing) if listening(existing.port) => {
                 // Refused credentials or anything else that is not this
                 // workspace's cluster: start it, as before.
@@ -127,6 +136,22 @@ impl Database {
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
+}
+
+/// What a cluster started for `store` records it was started with.
+fn started_with(store: &StoreSettings) -> StartedWith {
+    StartedWith {
+        jit: store.jit,
+        postgres_dir: store
+            .postgres_dir
+            .as_ref()
+            .map(|path| path.as_os_str().to_owned()),
+    }
+}
+
+/// Whether the running cluster `server` records was started with `store`.
+fn reusable(server: &LocalServer, store: &StoreSettings) -> bool {
+    server.started_with.as_ref() == Some(&started_with(store))
 }
 
 /// Opens a pool sized for one short-lived command.
@@ -476,6 +501,7 @@ async fn start_server(workspace: &Workspace, store: &StoreSettings) -> Result<Lo
         // setup() qualifies the install directory with the resolved version, so
         // record what it settled on rather than what we asked for.
         installation_dir: settings.installation_dir.clone(),
+        started_with: Some(started_with(store)),
     };
     workspace.write_server(&server)?;
 
@@ -570,6 +596,70 @@ mod tests {
     use std::net::TcpListener;
 
     use super::{StoreSettings, UNREAD, UNREAD_WITHOUT_JIT, stale_pid_file, trim_unread};
+
+    /// A running cluster is reused only by a caller asking for the store
+    /// settings it was started with; a changed `jit` or PostgreSQL prefix,
+    /// or a record from before settings were kept, restarts it.
+    #[test]
+    fn a_cluster_is_reused_only_with_the_settings_it_started_with() {
+        let started = StoreSettings {
+            jit: false,
+            postgres_dir: Some("/usr/lib/postgresql/17".into()),
+        };
+        let mut server = crate::LocalServer {
+            host: "localhost".into(),
+            port: 5432,
+            username: "postgres".into(),
+            password: "secret".into(),
+            database: "pamin".into(),
+            installation_dir: "/usr/lib/postgresql/17".into(),
+            started_with: Some(super::started_with(&started)),
+        };
+        assert!(super::reusable(&server, &started));
+        let jit = StoreSettings {
+            jit: true,
+            ..started.clone()
+        };
+        assert!(!super::reusable(&server, &jit));
+        let elsewhere = StoreSettings {
+            postgres_dir: Some("/opt/postgresql/17".into()),
+            ..started.clone()
+        };
+        assert!(!super::reusable(&server, &elsewhere));
+        let bundled = StoreSettings {
+            postgres_dir: None,
+            ..started.clone()
+        };
+        assert!(!super::reusable(&server, &bundled));
+
+        // Through the record on disk, as the next process reads it.
+        let json = serde_json::to_vec(&server).unwrap();
+        let read: crate::LocalServer = serde_json::from_slice(&json).unwrap();
+        assert!(super::reusable(&read, &started));
+        server.started_with = None;
+        let old: serde_json::Value = serde_json::to_value(&server).unwrap();
+        let mut old = old.as_object().unwrap().clone();
+        old.remove("started_with");
+        let read: crate::LocalServer = serde_json::from_value(old.into()).unwrap();
+        assert!(!super::reusable(&read, &StoreSettings::default()));
+    }
+
+    /// Two prefixes that differ only in bytes that are not UTF-8 are recorded
+    /// as two prefixes.
+    #[cfg(unix)]
+    #[test]
+    fn a_prefix_that_is_not_utf8_is_recorded_byte_for_byte() {
+        use std::os::unix::ffi::OsStrExt;
+        let prefix = |byte: u8| StoreSettings {
+            jit: false,
+            postgres_dir: Some(std::ffi::OsStr::from_bytes(&[b'/', b'p', byte]).into()),
+        };
+        let recorded = super::started_with(&prefix(0x80));
+        let json = serde_json::to_vec(&recorded).unwrap();
+        let read: crate::workspace::StartedWith = serde_json::from_slice(&json).unwrap();
+        assert_eq!(read, super::started_with(&prefix(0x80)));
+        assert_ne!(read, super::started_with(&prefix(0x81)));
+    }
 
     /// An installation tree shaped the way a PostgreSQL install is shaped.
     ///
