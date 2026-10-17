@@ -150,6 +150,7 @@ impl Repository {
         if let Some(entry) = self.cached(file) {
             return Ok(entry);
         }
+        self.record_ref(self.remote_ref().as_deref());
         let commit = self.at().to_string();
         // A fetch at a commit leaves a ref named by that commit, which
         // [`File::remove`] would take for a pinned revision sharing the
@@ -175,6 +176,56 @@ impl Repository {
         crate::activity::fetched();
         self.pin_fetched(&fetched);
         Ok(fetched)
+    }
+
+    /// The commit the hub says the requested revision names now, if it is a
+    /// moving ref -- `main` -- and the hub can be reached. A requested
+    /// commit is its own answer, and offline there is none.
+    fn remote_ref(&self) -> Option<String> {
+        if is_commit(&self.revision) {
+            return None;
+        }
+        self.api
+            .repo(hf_hub::Repo::with_revision(
+                self.name.clone(),
+                hf_hub::RepoType::Model,
+                self.revision.clone(),
+            ))
+            .info()
+            .ok()
+            .map(|info| info.sha)
+    }
+
+    /// Records `remote` as the commit the requested revision's ref names in
+    /// the cache, before a file missing from the cache is fetched.
+    ///
+    /// The cached ref was only ever written by a fetch by that ref, and a
+    /// fetch is now made at the pinned commit, so a cache whose file had
+    /// gone -- a download a mapped copy replaced, then a copy collected --
+    /// fetched the old commit's file again and never learned that the
+    /// branch had moved. Asked here, where a fetch needs the hub anyway, the
+    /// ref follows the branch. A repository already pinned keeps its commit
+    /// for its life, as everything its load has named -- its plan key, the
+    /// files it has read -- is that commit's; the next load opens at the new
+    /// one. With nothing pinned yet, as on a first download, this load
+    /// fetches at the commit the hub named. Offline, or answered with
+    /// something that is not a commit, the cached ref stands.
+    fn record_ref(&self, remote: Option<&str>) {
+        let Some(commit) = remote.filter(|commit| is_commit(commit)) else {
+            return;
+        };
+        let reference = self.root().join("refs").join(&self.revision);
+        let mut partial = reference.as_os_str().to_owned();
+        partial.push(".partial");
+        let recorded = reference
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&partial, commit))
+            .and_then(|()| std::fs::rename(&partial, &reference));
+        if let Err(error) = recorded {
+            let _ = std::fs::remove_file(&partial);
+            tracing::warn!(model = %self.name, %error, "could not record the ref the hub named");
+        }
     }
 
     /// Pins the commit `fetched` was read at, from its own path --
@@ -492,6 +543,43 @@ mod tests {
         // A requested commit is resolved without a ref.
         let at = Repository::open_at(dir.path(), NAME, OLD).expect("open");
         assert_eq!(at.identity(dir.path()), at.identity(dir.path()));
+    }
+
+    /// A ref the hub names anew before a fetch is recorded, so a cache whose
+    /// file has gone follows the branch: the next repository opened pins the
+    /// new commit, while one already pinned keeps its own. Offline, or given
+    /// something that is not a commit, the cached ref stands.
+    #[test]
+    fn a_fetch_records_the_ref_the_hub_names_now() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (entry, _) = downloaded(dir.path());
+        // The download a mapped copy replaced, then the copy collected.
+        std::fs::remove_file(&entry).expect("release the download");
+        let main = dir.path().join("models--someone--model/refs/main");
+        let repository = Repository::open(dir.path(), NAME).expect("open");
+        assert_eq!(repository.revision(), format!("someone/model@{OLD}"));
+
+        repository.record_ref(None);
+        repository.record_ref(Some("not a commit"));
+        assert_eq!(std::fs::read_to_string(&main).unwrap(), OLD);
+
+        repository.record_ref(Some(NEW));
+        assert_eq!(std::fs::read_to_string(&main).unwrap(), NEW);
+        assert_eq!(repository.revision(), format!("someone/model@{OLD}"));
+        let reopened = Repository::open(dir.path(), NAME).expect("open");
+        assert_eq!(reopened.revision(), format!("someone/model@{NEW}"));
+
+        // Nothing cached: the ref recorded is the one this load fetches at.
+        let fresh = tempfile::tempdir().expect("temp dir");
+        let first = Repository::open(fresh.path(), NAME).expect("open");
+        assert_eq!(first.revision(), "someone/model@main");
+        first.record_ref(Some(NEW));
+        assert_eq!(first.revision(), format!("someone/model@{NEW}"));
+        assert!(
+            !dir.path()
+                .join("models--someone--model/refs/main.partial")
+                .exists()
+        );
     }
 
     /// An empty or cut-short ref names no commit, so nothing is pinned: the
