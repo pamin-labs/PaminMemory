@@ -668,6 +668,10 @@ pub struct Shape {
     activity_before: Option<pamin_index::LoadActivity>,
     /// Reads those counts: `LoadActivity::now`, or a test's own.
     activity: fn() -> pamin_index::LoadActivity,
+    /// This process's turn at loading models, from that first look until
+    /// the record is written, so no other test's loads fall in between
+    /// (see `harness::ModelsTurn`).
+    turn: Option<super::ModelsTurn>,
     /// The execution plans calibrated and kept on disk before the models
     /// loaded, by plan hash, if [`observe_models`](Self::observe_models)
     /// looked.
@@ -1126,6 +1130,7 @@ impl Shape {
             caches: Vec::new(),
             activity_before: None,
             activity: pamin_index::LoadActivity::now,
+            turn: None,
             plans_before: None,
             calibration: Vec::new(),
             indexes: Vec::new(),
@@ -1200,6 +1205,7 @@ impl Shape {
     /// its timings: the outcome of the loads, not a prediction of it.
     pub fn observe_models(&mut self, models: &Path) {
         if self.activity_before.is_none() {
+            self.turn = Some(super::load_models());
             self.activity_before = Some((self.activity)());
         }
         // Only plans a load would accept (`pamin_index::plan_is_usable`): an
@@ -2298,6 +2304,57 @@ mod tests {
         );
     }
 
+    /// Two evaluations in one process take turns at loading models: one
+    /// that fetches while the other waits does not fall in the other's
+    /// interval, so the other is not named cold by it -- nor is its record
+    /// written over an interval holding another run's loads.
+    #[test]
+    fn evaluations_take_turns_at_loading_models() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static FETCHED: AtomicU64 = AtomicU64::new(0);
+        fn activity() -> pamin_index::LoadActivity {
+            pamin_index::LoadActivity {
+                fetched: FETCHED.load(Ordering::SeqCst),
+                prepared: 0,
+            }
+        }
+        let dir = tempfile::tempdir().expect("temp dir");
+        let models = dir.path().to_path_buf();
+        let observe = move || {
+            let mut shape = Shape::new("test", String::new(), None);
+            shape.activity = activity;
+            shape.observe_models(&models);
+            shape
+        };
+        let fetching = observe();
+        let (looked, waiting) = std::sync::mpsc::channel();
+        let other = std::thread::spawn({
+            let observe = observe.clone();
+            move || {
+                let shape = observe();
+                looked.send(()).expect("say it looked");
+                shape.observed_warmth()
+            }
+        });
+        // The other evaluation cannot look while this one loads.
+        assert!(
+            waiting
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "two evaluations loaded models at once"
+        );
+        FETCHED.fetch_add(3, Ordering::SeqCst);
+        assert_eq!(
+            fetching.observed_warmth(),
+            ["models: cold: fetched 3 / prepared 0"]
+        );
+        drop(fetching);
+        assert_eq!(
+            other.join().expect("the other evaluation"),
+            ["models: warm: nothing fetched or prepared"]
+        );
+    }
+
     /// A run whose model loads fetched or prepared anything is cold, one
     /// whose loads found everything in place is warm, and a plan
     /// calibrated before the run is told from one the run calibrated -- an
@@ -2327,6 +2384,7 @@ mod tests {
             first.observed_warmth(),
             ["models: cold: fetched 2 / prepared 0"]
         );
+        drop(first);
         // A second load, finding what the first fetched: warm.
         assert_eq!(
             observe().observed_warmth(),
@@ -2340,6 +2398,7 @@ mod tests {
             shape.observed_warmth(),
             ["models: cold: fetched 1 / prepared 0"]
         );
+        drop(shape);
 
         // A plan a load would use, and one it would not: expired.
         let plans = models.join("compute-plans-v1");

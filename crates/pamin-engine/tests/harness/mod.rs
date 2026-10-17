@@ -19,6 +19,45 @@ use std::path::PathBuf;
 use pamin_engine::{Drained, Engine, Owed, Write};
 use pamin_index::Profile;
 
+/// This process's turn at loading models: held by an evaluation from its
+/// first look at the model directory until its record is written
+/// ([`shape::Shape::observe_models`]), and by every other test here that
+/// loads a model ([`load_models`]), so no two of them load at once.
+///
+/// What the loads fetched and prepared is counted process wide
+/// (`pamin_index::LoadActivity`), and libtest runs the tests of one binary
+/// side by side: without turns, another test's download would land in an
+/// evaluation's interval and name a warm run cold. A flag and a condition
+/// variable rather than a held `MutexGuard`, so the turn is `Send` and is
+/// let go of however the test ends, a panic included.
+pub struct ModelsTurn(());
+
+static TURN: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+static TURN_FREED: std::sync::Condvar = std::sync::Condvar::new();
+
+/// Waits for this process's turn at loading models (see [`ModelsTurn`]).
+pub fn load_models() -> ModelsTurn {
+    let mut taken = TURN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    while *taken {
+        taken = TURN_FREED
+            .wait(taken)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+    *taken = true;
+    ModelsTurn(())
+}
+
+impl Drop for ModelsTurn {
+    fn drop(&mut self) {
+        *TURN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+        TURN_FREED.notify_one();
+    }
+}
+
 /// The profile the floors were measured against, and the product default.
 pub const DEFAULT_PROFILE: &str = "accuracy";
 
