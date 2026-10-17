@@ -160,8 +160,8 @@ that two topics really are related the way it claims.
 
 Every search reranks with one cross-encoder, and there is no flag for it:
 `--rerank` and `PAMIN_RERANK` were removed, and setting `PAMIN_RERANK` is an
-error. A search against a warm server on four cores costs more than a second,
-most of it the reranker (`docs/cli.md`).
+error. A search against a warm server on four cores costs two to three
+seconds, most of it the reranker; `docs/measured.md` has the current figures.
 
 **Leave `--channel-depth` and `--graph-depth` alone.** They exist for the
 evaluation harness. Raising them costs latency for recall you have no way to
@@ -170,10 +170,10 @@ measure from outside. If you want more control over retrieval, use `grep`,
 
 ### When to stop searching
 
-Every `search` costs more than a second and a page of results in your
-context. The 1522 ms `docs/cli.md` records was measured at twenty reranked
-candidates; a search now reranks thirty, and `docs/measured.md`
-records slower medians on busier machines. A second search pays off only when
+Every `search` costs two to three seconds on four cores and a page of results
+in your context. The reranker reads the top thirty fused results, and up to
+thirty more that only the graph found; `docs/measured.md` records a median of
+about 2.7 s at `pamin search` over 3,230 memories on a four-core machine. A second search pays off only when
 it can find something the first could not. The rules below are a heuristic for
 spending that cost; no agent-task measurement yet shows how often a repeat
 search finds something new.
