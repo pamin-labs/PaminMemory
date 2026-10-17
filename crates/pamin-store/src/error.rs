@@ -14,6 +14,11 @@ pub enum StoreError {
 
     #[error("workspace io: {0}")]
     Io(#[from] std::io::Error),
+
+    /// A supplied PostgreSQL prefix that is not an installation; see
+    /// [`crate::installation_missing`].
+    #[error("{0}")]
+    Installation(String),
 }
 
 /// Result alias for store operations.

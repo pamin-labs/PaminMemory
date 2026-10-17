@@ -344,6 +344,21 @@ impl Server {
         let flag_postgres = args.postgres_dir.as_ref().map(from_flag).transpose()?;
         let file_postgres = serve.postgres_dir.as_ref().map(from_file).transpose()?;
         let postgres_dir = flag_postgres.clone().or(file_postgres.clone());
+        // Refused here rather than when the database starts, where a prefix
+        // that is not an installation is an error in a log nobody reads.
+        if let Some(prefix) = &postgres_dir
+            && let Some(missing) = pamin_store::installation_missing(prefix)
+        {
+            let named = match given("postgres_dir") {
+                Some(Source::Env) => "postgres_dir from the environment".to_string(),
+                Some(_) => "--postgres-dir".to_string(),
+                None => format!("{CONFIG}: postgres_dir"),
+            };
+            bail!(
+                "{named} {} is not a PostgreSQL installation: it has no {missing}",
+                prefix.display()
+            );
+        }
         pick(
             "postgres_dir",
             flag_postgres.as_deref().map(pamin_index::spelled_path),
@@ -657,22 +672,17 @@ mod tests {
     fn relative_paths_are_resolved_before_they_are_stored() {
         let root = tempfile::tempdir().unwrap();
         let here = std::env::current_dir().unwrap();
-        let server = resolve(
-            root.path(),
-            &["--postgres-dir", "pg", "--ep-library", "plugins/npu.so"],
-        )
-        .unwrap();
-        assert_eq!(server.settings.store.postgres_dir, Some(here.join("pg")));
+        let server = resolve(root.path(), &["--ep-library", "plugins/npu.so"]).unwrap();
         assert_eq!(
             server.settings.inference.ep_libraries,
             [here.join("plugins/npu.so")]
         );
-        let asked = server.asked();
         assert_eq!(
-            asked["postgres_dir"].value,
-            here.join("pg").display().to_string()
+            server.asked()["ep_libraries"].value,
+            pamin_index::spelled_paths(&[here.join("plugins/npu.so")])
         );
 
+        installation(&root.path().join("pg"));
         std::fs::write(
             root.path().join(CONFIG),
             "[serve]\npostgres_dir = \"pg\"\nep_libraries = [\"npu.so\"]\n",
@@ -687,6 +697,48 @@ mod tests {
             server.settings.inference.ep_libraries,
             [root.path().join("npu.so")]
         );
+    }
+
+    /// A PostgreSQL prefix holding what the store runs from one.
+    fn installation(prefix: &Path) {
+        std::fs::create_dir_all(prefix.join("bin")).unwrap();
+        for program in ["initdb", "pg_ctl"] {
+            std::fs::write(prefix.join("bin").join(program), b"").unwrap();
+        }
+    }
+
+    /// A PostgreSQL prefix that is not an installation is refused when the
+    /// settings are resolved, naming where it came from and what it lacks,
+    /// rather than recorded and then replaced by a downloaded installation.
+    #[test]
+    fn a_postgres_prefix_without_an_installation_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let absent = root.path().join("absent");
+        let Err(error) = resolve(root.path(), &["--postgres-dir", absent.to_str().unwrap()]) else {
+            panic!("an absent prefix is refused");
+        };
+        let error = error.to_string();
+        assert!(error.contains("--postgres-dir"), "{error}");
+        assert!(error.contains("bin/initdb"), "{error}");
+
+        let half = root.path().join("half");
+        installation(&half);
+        std::fs::remove_file(half.join("bin/pg_ctl")).unwrap();
+        std::fs::write(
+            root.path().join(CONFIG),
+            format!("[serve]\npostgres_dir = {:?}\n", half.to_str().unwrap()),
+        )
+        .unwrap();
+        let Err(error) = resolve(root.path(), &[]) else {
+            panic!("a prefix without pg_ctl is refused");
+        };
+        let error = error.to_string();
+        assert!(error.contains("config.toml: postgres_dir"), "{error}");
+        assert!(error.contains("bin/pg_ctl"), "{error}");
+
+        installation(&half);
+        let server = resolve(root.path(), &[]).unwrap();
+        assert_eq!(server.settings.store.postgres_dir, Some(half));
     }
 
     /// A comma in a library's path does not make it two libraries: a server
@@ -714,9 +766,11 @@ mod tests {
     fn a_path_that_is_not_utf8_is_compared_byte_for_byte() {
         use std::os::unix::ffi::OsStrExt;
         let path = |bytes: &[u8]| PathBuf::from(std::ffi::OsStr::from_bytes(bytes));
-        let x80 = path(b"/opt/ep-\x80.so");
-        let x81 = path(b"/opt/ep-\x81.so");
         let root = tempfile::tempdir().unwrap();
+        let x80 = root.path().join(path(b"ep-\x80"));
+        let x81 = root.path().join(path(b"ep-\x81"));
+        installation(&x80);
+        installation(&x81);
         let resolve_with = |library: &PathBuf, prefix: &PathBuf| {
             let matches = Test::command()
                 .try_get_matches_from([
