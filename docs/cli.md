@@ -859,11 +859,11 @@ support.
 
 The entry distinguishes scored from unscored results; it does not claim that
 the model alone set the final order or that the position changed. A line
-reading `vector#12 reranked` says the model scored that candidate. Every
-result in the fused top thirty is scored, whichever channel found it, so a line
-without `reranked` sat below that head and was not among the strongest
-candidates only the graph found. A search with a single fused result has
-nothing to reorder, and its hit carries no `reranked`.
+reading `vector#12 reranked` says the model scored that candidate. When fusion
+returns two or more candidates, every result in the fused top thirty is scored,
+whichever channel found it, so a line without `reranked` sat below that head
+and was not among the strongest candidates only the graph found. When fusion
+returns fewer than two, nothing is reranked and no hit carries `reranked`.
 
 There is no fourth kind. There used to be a `modifier`, a post-fusion
 adjustment that lifted a result by its recorded `importance` and by the balance
