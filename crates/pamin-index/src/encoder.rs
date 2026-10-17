@@ -226,7 +226,16 @@ impl Encoder {
             return Ok(1);
         }
         while sessions.len() < wanted {
-            sessions.push(crate::inference::cpu_session(model, 1)?);
+            // A side session only saves time, and `session` still runs
+            // every batch: one that will not load leaves the passes to
+            // those that did.
+            match crate::inference::cpu_session(model, 1) {
+                Ok(session) => sessions.push(session),
+                Err(error) => {
+                    tracing::warn!(%error, loaded = sessions.len(), "could not load a side-by-side session");
+                    return Ok(sessions.len().max(1));
+                }
+            }
         }
         Ok(wanted)
     }
