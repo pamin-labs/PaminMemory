@@ -173,7 +173,9 @@ fn embed_with<M>(
     batch: usize,
 ) -> Embedded {
     let embedding = producer(model);
-    let named = format!("{embedding}\ninput={}", input_digest(texts));
+    // The batch too: each call pads to its longest text, and another padded
+    // shape can round another way.
+    let named = format!("{embedding}\ninput={}\nbatch={batch}", input_digest(texts));
     let mut vectors = resume(path, &named, width, texts.len());
     let reused = vectors.len() / width;
     if reused > 0 {
@@ -408,6 +410,30 @@ mod tests {
         let resumed = embed_with(&mut Model { batches: 2 }, steady, run, &path, &texts, 2, 1);
         assert_eq!(resumed.reused, 2);
         assert_eq!(resumed.vectors.len(), 8);
+    }
+
+    /// Vectors embedded in batches of another size are another cache: each
+    /// call pads to its longest text, and another shape can round another
+    /// way.
+    #[test]
+    fn a_cache_is_named_by_its_batch_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vectors.f32");
+        let producer = |_: &()| "plan=cpu@a".to_string();
+        let run = |_: &mut (), chunk: &[&str]| -> Vec<Vec<f32>> {
+            chunk.iter().map(|_| vec![1.0, 0.0]).collect()
+        };
+        let texts = ["a", "b", "c", "d"];
+        embed_with(&mut (), producer, run, &path, &texts, 2, 2);
+        assert_eq!(
+            embed_with(&mut (), producer, run, &path, &texts, 2, 2).reused,
+            4
+        );
+        assert_eq!(
+            embed_with(&mut (), producer, run, &path, &texts, 2, 1).reused,
+            0,
+            "batches of one read batches of two"
+        );
     }
 
     /// A cache holds the vectors of one input, in one order: the same
