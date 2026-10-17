@@ -1075,6 +1075,8 @@ fn prepare_pinned_model(api: &hf_hub::api::sync::Api, models: &Path, model: &ser
 #[test]
 #[ignore = "downloads a pinned Fast reranker into PAMIN_EVAL_HOME"]
 fn pinned_fast_reranker_loads_and_scores() {
+    // Loads models: one test at a time (see `harness::ModelsTurn`).
+    let _turn = harness::load_models();
     let Some(home) = pinned_benchmark_home("pinned_fast_reranker_loads_and_scores") else {
         return;
     };
@@ -1114,6 +1116,8 @@ fn pinned_fast_reranker_loads_and_scores() {
 #[test]
 #[ignore = "downloads a pinned Fast INT8 export and checks the Apple auto route"]
 fn pinned_fast_auto_prefers_cpu_model() {
+    // Loads models: one test at a time (see `harness::ModelsTurn`).
+    let _turn = harness::load_models();
     let Some(home) = pinned_benchmark_home("pinned_fast_auto_prefers_cpu_model") else {
         return;
     };
@@ -1150,6 +1154,8 @@ fn pinned_fast_auto_prefers_cpu_model() {
 #[test]
 #[ignore = "loads cached pinned CPU models; set PAMIN_EVAL_HOME and PAMIN_DEVICE=cpu"]
 fn pinned_model_loads_report_actual_graph_paths() {
+    // Loads models: one test at a time (see `harness::ModelsTurn`).
+    let _turn = harness::load_models();
     let Some(home) = pinned_benchmark_home("pinned_model_loads_report_actual_graph_paths") else {
         return;
     };
@@ -1169,6 +1175,8 @@ fn pinned_model_loads_report_actual_graph_paths() {
 #[test]
 #[ignore = "downloads the pinned XQuAD-R model artifacts into a persistent cache"]
 fn prepare_pinned_xquad_models() {
+    // Loads models: one test at a time (see `harness::ModelsTurn`).
+    let _turn = harness::load_models();
     let Some(home) = pinned_benchmark_home("prepare_pinned_xquad_models") else {
         return;
     };

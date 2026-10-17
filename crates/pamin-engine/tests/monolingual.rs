@@ -577,6 +577,8 @@ const RERANK_IS_WORTH: f64 = 0.0;
 #[test]
 #[ignore = "provisions PostgreSQL, downloads a corpus, and indexes it"]
 fn search_ranks_real_passages() {
+    // Loads models: one test at a time (see `harness::ModelsTurn`).
+    let _turn = harness::load_models();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
