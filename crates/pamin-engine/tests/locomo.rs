@@ -14,8 +14,9 @@
 //! with `pamin link`. The topic names are dialogue ids, so mention derivation
 //! finds nothing and the only edges are those links. Every question is asked
 //! twice of that one project: with the shipped fusion, and with the graph
-//! channel taken out, which is what a project without the links -- the flat
-//! benchmark arm -- can find. Each row is a per-question comparison of the
+//! channel taken out and not walked (graph depth 0, so the reranker is shown
+//! no graph seed either), which is what a project without the links -- the
+//! flat benchmark arm -- can find. Each row is a per-question comparison of the
 //! same search with and without the graph -- the graph channel's worth on
 //! this corpus, not a guess at it.
 //!
@@ -73,9 +74,11 @@
 //! | `LOCOMO_CONVERSATIONS` | read only the first this many conversations |
 //!
 //! Projects are named after a digest of the records and links they hold, and
-//! of the execution provider and model revision that embedded them, so a
-//! reused `PAMIN_EVAL_HOME` never scores a corpus built by older code or data,
-//! or embedded on another provider or by other weights.
+//! of the execution plan and model revision that embedded them, so a reused
+//! `PAMIN_EVAL_HOME` never scores a corpus built by older code or data, or
+//! embedded on another provider, plan or by other weights. Each conversation's
+//! index is also claimed through `harness::index` before it is written, so a
+//! reused index built under other settings is reported rather than trusted.
 
 mod channels;
 mod harness;
@@ -475,8 +478,9 @@ fn fetch(path: &Path, url: &str) {
 }
 
 /// What embeds this run's documents, as a project name carries it: the first
-/// twelve hex digits of a SHA-256 over each embedding plan's role, execution
-/// provider and model revision (`repository@commit`).
+/// twelve hex digits of a SHA-256 over each embedding plan's role, its full
+/// execution plan as the shape records it (`harness::shape::provider`) and
+/// its model revision (`repository@commit`).
 ///
 /// A reused `PAMIN_EVAL_HOME` keeps the vectors an earlier run wrote, and
 /// `write_absent` skips every topic it finds. Without this, a run on another
@@ -509,7 +513,13 @@ async fn embedded_by(
         .providers()
         .into_iter()
         .filter(|(role, _)| role.starts_with("embedding"))
-        .map(|(role, plan)| format!("{role}={}@{}", plan.target, plan.revision))
+        .map(|(role, plan)| {
+            format!(
+                "{role}={}@{}",
+                harness::shape::provider(&plan),
+                plan.revision
+            )
+        })
         .collect();
     plans.sort();
     plans.dedup();
@@ -639,6 +649,16 @@ async fn locomo_evidence_with_and_without_links() {
         )
         .await
         .expect("open the engine");
+        // Claimed before writing, so a reused project's index is checked
+        // against the settings and plans that built it, not trusted.
+        harness::index(
+            &mut shape,
+            &conversation.id,
+            &engine,
+            workspace.root(),
+            conversation.turns.len(),
+        )
+        .await;
         write(&engine, conversation).await;
         // `write_absent` skips a topic the ledger has, and `drain` sees
         // nothing owed, even when the index beside a reused project was
@@ -688,13 +708,27 @@ async fn locomo_evidence_with_and_without_links() {
                 rules.planned_like(&engine);
                 continue;
             }
-            let fusions = [Fusion::default().without(Channel::Graph), Fusion::default()];
-            for (side, fusion) in fusions.into_iter().enumerate() {
+            // Without the graph, nothing walks it: a zero fusion weight alone
+            // still recalls the graph and shows the reranker each reached
+            // candidate's seed, so the links would still move the ranking.
+            let arms = [
+                (
+                    Depths { graph: 0, ..DEPTHS },
+                    Fusion::default().without(Channel::Graph),
+                ),
+                (DEPTHS, Fusion::default()),
+            ];
+            for (side, (depths, fusion)) in arms.into_iter().enumerate() {
                 harness::shape::table(TABLES[side]);
                 let hits = engine
-                    .search_reranked_with(&question.text, RECALL_AT as u32, DEPTHS, fusion)
+                    .search_reranked_with(&question.text, RECALL_AT as u32, depths, fusion)
                     .await
                     .expect("search");
+                assert!(
+                    side == 1 || hits.iter().all(|hit| hit.seed.is_none()),
+                    "{}: the arm without the graph still used it",
+                    question.id
+                );
                 let ranked: Vec<String> = hits.into_iter().map(|hit| hit.topic).collect();
                 harness::shape::tally(&question.category, &question.id);
                 scores[side]
