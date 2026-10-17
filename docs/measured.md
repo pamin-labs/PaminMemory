@@ -1510,7 +1510,7 @@ time under `disk` (medians 1,371 against 1,287 ms and 2,339 against 2,236),
 and rebuilding XQuAD-R's 13,014 documents took 424 s under `disk` and 30 s
 under `memory`.
 The table, the tuning and the write-path measurement are in
-[the ADR](adr/0001-tech-selection.md#two-vector-indexes-both-half-precision-disk-by-default).
+[the ADR](adr/0001-tech-selection.md#two-vector-indexes-both-half-precision-memory-by-default).
 
 **Above this, nothing is measured.** The largest corpus here is 131,924
 documents. A million and beyond is untested — not projected, not extrapolated,
