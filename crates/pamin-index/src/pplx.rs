@@ -32,7 +32,9 @@ pub(crate) fn prepare(source: &Path, cache: &Path) -> Result<PathBuf> {
         .join("model_quantized.onnx_data");
     let data = std::fs::canonicalize(data)?;
     let linked = directory.join("model_quantized.onnx_data");
-    if !linked.is_file() || std::fs::symlink_metadata(&linked)?.file_type().is_symlink() {
+    let copying = !linked.is_file() || std::fs::symlink_metadata(&linked)?.file_type().is_symlink();
+    if copying {
+        crate::activity::prepared();
         if std::fs::symlink_metadata(&linked).is_ok() {
             std::fs::remove_file(&linked)?;
         }
@@ -42,6 +44,9 @@ pub(crate) fn prepare(source: &Path, cache: &Path) -> Result<PathBuf> {
     }
     if std::fs::read(&output).is_ok_and(|existing| existing == rewritten) {
         return Ok(output);
+    }
+    if !copying {
+        crate::activity::prepared();
     }
     let pending = output.with_extension("partial");
     std::fs::write(&pending, rewritten)?;
