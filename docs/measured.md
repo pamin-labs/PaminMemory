@@ -999,7 +999,7 @@ that saw another. Against reranking every query, nDCG@10:
 
 | route | XQuAD-R cross-lingual | MIRACL | MuSiQue |
 | --- | --- | --- | --- |
-| `fast` picks ten, `accurate` orders them | −0.0284, p = 0.0001 | | −0.0047, p = 0.0015 |
+| `fast` picks ten, `accurate` orders them (historical: `fast` has been removed) | −0.0284, p = 0.0001 | | −0.0047, p = 0.0015 |
 | best rule (skip when the top is first in both lexical channels) | −0.0133, p = 0.0001 | | ±0 (never fires) |
 | learned, reranking half the queries | −0.0085, p = 0.0001 | −0.0036, p = 0.014 | −0.0023, n.s. |
 | learned, reranking four in five | −0.0020, p = 0.0001 | +0.0001, n.s. | −0.0000, n.s. |
@@ -1012,8 +1012,7 @@ Every cross-validated fold on every corpus chose to rerank every query. The
 literature says the same thing from the other side: query-performance
 predictors transfer badly between collections, and routers recover 60-80% of
 an oracle's saving at best. Accuracy is the axis this project will not trade,
-so every query is still reranked; the learned route is a candidate for the
-`speed` profile, not the default.
+so every query is still reranked, and the learned route does not ship.
 
 **Every latency table on this page was taken while idle inference threads
 spun, and they no longer do.** ONNX Runtime lets an intra-op thread that runs
