@@ -433,6 +433,72 @@ mod tests {
         );
     }
 
+    /// The libraries read no `PAMIN_*` variable: the binary turns its flags,
+    /// its `config.toml` and the few variables it still reads into the values
+    /// the libraries take, so what a server runs with is what it was started
+    /// with, and a test varies a setting by building a value rather than
+    /// writing the environment every other thread shares.
+    ///
+    /// Any `"PAMIN_` literal in a library's product code -- outside comments,
+    /// outside its test module, and other than a compile-time `env!` stamp --
+    /// fails, which also catches a name read through a constant.
+    #[test]
+    fn the_libraries_read_no_pamin_variable() {
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crates directory");
+        let mut found = Vec::new();
+        let mut files = 0;
+        for library in ["pamin-core", "pamin-index", "pamin-store", "pamin-engine"] {
+            let mut sources = Vec::new();
+            rust_files(&crates.join(library).join("src"), &mut sources);
+            for path in sources {
+                files += 1;
+                let source = std::fs::read_to_string(&path).expect("read a source file");
+                // Up to the test module, however it is declared.
+                let product = source
+                    .match_indices("#[cfg(test)]\n")
+                    .find(|(at, marker)| {
+                        source[at + marker.len()..]
+                            .lines()
+                            .next()
+                            .is_some_and(|line| line.contains("mod tests"))
+                    })
+                    .map_or(source.as_str(), |(at, _)| &source[..at]);
+                for (number, line) in product.lines().enumerate() {
+                    let code = line.trim_start();
+                    if code.starts_with("//") {
+                        continue;
+                    }
+                    for (at, _) in code.match_indices("\"PAMIN_") {
+                        if !code[..at].ends_with("env!(") {
+                            found.push(format!("{}:{}: {code}", path.display(), number + 1));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            files > 20,
+            "only read {files} files, so this is not reading the source"
+        );
+        assert!(
+            found.is_empty(),
+            "a library names a PAMIN_ variable: {found:#?}"
+        );
+    }
+
+    fn rust_files(dir: &std::path::Path, into: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read a source directory") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                rust_files(&path, into);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                into.push(path);
+            }
+        }
+    }
+
     /// Every `"PAMIN_..."` literal under a directory, recursively.
     fn collect_settings(dir: &std::path::Path, into: &mut Vec<String>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
