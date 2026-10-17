@@ -159,10 +159,11 @@ pub fn embed(
 ///
 /// The producer is asked again after every batch, before that batch is
 /// written: a model that fell back to another plan partway has just embedded
-/// with a producer the file's header does not name, so the cache is removed
-/// and nothing more is written to it. Checked only at the end, an
-/// interruption in between left a file whose header named the first
-/// producer over vectors from two, and the next run reused them.
+/// with a producer the file's header does not name. The cache is removed and
+/// the run fails, naming both producers: its vectors -- a reused or embedded
+/// prefix from one plan and the rest from another -- are no single
+/// producer's, and a run scored on them would be recorded as either. Run
+/// again, it starts under the plan the model now has.
 fn embed_with<M>(
     model: &mut M,
     producer: impl Fn(&M) -> String,
@@ -188,14 +189,18 @@ fn embed_with<M>(
 
     let started = std::time::Instant::now();
     let mut done = reused;
-    let mut caching = true;
     while done < texts.len() {
         let chunk: Vec<&str> = texts[done..].iter().take(batch).copied().collect();
         let embedded = run(model, &chunk);
-        if caching && producer(model) != embedding {
-            println!("  the embedder's plan changed during the run; removing its vector cache");
+        let now = producer(model);
+        if now != embedding {
             let _ = std::fs::remove_file(path);
-            caching = false;
+            panic!(
+                "the embedder's plan changed after {done} of {} texts, so its vectors are \
+                 no one producer's; its cache was removed, and a run again starts under \
+                 the new plan\n  was:\n{embedding}\n  now:\n{now}",
+                texts.len()
+            );
         }
 
         let mut appended = Vec::with_capacity(chunk.len() * width * 4);
@@ -206,9 +211,7 @@ fn embed_with<M>(
             }
             vectors.extend_from_slice(&vector);
         }
-        if caching {
-            append(path, &appended);
-        }
+        append(path, &appended);
 
         done += chunk.len();
         if done.is_multiple_of(batch * 50) {
@@ -368,11 +371,11 @@ mod tests {
         );
     }
 
-    /// A model that falls back partway leaves no cache behind under its
-    /// first producer's header, so a run interrupted after the fallback
-    /// cannot hand the next one a prefix from two producers.
+    /// A model that falls back partway fails the run, naming both
+    /// producers, and leaves no cache behind under the first producer's
+    /// header: neither this run nor the next is scored on vectors from two.
     #[test]
-    fn a_fallback_partway_removes_the_cache_before_writing_to_it() {
+    fn a_fallback_partway_fails_the_run_and_removes_the_cache() {
         struct Model {
             batches: usize,
         }
@@ -391,22 +394,25 @@ mod tests {
             chunk.iter().map(|_| vec![1.0, 0.0]).collect()
         };
         let texts = ["a", "b", "c", "d"];
-        // Interrupted in the third batch, after one batch of the new plan.
-        let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // The plan changes with the second batch.
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             embed_with(
                 &mut Model { batches: 0 },
                 producer,
-                |model: &mut Model, chunk: &[&str]| {
-                    assert!(model.batches < 2, "interrupted");
-                    run(model, chunk)
-                },
+                run,
                 &path,
                 &texts,
                 2,
                 1,
             )
-        }));
-        assert!(interrupted.is_err());
+        }))
+        .map(drop)
+        .expect_err("a run embedded by two plans completed");
+        let message = failed.downcast_ref::<String>().expect("a formatted panic");
+        assert!(
+            message.contains("plan=cuda@a") && message.contains("plan=cpu@b"),
+            "{message}"
+        );
         assert!(
             read(&path, "plan=cuda@a", 2, 4).is_empty(),
             "the first producer's header kept the new plan's vectors"
@@ -433,6 +439,63 @@ mod tests {
         let resumed = embed_with(&mut Model { batches: 2 }, steady, run, &path, &texts, 2, 1);
         assert_eq!(resumed.reused, 2);
         assert_eq!(resumed.vectors.len(), 8);
+    }
+
+    /// A run that resumed a cache and then falls back fails too: the
+    /// prefix it read is the first plan's, the rest would be the second's.
+    #[test]
+    fn a_fallback_after_a_resumed_prefix_fails_the_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vectors.f32");
+        let texts = ["a", "b", "c", "d"];
+        let vector = |_: &mut usize, chunk: &[&str]| -> Vec<Vec<f32>> {
+            chunk.iter().map(|_| vec![1.0, 0.0]).collect()
+        };
+        let first = |_: &usize| "plan=cuda@a".to_string();
+        let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            embed_with(
+                &mut 0,
+                first,
+                |batches: &mut usize, chunk: &[&str]| {
+                    assert!(*batches < 2, "interrupted");
+                    *batches += 1;
+                    vector(batches, chunk)
+                },
+                &path,
+                &texts,
+                2,
+                1,
+            )
+        }));
+        assert!(interrupted.is_err());
+
+        let falls_back = |batches: &usize| {
+            if *batches == 0 {
+                "plan=cuda@a"
+            } else {
+                "plan=cpu@b"
+            }
+            .to_string()
+        };
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            embed_with(
+                &mut 0,
+                falls_back,
+                |batches: &mut usize, chunk: &[&str]| {
+                    *batches += 1;
+                    vector(batches, chunk)
+                },
+                &path,
+                &texts,
+                2,
+                1,
+            )
+        }))
+        .map(drop)
+        .expect_err("a resumed run finished on another plan");
+        let message = failed.downcast_ref::<String>().expect("a formatted panic");
+        assert!(message.contains("after 2 of 4 texts"), "{message}");
+        assert!(!path.exists(), "the cache outlived the fallback");
     }
 
     /// Vectors embedded in batches of another size are another cache: each
