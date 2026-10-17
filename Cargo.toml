@@ -47,6 +47,9 @@ futures = "0.3"
 # Already compiled -- it is under tokio and sqlx both -- so declaring it adds
 # nothing to the tree.
 libc = "0.2"
+# `$PAMIN_HOME/config.toml`, the server's settings file. Nothing in the tree
+# parsed TOML before; parsing and serde only, no writer.
+toml = { version = "0.9", default-features = false, features = ["std", "parse", "serde"] }
 half = "2.7.1"
 # Test-only: `pamin-index`'s `shared_vocabulary` test compares the encoder with
 # what `fastembed` computed before the encoder replaced it. No product code

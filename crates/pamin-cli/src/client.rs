@@ -33,9 +33,13 @@ const RETRY: Duration = Duration::from_millis(50);
 /// `Ok(None)` means there was no server and none was wanted -- only `stop` asks
 /// for that, since starting a server to stop it is a way of doing nothing
 /// slowly. Every other call gets one started.
+///
+/// `serve` is the flags to start a server with: the ones this command was
+/// given for it, so the server it starts runs with what was asked for.
 pub async fn ask(
     workspace: &Workspace,
     request: &Request,
+    serve: &[std::ffi::OsString],
 ) -> Result<Option<Box<serde_json::value::RawValue>>> {
     let path = socket_path(workspace);
     let start_one = !matches!(request.call, Call::Stop);
@@ -44,7 +48,7 @@ pub async fn ask(
         Ok(stream) => stream,
         Err(_) if !start_one => return Ok(None),
         Err(_) => {
-            spawn(workspace, &path).await?;
+            spawn(workspace, &path, serve).await?;
             UnixStream::connect(&path)
                 .await
                 .with_context(|| format!("connecting to the server at {}", path.display()))?
@@ -60,7 +64,7 @@ pub async fn ask(
             // which fields still line up.
             tracing::info!(%server, ours = %version(), "replacing a server from another build");
             stop_and_wait(&path).await?;
-            spawn(workspace, &path).await?;
+            spawn(workspace, &path, serve).await?;
 
             let mut fresh = UnixStream::connect(&path)
                 .await
@@ -109,7 +113,7 @@ const MAX_RESPONSE: usize = 16 * 1024 * 1024;
 /// Only one process starts one. The rest wait, which is the same outcome and
 /// costs nothing: twenty agents running `pamin search` against a cold workspace
 /// should provision it once, not twenty times.
-async fn spawn(workspace: &Workspace, path: &Path) -> Result<()> {
+async fn spawn(workspace: &Workspace, path: &Path, serve: &[std::ffi::OsString]) -> Result<()> {
     std::fs::create_dir_all(workspace.root())?;
     let lock = workspace.root().join(SPAWN_LOCK);
     // Held only by the caller that wins the race to start one; the losers wait
@@ -142,6 +146,7 @@ async fn spawn(workspace: &Workspace, path: &Path) -> Result<()> {
             .arg("--home")
             .arg(workspace.root())
             .arg("serve")
+            .args(serve)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(log.try_clone()?))
             .stderr(std::process::Stdio::from(log))
@@ -258,6 +263,7 @@ async fn stop_and_wait(path: &Path) -> Result<()> {
         project: String::new(),
         profile: String::new(),
         vector_index: String::new(),
+        server: Default::default(),
         call: Call::Stop,
     };
 
