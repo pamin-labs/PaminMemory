@@ -566,10 +566,12 @@ current comparison is tracked in [#121](https://github.com/pamin-labs/PaminMemor
 All three rows are one run over the same 1,190 queries, taken when a tier
 reranked twenty candidates; the reranker now sees thirty, which turned into
 +0.0063 more cross-lingual (`p = 0.0001`) for half again as many model pairs.
-At thirty a search has been timed only on a busy machine, where the batching
-that ships with it made one 0.83 of what it was on this corpus
-([measured.md](measured.md) has the figures), so read 1522 ms as the cost at
-twenty candidates rather than as today's. Paired bootstrap against `off`,
+At thirty, `pamin search` against a resident server over 3,230 memories, on a
+four-core 2.8 GHz Xeon with no other measurement running, had a median of
+3,207 ms (p95 5,128) when a pass took up to four pairs, and 2,675 ms (p95
+4,359) with the one pair a pass that now ships on a multi-core CPU -- 0.834 of
+it ([measured.md](measured.md) has the conditions). Read 1522 ms as the cost
+at twenty candidates rather than as today's. Paired bootstrap against `off`,
 10,000 resamples: cross-lingual `p = 0.0001` for both tiers; same-language
 `p = 0.0008` for `fast` and not significant for `accurate`. `recall@50` is
 0.8962 and 0.9571 in **every** arm, to four decimals — a reranker reorders a
