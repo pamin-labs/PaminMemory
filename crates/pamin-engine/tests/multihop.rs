@@ -705,7 +705,7 @@ async fn search_answers_questions_that_take_several_steps() {
     // against the shipped one from a single shipped run. See `reranking`.
     if std::env::var("RERANK_RULES").is_ok() {
         let tier = Rerank::default();
-        let mut priced = reranking::Priced::new(&workspace.root().join("models"));
+        let mut priced = reranking::Priced::default();
         for query in &corpus.queries {
             let hits = engine
                 .search_reranked(&query.text, WIDE, DEPTHS, tier)
@@ -714,6 +714,7 @@ async fn search_answers_questions_that_take_several_steps() {
             channels::enough_room(&hits, WIDE);
             let replayed = reranking::replay(&hits, tier);
             priced.observe(
+                &engine,
                 &query.group,
                 &query.text,
                 &hits,
@@ -721,7 +722,6 @@ async fn search_answers_questions_that_take_several_steps() {
                 None,
                 |into, ranking| score(into.entry(query.group.clone()).or_default(), query, ranking),
             );
-            priced.planned_like(&engine);
         }
         priced.report(&format!(
             "rules for the {} reranker's scores, MuSiQue, {named}",
