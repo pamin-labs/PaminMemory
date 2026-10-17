@@ -240,11 +240,32 @@ impl Embedder {
     /// plan, whose identity would name a device and nothing that produced the
     /// numbers, so nothing can be shown to match it.
     pub fn encoding(&self) -> Option<String> {
-        let primary = crate::inference::planned_use(&self.model, self.device)?;
+        self.encoding_by(crate::inference::planned_use)
+    }
+
+    /// [`Embedder::encoding`], for a caller deciding whether a vector already
+    /// stored can stand in for the one this would embed now: `None` while any
+    /// model runs on a fallback past its retry deadline.
+    ///
+    /// The next pass revalidates such a fallback and may move to the
+    /// accelerator it fell back from, so what it embedded is not shown to
+    /// match what it embeds next -- and a caller that skipped the pass on the
+    /// strength of a match would skip that revalidation too. With `None`,
+    /// nothing matches, the pass runs, and [`Embedder::encoding`] read after
+    /// it names the plan that ran.
+    pub fn reusable_encoding(&self) -> Option<String> {
+        self.encoding_by(crate::inference::reusable_use)
+    }
+
+    fn encoding_by(
+        &self,
+        plan: impl Fn(&Encoder, crate::inference::Device) -> Option<crate::PlanUse>,
+    ) -> Option<String> {
+        let primary = plan(self.model.as_ref(), self.device)?;
         Some(match &self.secondary {
             None => format!("{}:{}", primary.target, primary.plan),
             Some((model, device)) => {
-                let secondary = crate::inference::planned_use(model, *device)?;
+                let secondary = plan(model.as_ref(), *device)?;
                 format!(
                     "{}:{}+{}:{}",
                     primary.target, primary.plan, secondary.target, secondary.plan
