@@ -456,7 +456,7 @@ mod tests {
             plan: "a".repeat(64),
             stable: true,
             revision: revision.into(),
-            calibrated: true,
+            origin: pamin_index::PlanOrigin::CalibratedNow,
         };
         let old = lines(&[plan("someone/model@c0ffee")], &[], &[], "");
         assert_ne!(old, lines(&[plan("someone/model@decaf")], &[], &[], ""));
@@ -486,7 +486,7 @@ mod tests {
             plan: "a".repeat(64),
             stable: true,
             revision: "someone/model@c0ffee".into(),
-            calibrated: true,
+            origin: pamin_index::PlanOrigin::CalibratedNow,
         };
         let with = |harness: &str| lines(std::slice::from_ref(&plan), &[], &[], harness);
         assert_ne!(with("0123"), with("4567"));
@@ -504,7 +504,7 @@ mod tests {
             plan: "a".repeat(64),
             stable: true,
             revision: "someone/model@c0ffee".into(),
-            calibrated: true,
+            origin: pamin_index::PlanOrigin::CalibratedNow,
         };
         let with = |setting: &str| lines(std::slice::from_ref(&plan), &[], &[setting.into()], "");
         assert_ne!(with("OMP_NUM_THREADS=1"), with("OMP_NUM_THREADS=4"));
