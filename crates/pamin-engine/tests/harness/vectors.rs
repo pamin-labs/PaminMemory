@@ -6,7 +6,10 @@
 //! ([`shape::build_digest`]), and the settings that can change what the
 //! model computes ([`shape::runtime_settings`]), and this module's own
 //! source ([`harness_digest`]), which normalises and encodes what it caches,
-//! written into the file's header. It was named
+//! written into the file's header -- with the input itself
+//! ([`input_digest`]): every text, in the order the cache holds their
+//! vectors, so a caller that selects or orders its texts another way is
+//! another cache whatever its code. It was named
 //! by the model and the corpus alone, so vectors embedded on one device or
 //! one build were scored as another's; and a plan's hash does not follow a
 //! moved `refs/main` on a fresh download, so without the revision the old
@@ -169,7 +172,8 @@ fn embed_with<M>(
     width: usize,
     batch: usize,
 ) -> Embedded {
-    let named = producer(model);
+    let embedding = producer(model);
+    let named = format!("{embedding}\ninput={}", input_digest(texts));
     let mut vectors = resume(path, &named, width, texts.len());
     let reused = vectors.len() / width;
     if reused > 0 {
@@ -182,7 +186,7 @@ fn embed_with<M>(
     while done < texts.len() {
         let chunk: Vec<&str> = texts[done..].iter().take(batch).copied().collect();
         let embedded = run(model, &chunk);
-        if caching && producer(model) != named {
+        if caching && producer(model) != embedding {
             println!("  the embedder's plan changed during the run; removing its vector cache");
             let _ = std::fs::remove_file(path);
             caching = false;
@@ -215,6 +219,20 @@ fn embed_with<M>(
         reused,
         producer: named,
     }
+}
+
+/// The SHA-256 of `texts` in order, each prefixed by its length: what a
+/// cache's vectors are vectors of, position by position. Named by the
+/// input rather than by the code that chose it, so texts selected or
+/// ordered any other way -- by another commit or an uncommitted change in
+/// the caller -- never read back another order's vectors.
+fn input_digest(texts: &[&str]) -> String {
+    let mut digest = Sha256::new();
+    for text in texts {
+        digest.update((text.len() as u64).to_le_bytes());
+        digest.update(text.as_bytes());
+    }
+    format!("{:x}", digest.finalize())
 }
 
 /// The whole vectors `producer` already wrote to the cache at `path`, with
@@ -372,18 +390,61 @@ mod tests {
 
         // Without a fallback, the next run resumes what was written.
         let steady = |_: &Model| "plan=cpu@b".to_string();
-        embed_with(
-            &mut Model { batches: 2 },
-            steady,
-            run,
-            &path,
-            &texts[..2],
-            2,
-            1,
-        );
+        let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            embed_with(
+                &mut Model { batches: 2 },
+                steady,
+                |model: &mut Model, chunk: &[&str]| {
+                    assert!(model.batches < 4, "interrupted");
+                    run(model, chunk)
+                },
+                &path,
+                &texts,
+                2,
+                1,
+            )
+        }));
+        assert!(interrupted.is_err());
         let resumed = embed_with(&mut Model { batches: 2 }, steady, run, &path, &texts, 2, 1);
         assert_eq!(resumed.reused, 2);
         assert_eq!(resumed.vectors.len(), 8);
+    }
+
+    /// A cache holds the vectors of one input, in one order: the same
+    /// texts in the same order read it back, and the same texts reversed --
+    /// a caller that orders them otherwise -- embed again.
+    #[test]
+    fn a_cache_is_named_by_its_ordered_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vectors.f32");
+        let producer = |_: &()| "plan=cpu@a".to_string();
+        let run = |_: &mut (), chunk: &[&str]| -> Vec<Vec<f32>> {
+            chunk
+                .iter()
+                .map(|text| {
+                    if *text == "a" {
+                        vec![1.0, 0.0]
+                    } else {
+                        vec![0.0, 1.0]
+                    }
+                })
+                .collect()
+        };
+        let texts = ["a", "b"];
+        let first = embed_with(&mut (), producer, run, &path, &texts, 2, 1);
+        assert_eq!(first.reused, 0);
+        let again = embed_with(&mut (), producer, run, &path, &texts, 2, 1);
+        assert_eq!(again.reused, 2, "the same input in the same order");
+        assert_eq!(again.vectors, first.vectors);
+
+        let reversed = embed_with(&mut (), producer, run, &path, &["b", "a"], 2, 1);
+        assert_eq!(
+            reversed.reused, 0,
+            "another order read the first one's vectors"
+        );
+        assert_eq!(reversed.vectors, [0.0, 1.0, 1.0, 0.0]);
+        // Nor does a text moved across a boundary read as the same input.
+        assert_ne!(input_digest(&["ab", "c"]), input_digest(&["a", "bc"]));
     }
 
     /// The same plans over a moved `refs/main` are another producer, so
