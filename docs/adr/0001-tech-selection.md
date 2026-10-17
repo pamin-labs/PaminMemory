@@ -3433,13 +3433,16 @@ each against its immediate predecessor, in three rotated runs an arm on a
 
 The one-pair arm set the rerank batch to one pair on `710ceec`, which is what
 `b972ead` made the default; the nDCG@10 rows were taken through
-`Engine::search_reranked` over copies of one index, and no group of the four
-measured moved significantly.
+`Engine::search_reranked` over copies of one index, and no significant change
+was detected in any of the four groups measured (Holm-corrected p = 1.00 in
+each; the 95% CIs of the differences run from [−0.0052, +0.0026] to
+[−0.0029, +0.0113], all including zero).
 
-**What it costs.** The shared session bought memory and no speed: a component
-result of 0.81 for it did not carry over to `pamin search`, where every latency
-CI includes 1.0. One pair a pass moves rankings without moving accuracy: the
-top-five set was the same on 82 of 120 timed queries and in the same order on
+**What it costs.** For the shared session, no significant latency change was
+detected at `pamin search` (p50 1.044 [0.937, 1.157], p95 0.999
+[0.880, 1.191]); a component result of 0.81 for it did not carry over, and its
+measured gain is memory. One pair a pass moves rankings, and no significant
+nDCG@10 change was detected in any group measured: the top-five set was the same on 82 of 120 timed queries and in the same order on
 38. Nothing here was measured with an inference budget of one thread or on an
 accelerator, and neither path changed. The host in these runs had a CUDA
 provider built in that could not register, so every arm saw one five-minute
