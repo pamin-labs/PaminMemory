@@ -195,14 +195,11 @@ fn open_tally() {
 /// change no result. Every other `PAMIN_` variable is taken to change what is
 /// measured: the `PAMIN_EVAL_*` knobs a harness reads into its settings (see
 /// `support/eval.rs`), and any product variable a harness would refuse. Nor
-/// do the four `PAMIN_ENGINE_` variables `build.rs` sets with
-/// `cargo:rustc-env`, which Cargo also sets on every test it runs: they
-/// describe the build, which the record names as its source and build.
-const NOT_SETTINGS: [&str; 14] = [
-    "PAMIN_ENGINE_BUILD_ENVIRONMENT",
-    "PAMIN_ENGINE_COMMIT",
-    "PAMIN_ENGINE_DIRTY",
-    "PAMIN_ENGINE_SOURCES",
+/// do the variables build scripts set with `cargo:rustc-env`
+/// ([`eval::BUILD`](super::eval::BUILD)), which Cargo also sets on every test
+/// it runs: they describe the build, which the record names as its source and
+/// build.
+const NOT_SETTINGS: [&str; 10] = [
     "PAMIN_EVAL_EMBEDDING_OUTPUT",
     "PAMIN_EVAL_HOME",
     "PAMIN_EVAL_MODEL_CACHE",
@@ -400,7 +397,9 @@ fn settings(set: impl IntoIterator<Item = (String, String)>) -> Vec<String> {
         .into_iter()
         .filter(|(name, _)| {
             identity_variable(name)
-                || (name.starts_with("PAMIN_") && !NOT_SETTINGS.contains(&name.as_str()))
+                || (name.starts_with("PAMIN_")
+                    && !NOT_SETTINGS.contains(&name.as_str())
+                    && !super::eval::BUILD.contains(&name.as_str()))
         })
         .map(|(name, value)| format!("{name}={value}"))
         .collect();
