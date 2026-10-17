@@ -84,7 +84,12 @@ whose default is what the library already did. Stored texts of BGE-M3 divide
 them the other way on the CPU: each pass has one thread, and this many passes
 run at once, as do the passes of one rerank, one pair each when this is more
 than one (at one, a pass takes up to four pairs). A BGE-M3 query, and a rerank
-of a single pass, still get one pass of this many threads.
+of a single pass, still get one pass of this many threads. Those passes share
+one single-threaded session over the model's mapped copy (below), loaded the
+first time more than one text is stored or more than one pass reranked, and
+kept from then on; at one thread, or when the model loads from its download
+rather than a copy, every pass runs one after another on the model's own
+session instead.
 
 On the CPU, the first load of a model writes a copy of it into
 `models/prepared/`, and every load after that reads the copy. The copy is the
@@ -92,7 +97,18 @@ runtime's own optimized form of the graph with its weights in a separate data
 file, which the runtime maps from disk instead of copying onto the heap: the
 `accurate` reranker holds 271 MB of live memory rather than 822, the `accuracy`
 embedder 272 rather than 824, with scores and vectors bit-identical (see
-[measured.md](measured.md)). Most of what was left was the tokenizer's
+[measured.md](measured.md)). Those are a model as loaded: the passes it runs
+side by side (above), and the session they share, hold memory of their own on
+top, and for the `accurate`
+reranker that is the larger part. Measured through `pamin search` on four
+cores over 3,230 memories, when each pass still had a session of its own
+rather than one shared session, running a rerank's batches side by side took the
+search server from 2,117 MB peak resident to 4,677, and from 855 MB of
+anonymous memory at the end of the run to 1,876 (proportional set size
+1,726 MB to 2,808). The resident figure counted the shared data file once for
+each session; the anonymous figure was what the sessions held of their own.
+That has not been re-measured with one shared session.
+Most of what was left was the tokenizer's
 vocabulary, which the embedder and every reranker share. It is now held in a
 compact layout: with both loaded, the two hold 47 MiB of anonymous memory after
 use, where the previous layout held 314 MiB in the same measurement (and

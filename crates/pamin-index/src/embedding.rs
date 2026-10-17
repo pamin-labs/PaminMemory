@@ -118,6 +118,42 @@ impl Embedder {
         crate::inference::plans_of(&self.model, self.device)
     }
 
+    /// What produces the vectors this embeds now, for an index to record
+    /// beside each one: the model's current execution plan, as its
+    /// [`crate::PlanUse`] names it -- the target and the hash of the full plan
+    /// key it was selected under.
+    ///
+    /// Two vectors of one text are interchangeable only when this is the
+    /// same for both: the CPU runs the int8 export and an accelerator another,
+    /// and their outputs are not bit-identical. `None` when the model runs on no
+    /// plan, whose identity would name a device and nothing that produced the
+    /// numbers, so nothing can be shown to match it.
+    pub fn encoding(&self) -> Option<String> {
+        self.encoding_by(crate::inference::planned_use)
+    }
+
+    /// [`Embedder::encoding`], for a caller deciding whether a vector already
+    /// stored can stand in for the one this would embed now: `None` while the
+    /// model runs on a fallback past its retry deadline.
+    ///
+    /// The next pass revalidates such a fallback and may move to the
+    /// accelerator it fell back from, so what it embedded is not shown to
+    /// match what it embeds next -- and a caller that skipped the pass on the
+    /// strength of a match would skip that revalidation too. With `None`,
+    /// nothing matches, the pass runs, and [`Embedder::encoding`] read after
+    /// it names the plan that ran.
+    pub fn reusable_encoding(&self) -> Option<String> {
+        self.encoding_by(crate::inference::reusable_use)
+    }
+
+    fn encoding_by(
+        &self,
+        plan: impl Fn(&Encoder, crate::inference::Device) -> Option<crate::PlanUse>,
+    ) -> Option<String> {
+        let primary = plan(self.model.as_ref(), self.device)?;
+        Some(format!("{}:{}", primary.target, primary.plan))
+    }
+
     /// Embeds one passage for storage.
     pub fn embed_passage(&mut self, text: &str) -> Result<Vec<f32>> {
         self.embed_one(text)
@@ -232,7 +268,7 @@ fn primary_model(cache_dir: &std::path::Path) -> Result<(Encoder, crate::inferen
             queries: Some((2, DIMENSIONS as usize)),
             scores: None,
         },
-        |device, target, _validated| load_on(cache_dir, device, target),
+        |device, target, _validated| load_on(&repository, cache_dir, device, target),
         |model, _device| {
             let mut reference = references.borrow_mut();
             // Reject an already incompatible short query before compiling
@@ -244,7 +280,13 @@ fn primary_model(cache_dir: &std::path::Path) -> Result<(Encoder, crate::inferen
                 }
                 check_vectors(vectors, &mut reference.queries, DIMENSIONS as usize)
             })?;
-            let vectors = vectors_of(model, &fixtures)?;
+            // BGE-M3 runs one text a pass, so its fixtures go one at a time on
+            // the query's session: through `run_each` together they would load
+            // its side sessions on a model that may only ever answer queries.
+            let mut vectors = Vec::new();
+            for fixture in &fixtures {
+                vectors.extend(vectors_of(model, std::slice::from_ref(fixture))?);
+            }
             check_vectors(vectors, &mut reference.vectors, DIMENSIONS as usize)?;
             Ok(elapsed)
         },
@@ -330,13 +372,13 @@ fn check_vectors(
 
 /// Loads the joint BGE-M3 export for `device`.
 fn load_on(
+    repository: &Repository,
     cache_dir: &std::path::Path,
     device: crate::inference::Device,
     target: crate::inference::Target,
 ) -> Result<Encoder> {
-    let repository = Repository::open(cache_dir, JOINT_REPOSITORY)?;
     let weights = repository.file(cache_dir, JOINT_FILE);
-    joint_session(&repository, &weights, cache_dir, device, target)
+    joint_session(repository, &weights, cache_dir, device, target)
 }
 
 /// Numerical compatibility with an already indexed CPU export. This is the
@@ -412,14 +454,29 @@ fn joint_session(
     device: crate::inference::Device,
     providers: impl Into<crate::inference::Target>,
 ) -> Result<Encoder> {
+    let mut download = None;
     if device == crate::inference::Device::Cpu {
-        let copy = crate::prepared::load_path(weights, cache_dir)?;
-        let tokenizer = crate::tokenizer::load(repository, JOINT_MAX_TOKENS)?;
-        return Encoder::side_by_side(copy, crate::inference::budget()?, tokenizer)
+        let path = crate::prepared::load_path(weights, cache_dir)?;
+        // Side by side only over a mapped copy, whose weights the sessions
+        // share. Over the download it falls back to, each session would copy
+        // them onto the heap, so that loads the one session it did before.
+        if crate::prepared::is_copy(&path, cache_dir) {
+            let tokenizer = crate::tokenizer::load(repository, JOINT_MAX_TOKENS)?;
+            return Encoder::side_by_side(
+                path,
+                crate::inference::budget()?,
+                tokenizer,
+                repository.revision(),
+            )
             .map_err(|error| error.context("loading embedding model"));
+        }
+        download = Some(path);
     }
     let encoder = Encoder::load(
-        || repository.get(JOINT_FILE),
+        || match download {
+            Some(path) => Ok(path),
+            None => repository.get(JOINT_FILE),
+        },
         repository,
         JOINT_MAX_TOKENS,
         providers,
@@ -640,6 +697,11 @@ mod tests {
         );
         let mut embedder = Embedder::load(&cache).expect("load the model");
         assert_eq!(embedder.device(), crate::inference::Device::Cpu);
+        assert_eq!(
+            embedder.model.side_by_side_passes(),
+            (0, 0),
+            "loading, calibration included, loaded the shared session"
+        );
         let long = "migration rollback ".repeat(300);
         let texts = [
             "deployment rollback",
