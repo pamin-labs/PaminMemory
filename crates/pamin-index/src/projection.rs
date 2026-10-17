@@ -76,6 +76,9 @@ const FIELD_SEGMENTED: &str = "content_segmented";
 /// Substring recall over raw text: paths, error codes, identifiers.
 const FIELD_NGRAM: &str = "content_ngram";
 const FIELD_VECTOR: &str = "embedding";
+/// What produced a document's vectors ([`Stored::encoding`]). Nullable, and
+/// absent from a collection created before it was recorded.
+const FIELD_ENCODING: &str = "encoding";
 
 static INITIALIZE: Once = Once::new();
 
@@ -138,6 +141,21 @@ pub trait Projection {
     /// Adds or replaces many.
     fn upsert_batch(&self, documents: &[VectorDocument<'_>]) -> Result<()>;
 
+    /// [`upsert_batch`](Self::upsert_batch), recording beside every
+    /// document what produced its vectors ([`Stored::encoding`]).
+    ///
+    /// By default the record is dropped, which is the safe direction: a
+    /// document whose encoding is unknown is one [`holds`](Self::holds) never
+    /// matches, so it is embedded again rather than kept.
+    fn upsert_encoded(
+        &self,
+        documents: &[VectorDocument<'_>],
+        encoding: Option<&str>,
+    ) -> Result<()> {
+        let _ = encoding;
+        self.upsert_batch(documents)
+    }
+
     /// Word-level lexical recall, best first.
     fn recall_segmented(&self, query: &str, limit: u32) -> Result<Vec<Scored>>;
 
@@ -173,22 +191,29 @@ pub trait Projection {
     fn stored(&self, topics: &[TopicId]) -> Result<Vec<Option<Stored>>>;
 
     /// Whether this index already holds each topic with exactly the text
-    /// given for it, in the order asked.
+    /// given for it, embedded under exactly `encoding`, in the order asked.
     ///
     /// The rule a rebuild lends a stored vector by ([`Previous::lend`]), asked
-    /// of a served index: a document holding the same text was embedded from
-    /// it under this index's encoding, so writing it again would write what is
-    /// there. Read through [`stored`](Self::stored), so a buffered write
+    /// of a served index, and narrowed to the plan that produced the vector: a
+    /// document holding the same text was embedded from it under this index's
+    /// passage encoding, but only one recorded with the same
+    /// [`Stored::encoding`] holds the vector embedding it now would write. A
+    /// vector from another execution provider or plan is not bit-identical to
+    /// it, so it is never a match, and neither is one whose encoding was not
+    /// recorded. Read through [`stored`](Self::stored), so a buffered write
     /// counts, a deleted topic does not, and a document missing a vector it
     /// should have is an error rather than a match.
-    fn holds(&self, wanted: &[(TopicId, &str)]) -> Result<Vec<bool>> {
+    fn holds(&self, wanted: &[(TopicId, &str)], encoding: &str) -> Result<Vec<bool>> {
         let topics: Vec<TopicId> = wanted.iter().map(|(topic, _)| *topic).collect();
         Ok(self
             .stored(&topics)?
             .iter()
             .zip(wanted)
             .map(|(stored, (_, text))| {
-                holds_exactly(stored.as_ref().map(|stored| stored.content.as_str()), text)
+                stored.as_ref().is_some_and(|stored| {
+                    holds_exactly(Some(stored.content.as_str()), text)
+                        && stored.encoding.as_deref() == Some(encoding)
+                })
             })
             .collect())
     }
@@ -251,6 +276,11 @@ pub struct Stored {
     /// The vector, as it was embedded under the index's [`Passage`] and then
     /// stored: each component rounded to half precision (see [`crate::as_stored`]).
     pub embedding: Vec<f32>,
+    /// What produced the vectors, as [`crate::Embedder::encoding`] names it:
+    /// the execution plan of the model. `None` when nothing recorded it -- a
+    /// vector a rebuild lent, one written before this was recorded, or any in
+    /// an index created before then.
+    pub encoding: Option<String>,
 }
 
 /// A lexical or vector index over topics.
@@ -265,6 +295,9 @@ pub struct ProjectionIndex {
     passage: Passage,
     /// How this index spells a topic as a primary key. See [`Keys`].
     keys: Keys,
+    /// Whether this collection has [`FIELD_ENCODING`]: one created before it
+    /// existed does not, and its documents are written and read without it.
+    encodings: bool,
     /// What [`Projection::files_after_optimize`] reports.
     optimized_files: AtomicU64,
 }
@@ -1157,6 +1190,8 @@ impl ProjectionIndex {
                 DataType::String,
                 IndexParams::fts(Some("ngram"), None, None)?,
             )
+            // Not indexed: read back by key, never searched.
+            .add_field(FieldSchema::new(FIELD_ENCODING, DataType::String, true, 0)?)
             // Half precision, and read back by the rescore; see `RESCORE`.
             .add_vector_field(
                 FIELD_VECTOR,
@@ -1183,6 +1218,7 @@ impl ProjectionIndex {
             }
             Ok(Collection::open(&path, options(access)?.as_ref())?)
         })?;
+        let encodings = collection.schema()?.has_field(FIELD_ENCODING);
 
         Ok(Self {
             collection,
@@ -1191,11 +1227,18 @@ impl ProjectionIndex {
             index,
             passage: PASSAGE,
             keys: KEYS,
+            encodings,
             optimized_files: AtomicU64::new(saved_optimize_floor(dir)),
         })
     }
 
-    fn document(&self, topic: TopicId, content: &str, embedding: &[f32]) -> Result<Doc> {
+    fn document(
+        &self,
+        topic: TopicId,
+        content: &str,
+        embedding: &[f32],
+        encoding: Option<&str>,
+    ) -> Result<Doc> {
         let mut doc = Doc::new()?;
         let key = self.keys.key(topic);
         doc.set_pk(&key);
@@ -1203,6 +1246,9 @@ impl ProjectionIndex {
         doc.add_string(FIELD_SEGMENTED, &self.segmenter.segment_for_index(content))?;
         doc.add_string(FIELD_NGRAM, content)?;
         crate::half::add(&mut doc, FIELD_VECTOR, embedding)?;
+        if let Some(encoding) = encoding.filter(|_| self.encodings) {
+            doc.add_string(FIELD_ENCODING, encoding)?;
+        }
         Ok(doc)
     }
 
@@ -1285,6 +1331,24 @@ impl ProjectionIndex {
         ))
     }
 
+    /// The scalar fields [`fetch`](Self::fetch) reads back: the text, and what
+    /// produced the vectors when this collection records it.
+    fn stored_fields(&self) -> &'static [&'static str] {
+        if self.encodings {
+            &[FIELD_NGRAM, FIELD_ENCODING]
+        } else {
+            &[FIELD_NGRAM]
+        }
+    }
+
+    /// What produced a fetched document's vectors, if that was recorded.
+    fn encoding_of(&self, doc: &Doc) -> Result<Option<String>> {
+        if !self.encodings || !doc.has_field(FIELD_ENCODING) || doc.is_field_null(FIELD_ENCODING) {
+            return Ok(None);
+        }
+        Ok(doc.get_string(FIELD_ENCODING)?)
+    }
+
     /// The documents stored under these topics, keyed by the topic each is.
     ///
     /// How a reshape reads the index it is copying, and it has to be keyed:
@@ -1300,9 +1364,9 @@ impl ProjectionIndex {
         let mut stored: HashMap<TopicId, Doc> = HashMap::with_capacity(keys.len());
         for chunk in keys.chunks(WRITE_BATCH) {
             let chunk: Vec<&str> = chunk.iter().map(String::as_str).collect();
-            for doc in self
-                .collection
-                .fetch_with_options(&chunk, Some(&[FIELD_NGRAM]), true)?
+            for doc in
+                self.collection
+                    .fetch_with_options(&chunk, Some(self.stored_fields()), true)?
             {
                 if let Some(topic) = doc.get_pk().and_then(|key| self.keys.topic(key)) {
                     stored.insert(topic, doc);
@@ -1625,10 +1689,20 @@ impl Projection for ProjectionIndex {
     /// visible, and flushing between batches would make that decision for them
     /// once per batch.
     fn upsert_batch(&self, documents: &[VectorDocument<'_>]) -> Result<()> {
+        self.upsert_encoded(documents, None)
+    }
+
+    fn upsert_encoded(
+        &self,
+        documents: &[VectorDocument<'_>],
+        encoding: Option<&str>,
+    ) -> Result<()> {
         for chunk in documents.chunks(WRITE_BATCH) {
             let docs = chunk
                 .iter()
-                .map(|(topic, content, embedding)| self.document(*topic, content, embedding))
+                .map(|(topic, content, embedding)| {
+                    self.document(*topic, content, embedding, encoding)
+                })
                 .collect::<Result<Vec<_>>>()?;
 
             let refs: Vec<&Doc> = docs.iter().collect();
@@ -1652,7 +1726,11 @@ impl Projection for ProjectionIndex {
                     doc.get_string(FIELD_NGRAM)?,
                     crate::half::get(doc, FIELD_VECTOR)?,
                 ) {
-                    (Some(content), Some(embedding)) => Ok(Some(Stored { content, embedding })),
+                    (Some(content), Some(embedding)) => Ok(Some(Stored {
+                        content,
+                        embedding,
+                        encoding: self.encoding_of(doc)?,
+                    })),
                     _ => Err(IndexError::Engine(format!(
                         "the document for topic {topic} came back without its text or its vector"
                     ))),
