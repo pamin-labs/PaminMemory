@@ -76,7 +76,9 @@
 //! Projects are named after a digest of the records and links they hold, and
 //! of the execution provider and model revision that embedded them, so a
 //! reused `PAMIN_EVAL_HOME` never scores a corpus built by older code or data,
-//! or embedded on another provider or by other weights.
+//! or embedded on another provider or by other weights. Each conversation's
+//! index is also claimed through `harness::index` before it is written, so a
+//! reused index built under other settings is reported rather than trusted.
 
 mod harness;
 mod scoring;
@@ -634,6 +636,16 @@ async fn locomo_evidence_with_and_without_links() {
         )
         .await
         .expect("open the engine");
+        // Claimed before writing, so a reused project's index is checked
+        // against the settings and plans that built it, not trusted.
+        harness::index(
+            &mut shape,
+            &conversation.id,
+            &engine,
+            workspace.root(),
+            conversation.turns.len(),
+        )
+        .await;
         write(&engine, conversation).await;
         // `write_absent` skips a topic the ledger has, and `drain` sees
         // nothing owed, even when the index beside a reused project was
