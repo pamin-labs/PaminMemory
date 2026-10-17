@@ -476,6 +476,7 @@ impl Priced {
     /// LOCOMO conversation is one, since its questions share a corpus, index
     /// and graph. `None` makes the search its own unit, which also keeps the
     /// answer keys one search is scored under together.
+    #[allow(clippy::too_many_arguments)]
     pub fn observe(
         &mut self,
         engine: &pamin_engine::Engine,
