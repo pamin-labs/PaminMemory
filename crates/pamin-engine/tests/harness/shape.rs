@@ -730,6 +730,9 @@ struct Indexed {
     /// The stamp this run's producer writes, as it was before the run wrote
     /// anything; set by [`Shape::begin_index`].
     start: Option<String>,
+    /// This index's build lock, held from counting what it holds until the
+    /// run is over (see [`Shape::claim_index`]).
+    building: Option<std::fs::File>,
 }
 
 /// Everything that tells one run's record from another's, serialised
@@ -1276,7 +1279,8 @@ impl Shape {
     }
 
     /// The search index `engine` scores, under `label`, before this run
-    /// writes to it: it holds `found` of the corpus's `total` documents.
+    /// writes to it, and how many of the corpus's `total` documents it
+    /// holds, counted once this run holds its build lock.
     /// `engine`'s embedder must be loaded (`Engine::load_embedder`), so the
     /// producer that will embed what the run writes is known.
     ///
@@ -1294,20 +1298,57 @@ impl Shape {
         label: &str,
         engine: &pamin_engine::Engine,
         workspace: &Path,
-        found: usize,
         total: usize,
     ) {
         let stamp = workspace
             .join("index")
             .join(format!("{}.eval-producer", engine.project));
+        let counting = engine.clone();
         let engine = engine.clone();
+        self.claim_index(
+            label,
+            stamp,
+            Box::new(move || super::vectors::index_producer(&engine)),
+            || counting.indexed_documents().expect("count documents") as usize,
+            total,
+        );
+    }
+
+    /// Takes the index's build lock, counts what it holds, and begins it
+    /// (see [`begin_index`](Self::begin_index)), holding the lock until this
+    /// run is over.
+    ///
+    /// One build at a time, across processes sharing an evaluation home:
+    /// two runs over one empty project each counted nothing, each stamped
+    /// it pending as theirs and wrote into it together, and the one whose
+    /// stamp was left vouched for documents the other embedded. Held from
+    /// the count through the stamp's promotion, a second run waits and then
+    /// counts what the first built.
+    fn claim_index(
+        &mut self,
+        label: &str,
+        stamp: PathBuf,
+        producer: Box<dyn Fn() -> Option<String> + Send>,
+        count: impl FnOnce() -> usize,
+        total: usize,
+    ) {
+        // An index this run has already claimed is locked by it: a second
+        // lock on another descriptor would wait on this run itself.
+        let held = self
+            .indexes
+            .iter_mut()
+            .find(|kept| kept.stamp == stamp)
+            .and_then(|kept| kept.building.take());
+        let building = held.unwrap_or_else(|| super::vectors::lock(&stamp));
+        let found = count();
         self.begin_index(Indexed {
             label: label.to_string(),
-            producer: Box::new(move || super::vectors::index_producer(&engine)),
+            producer,
             stamp,
             found,
             total,
             start: None,
+            building: Some(building),
         });
     }
 
@@ -2164,6 +2205,7 @@ mod tests {
             found,
             total: 4,
             start: None,
+            building: None,
         };
         // One run: published at `commit`, canonical or not, its index begun
         // before writing; and, unless interrupted, checked at the end.
@@ -2303,6 +2345,7 @@ mod tests {
             found,
             total: 4,
             start: None,
+            building: None,
         };
         let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut shape = Shape::new("test", String::new(), None);
@@ -2322,6 +2365,65 @@ mod tests {
         assert_eq!(
             reasons,
             ["primary index left pending by an unfinished build"]
+        );
+    }
+
+    /// Two runs building one index take turns: the second waits for the
+    /// first's build lock, then counts what the first built, and the stamp
+    /// is the promoting build's, not overwritten by a pending claim.
+    #[test]
+    fn index_builds_take_turns_and_the_stamp_is_the_promoter_s() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let stamp = dir.path().join("index").join("p.eval-producer");
+        let documents = Arc::new(AtomicUsize::new(0));
+        let claim = |shape: &mut Shape, documents: Arc<AtomicUsize>, stamp: PathBuf| {
+            shape.source.commit = "a".into();
+            shape.claim_index(
+                "primary",
+                stamp,
+                Box::new(|| Some("plan=cpu@a".into())),
+                move || documents.load(Ordering::SeqCst),
+                4,
+            );
+        };
+
+        let mut first = Shape::new("test", String::new(), None);
+        claim(&mut first, Arc::clone(&documents), stamp.clone());
+        assert_eq!(
+            std::fs::read_to_string(&stamp).ok().as_deref(),
+            Some("pending\nplan=cpu@a\ncommit=a")
+        );
+        let (claimed, waiting) = std::sync::mpsc::channel();
+        let second = std::thread::spawn({
+            let documents = Arc::clone(&documents);
+            let stamp = stamp.clone();
+            move || {
+                let mut second = Shape::new("test", String::new(), None);
+                claim(&mut second, documents, stamp);
+                claimed.send(()).expect("say it claimed");
+                second.check_indexes()
+            }
+        });
+        assert!(
+            waiting
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "a second build claimed the index while the first held it"
+        );
+        // The first build writes every document and promotes its stamp.
+        documents.store(4, Ordering::SeqCst);
+        let (_, reasons) = first.check_indexes();
+        assert!(reasons.is_empty(), "{reasons:?}");
+        drop(first);
+
+        let (lines, reasons) = second.join().expect("the second run");
+        assert!(reasons.is_empty(), "{reasons:?}");
+        assert!(lines[0].starts_with("primary: reused by "), "{lines:?}");
+        assert_eq!(
+            std::fs::read_to_string(&stamp).ok().as_deref(),
+            Some("plan=cpu@a\ncommit=a")
         );
     }
 

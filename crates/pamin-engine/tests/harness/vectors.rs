@@ -269,8 +269,9 @@ fn resume(path: &Path, producer: &str, width: usize, most: usize) -> Vec<f32> {
     vectors
 }
 
-/// An exclusive lock on the cache at `path`, held while the file is in use.
-fn lock(path: &Path) -> std::fs::File {
+/// An exclusive lock on the file at `path` -- a vector cache, or an index's
+/// stamp -- held while it is in use, by any process.
+pub fn lock(path: &Path) -> std::fs::File {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).expect("the cache directory");
     }
