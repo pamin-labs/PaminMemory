@@ -42,6 +42,9 @@ pub(crate) struct Encoder {
     /// The most passes [`run_each`](Self::run_each) has had running at once.
     #[cfg(test)]
     most_at_once: usize,
+    /// The repository and commit the model was read from, as
+    /// [`Repository::revision`] resolves it once its files are fetched.
+    revision: String,
 }
 
 /// A forward pass's outputs, by name, in the graph's order.
@@ -53,6 +56,9 @@ impl crate::inference::RuntimeModel for Encoder {
     }
     fn runtime_plan_mut(&mut self) -> &mut crate::inference::RuntimePlan {
         &mut self.runtime_plan
+    }
+    fn revision(&self) -> &str {
+        &self.revision
     }
 }
 
@@ -80,10 +86,10 @@ impl Encoder {
         max_length: usize,
     ) -> Result<Self> {
         let tokenizer = crate::tokenizer::load(repository, max_length)?;
-        Ok(Self::from_parts(session, tokenizer))
+        Ok(Self::from_parts(session, tokenizer, repository.revision()))
     }
 
-    fn from_parts(session: Session, tokenizer: Tokenizer) -> Self {
+    fn from_parts(session: Session, tokenizer: Tokenizer, revision: String) -> Self {
         let token_type_ids = session
             .inputs()
             .iter()
@@ -98,22 +104,25 @@ impl Encoder {
             side_by_side: None,
             #[cfg(test)]
             most_at_once: 0,
+            revision,
         }
     }
 
     /// The model on the CPU over a session of `threads` intra-op threads, with
     /// [`run_each`](Self::run_each) running several texts at once on one
     /// single-threaded session over the same `model` -- a mapped copy (see
-    /// `crate::prepared`).
+    /// `crate::prepared`). `revision` is the [`Repository::revision`] `model`
+    /// and `tokenizer` were read from.
     pub(crate) fn side_by_side(
         model: PathBuf,
         threads: usize,
         tokenizer: Tokenizer,
+        revision: String,
     ) -> Result<Self> {
         let session = crate::inference::cpu_session(&model, threads)?;
         Ok(Self {
             side_by_side: Some((model, None)),
-            ..Self::from_parts(session, tokenizer)
+            ..Self::from_parts(session, tokenizer, revision)
         })
     }
 
@@ -145,6 +154,7 @@ impl Encoder {
             side_by_side: None,
             #[cfg(test)]
             most_at_once: 0,
+            revision: repository.revision(),
         })
     }
 
@@ -206,20 +216,42 @@ impl Encoder {
             .max_length
     }
 
+    /// How many passes [`run_each`](Self::run_each) runs at once for
+    /// `batches` batches, with the shared session it runs them on loaded: 1
+    /// when it runs them one after another on [`session`](Self::session).
+    ///
+    /// `run_each` calls this itself; a caller that times its passes calls it
+    /// first, so that loading the session is not counted as running them.
+    pub(crate) fn ready(&mut self, batches: usize) -> Result<usize> {
+        let Some((model, shared)) = &mut self.side_by_side else {
+            return Ok(1);
+        };
+        let wanted = crate::inference::budget()?.min(batches);
+        // One pass at a time gains nothing on a session of its own.
+        if wanted < 2 {
+            return Ok(1);
+        }
+        if shared.is_none() {
+            *shared = Some(crate::inference::cpu_session(model, 1)?);
+        }
+        Ok(wanted)
+    }
+
     /// Each of `batches`, from [`encode`](Self::encode), in a forward pass of
     /// its own as [`run_encoded`](Self::run_encoded) runs it, its outputs
     /// taken by `read`, in `batches`' order.
     ///
     /// On [`session`](Self::session) one after another, unless the model was
     /// loaded [`side_by_side`](Self::side_by_side) and there is more than one
-    /// batch: then as many passes at once as the inference budget allows, all
-    /// on one session of one intra-op thread, each thread taking the next
-    /// batch when it finishes one. A pass hands each of the graph's nodes to
-    /// its threads and waits for them, and on a short input that hand-off is
-    /// most of the pass; passes side by side pay none of it. Measured through
-    /// `Embedder` on four cores (ONNX Runtime 1.28, Xeon with AMX), 500 texts
-    /// stored 64 at a time, two runs each, when each pass still had a session
-    /// of its own: BGE-M3 from 38.3 and 40.3 s to 18.7 and 17.3 s, every vector
+    /// batch and more than one thread in the inference budget: then as many
+    /// passes at once as the budget allows, all on one session of one
+    /// intra-op thread, each thread taking the next batch when it finishes
+    /// one. A pass hands each of the graph's nodes to its threads and waits
+    /// for them, and on a short input that hand-off is most of the pass;
+    /// passes side by side pay none of it. Measured through `Embedder` on four
+    /// cores (ONNX Runtime 1.28, Xeon with AMX), 500 texts stored 64 at a
+    /// time, two runs each, when each pass still had a session of its own:
+    /// BGE-M3 from 38.3 and 40.3 s to 18.7 and 17.3 s, every vector
     /// bit-identical to one thread's.
     ///
     /// One session for every pass rather than one a pass, so the graph, its
@@ -232,8 +264,9 @@ impl Encoder {
         batches: Vec<Vec<Encoding>>,
         read: impl Fn(Outputs) -> Result<T> + Sync,
     ) -> Result<Vec<T>> {
-        let (model, shared) = match &mut self.side_by_side {
-            Some((model, shared)) if batches.len() > 1 => (model, shared),
+        let workers = self.ready(batches.len())?;
+        let session = match &self.side_by_side {
+            Some((_, Some(session))) if workers > 1 => session,
             _ => {
                 return batches
                     .into_iter()
@@ -241,11 +274,6 @@ impl Encoder {
                     .collect();
             }
         };
-        if shared.is_none() {
-            *shared = Some(crate::inference::cpu_session(model, 1)?);
-        }
-        let session = shared.as_ref().expect("loaded above");
-        let workers = crate::inference::budget()?.min(batches.len());
         let (tokenizer, token_type_ids) = (&self.tokenizer, self.token_type_ids);
         let pending = &std::sync::Mutex::new(batches.into_iter().enumerate());
         let read = &read;

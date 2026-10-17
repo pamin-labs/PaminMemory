@@ -3,6 +3,7 @@
 //! Everything here is derived data. Losing it costs a reindex, not a migration,
 //! which is what makes a pre-1.0 index engine an acceptable dependency.
 
+mod activity;
 mod attention;
 #[cfg(test)]
 mod build_profile;
@@ -26,11 +27,14 @@ mod vector_math;
 #[cfg(target_os = "windows")]
 mod winml;
 
+pub use activity::LoadActivity;
 pub use descriptors::raise_open_file_limit;
 pub use embedding::{DIMENSIONS, Embedder, MODEL_ID};
 pub use error::{IndexError, Result};
 pub use half::as_stored;
-pub use inference::{CUDA_SELECTION, Device, PlanUse, cuda_devices};
+pub use inference::{
+    CUDA_SELECTION, Device, EXECUTION_SETTINGS, PlanOrigin, PlanUse, cuda_devices,
+};
 
 /// What this crate was built from and how: a sha256 over its sources, the
 /// workspace manifests and Cargo config, the target, profile, opt-level,
