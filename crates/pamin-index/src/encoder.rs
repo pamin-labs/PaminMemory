@@ -30,6 +30,9 @@ pub(crate) struct Encoder {
     /// Whether the graph takes token type ids. XLM-R's family ignores them and
     /// most of its exports do not declare the input.
     token_type_ids: bool,
+    /// The repository and commit the model was read from, as
+    /// [`Repository::revision`] resolves it once its files are fetched.
+    revision: String,
 }
 
 impl crate::inference::RuntimeModel for Encoder {
@@ -38,6 +41,9 @@ impl crate::inference::RuntimeModel for Encoder {
     }
     fn runtime_plan_mut(&mut self) -> &mut crate::inference::RuntimePlan {
         &mut self.runtime_plan
+    }
+    fn revision(&self) -> &str {
+        &self.revision
     }
 }
 
@@ -76,6 +82,7 @@ impl Encoder {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             fixed: None,
             token_type_ids,
+            revision: repository.revision(),
         })
     }
 
@@ -104,6 +111,7 @@ impl Encoder {
             session,
             fixed: Some((short, long)),
             token_type_ids: false,
+            revision: repository.revision(),
         })
     }
 
