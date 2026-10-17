@@ -3351,8 +3351,10 @@ stay true. Options nobody should choose cost that without buying anything.
 **What is kept exactly.** A workspace that ran the defaults must not notice:
 the index marker still records `gpahal/bge-m3-onnx-int8`; the embedder's plan
 key keeps its `embedding-query-v4:max512:joint-singleton:e5-cpu256-accelerator8:`
-prefix and the reranker's its `reranker-v3:accurate:` prefix, so measured plans
-are reused rather than re-measured; plans keep the provider label
+prefix and the reranker's kept its `reranker-v3:accurate:` prefix through this
+change, so measured plans were reused rather than re-measured (`b972ead` later
+moved the reranker's to `reranker-v4`, so each host measures that plan once
+more; see [2026-10-16](#2026-10-16-side-by-side-passes-one-shared-session-one-pair-a-cpu-pass)); plans keep the provider label
 `reranking accurate`; and evaluation records and cached projects keep the
 `accuracy` name. Each is pinned by a test. The change is meant to leave the
 default search path bit-identical, and the pull request that made it records
