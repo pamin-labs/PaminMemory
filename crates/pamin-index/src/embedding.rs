@@ -209,6 +209,26 @@ impl Embedder {
         self.device
     }
 
+    /// The execution target this model runs on, as its execution plans are
+    /// keyed: `npu:<provider>:<id>` for an NPU, the device's name otherwise.
+    pub fn target(&self) -> String {
+        crate::inference::target_key(&self.model, self.device)
+    }
+
+    /// Every execution plan this model has run on in this process, oldest
+    /// first, the current one last: more than one when a failure fell back
+    /// or a revalidation moved it. See [`crate::PlanUse`].
+    pub fn plans(&self) -> Vec<crate::PlanUse> {
+        crate::inference::plans_of(&self.model, self.device)
+    }
+
+    /// The second vector model's plans, as [`Embedder::plans`].
+    pub fn secondary_plans(&self) -> Option<Vec<crate::PlanUse>> {
+        self.secondary
+            .as_ref()
+            .map(|(model, device)| crate::inference::plans_of(model, *device))
+    }
+
     pub fn profile(&self) -> Profile {
         self.profile
     }
@@ -429,7 +449,7 @@ fn primary_model(
             queries: Some((2, profile.dimensions() as usize)),
             scores: None,
         },
-        |device, target, _validated| load_on(profile, cache_dir, device, target),
+        |device, target, _validated| load_on(profile, &repository, cache_dir, device, target),
         |model, device| {
             let mut reference = references.borrow_mut();
             // Reject an already incompatible short query before compiling
@@ -540,31 +560,22 @@ fn check_vectors(
 /// its private session cannot report which execution provider ran the graph.
 fn load_on(
     profile: Profile,
+    repository: &Repository,
     cache_dir: &std::path::Path,
     device: crate::inference::Device,
     target: crate::inference::Target,
 ) -> Result<Encoder> {
     if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
-        let repository = if profile == Profile::DualAccuracy {
-            Repository::open_at(
-                cache_dir,
-                JOINT_REPOSITORY,
-                "2b34e84df040034d4b9eabb62383a87c18955822",
-            )?
-        } else {
-            Repository::open(cache_dir, JOINT_REPOSITORY)?
-        };
         let weights = repository.file(cache_dir, JOINT_FILE);
-        let encoder = joint_session(&repository, &weights, cache_dir, device, target)?;
+        let encoder = joint_session(repository, &weights, cache_dir, device, target)?;
         return Ok(encoder);
     }
     let model = profile.model();
     let info = TextEmbedding::get_model_info(&model)
         .map_err(|error| IndexError::Engine(format!("finding embedding model: {error}")))?;
-    let repository = Repository::open(cache_dir, &info.model_code)?;
     let encoder = Encoder::load(
         || repository.get(&info.model_file),
-        &repository,
+        repository,
         JOINT_MAX_TOKENS,
         target,
     )

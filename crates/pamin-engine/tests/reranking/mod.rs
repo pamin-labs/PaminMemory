@@ -157,6 +157,7 @@ impl Default for Routes {
                 .map(|n| (format!("cascade: fast picks {n}"), ())),
         );
         labels.extend(GATES.iter().map(|gate| (gate.to_string(), ())));
+        crate::harness::shape::tables(labels.iter().map(|(label, _)| label));
         let rows = labels.len();
         Self {
             labels,
@@ -266,10 +267,12 @@ impl Routes {
             });
         }
 
-        for ((order, cheap_pairs, dear_pairs), (into, pairs)) in orders
+        for (((order, cheap_pairs, dear_pairs), (into, pairs)), (label, _)) in orders
             .iter()
             .zip(self.measured.iter_mut().zip(self.pairs.iter_mut()))
+            .zip(&self.labels)
         {
+            crate::harness::shape::table(label);
             score(into.entry(group.to_string()).or_default(), order);
             pairs.0 += cheap_pairs;
             pairs.1 += dear_pairs;
