@@ -490,8 +490,10 @@ pub fn forwarded(args: &ServerArgs) -> Vec<std::ffi::OsString> {
 /// What `pamin config` shows.
 #[derive(Serialize)]
 pub struct Shown {
-    /// The file read, whether or not it exists.
-    pub file: PathBuf,
+    /// The file read, whether or not it exists, spelled by
+    /// [`pamin_index::spelled_path`] so a workspace path that is not UTF-8
+    /// still serializes.
+    pub file: String,
     pub exists: bool,
     pub settings: Vec<Entry>,
 }
@@ -501,7 +503,7 @@ impl Shown {
         let file = workspace.root().join(CONFIG);
         Self {
             exists: file.is_file(),
-            file,
+            file: pamin_index::spelled_path(&file),
             settings: server.entries.clone(),
         }
     }
@@ -515,7 +517,7 @@ impl Shown {
             .unwrap_or(0);
         let mut out = format!(
             "{} ({})\n",
-            self.file.display(),
+            self.file,
             if self.exists { "read" } else { "absent" }
         );
         for entry in &self.settings {
@@ -696,6 +698,26 @@ mod tests {
         assert_eq!(
             server.settings.inference.ep_libraries,
             [root.path().join("npu.so")]
+        );
+    }
+
+    /// `pamin --json config` in a workspace whose path is not UTF-8
+    /// serializes, with the path spelled byte for byte.
+    #[cfg(unix)]
+    #[test]
+    fn config_output_serializes_a_path_that_is_not_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join(std::ffi::OsStr::from_bytes(b"home-\x80"));
+        let server = resolve(root.path(), &[]).unwrap();
+        let shown = Shown::new(&pamin_store::Workspace::at(&home), &server);
+        let json = serde_json::to_value(&shown).expect("serializes");
+        assert!(
+            json["file"]
+                .as_str()
+                .unwrap()
+                .ends_with("home-\\x80/config.toml"),
+            "{json}"
         );
     }
 

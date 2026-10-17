@@ -19,7 +19,7 @@ pub async fn execute(session: &Session, project: &str) -> Result<Initialized> {
 
     let result = Initialized {
         project: project.to_string(),
-        home: session.workspace().root().display().to_string(),
+        home: pamin_index::spelled_path(session.workspace().root()),
     };
 
     Ok(result)
