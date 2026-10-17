@@ -308,9 +308,11 @@ impl Routes {
 /// Every rule in [`rules`], measured over shipped searches one at a time, with
 /// what each costs in model pairs.
 ///
-/// With `SUFFICIENCY_OUT` set, also writes one row a query -- group, whether
-/// the shipped first result is relevant, the model's best score and its lead
-/// over the second -- to that file, for asking whether those two numbers
+/// With `SUFFICIENCY_OUT` set, also writes one row a query and answer key --
+/// the search's group, the group it was scored under (an XQuAD-R search is
+/// scored under three answer keys, other corpora's under one), whether the
+/// shipped first result is relevant under that key, the model's best score
+/// and its lead over the second -- to that file, for asking whether those two numbers
 /// predict a right first answer before anything exposes them. The scores are
 /// the ones the product computed in its own batches, which is the condition
 /// the withdrawn abstention experiment did not hold.
@@ -332,13 +334,34 @@ pub struct Priced {
     /// Per group, the unit each scored query belongs to, in `per_query`
     /// order, for the cross-validated choice and its paired test.
     clusters: BTreeMap<String, Vec<String>>,
-    /// The shipped tier's reranker, loaded for its tokenizer and planner
-    /// only, so [`Rule::Patience`] replays the passes the engine ran.
-    reranker: pamin_index::Reranker,
-    /// Searches checked by [`planned_like`](Self::planned_like), and why
-    /// the replay's plan was not the engine's, if it ever was not.
-    checked: u64,
-    unlike: Option<String>,
+}
+
+/// One `SUFFICIENCY_OUT` row for each answer key the shipped first result was
+/// scored under (`first`, scored from a one-result list), each labelled with
+/// that key: one search scored under several keys can have its first result
+/// relevant under one and not another.
+fn sufficiency_rows(
+    group: &str,
+    first: &BTreeMap<String, crate::scoring::Scores>,
+    model: &[f64],
+) -> Vec<String> {
+    let mut model = model.to_vec();
+    model.sort_by(|left, right| right.total_cmp(left));
+    let (best, gap) = match model.as_slice() {
+        [best, second, ..] => (*best, best - second),
+        [best] => (*best, 0.0),
+        [] => (f64::NAN, f64::NAN),
+    };
+    first
+        .iter()
+        .map(|(key, scores)| {
+            format!(
+                "{group}\t{key}\t{}\t{best}\t{gap}\t{}",
+                u8::from(scores.ndcg > 0.0),
+                u8::from(!model.is_empty())
+            )
+        })
+        .collect()
 }
 
 /// The shape table `SUFFICIENCY_OUT`'s first-result check is scored into.
@@ -368,12 +391,8 @@ fn rescored_rules(model: &str) -> Vec<(String, Rule)> {
     ]
 }
 
-impl Priced {
-    /// `models` is the workspace's model cache, where the shipped tier's
-    /// reranker is loaded from.
-    pub fn new(models: &std::path::Path) -> Self {
-        let reranker = pamin_index::Reranker::load(models, &crate::harness::support::inference())
-            .expect("load the shipped reranker for its planner");
+impl Default for Priced {
+    fn default() -> Self {
         let mut rules = rules();
         let shortlist = std::env::var("SHORTLIST_OUT").ok().map(|path| {
             std::io::BufWriter::new(
@@ -400,7 +419,8 @@ impl Priced {
                 std::fs::File::create(path).expect("create the sufficiency output"),
             );
             use std::io::Write;
-            writeln!(file, "group\tfirst_relevant\tbest\tgap\tscored").expect("write the header");
+            writeln!(file, "group\tkey\tfirst_relevant\tbest\tgap\tscored")
+                .expect("write the header");
             file
         });
         crate::harness::shape::tables(rules.iter().map(|(label, _)| label));
@@ -417,22 +437,31 @@ impl Priced {
             shortlist,
             rescore,
             clusters: BTreeMap::new(),
-            reranker,
-            checked: 0,
-            unlike: None,
         }
     }
+}
 
-    /// One shipped search. `score` scores one ranking into its group or
-    /// groups; `group` only labels the sufficiency row.
+impl Priced {
+    /// One shipped search, which `engine` ran. `score`
+    /// scores one ranking into its group or groups; `group` only labels the
+    /// sufficiency row.
+    ///
+    /// [`Rule::Patience`] replays the passes `engine`'s own reranker plans
+    /// for the shortlist ([`pamin_engine::Engine::rerank_passes`]), at the
+    /// execution target it is on now: the one that scored this search, since
+    /// a reranker that falls back mid-search rescores the whole list on its
+    /// new target. So the replay plans as the engine did without loading a
+    /// second copy of the model for its planner.
     ///
     /// `cluster` names the unit the search belongs to: searches that share
     /// one share a fold, and the paired test runs over each unit's mean. A
     /// LOCOMO conversation is one, since its questions share a corpus, index
     /// and graph. `None` makes the search its own unit, which also keeps the
     /// answer keys one search is scored under together.
+    #[allow(clippy::too_many_arguments)]
     pub fn observe(
         &mut self,
+        engine: &pamin_engine::Engine,
         group: &str,
         query: &str,
         hits: &[SearchHit],
@@ -480,10 +509,17 @@ impl Priced {
         let names = replayed.movable();
         let documents = shown(hits, &names);
         let documents: Vec<&str> = documents.iter().map(String::as_str).collect();
-        let planned =
-            replayed
-                .rescored(replayed.model.clone())
-                .planned(&self.reranker, query, &documents);
+        // A search the engine declined to rerank ran no pass, and its
+        // reranker may still be loading: there is nothing to plan.
+        let passes = if documents.is_empty() {
+            Vec::new()
+        } else {
+            engine
+                .rerank_passes(query, &documents)
+                .expect("the engine's reranker scored this search, so it is loaded")
+                .expect("plan the shortlist")
+        };
+        let planned = replayed.rescored(replayed.model.clone()).planned(passes);
         for (row, (((label, rule), into), pairs)) in self
             .rules
             .iter()
@@ -518,88 +554,13 @@ impl Priced {
             let mut first = BTreeMap::new();
             crate::harness::shape::table(SUFFICIENCY_TABLE);
             score(&mut first, &shipped[..shipped.len().min(1)]);
-            let first = first.values().any(|scores| scores.ndcg > 0.0);
-            let mut model = replayed.model.clone();
-            model.sort_by(|left, right| right.total_cmp(left));
-            let (best, gap) = match model.as_slice() {
-                [best, second, ..] => (*best, best - second),
-                [best] => (*best, 0.0),
-                [] => (f64::NAN, f64::NAN),
-            };
-            writeln!(
-                file,
-                "{group}\t{}\t{best}\t{gap}\t{}",
-                u8::from(first),
-                u8::from(!model.is_empty())
-            )
-            .expect("write a sufficiency row");
-        }
-    }
-
-    /// Checks, after a search `engine` ran, that the replay plans passes as
-    /// the engine's reranker does: the same tier on the same execution
-    /// target (an NPU's provider and id included). The planner is the same code; what can differ is the
-    /// model's batch limits, and those follow from the tier and the provider
-    /// (a compiled CoreML session has its own) under this process's
-    /// settings. A reranker that fell back mid-run -- CoreML to the CPU, say
-    /// -- plans differently from the replay, and the Patience rows are then
-    /// not reported rather than reported with the wrong pair counts.
-    pub fn planned_like(&mut self, engine: &pamin_engine::Engine) {
-        self.checked += 1;
-        if self.unlike.is_some() {
-            return;
-        }
-        let role = format!("reranking {}", pamin_index::reranking::TIER);
-        let replay = self.reranker.target();
-        // Every plan the engine's reranker ran on so far: one, unless it fell
-        // back mid-run, and then its passes were planned two ways.
-        let mut ran: Vec<String> = engine
-            .providers()
-            .into_iter()
-            .filter(|(name, _)| *name == role)
-            .map(|(_, plan)| plan.target)
-            .collect();
-        ran.dedup();
-        if ran != [replay.clone()] {
-            self.unlike = Some(format!(
-                "the engine's {role} ran on {}, and the replay plans for {replay}",
-                if ran.is_empty() {
-                    "nothing".to_string()
-                } else {
-                    ran.join(" then ")
-                },
-            ));
+            for row in sufficiency_rows(group, &first, replayed.model()) {
+                writeln!(file, "{row}").expect("write a sufficiency row");
+            }
         }
     }
 
     pub fn report(&mut self, title: &str) {
-        assert_eq!(
-            self.checked, self.queries,
-            "every search is checked with planned_like before Patience is priced"
-        );
-        if let Some(unlike) = &self.unlike {
-            // Refused, not reported: the rows are scored, so the run's
-            // coverage still holds, but their pair counts would be wrong.
-            println!(
-                "\n  patience rows not reported: {unlike}, so the passes they replay are not the ones that ran"
-            );
-            let keep: Vec<bool> = self
-                .rules
-                .iter()
-                .map(|(_, rule)| !matches!(rule, Rule::Patience { .. }))
-                .collect();
-            fn kept<T>(values: &mut Vec<T>, keep: &[bool]) {
-                let mut at = 0;
-                values.retain(|_| {
-                    at += 1;
-                    keep[at - 1]
-                });
-            }
-            self.firsts -= keep[..self.firsts].iter().filter(|kept| !**kept).count();
-            kept(&mut self.rules, &keep);
-            kept(&mut self.measured, &keep);
-            kept(&mut self.pairs, &keep);
-        }
         // Flushed with errors checked, so a truncated artifact fails the run
         // instead of being dropped silently with its writer.
         for file in [&mut self.sufficiency, &mut self.shortlist]
@@ -975,24 +936,16 @@ impl Replayed {
         }
     }
 
-    /// The same query with the passes `reranker` runs over what it was
-    /// shown, `documents` in movable order: their encoded lengths through
-    /// the planner [`pamin_index::Reranker::rank`] runs.
-    pub fn planned(
-        mut self,
-        reranker: &pamin_index::Reranker,
-        query: &str,
-        documents: &[&str],
-    ) -> Replayed {
-        assert_eq!(
-            documents.len(),
-            self.movable.len(),
-            "one document per movable candidate"
+    /// The same query with the reranker's passes over the movable
+    /// candidates, as indices into them in the order it runs them (see
+    /// [`pamin_engine::Engine::rerank_passes`]); none for a search it
+    /// declined to rerank.
+    pub fn planned(mut self, passes: Vec<Vec<usize>>) -> Replayed {
+        assert!(
+            passes.iter().flatten().all(|at| *at < self.movable.len()),
+            "a pass over a candidate the model was not shown"
         );
-        let lengths = reranker
-            .lengths(query, documents)
-            .expect("encode the shortlist");
-        self.passes = Some(reranker.plan(&lengths));
+        self.passes = Some(passes);
         self
     }
 
@@ -1211,6 +1164,47 @@ mod tests {
             settled.fused
         );
         assert_eq!(settled.pairs(Rule::Confident { lead: 0.1, n: 0 }), 0);
+    }
+
+    /// A search the engine declined to rerank ran no pass and is planned
+    /// with none: every rule, Patience included, is fusion alone at no pairs,
+    /// with nothing asked of a reranker that may not have loaded yet.
+    #[test]
+    fn a_search_with_no_model_pass_is_priced_without_a_plan() {
+        let scores = Replayed {
+            movable: Vec::new(),
+            fusion: Vec::new(),
+            model: Vec::new(),
+            graph: Vec::new(),
+            ..replayed(&[], &[])
+        }
+        .planned(Vec::new());
+        for (_, rule) in rules() {
+            assert_eq!(scores.order(rule), scores.fused, "{rule:?}");
+            assert_eq!(scores.pairs(rule), 0, "{rule:?}");
+        }
+    }
+
+    /// A search scored under several answer keys gets a row for each, so
+    /// a first result relevant under one key and not another is not merged
+    /// into one row for the search.
+    #[test]
+    fn sufficiency_has_a_row_for_each_answer_key() {
+        let mut first: BTreeMap<String, crate::scoring::Scores> = BTreeMap::new();
+        let shown = ["a".to_string()];
+        for (key, relevant) in [("cross_lingual", false), ("same_language", true)] {
+            first
+                .entry(key.to_string())
+                .or_default()
+                .add(&shown, 1, |_| relevant);
+        }
+        assert_eq!(
+            sufficiency_rows("de", &first, &[0.5, 2.0]),
+            [
+                "de\tcross_lingual\t0\t2\t1.5\t1",
+                "de\tsame_language\t1\t2\t1.5\t1"
+            ]
+        );
     }
 
     #[test]

@@ -194,8 +194,15 @@ async fn maintain(session: Arc<Session>) {
             );
             // Beside the loop rather than in it: a reshape takes minutes, and
             // every other project's flushes wait on this loop -- a claim held
-            // past its lease is replayed.
-            reshapes.consider(&key, engine);
+            // past its lease is replayed. Only between requests too, for the
+            // reason upkeep is: a reshape sizes its sibling from the documents
+            // held when it starts and optimizes it before applying what was
+            // written meanwhile, so one started mid-import would put segment
+            // boundaries wherever the tick landed. One skipped here records
+            // nothing, so the next quiet tick considers it afresh.
+            if session.is_quiet() {
+                reshapes.consider(&key, engine);
+            }
         }
 
         // The engines above are dropped by now, so a project that has gone

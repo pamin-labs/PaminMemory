@@ -57,6 +57,17 @@ pub struct Args {
     )]
     #[serde(default = "default_search_effort")]
     pub search_effort: u32,
+
+    /// Always `accurate`, and read by nothing in this build.
+    ///
+    /// It named the reranking tier until there was one. A server from before
+    /// then refuses a search without it as unreadable rather than answering
+    /// with its version, so a client that stopped sending it could neither
+    /// use such a server nor replace it -- the reason `Request::profile` is
+    /// still sent.
+    #[arg(skip = String::from("accurate"))]
+    #[serde(default)]
+    pub rerank: String,
 }
 
 fn default_rerank_depth() -> usize {
@@ -275,4 +286,36 @@ fn describe(why: &[Trace]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Command {
+        #[command(flatten)]
+        args: Args,
+    }
+
+    /// A search request is still readable by a server from before the tier
+    /// was removed, which required the field and knew `accurate`, so that
+    /// server answers with its version and the client replaces it.
+    #[test]
+    fn a_search_is_readable_by_a_server_that_required_a_tier() {
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct Before {
+            query: String,
+            limit: u32,
+            channel_depth: u32,
+            graph_depth: u8,
+            rerank: String,
+        }
+        let args = Command::parse_from(["pamin", "deployment rollback"]).args;
+        let wire = serde_json::to_string(&args).unwrap();
+        let before: Before = serde_json::from_str(&wire).expect("an older server reads it");
+        assert_eq!(before.rerank, "accurate");
+    }
 }
