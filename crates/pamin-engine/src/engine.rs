@@ -315,7 +315,49 @@ pub struct Engine {
     /// most workspaces never will, and half a gigabyte should not be read off
     /// disk by opening a project.
     models: Models,
+    /// The model loads a search started ahead of its need and did not wait
+    /// for. See [`settle_loads`](Self::settle_loads).
+    preloads: Preloads,
     pub project: ProjectId,
+}
+
+/// Loads started ahead of their need, which nothing in the product waits for.
+///
+/// A search that starts loading its reranker and then returns early -- no
+/// candidates, or an error -- leaves the load running past the search. That
+/// costs a server nothing. A measurement that reads, when its run is over,
+/// what the loads fetched and which plans they ran on would read a load still
+/// running, so it waits for them first (see [`Engine::settle_loads`]).
+#[derive(Clone, Default)]
+struct Preloads(Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>);
+
+impl Preloads {
+    /// Starts `load` on the blocking pool and returns without waiting.
+    ///
+    /// Loads that have already finished are forgotten here, so a resident
+    /// server that never settles holds at most the loads still running.
+    fn start(&self, load: impl FnOnce() + Send + 'static) {
+        let load = tokio::task::spawn_blocking(load);
+        let mut loads = self.0.lock().expect("the preload list lock is poisoned");
+        loads.retain(|load| !load.is_finished());
+        loads.push(load);
+    }
+
+    /// Waits for every load started so far, including any a load started.
+    async fn settle(&self) {
+        loop {
+            let loads =
+                std::mem::take(&mut *self.0.lock().expect("the preload list lock is poisoned"));
+            if loads.is_empty() {
+                return;
+            }
+            for load in loads {
+                // A load that failed or panicked has failed for the search
+                // that needed it, which reports it; settling only waits.
+                let _ = load.await;
+            }
+        }
+    }
 }
 
 /// What a rebuild holds from opening its index until
@@ -831,6 +873,7 @@ impl Engine {
             profile,
             vector_index,
             models: models.clone(),
+            preloads: Preloads::default(),
             project: project.id,
         })
     }
@@ -1604,6 +1647,25 @@ impl Engine {
         self.models.counted(tier)
     }
 
+    /// Loads the embedding model now, if it is not loaded yet, rather than at
+    /// the first write or search that needs it -- so a caller can ask
+    /// [`providers`](Self::providers) which plan will embed what it is about
+    /// to write. Blocking: call it off the async runtime.
+    pub fn load_embedder(&self) -> std::result::Result<(), pamin_index::IndexError> {
+        self.embedding().map(drop)
+    }
+
+    /// Waits for every model load a search started ahead of its need and
+    /// returned before needing -- a reranked search that found nothing
+    /// leaves its reranker loading. Nothing in the product calls it; a
+    /// search never waits on such a load. A measurement does, before it
+    /// reads what the loads fetched or which plans they ran on (see
+    /// [`providers`](Self::providers)), so a load still running is not read
+    /// as one that never happened, or charged to the run after it.
+    pub async fn settle_loads(&self) {
+        self.preloads.settle().await;
+    }
+
     /// Every execution plan each model this engine has used ran on, by role:
     /// `embedding`, `embedding secondary` for a profile with a second vector
     /// model, and `reranking <tier>` for each tier this process has loaded --
@@ -1697,9 +1759,13 @@ impl Engine {
         // never loaded twice. Nothing about the ranking changes; a failure
         // here is the same failure the call below reports, so it is left to
         // that one.
+        //
+        // The search never waits for the load itself, only for the model when
+        // it reranks; a search that returns before then leaves the load
+        // running, which [`settle_loads`](Self::settle_loads) waits for.
         if rerank != Rerank::Off {
             let models = self.models.clone();
-            drop(tokio::task::spawn_blocking(move || models.reranker(rerank)));
+            self.preloads.start(move || drop(models.reranker(rerank)));
         }
 
         // The whole fused list rather than the caller's limit or the tier's
@@ -2805,6 +2871,45 @@ mod tests {
     };
     use pamin_core::{Channel, ChannelResults, TopicId};
     use pamin_index::Rerank;
+
+    /// A load started ahead of its need returns at once, is waited for by
+    /// settling, and once finished is not held by a server that never settles.
+    #[tokio::test]
+    async fn settling_waits_for_a_load_nothing_else_waited_for() {
+        use std::sync::mpsc;
+
+        let preloads = super::Preloads::default();
+        let (release, released) = mpsc::channel::<()>();
+        let started = Instant::now();
+        preloads.start(move || {
+            released.recv().unwrap();
+        });
+        assert!(started.elapsed() < Duration::from_secs(1), "start waited");
+
+        let settling = tokio::spawn({
+            let preloads = preloads.clone();
+            async move { preloads.settle().await }
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!settling.is_finished(), "settled before the load finished");
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), settling)
+            .await
+            .expect("settling waits only for the load")
+            .unwrap();
+        assert!(preloads.0.lock().unwrap().is_empty());
+
+        // A finished load is forgotten as the next one starts.
+        preloads.start(|| {});
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !preloads.0.lock().unwrap()[0].is_finished() {
+            assert!(Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        preloads.start(|| {});
+        assert_eq!(preloads.0.lock().unwrap().len(), 1);
+        preloads.settle().await;
+    }
 
     #[test]
     fn idle_sweep_skips_registries_while_a_model_load_holds_them() {
