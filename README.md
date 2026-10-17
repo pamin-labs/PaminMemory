@@ -419,17 +419,23 @@ filesystem. Dropping a column and deleting rows stop a database growing and let
 it reuse what it holds; only `VACUUM FULL` makes an existing file smaller, and
 nothing here runs one.
 
-**Write latency has never been attributed.** Retrieval is divided into four
-stages and published; the write path is a single number, so there is nothing
-to say about which part of it a round trip would remove.
+**Write latency has been attributed only coarsely.** Retrieval is divided into
+four stages and published; the write path has two figures beside its 30.1 ms
+total: [measured.md](docs/measured.md) puts most of that on the `fsync` a
+durable append owes, and one `remember`, the ledger insert, at about 1.9 ms.
+Nothing finer has been taken, so there is little to say about which part of it
+a round trip would remove.
 
-**Resident memory is measured but not attributed.** 3.6 GB and 7.2 GB are
-published for two corpus sizes and neither is broken down, so nothing here can
-say what a reduction would have to target. Attribution is the first job on that
-axis rather than optimisation — model weights against index against vector
-graph against connection pools — because optimising the visible part rather
-than the large part is a mistake this project has already made once and
-recorded.
+**Resident memory has been attributed once, by stage.** On MIRACL's 131,924
+passages, [measured.md](docs/measured.md) puts the index first, at 3,283 MB of
+anonymous memory, ahead of the embedder and a first search (1,080 MB) and the
+reranker (911 MB), and breaks down separately what the mapped model copies and
+the shared vocabulary saved. That attribution predates the mapped copies and
+the shared session side-by-side passes now run on, so it says where memory went
+then; re-taking it is the first job on that axis rather than optimisation —
+model weights against index against vector graph against connection pools —
+because optimising the visible part rather than the large part is a mistake
+this project has already made once and recorded.
 
 ## Development
 
