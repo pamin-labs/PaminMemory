@@ -35,3 +35,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# The evaluation harness waits for an engine's outstanding model loads from a
+# shape's drop, which cannot await. Already in the tree as `pamin-cli`'s, so
+# this adds no lockfile entry.
+futures = { workspace = true }

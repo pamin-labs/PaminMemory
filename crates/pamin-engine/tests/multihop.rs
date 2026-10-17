@@ -583,6 +583,7 @@ async fn search_answers_questions_that_take_several_steps() {
     };
 
     let project = format!("musique-{named}-{}", corpus.fingerprint());
+    shape.observe_models();
     let engine = Engine::open(
         &workspace,
         &project,
@@ -596,7 +597,7 @@ async fn search_answers_questions_that_take_several_steps() {
     if std::env::var("CHANNELS").is_ok() {
         assert_eq!(engine.passage(), pamin_index::Passage::Named);
     }
-    write_corpus(&engine, &corpus).await;
+    write_corpus(&engine, &corpus, &mut shape, "primary", &workspace).await;
     if std::env::var("CHANNELS").is_ok() {
         assert_eq!(engine.passage(), pamin_index::Passage::Named);
         assert_eq!(
@@ -630,7 +631,7 @@ async fn search_answers_questions_that_take_several_steps() {
             ("primary", &engine),
             ("named", &other),
         ]));
-        write_corpus(&other, &corpus).await;
+        write_corpus(&other, &corpus, &mut shape, "named", &workspace).await;
         assert_eq!(
             engine.passage(),
             pamin_index::Passage::Content,
@@ -716,6 +717,14 @@ async fn search_answers_questions_that_take_several_steps() {
             ("primary", &engine),
             ("entities", &entities),
         ]));
+        harness::index(
+            &mut shape,
+            "entities",
+            &entities,
+            workspace.root(),
+            corpus.memories.len(),
+        )
+        .await;
         reach(&entities, &corpus, "with shared names").await;
         return;
     }
@@ -903,7 +912,23 @@ async fn search_answers_questions_that_take_several_steps() {
     }
 }
 
-async fn write_corpus(engine: &Engine, corpus: &Corpus) {
+/// Hands the index to `shape` under `label` (see `harness::index`), then
+/// writes every memory not already a topic and runs the queue.
+async fn write_corpus(
+    engine: &Engine,
+    corpus: &Corpus,
+    shape: &mut Shape,
+    label: &str,
+    workspace: &Workspace,
+) {
+    harness::index(
+        shape,
+        label,
+        engine,
+        workspace.root(),
+        corpus.memories.len(),
+    )
+    .await;
     let mut written = 0usize;
     for memory in &corpus.memories {
         if !harness::write_absent(
@@ -1000,7 +1025,7 @@ async fn entities(
         ("primary", base),
         ("entities", &engine),
     ]));
-    write_corpus(&engine, corpus).await;
+    write_corpus(&engine, corpus, shape, "entities", workspace).await;
 
     let names: Vec<HashSet<String>> = corpus
         .memories
