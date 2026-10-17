@@ -486,7 +486,7 @@ Reads a topic at a version. `--version-offset` counts back from the current one.
 
 ```console
 $ pamin read deployment_pipeline
-deployment_pipeline v2 (current, 0 of 2 versions, recorded 2026-03-04T09:12:44.325845Z)
+deployment_pipeline v2 (current, 0 of 2 versions, recorded 2026-10-17T02:23:17.362349Z)
 
 the deployment pipeline now runs on argo cd
 ```
@@ -502,9 +502,9 @@ $ pamin read deployment_pipeline --version-offset 1 --json
   "oldest_version": 1,
   "latest_version": 2,
   "available_versions": 2,
-  "recorded_at": "2026-03-04T09:12:44.098121Z",
-  "observed_at": "2026-03-04T09:12:44.092905Z",
-  "source_span": "4c570553-5eeb-4b4f-804c-339738c1a632"
+  "recorded_at": "2026-10-17T02:22:59.777239Z",
+  "observed_at": "2026-10-17T02:22:59.772516Z",
+  "source_span": "01a147ab-6ec1-78e2-8ccf-08a6924aa0f0"
 }
 ```
 
@@ -662,18 +662,18 @@ named by name ahead of the ones the lexical and vector channels supplied.
 
 ```console
 $ pamin search "how do we deploy" --limit 3
-0.1970  deployment_pipeline v2  the deployment pipeline now runs on argo cd
-        lexical_ngram#1 vector#1 graph#2 oncall_rota --depends_on-> deployment_pipeline (1hop)
-0.1871  oncall_rota v1  the oncall rota rotates every monday morning
-        lexical_ngram#3 vector#3 graph#1 oncall_rota --depends_on-> deployment_pipeline (1hop)
-0.1811  rollback_plan v1  a rollback reverts the deployment pipeline to the previous tag
-        lexical_ngram#2 vector#2 graph#3 rollback_plan --mentions-> deployment_pipeline (1hop)
+0.1289  deployment_pipeline v2  the deployment pipeline now runs on argo cd
+        lexical_ngram#1 vector#1 graph#2 oncall_rota --depends_on-> deployment_pipeline (1hop) reranked
+0.1214  rollback_plan v1  a rollback reverts the deployment pipeline to the previous tag
+        lexical_ngram#2 vector#2 graph#3 rollback_plan --mentions-> deployment_pipeline (1hop) reranked
+0.1138  oncall_rota v1  the oncall rota rotates every monday morning
+        lexical_ngram#3 vector#3 graph#1 oncall_rota --depends_on-> deployment_pipeline (1hop) reranked
 ```
 
 The JSON carries the same trace, shown here with `--pretty` because it is being
-read by a person. Without it the same result is one line and 151 tokens against
-249, which is what indentation costs on a hit this size -- roughly a third off,
-and more on a fuller result because the saving is per line:
+read by a person. Without it the same result is one line of 551 bytes against
+934, which is what indentation costs on a hit this size -- about two fifths
+off, and more on a fuller result because the saving is per line:
 
 ```console
 $ pamin search "how do we deploy" --limit 1 --json --pretty
@@ -684,7 +684,7 @@ $ pamin search "how do we deploy" --limit 1 --json --pretty
       "topic": "deployment_pipeline",
       "version": 2,
       "content": "the deployment pipeline now runs on argo cd",
-      "score": 0.1969697,
+      "score": 0.12889996,
       "why": [
         {
           "kind": "channel",
@@ -710,9 +710,12 @@ $ pamin search "how do we deploy" --limit 1 --json --pretty
           "asserted_to": "deployment_pipeline",
           "edge": "depends_on",
           "derivation": "explicit"
+        },
+        {
+          "kind": "reranked"
         }
       ],
-      "recorded_at": "2026-03-04T09:12:44.325845Z"
+      "recorded_at": "2026-10-17T02:23:17.362349Z"
     }
   ]
 }
@@ -1248,7 +1251,7 @@ command does not pay for it:
 
 ```console
 $ pamin read deployment_pipeline    # first call, starts a server
-deployment_pipeline v2 (current, 0 of 2 versions)
+deployment_pipeline v2 (current, 0 of 2 versions, recorded 2026-10-17T02:23:17.362349Z)
 
 the deployment pipeline now runs on argo cd
 ```
