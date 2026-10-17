@@ -393,7 +393,7 @@ async fn retrieval_quality_by_group() {
     // move, which is a question the tier table cannot ask: it compares tiers
     // under one rule, and this compares rules under one tier.
     if std::env::var("RERANK_RULES").is_ok() {
-        rerank_rules(&engine, &queries, &workspace.root().join("models")).await;
+        rerank_rules(&engine, &queries).await;
         return;
     }
 
@@ -681,10 +681,10 @@ async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query]) {
 /// (+0.0259, 4W/0L, p = 0.12) and cost cross-lingual (-0.0108, 0W/10L,
 /// p = 0.0018), so it traded one group for another and was dropped. Blending
 /// keeps fusion's opinion of every candidate rather than of some.
-async fn rerank_rules(engine: &Engine, queries: &[Query], models: &std::path::Path) {
+async fn rerank_rules(engine: &Engine, queries: &[Query]) {
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
-    let mut priced = reranking::Priced::new(models);
+    let mut priced = reranking::Priced::default();
     for query in queries {
         let hits = tier
             .search(engine, &query.query, WIDE, harness::depths())
@@ -695,6 +695,7 @@ async fn rerank_rules(engine: &Engine, queries: &[Query], models: &std::path::Pa
 
         let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
         priced.observe(
+            engine,
             &query.group,
             &query.query,
             &hits,
@@ -708,7 +709,6 @@ async fn rerank_rules(engine: &Engine, queries: &[Query], models: &std::path::Pa
                 );
             },
         );
-        priced.planned_like(engine);
     }
 
     priced.report(&format!(

@@ -695,7 +695,19 @@ pub(crate) fn planned_use(model: &impl RuntimeModel, device: Device) -> Option<P
     (!model.runtime_plan().identity.is_empty()).then(|| current_use(model, device))
 }
 
-/// The plan `model` runs on now, as [`planned_use`], but only while that plan
+/// The plan `model` runs on now, as [`planned_use`], for recording beside what
+/// it embeds: `None` when that plan is not stable across processes.
+///
+/// A DirectML adapter ordinal or an NPU id names whichever device holds that
+/// number in this process ([`PlanUse::stable`]), so the same plan identity can
+/// name other hardware after a restart. A vector recorded under it could then
+/// match a plan that would not reproduce it, so such a plan records nothing,
+/// and nothing it embedded is ever reused.
+pub(crate) fn recorded_use(model: &impl RuntimeModel, device: Device) -> Option<PlanUse> {
+    planned_use(model, device).filter(|plan| plan.stable)
+}
+
+/// The plan `model` runs on now, as [`recorded_use`], but only while that plan
 /// is final: `None` once its retry deadline has passed ([`needs_revalidation`]).
 ///
 /// A plan past its deadline is a fallback the next forward pass may replace,
@@ -715,7 +727,7 @@ fn reusable_use_at(
     if needs_revalidation_at(model, now) {
         return None;
     }
-    planned_use(model, device)
+    recorded_use(model, device)
 }
 
 pub(crate) trait RuntimeModel {
@@ -747,6 +759,11 @@ fn runtime_failures() -> &'static std::sync::Mutex<RuntimeFailures> {
 const RUNTIME_RETRY: std::time::Duration = std::time::Duration::from_secs(300);
 
 fn quarantine_runtime(cache_dir: &Path, plan: &RuntimePlan, now: std::time::Instant) {
+    quarantine_target(cache_dir, &plan.namespace, &plan.target, now);
+}
+
+/// Quarantines `target` for the plans of `namespace` under `cache_dir`.
+fn quarantine_target(cache_dir: &Path, namespace: &str, target: &str, now: std::time::Instant) {
     let root = cache_dir
         .canonicalize()
         .unwrap_or_else(|_| cache_dir.to_path_buf());
@@ -764,7 +781,7 @@ fn quarantine_runtime(cache_dir: &Path, plan: &RuntimePlan, now: std::time::Inst
         }
     }
     failures.insert(
-        (root, plan.namespace.clone(), plan.target.clone()),
+        (root, namespace.to_string(), target.to_string()),
         now + RUNTIME_RETRY,
     );
 }
@@ -949,13 +966,39 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
                 failed_devices.push(target);
                 let now = clock();
                 quarantine_runtime(cache_dir, active.runtime_plan(), now);
+                let namespace = active.runtime_plan().namespace.clone();
                 if model.runtime_plan().restore_target.is_none() {
                     model.runtime_plan_mut().restore_target = Some(failed_devices[0].clone());
                 }
                 model.runtime_plan_mut().retry_at = Some(now + RUNTIME_RETRY);
                 remember_attempt(model, *device, attempted);
                 drop(replacement.take());
-                let (mut active, selected) = match reload() {
+                let mut reloaded = reload();
+                // A model first loaded before its revision's ref existed was
+                // planned under a namespace of that load's own (see
+                // `hub::Repository::identity`), and the reload, opening it at
+                // the commit the ref now names, plans under the commit's: a
+                // namespace the quarantine above is not in. Carry the failed
+                // targets there, and plan once more if the reload chose one.
+                let moved = reloaded.as_ref().ok().and_then(|(fresh, _)| {
+                    let plan = fresh.runtime_plan();
+                    (plan.namespace != namespace).then(|| {
+                        (
+                            plan.namespace.clone(),
+                            failed_devices.contains(&plan.target),
+                        )
+                    })
+                });
+                if let Some((moved, chose_failed)) = moved {
+                    for failed in &failed_devices {
+                        quarantine_target(cache_dir, &moved, failed, now);
+                    }
+                    if chose_failed {
+                        drop(reloaded);
+                        reloaded = reload();
+                    }
+                }
+                let (mut active, selected) = match reloaded {
                     Ok(plan) => plan,
                     Err(_) if revalidating => {
                         model.runtime_plan_mut().retry_at = Some(clock() + RUNTIME_RETRY);
@@ -2476,6 +2519,52 @@ mod tests {
         assert_eq!(model.value, 41);
     }
 
+    /// A model first loaded before its ref existed is planned under that
+    /// load's own namespace, and its reload under the commit's. The failed
+    /// accelerator is quarantined in the reload's namespace too, so the
+    /// reload falls back rather than choosing it again -- and only it: the
+    /// other accelerator stays available.
+    #[test]
+    fn recovery_quarantines_across_a_resolved_revision() {
+        let root = tempfile::tempdir().unwrap();
+        let resolved = "model@commit|runtime";
+        let mut model = RuntimeFixture::new(0, "cuda");
+        model.plan.namespace = "model@main:unresolved:0001|runtime".into();
+        let mut device = Device::Cuda;
+        let mut loads = 0;
+        let (result, replaced) = retry_model(
+            &mut model,
+            &mut device,
+            root.path(),
+            |_, selected| {
+                if selected == Device::Cuda {
+                    Err(IndexError::Engine("device fault on real input".into()))
+                } else {
+                    Ok(selected)
+                }
+            },
+            || {
+                loads += 1;
+                // What a plan selection over the commit's namespace sees.
+                let (target, selected) = if runtime_available(root.path(), resolved, "cuda") {
+                    ("cuda", Device::Cuda)
+                } else {
+                    ("cpu", Device::Cpu)
+                };
+                let mut fresh = RuntimeFixture::new(1, target);
+                fresh.plan.namespace = resolved.into();
+                Ok((fresh, selected))
+            },
+        )
+        .unwrap();
+        assert_eq!(result, Device::Cpu);
+        assert!(replaced);
+        assert_eq!(device, Device::Cpu);
+        assert_eq!(loads, 2, "the reload was not planned again");
+        assert!(!runtime_available(root.path(), resolved, "cuda"));
+        assert!(runtime_available(root.path(), resolved, "npu:first:1"));
+    }
+
     #[test]
     fn runtime_quarantine_is_scoped_to_model_and_selected_target() {
         let root = tempfile::tempdir().unwrap();
@@ -2556,6 +2645,7 @@ mod tests {
         let now = std::time::Instant::now();
         let mut model = RuntimeFixture::new(0, "cpu");
         model.plan.identity = "cpu-plan".into();
+        model.plan.stable = true;
         model.plan.retry_at = Some(now + RUNTIME_RETRY);
         let mut device = Device::Cpu;
         let planned = planned_use(&model, device);
@@ -2576,6 +2666,7 @@ mod tests {
             || {
                 let mut restored = RuntimeFixture::new(42, "npu:first:1");
                 restored.plan.identity = "npu-plan".into();
+                restored.plan.stable = true;
                 Ok((restored, Device::Npu))
             },
         )
@@ -2583,6 +2674,29 @@ mod tests {
         let reusable = reusable_use_at(&model, device, expired).expect("revalidated");
         assert_eq!(reusable.target, "npu:first:1");
         assert_eq!(Some(reusable), planned_use(&model, device));
+    }
+
+    /// A plan that is not stable across processes -- a DirectML ordinal or an
+    /// NPU id -- is neither recorded nor reusable, while the plan itself is
+    /// still reported, so a vector it embedded is never kept for one another
+    /// process's plan of the same identity would embed.
+    #[test]
+    fn an_unstable_plan_is_neither_recorded_nor_reusable() {
+        let now = std::time::Instant::now();
+        let mut model = RuntimeFixture::new(0, "npu:first:1");
+        model.plan.identity = "npu-plan".into();
+        model.plan.stable = false;
+        let device = Device::Npu;
+        assert!(planned_use(&model, device).is_some_and(|plan| !plan.stable));
+        assert_eq!(recorded_use(&model, device), None);
+        assert_eq!(reusable_use_at(&model, device, now), None);
+
+        model.plan.stable = true;
+        assert_eq!(recorded_use(&model, device), planned_use(&model, device));
+        assert_eq!(
+            reusable_use_at(&model, device, now),
+            planned_use(&model, device)
+        );
     }
 
     /// A model that fell back keeps the plan it failed on in its history,
