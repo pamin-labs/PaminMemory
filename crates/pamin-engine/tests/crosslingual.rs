@@ -246,10 +246,7 @@ const DEPTH: usize = RECALL_AT + LANGUAGES.len() - 1;
 ///
 /// The shipped defaults, so the second test measures the product rather than a
 /// configuration invented for the benchmark.
-const DEPTHS: Depths = Depths {
-    channel: 50,
-    graph: 2,
-};
+const DEPTHS: Depths = Depths::DEFAULT;
 
 /// Per group: the nDCG@10 and recall@50 floors for the embedding space.
 ///
@@ -1137,7 +1134,7 @@ async fn report_channels(
 
     for query in queries {
         let hits = engine
-            .search_fused(query.text(), WIDE, DEPTHS, Fusion::default())
+            .search_fused(query.text(), WIDE, harness::depths(), Fusion::default())
             .await
             .expect("search");
 
@@ -1685,6 +1682,7 @@ async fn search_reaches_across_languages() {
         &project,
         VectorIndex::default(),
         Access::ReadWrite,
+        &crate::harness::settings(),
     )
     .await
     .expect("open the engine");
@@ -1780,7 +1778,7 @@ async fn search_reaches_across_languages() {
         harness::shape::table("features");
         for query in &queries {
             let hits = engine
-                .search_fused(query.text(), WIDE, DEPTHS, Fusion::default())
+                .search_fused(query.text(), WIDE, harness::depths(), Fusion::default())
                 .await
                 .expect("search");
             for group in GROUPS {
@@ -1829,7 +1827,7 @@ async fn search_reaches_across_languages() {
             &format!("XQuAD-R, {named}"),
             &questions,
             DEPTH as u32,
-            DEPTHS,
+            harness::depths(),
             &variants,
             |index, into, hits| {
                 let (query, group) = asked[index];
@@ -1858,7 +1856,7 @@ async fn search_reaches_across_languages() {
         let mut routes = reranking::Routes::default();
         for query in &queries {
             let hits = tier
-                .search(&engine, query.text(), WIDE, DEPTHS)
+                .search(&engine, query.text(), WIDE, harness::depths())
                 .await
                 .expect("search");
             channels::enough_room(&hits, WIDE);
@@ -2182,7 +2180,7 @@ async fn labels(engine: &Engine, queries: &[Query<'_>], named: &str) {
         "query tokens",
     ];
 
-    let head = pamin_index::reranking::depth();
+    let head = crate::harness::depths().rerank;
     let mut samples: Vec<Sample> = Vec::new();
     let mut per_tier: Vec<BTreeMap<String, Scores>> =
         LADDER.iter().map(|_| BTreeMap::new()).collect();
@@ -2206,7 +2204,7 @@ async fn labels(engine: &Engine, queries: &[Query<'_>], named: &str) {
     // the only ordering a router gets to look at.
     for (index, query) in queries.iter().enumerate() {
         let hits = Rerank::Off
-            .search(engine, query.text(), DEPTH as u32, DEPTHS)
+            .search(engine, query.text(), DEPTH as u32, harness::depths())
             .await
             .expect("search with the reranker off");
 
@@ -2386,7 +2384,7 @@ async fn calibration(engine: &Engine, queries: &[Query<'_>], named: &str) {
     harness::shape::table("calibration");
     for (at, query) in queries.iter().enumerate() {
         let hits = tier
-            .search(engine, query.text(), DEPTH as u32, DEPTHS)
+            .search(engine, query.text(), DEPTH as u32, harness::depths())
             .await
             .expect("search at the default tier");
 
@@ -2772,11 +2770,11 @@ async fn gate_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
     );
     for query in queries {
         let off = Rerank::Off
-            .search(engine, query.text(), DEPTH as u32, DEPTHS)
+            .search(engine, query.text(), DEPTH as u32, harness::depths())
             .await
             .expect("search with the reranker off");
         let on = tier
-            .search(engine, query.text(), DEPTH as u32, DEPTHS)
+            .search(engine, query.text(), DEPTH as u32, harness::depths())
             .await
             .expect("search at the default tier");
 
@@ -2972,7 +2970,7 @@ async fn pairs_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
     const CAPS: [usize; 8] = [0, 2, 4, 6, 8, 10, 12, usize::MAX];
 
     let tier = Rerank::default();
-    let head = pamin_index::reranking::depth();
+    let head = crate::harness::depths().rerank;
 
     let mut shipped: BTreeMap<String, Scores> = BTreeMap::new();
     let mut fused_only: BTreeMap<String, Scores> = BTreeMap::new();
@@ -2989,11 +2987,11 @@ async fn pairs_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
     );
     for query in queries {
         let off = Rerank::Off
-            .search(engine, query.text(), DEPTH as u32, DEPTHS)
+            .search(engine, query.text(), DEPTH as u32, harness::depths())
             .await
             .expect("search with the reranker off");
         let on = tier
-            .search(engine, query.text(), DEPTH as u32, DEPTHS)
+            .search(engine, query.text(), DEPTH as u32, harness::depths())
             .await
             .expect("search at the default tier");
 
@@ -3132,15 +3130,22 @@ async fn run<'a>(engine: &Engine, queries: &[Query<'a>], route: Route) -> BTreeM
             // to change.
             Route::Shipped(rerank) => {
                 rerank
-                    .search(engine, query.text(), DEPTH as u32, DEPTHS)
+                    .search(engine, query.text(), DEPTH as u32, harness::depths())
                     .await
             }
             Route::AtLimit(rerank, limit) => {
-                rerank.search(engine, query.text(), *limit, DEPTHS).await
+                rerank
+                    .search(engine, query.text(), *limit, harness::depths())
+                    .await
             }
             Route::Fused(fusion) => {
                 engine
-                    .search_fused(query.text(), DEPTH as u32, DEPTHS, fusion.clone())
+                    .search_fused(
+                        query.text(),
+                        DEPTH as u32,
+                        harness::depths(),
+                        fusion.clone(),
+                    )
                     .await
             }
         }
@@ -3163,7 +3168,7 @@ async fn rerank_rules(
     let mut priced = reranking::Priced::new(models);
     for query in queries {
         let hits = tier
-            .search(engine, query.text(), WIDE, DEPTHS)
+            .search(engine, query.text(), WIDE, harness::depths())
             .await
             .expect("search");
         channels::enough_room(&hits, WIDE);
@@ -3213,7 +3218,7 @@ async fn context(
     harness::shape::tables(labels.iter().map(|(label, _)| label));
     for query in queries {
         let hits = tier
-            .search(engine, query.text(), WIDE, DEPTHS)
+            .search(engine, query.text(), WIDE, harness::depths())
             .await
             .expect("search");
         channels::enough_room(&hits, WIDE);

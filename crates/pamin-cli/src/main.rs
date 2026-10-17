@@ -11,6 +11,7 @@ mod protocol;
 mod registry;
 mod server;
 mod session;
+mod settings;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};

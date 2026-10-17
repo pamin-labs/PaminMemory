@@ -34,7 +34,7 @@ pub async fn run(workspace: &Workspace) -> Result<()> {
 
     // Before the socket exists, so a client that connects finds a server that
     // can answer rather than one still starting the database.
-    let session = Arc::new(Session::open(workspace).await?);
+    let session = Arc::new(Session::open(workspace, crate::settings::from_environment()).await?);
 
     // A socket file left by a process that died is not a listener, so the stale
     // one has to go before binding. Connecting to it first is what tells the

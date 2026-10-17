@@ -704,8 +704,7 @@ impl Engine {
         Ok(pamin_index::vector_index_lags(
             documents,
             completeness,
-            pamin_core::env::positive("PAMIN_UNINDEXED_BUDGET")
-                .unwrap_or(pamin_index::projection::UNINDEXED_BUDGET),
+            self.models.settings().unindexed_budget,
         ))
     }
 
