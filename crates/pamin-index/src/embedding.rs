@@ -548,6 +548,7 @@ mod tests {
                 model: Box::new(model),
                 device,
                 remembered: Queries::default(),
+                settings: crate::InferenceSettings::default(),
             };
             inputs
                 .iter()
