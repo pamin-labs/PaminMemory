@@ -92,8 +92,8 @@ identifiers never become memories. Write the sentence a future reader would need
 pamin import --from memories.ndjson
 ```
 
-Getting a memory into the ledger costs about **3.2 ms this way against 30.1 ms
-through repeated `pamin write`** — one process, one open engine, and the index
+Getting a memory into the ledger cost about **3.2 ms this way against 30.1 ms
+through repeated `pamin write`**, measured on an earlier build — one process, one open engine, and the index
 catching up in rounds instead of after each memory. The file is parsed in full
 before anything is recorded, so a malformed last line refuses the import rather
 than leaving it half done. Re-importing the same file is safe: unchanged
