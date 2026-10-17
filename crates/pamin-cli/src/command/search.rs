@@ -80,7 +80,8 @@ enum Trace {
     /// between two -- and a number on the wire invites exactly the comparison
     /// it cannot support. What a reader can act on is the *fact*: a result
     /// carrying this entry was scored by the model, whatever channel found
-    /// it, and one without it holds the place fusion gave it, because it sat
+    /// it, and one without it holds the place fusion gave it: either fusion
+    /// returned fewer than two candidates, so nothing was reranked, or it sat
     /// below the reranker's head and was not among the strongest finds only
     /// the graph made. That distinction costs about four tokens and is the
     /// difference between auditing a ranking and guessing at it.
