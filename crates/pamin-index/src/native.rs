@@ -40,6 +40,7 @@ pub(crate) fn prepare(source: &Path, cache: &Path) -> Result<PathBuf> {
     if model.is_file() && destination.join("source.onnx").is_file() {
         return Ok(model);
     }
+    crate::activity::prepared();
     let partial = root.join(format!("{digest}.partial"));
     if partial.exists() {
         std::fs::remove_dir_all(&partial)?;

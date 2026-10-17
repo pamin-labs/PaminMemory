@@ -959,7 +959,9 @@ impl Reranker {
     /// the batch settings it was loaded with ([`crate::RerankSettings`]), and
     /// the planner `rank` runs. For an evaluation replaying its passes; the
     /// pairs already in the score cache are still planned, as `rank` plans
-    /// them before it looks them up.
+    /// them before it looks them up. On the CPU, where the passes of a call
+    /// run side by side, they start longest first and overlap, so no order of
+    /// one after another is the one they ran in.
     pub fn plan(&self, lengths: &[usize]) -> Vec<Vec<usize>> {
         let (budget, most) = self.model.batch_limits(
             self.settings.rerank.batch_tokens,
@@ -1092,6 +1094,36 @@ impl Reranker {
     }
 }
 
+/// The reranker on the CPU.
+///
+/// The file the hub serves is copied onto the heap whole; the prepared copy
+/// is mapped instead -- see `crate::prepared` for what that saves -- and the
+/// download removed once the copy has loaded. Over the copy, loaded side by
+/// side, so that the batches of one call run at once (see [`forward`]). Over
+/// the download `prepared::load_path` falls back to, each single-threaded
+/// session would hold the weights on the heap again, so that loads the one
+/// session it did before side-by-side batches.
+fn cpu_model(
+    repository: &Repository,
+    cache_dir: &Path,
+    settings: &crate::InferenceSettings,
+    providers: impl Into<crate::inference::Target>,
+) -> Result<Encoder> {
+    let threads = settings.budget()?;
+    let max_tokens = settings.rerank.max_tokens;
+    let weights = repository.file(cache_dir, onnx(Device::Cpu));
+    let path = crate::prepared::load_path(&weights, cache_dir, settings)?;
+    let encoder = if crate::prepared::is_copy(&path, cache_dir) {
+        let tokenizer = crate::tokenizer::load(repository, max_tokens)?;
+        Encoder::side_by_side(path, threads, tokenizer, repository.revision())
+    } else {
+        Encoder::load(threads, || Ok(path), repository, max_tokens, providers)
+    }
+    .map_err(|error| error.context("loading the reranker"))?;
+    crate::prepared::release(&weights, cache_dir, settings);
+    Ok(encoder)
+}
+
 /// Keep the ordering proof first. Accurate also times long candidates, so
 /// maximum-length execution affects selection rather than only compatibility.
 fn load_model(cache_dir: &Path, settings: &crate::InferenceSettings) -> Result<(Encoder, Device)> {
@@ -1103,19 +1135,8 @@ fn load_model(cache_dir: &Path, settings: &crate::InferenceSettings) -> Result<(
     let repository = Repository::open(cache_dir, REPOSITORY)?;
 
     let session = |device: Device, providers, _validated: bool| -> Result<Encoder> {
-        let weights = repository.file(cache_dir, onnx(device));
         if device == Device::Cpu {
-            // The file the hub serves is copied onto the heap whole; on the
-            // CPU, the prepared copy is mapped instead -- see
-            // `crate::prepared` for what that saves -- and the download
-            // removed once the copy has loaded. Loaded side by side, so that
-            // the batches of one call run at once (see `forward`).
-            let copy = crate::prepared::load_path(&weights, cache_dir, settings)?;
-            let tokenizer = crate::tokenizer::load(&repository, max_tokens)?;
-            let encoder = Encoder::side_by_side(copy, threads, tokenizer)
-                .map_err(|error| error.context("loading the reranker"))?;
-            crate::prepared::release(&weights, cache_dir, settings);
-            return Ok(encoder);
+            return cpu_model(&repository, cache_dir, settings, providers);
         }
         let model = || match device {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -1386,7 +1407,10 @@ type Scored = Result<(Vec<Vec<f32>>, u64)>;
 /// Through [`Encoder::run_each`], so on the CPU the batches of one call run
 /// side by side, one thread a pass, longest first: the plan is shortest
 /// first, and the longest pass started last would be the one the others
-/// wait for. Measured through `Reranker::rank` on four cores (ONNX Runtime
+/// wait for. Run one after another -- on an accelerator, or at one thread --
+/// they keep the plan's order, the order [`Reranker::plan`] reports. The time
+/// is of the passes alone: the sessions they run on are loaded before it
+/// starts. Measured through `Reranker::rank` on four cores (ONNX Runtime
 /// 1.28, Xeon with AMX), 100 calls of 30 uncached pairs, two runs each:
 /// `accurate` from a median of 2,105 and 2,163 ms a call to 1,212 and 1,269,
 /// every score bit-identical (and the since-retired `fast` tier from 491 and
@@ -1394,10 +1418,18 @@ type Scored = Result<(Vec<Vec<f32>>, u64)>;
 /// 260 MB more for `accurate`, in proportional set size.
 fn forward(model: &mut Encoder, batches: Vec<Vec<Encoding>>) -> Scored {
     let counts: Vec<usize> = batches.iter().map(Vec::len).collect();
+    let longest_first = model.ready(batches.len())? > 1;
+    let batches = if longest_first {
+        batches.into_iter().rev().collect()
+    } else {
+        batches
+    };
     let start = Instant::now();
-    let mut scores = model.run_each(batches.into_iter().rev().collect(), first_column)?;
+    let mut scores = model.run_each(batches, first_column)?;
     let forward_us = start.elapsed().as_micros() as u64;
-    scores.reverse();
+    if longest_first {
+        scores.reverse();
+    }
     for (scores, count) in scores.iter().zip(counts) {
         if scores.len() != count {
             return Err(IndexError::Engine(format!(
@@ -2584,8 +2616,17 @@ mod tests {
                 _ => long.clone(),
             })
             .collect();
-        let (mut model, device) = load_model(&cache, &settings).expect("load the reranker");
-        assert_eq!(device, Device::Cpu);
+        // On the CPU directly: `load_model` may calibrate onto an
+        // accelerator, which runs no batches side by side.
+        std::fs::create_dir_all(&cache).expect("create the model cache");
+        let repository = Repository::open(&cache, REPOSITORY).expect("open the repository");
+        let mut model = cpu_model(
+            &repository,
+            &cache,
+            &settings,
+            vec![crate::inference::cpu()],
+        )
+        .expect("load the reranker");
         let encodings = model
             .encode(
                 documents
