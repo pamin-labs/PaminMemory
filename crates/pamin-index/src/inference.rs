@@ -2166,7 +2166,7 @@ pub(crate) fn accelerators(settings: &crate::InferenceSettings) -> Vec<(Device, 
     }
     let mut result = Vec::new();
     if let Ok(environment) = ort::environment::Environment::current() {
-        register_plugins(&environment, &settings.ep_libraries);
+        let plugins = register_plugins(&environment, &settings.ep_libraries);
         #[cfg(target_os = "windows")]
         crate::winml::register(&environment);
         for device in environment.devices() {
@@ -2174,6 +2174,7 @@ pub(crate) fn accelerators(settings: &crate::InferenceSettings) -> Vec<(Device, 
             if hardware.ty() == ort::memory::DeviceType::NPU
                 && let Ok(provider) = device.ep()
                 && provider != "CoreMLExecutionProvider"
+                && requested(provider, &plugins, &settings.ep_libraries)
             {
                 let target = Target::Npu {
                     provider: provider.into(),
@@ -2199,36 +2200,73 @@ pub(crate) fn accelerators(settings: &crate::InferenceSettings) -> Vec<(Device, 
 /// registered, rather than finding the set fixed by whoever came first. A
 /// path that is relative, or failed to register, is recorded too, so it is
 /// warned about once rather than on every call.
+///
+/// The registry is the process's, so a library one caller named stays
+/// registered for every later one. Returns which library each plugin
+/// execution provider came from -- the providers whose devices appeared when
+/// that library was registered -- so [`requested`] can keep a caller to the
+/// libraries it named.
 fn register_plugins(
     environment: &std::sync::Arc<ort::environment::Environment>,
     libraries: &[PathBuf],
-) {
-    static REGISTERED: std::sync::Mutex<
-        std::collections::BTreeMap<PathBuf, Option<ort::ep::ExecutionProviderLibrary>>,
-    > = std::sync::Mutex::new(std::collections::BTreeMap::new());
+) -> std::collections::BTreeMap<String, PathBuf> {
+    #[derive(Default)]
+    struct Registry {
+        libraries: std::collections::BTreeMap<PathBuf, Option<ort::ep::ExecutionProviderLibrary>>,
+        providers: std::collections::BTreeMap<String, PathBuf>,
+    }
+    static REGISTERED: std::sync::Mutex<Option<Registry>> = std::sync::Mutex::new(None);
     let mut registered = REGISTERED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let registry = registered.get_or_insert_with(Registry::default);
+    let providers = || -> std::collections::BTreeSet<String> {
+        environment
+            .devices()
+            .filter_map(|device| device.ep().ok().map(str::to_owned))
+            .collect()
+    };
     for path in libraries {
-        if registered.contains_key(path) {
+        if registry.libraries.contains_key(path) {
             continue;
         }
         let library = if !path.is_absolute() {
             tracing::warn!(path = %path.display(), "execution-provider library must be absolute");
             None
         } else {
+            let before = providers();
             // Named by the order of registration, which no two share.
-            let name = format!("pamin-plugin-{}", registered.len());
+            let name = format!("pamin-plugin-{}", registry.libraries.len());
             match environment.register_ep_library(name, path) {
-                Ok(library) => Some(library),
+                Ok(library) => {
+                    for provider in providers().difference(&before) {
+                        registry.providers.insert(provider.clone(), path.clone());
+                    }
+                    Some(library)
+                }
                 Err(error) => {
                     tracing::warn!(path = %path.display(), %error, "execution-provider library unavailable");
                     None
                 }
             }
         };
-        registered.insert(path.clone(), library);
+        registry.libraries.insert(path.clone(), library);
     }
+    registry.providers.clone()
+}
+
+/// Whether a device of `provider` is one this caller may plan on: a provider
+/// no plugin library brought (a built-in one), or one from a library in
+/// `asked`. `plugins` is which library each plugin provider came from, as
+/// [`register_plugins`] returns it.
+fn requested(
+    provider: &str,
+    plugins: &std::collections::BTreeMap<String, PathBuf>,
+    asked: &[PathBuf],
+) -> bool {
+    plugins
+        .get(provider)
+        .is_none_or(|library| asked.contains(library))
 }
 
 fn gpu_providers() -> Vec<(Device, ExecutionProviderDispatch)> {
@@ -2244,6 +2282,31 @@ fn gpu_providers() -> Vec<(Device, ExecutionProviderDispatch)> {
 
 #[cfg(test)]
 mod tests {
+    /// A caller plans on the plugins it named and the built-in providers, and
+    /// not on a plugin only another caller named.
+    #[test]
+    fn a_caller_sees_only_the_plugins_it_named() {
+        use std::path::PathBuf;
+        let a = PathBuf::from("/opt/a/libnpu_ep.so");
+        let b = PathBuf::from("/opt/b/libnpu_ep.so");
+        let plugins = [
+            ("ANpuExecutionProvider".to_string(), a.clone()),
+            ("BNpuExecutionProvider".to_string(), b.clone()),
+        ]
+        .into();
+        let requested = |provider, asked: &[PathBuf]| super::requested(provider, &plugins, asked);
+        assert!(requested("ANpuExecutionProvider", std::slice::from_ref(&a)));
+        assert!(!requested(
+            "BNpuExecutionProvider",
+            std::slice::from_ref(&a)
+        ));
+        assert!(!requested("ANpuExecutionProvider", &[]));
+        assert!(requested("ANpuExecutionProvider", &[b.clone(), a.clone()]));
+        assert!(requested("BNpuExecutionProvider", &[b, a]));
+        // A provider no plugin brought is built in, and every caller has it.
+        assert!(requested("QNNExecutionProvider", &[]));
+    }
+
     /// The thread budget a default configuration gives a session.
     fn threads() -> usize {
         crate::InferenceSettings::default()
