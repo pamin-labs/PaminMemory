@@ -879,10 +879,11 @@ side, one thread each, on one shared session, grouping pairs into a pass only
 padded them. Against four pairs on the same build, `pamin search` through a
 resident server (4 vCPU Xeon, three rotated runs of 120 warm queries an arm)
 took a p50 of 0.834 [0.757, 0.931] and a p95 of 0.850 [0.715, 0.997] as long,
-and through `Engine::search_reranked` over copies of one index no group's
-nDCG@10 moved significantly: XQuAD-R cross-lingual −0.0001, same-language
-−0.0012, single-target −0.0013 (1,190 queries each), MuSiQue 2-hop +0.0040
-(its first 200 questions). The table is at `CPU_BATCH` in
+and through `Engine::search_reranked` over copies of one index no significant
+nDCG@10 change was detected in any group (Holm-corrected p = 1.00 in each):
+XQuAD-R cross-lingual −0.0001 [−0.0020, +0.0016], same-language −0.0012
+[−0.0037, +0.0011], single-target −0.0013 [−0.0052, +0.0026] (1,190 queries
+each), MuSiQue 2-hop +0.0040 [−0.0029, +0.0113] (its first 200 questions). The table is at `CPU_BATCH` in
 `crates/pamin-index/src/reranking.rs`. Accelerators, and a CPU with an
 inference budget of one thread, where passes cannot overlap, still group up to
 four pairs within 512 padded tokens. The write-ups, raw rows, per-query dumps
@@ -944,8 +945,9 @@ The shared session, before `ddf0800` and after `710ceec`:
 | index directory MB allocated | 27.4 | 28.9 | +1.5 | +5.6% | 1.056 [0.946, 1.195] |
 | model cache in use MB | 2,788 | 2,788 | 0 | 0.0% | N/A: same model files |
 
-**The shared session bought memory and no speed.** Every latency CI includes
-1.0. A component measurement of the same change, a rerank timed alone, had
+**For the shared session, no significant latency change was detected; its
+measured gain is memory.** The p50 ratio was 1.044 [0.937, 1.157] and the p95
+0.999 [0.880, 1.191], both including 1.0. A component measurement of the same change, a rerank timed alone, had
 come out at 0.81 of its predecessor; at `pamin search` that did not carry
 over. What it does carry is memory: one session per model in place of one a
 pass took the search server's peak from 5.7 GB to 3.0 GB.
