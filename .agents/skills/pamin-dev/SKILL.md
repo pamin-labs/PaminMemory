@@ -45,6 +45,14 @@ say in the same breath why, and do not let that figure escape into a README.
 A rewritten harness is not a measurement of the product. If a scratch program
 re-implements the pipeline to measure it, you are measuring the scratch program.
 
+A component result is not one either, even when it times the product's own
+code. Running a rerank's side-by-side passes on one shared session took a
+rerank timed alone to 0.81 of its predecessor. At `pamin search` the same
+change measured 1.044 [0.937, 1.157] -- no speed change at all -- and its whole
+gain turned out to be memory, 47% off the search server's peak. Had the
+component figure been published, it would have claimed a speedup the product
+never saw and missed the gain it did get.
+
 ## Every measurement arm must assert its own premise
 
 A concurrency harness had a "cached" arm and a "fresh" arm. It warmed the query
