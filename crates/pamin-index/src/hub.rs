@@ -422,7 +422,7 @@ fn referenced_elsewhere(directory: &Path, own: &Path, blob: &Path) -> std::io::R
 /// Where the hub's files are cached: `HF_HOME` when it is set, as
 /// [`Repository::open`] reads it, and the workspace's model directory
 /// otherwise.
-fn cache_root(cache_dir: &Path) -> PathBuf {
+pub fn cache_root(cache_dir: &Path) -> PathBuf {
     std::env::var_os("HF_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| cache_dir.to_path_buf())
