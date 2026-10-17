@@ -97,7 +97,10 @@ vocabulary, which the embedder and every reranker share. It is now held in a
 compact layout: with both loaded, the two hold 47 MiB of anonymous memory after
 use, where the previous layout held 314 MiB in the same measurement (and
 582 MiB when each model built its own copy). The per-model figures above were taken
-with the previous layout. What it costs is disk. Each copy is larger than the
+with the previous layout, and with each model's one session: the first time
+passes run side by side, a model also loads one shared single-threaded session
+for them, which those figures leave out. [measured.md](measured.md) has what a
+whole server holds with it. What it costs is disk. Each copy is larger than the
 model it came from, because the weights are also stored in the layout the CPU's
 kernels use -- a data file of 874 MB for the 570 MB reranker, and about as
 much for the embedder -- and writing
@@ -225,8 +228,15 @@ reranker. There is nothing to choose between:
 
 | Role | Model | Width | Resident | Per query |
 | --- | --- | --- | --- | --- |
-| Embedding | BGE-M3, int8 weights (`gpahal/bge-m3-onnx-int8`) | 1024 | 560 MB | 35 ms |
-| Reranking | bge-reranker-v2-m3, int8 weights | | 571 MB loaded | see [`pamin search`](#pamin-search) |
+| Embedding | BGE-M3, int8 weights (`gpahal/bge-m3-onnx-int8`) | 1024 | 272 MiB live | 37.7 ms idle, 46–47 ms under load |
+| Reranking | bge-reranker-v2-m3, int8 weights | | 271 MiB live | see [`pamin search`](#pamin-search) |
+
+Resident is live anonymous memory with the model loaded from its mapped copy,
+taken before the vocabulary was shared and compacted and without the session
+side-by-side passes add; each download is about 570 MB. The query figures are
+a median on four cores, through `Embedder` with nothing else running and in a
+server at a load average of 5.6 to 7.2. [measured.md](measured.md) and
+[ADR 0001](adr/0001-tech-selection.md) have the runs.
 
 BGE-M3 was the `accuracy` profile while there were others. It was chosen
 because quantized weights make it a small download and because the gap it
@@ -601,8 +611,10 @@ It costs memory while it is loaded, and more than its download suggests. On a
 13,014-document project a server that had not reranked was 1,625 MB resident,
 and one search with the since-removed 130 MB `fast` model took it to 2,007 or
 2,271 MB -- the difference being the inference runtime's arenas rather than
-the weights. `accurate`'s model is 571 MB against 119, and its resident cost
-has not been taken on its own. `pamin serve` gives it back after
+the weights. `accurate`'s model is 571 MB against 119. Its own resident cost
+has since been taken: 271 MiB of live memory loaded from its mapped copy and
+822 MiB from the download, and on MIRACL, loading it from the download added
+911 MB of anonymous memory to a server (see [measured.md](measured.md)). `pamin serve` gives it back after
 `PAMIN_MODEL_IDLE` with nothing asking for it; the arena growth above that
 stays.
 
