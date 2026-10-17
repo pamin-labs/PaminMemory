@@ -29,6 +29,9 @@
 //! reranker's sweep knobs: what is being asserted is that a drain acts on the
 //! condition, not what the shipped number is.
 
+#[path = "../../pamin-index/tests/support/mod.rs"]
+mod support;
+
 use pamin_core::{FilterDecision, Validity};
 use pamin_engine::{Engine, Owed, Write};
 use pamin_index::{Access, VectorIndex};
@@ -45,10 +48,20 @@ const BUDGET: u64 = 5;
 /// The product's settings, with the budget lowered to [`BUDGET`].
 fn settings() -> pamin_engine::Settings {
     pamin_engine::Settings {
-        inference: pamin_index::InferenceSettings::from_environment(),
-        store: pamin_store::StoreSettings::from_environment(),
+        inference: support::inference(),
+        store: store(),
         unindexed_budget: BUDGET,
         ..pamin_engine::Settings::default()
+    }
+}
+
+/// The store settings: the defaults, and `PAMIN_EVAL_JIT` and
+/// `PAMIN_EVAL_POSTGRES_DIR`.
+fn store() -> pamin_store::StoreSettings {
+    support::eval::check();
+    pamin_store::StoreSettings {
+        jit: support::eval::switch("PAMIN_EVAL_JIT").unwrap_or_default(),
+        postgres_dir: support::eval::path("PAMIN_EVAL_POSTGRES_DIR"),
     }
 }
 

@@ -101,35 +101,6 @@ impl Default for InferenceSettings {
 }
 
 impl InferenceSettings {
-    /// The settings the environment variables that configured inference
-    /// before settings were passed in still name.
-    ///
-    /// Transitional: what callers use until the binary passes its own.
-    pub fn from_environment() -> Self {
-        let positive = |name: &str| pamin_core::env::positive::<usize>(name);
-        let default = Self::default();
-        Self {
-            device: if pamin_core::env::is("PAMIN_DEVICE", "cpu") {
-                DeviceChoice::Cpu
-            } else {
-                DeviceChoice::Auto
-            },
-            threads: positive("PAMIN_INFERENCE_THREADS").and_then(NonZeroUsize::new),
-            ep_libraries: std::env::var_os("PAMIN_EP_LIBRARIES")
-                .map(|paths| std::env::split_paths(&paths).collect())
-                .unwrap_or_default(),
-            prepared: !pamin_core::env::is("PAMIN_PREPARED", "off"),
-            fused_attention: !pamin_core::env::is("PAMIN_FUSED_ATTENTION", "off"),
-            rerank: RerankSettings {
-                batch: positive("PAMIN_RERANK_BATCH").and_then(NonZeroUsize::new),
-                batch_tokens: positive("PAMIN_RERANK_BATCH_TOKENS")
-                    .unwrap_or(default.rerank.batch_tokens),
-                max_tokens: positive("PAMIN_RERANK_MAX_TOKENS")
-                    .unwrap_or(default.rerank.max_tokens),
-            },
-        }
-    }
-
     /// How many threads inference may keep busy: [`threads`](Self::threads),
     /// or one per core.
     pub fn budget(&self) -> std::io::Result<usize> {

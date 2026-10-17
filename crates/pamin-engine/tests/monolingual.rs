@@ -431,11 +431,8 @@ fn the_model_ranks_real_passages() {
     corpus.describe(&named);
 
     let home = eval_home();
-    let mut embedder = Embedder::load(
-        &home.join("models"),
-        &pamin_index::InferenceSettings::from_environment(),
-    )
-    .expect("load the embedding model");
+    let mut embedder = Embedder::load(&home.join("models"), &crate::harness::support::inference())
+        .expect("load the embedding model");
 
     let width = pamin_index::DIMENSIONS as usize;
     let vectors = embed_corpus(&mut embedder, &corpus, &home, width);
@@ -1026,7 +1023,7 @@ async fn context(engine: &Engine, workspace: &Workspace, corpus: &Corpus, named:
     let tier = Rerank::default();
     let mut model = pamin_index::Reranker::load(
         &workspace.root().join("models"),
-        &pamin_index::InferenceSettings::from_environment(),
+        &crate::harness::support::inference(),
     )
     .expect("load the reranker");
     let labels = reranking::context_labels();

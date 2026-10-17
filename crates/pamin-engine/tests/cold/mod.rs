@@ -1,7 +1,7 @@
 //! Where the first search after an idle release spends its time.
 //!
 //! A resident server gives back its indexes and both models after
-//! `PAMIN_MODEL_IDLE`, so the next `pamin search` opens the project's index,
+//! its idle window (`--model-idle`), so the next `pamin search` opens the project's index,
 //! loads BGE-M3 and the reranker, and only then answers. That wait is the
 //! latency a user sees after stepping away, and the parts of it are what
 //! decide what is worth making concurrent. So each round here starts from what
@@ -391,7 +391,7 @@ fn parts(models: &std::path::Path, [query, other]: [&str; 2]) -> Vec<(&'static s
     let mut embedder = None;
     time("parts: load the embedder", &mut || {
         embedder = Some(
-            Embedder::load(models, &pamin_index::InferenceSettings::from_environment())
+            Embedder::load(models, &crate::harness::support::inference())
                 .expect("load the embedder"),
         );
     });
@@ -412,7 +412,7 @@ fn parts(models: &std::path::Path, [query, other]: [&str; 2]) -> Vec<(&'static s
     let mut reranker = None;
     time("parts: load the reranker", &mut || {
         reranker = Some(
-            Reranker::load(models, &pamin_index::InferenceSettings::from_environment())
+            Reranker::load(models, &crate::harness::support::inference())
                 .expect("load the reranker"),
         );
     });
@@ -430,12 +430,10 @@ fn parts(models: &std::path::Path, [query, other]: [&str; 2]) -> Vec<(&'static s
     time("parts: load both at once", &mut || {
         both = Some(std::thread::scope(|scope| {
             let embedder = scope.spawn(|| {
-                Embedder::load(models, &pamin_index::InferenceSettings::from_environment())
-                    .expect("embedder")
+                Embedder::load(models, &crate::harness::support::inference()).expect("embedder")
             });
             let reranker = scope.spawn(|| {
-                Reranker::load(models, &pamin_index::InferenceSettings::from_environment())
-                    .expect("reranker")
+                Reranker::load(models, &crate::harness::support::inference()).expect("reranker")
             });
             (
                 embedder.join().expect("the embedder's load panicked"),

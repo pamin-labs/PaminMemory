@@ -616,11 +616,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "PAMIN_NATIVE_MODEL_SOURCE supplies a cached FP16 BGE export"]
+    #[ignore = "PAMIN_EVAL_NATIVE_MODEL_SOURCE supplies a cached FP16 BGE export"]
     fn cached_bge_rewrites_the_complete_graph()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let source =
-            PathBuf::from(std::env::var_os("PAMIN_NATIVE_MODEL_SOURCE").expect("cached source"));
+        let source = PathBuf::from(
+            std::env::var_os("PAMIN_EVAL_NATIVE_MODEL_SOURCE").expect("cached source"),
+        );
         let bytes = std::fs::read(&source)?;
         let graph = rewrite(&bytes)?;
         assert_eq!((graph.norms, graph.gelus, graph.head), (49, 24, true));
@@ -629,7 +630,7 @@ mod tests {
             "raw weights were copied into the prepared graph"
         );
         let temporary = tempfile::tempdir()?;
-        let cache = std::env::var_os("PAMIN_NATIVE_TEST_CACHE")
+        let cache = std::env::var_os("PAMIN_EVAL_NATIVE_CACHE")
             .map(PathBuf::from)
             .unwrap_or_else(|| temporary.path().to_path_buf());
         let prepared = prepare(&source, &cache)?;

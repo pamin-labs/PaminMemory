@@ -72,22 +72,6 @@ pub struct StoreSettings {
     pub postgres_dir: Option<std::path::PathBuf>,
 }
 
-impl StoreSettings {
-    /// The settings the environment variables that configured the cluster
-    /// before settings were passed in still name.
-    ///
-    /// Transitional: what callers use until the binary passes its own.
-    pub fn from_environment() -> Self {
-        Self {
-            jit: matches!(
-                std::env::var("PAMIN_JIT").as_deref(),
-                Ok("on" | "1" | "true")
-            ),
-            postgres_dir: std::env::var_os("PAMIN_POSTGRES_DIR").map(std::path::PathBuf::from),
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct Database {
     pool: PgPool,
