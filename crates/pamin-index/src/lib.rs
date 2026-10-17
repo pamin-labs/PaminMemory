@@ -33,6 +33,7 @@ pub use descriptors::raise_open_file_limit;
 pub use embedding::{DIMENSIONS, Embedder, MODEL_ID};
 pub use error::{IndexError, Result};
 pub use half::as_stored;
+pub use hub::cache_root as model_cache_root;
 pub use inference::{
     CUDA_SELECTION, Device, EXECUTION_SETTINGS, PlanOrigin, PlanUse, cuda_devices,
 };
