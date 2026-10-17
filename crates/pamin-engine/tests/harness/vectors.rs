@@ -4,7 +4,7 @@
 //! plans, as a record names them ([`shape::provider`]), the model revision
 //! each plan ran ([`pamin_index::PlanUse::revision`]), and the build
 //! ([`shape::build_digest`]), and the settings that can change what the
-//! model computes ([`shape::runtime_settings`]), and this module's own
+//! model computes ([`shape::embedding_settings`]), and this module's own
 //! source ([`harness_digest`]), which normalises and encodes what it caches,
 //! written into the file's header -- with the input itself
 //! ([`input_digest`]): every text, in the order the cache holds their
@@ -42,7 +42,7 @@ pub fn producer(embedder: &Embedder) -> String {
     lines(
         &embedder.plans(),
         &secondary,
-        &shape::runtime_settings(),
+        &shape::embedding_settings(),
         &harness_digest(),
     )
 }
@@ -59,7 +59,8 @@ pub fn harness_digest() -> String {
 }
 
 /// Who embeds with `engine`'s embedder now, as [`producer`] names an
-/// embedder: what a search index the engine writes is built by. `None`
+/// embedder, with the settings that change what an index build makes of
+/// the vectors too: what a search index the engine writes is built by. `None`
 /// while its embedder has not loaded.
 pub fn index_producer(engine: &pamin_engine::Engine) -> Option<String> {
     let providers = engine.providers();
@@ -75,7 +76,7 @@ pub fn index_producer(engine: &pamin_engine::Engine) -> Option<String> {
         lines(
             &primary,
             &plans("embedding secondary"),
-            &shape::runtime_settings(),
+            &shape::index_settings(),
             &harness_digest(),
         )
     })
