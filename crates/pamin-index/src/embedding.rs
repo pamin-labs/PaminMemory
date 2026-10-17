@@ -238,9 +238,12 @@ impl Embedder {
     /// same for both: the CPU runs the int8 export and an accelerator another,
     /// and their outputs are not bit-identical. `None` when a model runs on no
     /// plan, whose identity would name a device and nothing that produced the
-    /// numbers, so nothing can be shown to match it.
+    /// numbers, so nothing can be shown to match it -- and when a model runs
+    /// on a plan that is not stable across processes, a DirectML adapter
+    /// ordinal or an NPU id another process may give other hardware
+    /// ([`crate::inference::recorded_use`]).
     pub fn encoding(&self) -> Option<String> {
-        self.encoding_by(crate::inference::planned_use)
+        self.encoding_by(crate::inference::recorded_use)
     }
 
     /// [`Embedder::encoding`], for a caller deciding whether a vector already
@@ -323,16 +326,31 @@ impl Embedder {
         Ok(Encoded { primary, secondary })
     }
 
-    pub fn encode_passages(&mut self, texts: &[&str]) -> Result<Vec<Encoded>> {
+    /// Embeds many passages for storage, and names the plan that produced
+    /// every one of them ([`Embedder::encoding`]): `None` when no one plan did.
+    ///
+    /// The primary vectors come from one forward pass, which a fallback
+    /// reruns whole, so one plan produces them all. The complementary model
+    /// runs once per text, and a failure or a revalidation can move it to
+    /// another plan partway through the batch. So the plan is read after
+    /// every text; if it moved, every complementary vector is embedded again
+    /// under the plan it moved to, and if it moves again during that, the
+    /// batch is recorded as produced by no one plan, which nothing later
+    /// mistakes for a match.
+    pub fn encode_passages(&mut self, texts: &[&str]) -> Result<(Vec<Encoded>, Option<String>)> {
         let primary = self.embed_passages(texts)?;
-        primary
+        let (secondary, encoding) = under_one_plan(
+            self,
+            texts.len(),
+            |embedder, at| embedder.secondary_vector(texts[at]),
+            Embedder::encoding,
+        )?;
+        let encoded = primary
             .into_iter()
-            .zip(texts)
-            .map(|(primary, text)| {
-                let secondary = self.secondary_vector(text)?;
-                Ok(Encoded { primary, secondary })
-            })
-            .collect()
+            .zip(secondary)
+            .map(|(primary, secondary)| Encoded { primary, secondary })
+            .collect();
+        Ok((encoded, encoding))
     }
 
     pub fn secondary_device(&self) -> Option<crate::inference::Device> {
@@ -436,6 +454,34 @@ impl Embedder {
         }
         Ok(Some(vector))
     }
+}
+
+/// Produces `count` outputs with `produce`, and the plan every one of them
+/// was produced under, as `encoding` reads it after each.
+///
+/// When the plan moved partway, everything is produced once more, now under
+/// the plan it moved to; when it moves again during that, the outputs are
+/// returned with `None`, since no one plan produced them.
+fn under_one_plan<S: ?Sized, T>(
+    state: &mut S,
+    count: usize,
+    mut produce: impl FnMut(&mut S, usize) -> Result<T>,
+    encoding: impl Fn(&S) -> Option<String>,
+) -> Result<(Vec<T>, Option<String>)> {
+    let mut outputs = Vec::with_capacity(count);
+    for _ in 0..2 {
+        outputs.clear();
+        let mut plans = Vec::with_capacity(count);
+        for at in 0..count {
+            outputs.push(produce(state, at)?);
+            plans.push(encoding(state));
+        }
+        let last = encoding(state);
+        if plans.iter().all(|plan| *plan == last) {
+            return Ok((outputs, last));
+        }
+    }
+    Ok((outputs, None))
 }
 
 fn primary_model(
@@ -1088,6 +1134,70 @@ mod pooled_tests {
 
 #[cfg(test)]
 mod tests {
+    /// A plan that moves partway through a batch is never recorded for the
+    /// batch: the outputs are produced again under the plan it moved to, and
+    /// when it keeps moving, no plan is named. Reading the plan once after the
+    /// batch would label every output with the last plan.
+    #[test]
+    fn a_batch_names_only_a_plan_that_produced_all_of_it() {
+        struct Moving {
+            plan: u32,
+            /// The call on which the plan moves, counting every output.
+            moves_at: Vec<u32>,
+            calls: u32,
+        }
+        let produce = |state: &mut Moving, at: usize| {
+            state.calls += 1;
+            if state.moves_at.contains(&state.calls) {
+                state.plan += 1;
+            }
+            Ok((at, state.plan))
+        };
+        let encoding = |state: &Moving| Some(format!("plan:{}", state.plan));
+
+        let mut steady = Moving {
+            plan: 0,
+            moves_at: vec![],
+            calls: 0,
+        };
+        let (outputs, plan) = under_one_plan(&mut steady, 3, produce, encoding).unwrap();
+        assert_eq!(outputs, [(0, 0), (1, 0), (2, 0)]);
+        assert_eq!(plan.as_deref(), Some("plan:0"));
+        assert_eq!(steady.calls, 3);
+
+        // Moves on the second output: the first came from plan 0, so all
+        // three are produced again under plan 1.
+        let mut once = Moving {
+            plan: 0,
+            moves_at: vec![2],
+            calls: 0,
+        };
+        let (outputs, plan) = under_one_plan(&mut once, 3, produce, encoding).unwrap();
+        assert_eq!(outputs, [(0, 1), (1, 1), (2, 1)]);
+        assert_eq!(plan.as_deref(), Some("plan:1"));
+        assert_eq!(once.calls, 6);
+
+        // Moving on the first output is a revalidation before anything was
+        // produced: one plan produced everything.
+        let mut first = Moving {
+            plan: 0,
+            moves_at: vec![1],
+            calls: 0,
+        };
+        let (_, plan) = under_one_plan(&mut first, 3, produce, encoding).unwrap();
+        assert_eq!(plan.as_deref(), Some("plan:1"));
+        assert_eq!(first.calls, 3);
+
+        let mut twice = Moving {
+            plan: 0,
+            moves_at: vec![2, 5],
+            calls: 0,
+        };
+        let (outputs, plan) = under_one_plan(&mut twice, 3, produce, encoding).unwrap();
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(plan, None);
+    }
+
     /// Changing an indexed embedding space silently corrupts retrieval, so
     /// both E5 profiles must retain FastEmbed's exact bytes on CPU.
     fn matches_fastembed(profile: Profile) {
