@@ -528,15 +528,20 @@ fn anchored(path: &Path, base: Option<&Path>) -> Result<PathBuf> {
 
 /// A list of libraries as a setting's value. An empty list is `none` however
 /// it was reached, so `ep_libraries = []` and no setting at all compare equal.
+///
+/// Otherwise a JSON array of the paths, which is what a running server's
+/// value is compared by: joined with a separator, one library whose path
+/// holds that separator would read as two, and a server would answer a
+/// client asking for other libraries than it registered.
 fn libraries(paths: &[PathBuf]) -> String {
     if paths.is_empty() {
         return "none".to_string();
     }
-    paths
+    let paths: Vec<String> = paths
         .iter()
         .map(|path| path.display().to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
+        .collect();
+    serde_json::to_string(&paths).expect("a list of strings serializes")
 }
 
 fn read(path: &Path) -> Result<File> {
@@ -687,6 +692,23 @@ mod tests {
             server.settings.inference.ep_libraries,
             [root.path().join("npu.so")]
         );
+    }
+
+    /// A comma in a library's path does not make it two libraries: a server
+    /// with the one does not answer a client asking for the two.
+    #[test]
+    fn a_comma_in_a_library_path_keeps_it_one_library() {
+        let root = tempfile::tempdir().unwrap();
+        let one = resolve(root.path(), &["--ep-library", "/tmp/a, /tmp/b"]).unwrap();
+        let two = resolve(
+            root.path(),
+            &["--ep-library", "/tmp/a", "--ep-library", "/tmp/b"],
+        )
+        .unwrap();
+        assert_eq!(one.asked()["ep_libraries"].value, r#"["/tmp/a, /tmp/b"]"#);
+        assert_eq!(two.asked()["ep_libraries"].value, r#"["/tmp/a","/tmp/b"]"#);
+        assert!(one.mismatch(&two.asked()).is_some());
+        assert!(two.mismatch(&one.asked()).is_some());
     }
 
     /// `ep_libraries = []` is the same setting as none at all, so a server
