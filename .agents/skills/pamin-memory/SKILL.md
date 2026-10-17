@@ -6,8 +6,8 @@ description: "Use the `pamin` CLI as durable memory — record what you learn, r
 # Using Påmin Memory
 
 `pamin` is a local memory store. It keeps what you write as evidence, promotes
-what is durable into versioned memories, indexes those four ways, and can
-explain why any result came back.
+what is durable into versioned memories, indexes them three ways, connects
+them through a graph, and can explain why any result came back.
 
 You do not need a server, a key, or a config file. The first command provisions
 everything and leaves it running.
@@ -19,7 +19,7 @@ Three layers, and confusing them causes almost every wrong answer:
 ```
 evidence    everything ever written, verbatim, never altered  →  pamin grep
 memories    the durable claims promoted out of evidence       →  pamin read
-index       those memories, made findable four ways           →  pamin search
+index       those memories, findable three ways plus a graph  →  pamin search
 ```
 
 A write always reaches evidence. It reaches the other two **only if the filter
