@@ -11,9 +11,10 @@ mod protocol;
 mod registry;
 mod server;
 mod session;
+mod settings;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use pamin_index::VectorIndex;
 use pamin_store::Workspace;
 
@@ -57,6 +58,9 @@ struct Cli {
     /// whitespace, and indenting a ten-hit search costs it about a thousand.
     #[arg(long, global = true, requires = "json")]
     pretty: bool,
+
+    #[command(flatten)]
+    server: settings::ServerArgs,
 
     #[command(subcommand)]
     command: Command,
@@ -108,6 +112,10 @@ enum Command {
     /// Started automatically by any command that needs one, so this is for
     /// running it in the foreground and watching it.
     Serve,
+
+    /// Show the server settings a command would run with, and where each
+    /// came from: a flag, `PAMIN_DEVICE`, `config.toml`, or the default.
+    Config,
 }
 
 #[tokio::main]
@@ -125,11 +133,16 @@ async fn main() -> Result<()> {
     // to avoid.
     refuse_removed_settings()?;
 
-    let cli = Cli::parse();
+    let matches = Cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     let workspace = match &cli.home {
         Some(path) => Workspace::at(path),
         None => Workspace::discover()?,
     };
+    // Resolved by every command, server or not: a client asks the running
+    // server for these, and a bad `config.toml` is refused here, before a
+    // server is started that would refuse it in a log nobody reads.
+    let server = settings::Server::resolve(workspace.root(), &cli.server, &matches)?;
     let format = output::Format::from_flags(cli.json, cli.pretty);
     // Checked here although the server parses it again, so that a misspelled
     // vector index is refused before a server is started for it.
@@ -149,14 +162,20 @@ async fn main() -> Result<()> {
             Ok(_) => {}
             Err(error) => tracing::warn!(%error, "could not raise the open-file limit"),
         }
-        return server::run(&workspace).await;
+        return server::run(&workspace, server).await;
+    }
+
+    if let Command::Config = cli.command {
+        let shown = settings::Shown::new(&workspace, &server);
+        format.emit(&shown, || shown.render());
+        return Ok(());
     }
 
     // Taken before the command is moved into the call below.
     let project = cli.project.clone();
 
     let call = match cli.command {
-        Command::Serve => unreachable!("handled above"),
+        Command::Serve | Command::Config => unreachable!("handled above"),
         Command::Init => protocol::Call::Init,
         Command::Write(args) => protocol::Call::Write(args),
         Command::Import(args) => protocol::Call::Import(args),
@@ -182,9 +201,11 @@ async fn main() -> Result<()> {
         project,
         profile: String::new(),
         vector_index: cli.vector_index.clone(),
+        server: server.asked(),
         call,
     };
-    if let Some(value) = client::ask(&workspace, &request).await? {
+    let serve = settings::forwarded(&cli.server);
+    if let Some(value) = client::ask(&workspace, &request, &serve).await? {
         return render(&request.call, &value, format);
     }
 
@@ -196,46 +217,114 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Refuses to run with a setting that no longer does anything.
+/// Refuses to run with a setting that is no longer read.
 ///
-/// `PAMIN_NO_SERVER` ran a command in the calling process rather than the
-/// workspace's server, and nothing reads it now: every command goes through
-/// the server. Ignoring it would be silent in exactly the case it was set
-/// for -- somebody debugging the server, or a test wanting one process to
-/// reason about -- who would then be reasoning about a process that is not
-/// the one they asked for. Whatever it is set to, including a value that
-/// used to mean "use the server": it cannot be honoured either way, and
-/// the fix is the same.
-///
-/// `PAMIN_RERANK` chose a reranking tier, and there is one reranker now.
-/// Somebody who set it to `off` to buy back search time would otherwise be
-/// paying for a reranker they believe is off.
+/// Ignoring one would be silent in exactly the case it was set for. A shell
+/// that still exports `PAMIN_INFERENCE_THREADS=2` would get a server running
+/// with settings its operator believes it does not have; `PAMIN_RERANK=off`
+/// set to buy back search time would pay for a reranker its setter believes
+/// is off; `PAMIN_NO_SERVER`, set by somebody debugging the server, would
+/// have them reasoning about a process that is not the one they asked for. A
+/// warning would go to stderr, or to `serve.log`, where an agent never
+/// looks. So each is refused, by name, with what replaced it -- whatever it
+/// is set to, since none can be honoured and the fix is the same.
 fn refuse_removed_settings() -> Result<()> {
-    for (name, why) in REMOVED {
+    for (name, what) in REMOVED {
         if std::env::var_os(name).is_some() {
-            anyhow::bail!("{name} was removed: {why} Unset it to continue.");
+            anyhow::bail!("{name} {what} Unset it to continue.");
         }
     }
     Ok(())
 }
 
-/// The removed settings [`refuse_removed_settings`] turns away, and why each
-/// cannot be honoured.
+/// The settings [`refuse_removed_settings`] turns away, and what became of
+/// each. Since only `PAMIN_HOME`, `PAMIN_PROJECT`, `PAMIN_VECTOR_INDEX`,
+/// `PAMIN_DEVICE` and `PAMIN_LOG` are read, every other setting that was a
+/// variable is a flag, a `config.toml` key, or gone.
 const REMOVED: &[(&str, &str)] = &[
     (
         "PAMIN_NO_SERVER",
-        "every command now goes through the workspace's server, and none can run in \
-         the calling process.",
+        "was removed: every command now goes through the workspace's server, and none \
+         can run in the calling process.",
     ),
     (
         "PAMIN_PROFILE",
-        "every project uses the one embedding model, BGE-M3, so there is no profile to \
-         choose.",
+        "was removed: every project uses the one embedding model, BGE-M3, so there is no \
+         profile to choose.",
     ),
     (
         "PAMIN_RERANK",
-        "`pamin search` always reranks with its one reranker, so there is no tier to \
-         choose.",
+        "was removed: `pamin search` always reranks with its one reranker, so there is no \
+         tier to choose.",
+    ),
+    (
+        "PAMIN_INFERENCE_THREADS",
+        "was replaced by `--inference-threads`, or `inference_threads` in config.toml.",
+    ),
+    (
+        "PAMIN_EP_LIBRARIES",
+        "was replaced by `--ep-library` (once per library), or `ep_libraries` in \
+         config.toml.",
+    ),
+    (
+        "PAMIN_PREPARED",
+        "was replaced by `--prepared <true|false>`, or `prepared` in config.toml.",
+    ),
+    (
+        "PAMIN_FUSED_ATTENTION",
+        "was replaced by `--fused-attention <true|false>`.",
+    ),
+    (
+        "PAMIN_MODEL_IDLE",
+        "was replaced by `--model-idle <SECONDS>`, or `model_idle` in config.toml.",
+    ),
+    (
+        "PAMIN_OPEN_INDEXES",
+        "was replaced by `--open-indexes`, or `open_indexes` in config.toml.",
+    ),
+    (
+        "PAMIN_JIT",
+        "was replaced by `--jit <true|false>`, or `jit` in config.toml.",
+    ),
+    (
+        "PAMIN_POSTGRES_DIR",
+        "was replaced by `--postgres-dir`, or `postgres_dir` in config.toml.",
+    ),
+    (
+        "PAMIN_CHANNEL_DEPTH",
+        "was replaced by `pamin search --channel-depth`.",
+    ),
+    (
+        "PAMIN_GRAPH_DEPTH",
+        "was replaced by `pamin search --graph-depth`.",
+    ),
+    (
+        "PAMIN_RERANK_DEPTH",
+        "was replaced by `pamin search --rerank-depth`.",
+    ),
+    (
+        "PAMIN_SEARCH_EFFORT",
+        "was replaced by `pamin search --search-effort`.",
+    ),
+    (
+        "PAMIN_RERANK_BATCH",
+        "was removed: the reranker's batch is fixed at its measured value.",
+    ),
+    (
+        "PAMIN_RERANK_BATCH_TOKENS",
+        "was removed: the reranker's batch is fixed at its measured value.",
+    ),
+    (
+        "PAMIN_RERANK_MAX_TOKENS",
+        "was removed: the reranker reads candidates to its measured length.",
+    ),
+    (
+        "PAMIN_UNINDEXED_BUDGET",
+        "was removed: the vector index is built at its measured threshold.",
+    ),
+    (
+        "PAMIN_CATCH_UP_BATCH",
+        "was removed: the server catches up in rounds of its measured size.",
     ),
 ];
 
@@ -333,128 +422,216 @@ fn render(
 mod tests {
     use super::*;
 
-    /// Variables the product reads and `docs/cli.md` deliberately omits.
-    ///
-    /// Each one shortens a window or a budget so that a test can reach a case
-    /// in seconds that the shipped value reaches in minutes or at twenty-five
-    /// thousand documents. A caller has no way to evaluate them, and a
-    /// documented knob is a knob somebody will turn -- so they stay out of the
-    /// table and in this list, where leaving one out is a failing test rather
-    /// than a silent omission.
-    const UNDOCUMENTED: &[&str] = &[
-        // Compile-time source/compiler fingerprint, not a runtime user setting.
-        "PAMIN_INFERENCE_BUILD",
-        "PAMIN_INFERENCE_CARGO",
-        "PAMIN_CATCH_UP_BATCH",
-        // Cached-export inputs used only by the native preparation regression.
-        "PAMIN_NATIVE_MODEL_SOURCE",
-        "PAMIN_NATIVE_TEST_CACHE",
-        // Embedding conformance controls compiled only under cfg(test).
-        "PAMIN_TEST_MODEL_CACHE",
-        "PAMIN_TEST_JOINT_GRAPH",
-        // Tokenizer parity controls compiled only under cfg(test).
-        "PAMIN_TEST_MODELS",
-        "PAMIN_PARITY_CORPORA",
-        "PAMIN_RERANK_BATCH",
-        "PAMIN_RERANK_BATCH_TOKENS",
-        "PAMIN_RERANK_DEPTH",
-        "PAMIN_RERANK_MAX_TOKENS",
-        "PAMIN_SEARCH_EFFORT",
-        "PAMIN_UNINDEXED_BUDGET",
+    /// The variables the binary still reads: where its state is, which
+    /// project and vector index, which device, and what to log.
+    const READ: &[&str] = &[
+        "PAMIN_HOME",
+        "PAMIN_PROJECT",
+        "PAMIN_VECTOR_INDEX",
+        "PAMIN_DEVICE",
+        "PAMIN_LOG",
     ];
 
-    /// Every setting the product reads is documented, or listed as not.
-    ///
-    /// This repository has written a setting and not documented it more than
-    /// once, and the reader cannot tell an omission from a decision. The
-    /// source is the authority here: whatever `PAMIN_*` the crates read has to
-    /// appear in the options table or in [`UNDOCUMENTED`], and adding one
-    /// without doing either fails.
-    ///
-    /// Reads the tree rather than a list, because a list would be the thing
-    /// that goes stale. Names are taken from string literals, which is how all
-    /// of them are written -- a variable assembled at runtime would slip past
-    /// this, and nothing here does that.
-    #[test]
-    fn every_setting_is_documented_or_deliberately_not() {
+    fn documented() -> String {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(|crates| crates.parent())
             .expect("the workspace root is two levels above this crate");
-        let documented =
-            std::fs::read_to_string(root.join("docs/cli.md")).expect("read docs/cli.md");
-
-        let mut read: Vec<String> = Vec::new();
-        collect_settings(&root.join("crates"), &mut read);
-        let mut found = read.clone();
-        found.sort();
-        found.dedup();
-        assert!(
-            found.len() > 10,
-            "only found {} settings, so this test is not reading the source",
-            found.len()
-        );
-
-        let missing: Vec<&String> = found
-            .iter()
-            .filter(|name| !UNDOCUMENTED.contains(&name.as_str()))
-            .filter(|name| !documented.contains(name.as_str()))
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "read by the product and in neither docs/cli.md nor UNDOCUMENTED: {missing:?}"
-        );
-
-        // The scan reads this file too, so every name in [`UNDOCUMENTED`] is
-        // found once in the list itself. Read by the product means found
-        // somewhere else as well; asking only whether it was found at all
-        // could never fail.
-        let gone: Vec<&&str> = UNDOCUMENTED
-            .iter()
-            .filter(|name| read.iter().filter(|found| found == *name).count() < 2)
-            .collect();
-        assert!(
-            gone.is_empty(),
-            "listed as deliberately undocumented but nothing reads them any more: {gone:?}"
-        );
+        std::fs::read_to_string(root.join("docs/cli.md")).expect("read docs/cli.md")
     }
 
-    /// Every `"PAMIN_..."` literal under a directory, recursively.
-    fn collect_settings(dir: &std::path::Path, into: &mut Vec<String>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.filter_map(Result::ok) {
-            let path = entry.path();
-            if path.is_dir() {
-                // `tests/` holds evaluation harnesses, which are not the
-                // product and document their own variables in their own module
-                // documentation.
-                if path.file_name().is_some_and(|name| name == "tests") {
-                    continue;
+    /// Every variable the binary reads is one of [`READ`], and documented;
+    /// every removed one is named in the docs, so a reader refused one can
+    /// look up what replaced it, and none is read any more.
+    ///
+    /// The variables clap reads are taken from the parser, not from a list:
+    /// a list would be the thing that goes stale. The binary's sources are
+    /// scanned too, for a variable read some other way.
+    #[test]
+    fn every_variable_is_documented_and_every_removed_one_refused() {
+        let documented = documented();
+
+        let mut read = Vec::new();
+        fn envs(command: &clap::Command, into: &mut Vec<String>) {
+            for argument in command.get_arguments() {
+                if let Some(name) = argument.get_env() {
+                    into.push(name.to_string_lossy().into_owned());
                 }
-                collect_settings(&path, into);
-            } else if path.extension().is_some_and(|extension| extension == "rs") {
-                let Ok(source) = std::fs::read_to_string(&path) else {
-                    continue;
-                };
-                for (before, _) in source.match_indices("\"PAMIN_") {
-                    let rest = &source[before + 1..];
-                    let Some(end) = rest.find('"') else { continue };
-                    let name = &rest[..end];
-                    // Upper case and underscores only, which rules out the
-                    // `"PAMIN_..."` this very comment would otherwise
-                    // contribute -- a scanner that finds its own prose is a
-                    // scanner that fails for the wrong reason.
-                    if name
+            }
+            for subcommand in command.get_subcommands() {
+                envs(subcommand, into);
+            }
+        }
+        envs(&Cli::command(), &mut read);
+        read.push("PAMIN_LOG".to_string());
+        read.sort();
+        read.dedup();
+        let mut expected: Vec<String> = READ.iter().map(|name| name.to_string()).collect();
+        expected.sort();
+        assert_eq!(read, expected, "the variables the binary reads changed");
+
+        for name in READ {
+            assert!(
+                documented.contains(name),
+                "{name} is read but not in docs/cli.md"
+            );
+        }
+        for (name, _) in REMOVED {
+            assert!(
+                documented.contains(name),
+                "{name} is refused but docs/cli.md does not say what replaced it"
+            );
+            assert!(!READ.contains(name), "{name} is both read and refused");
+        }
+
+        let mut sources = Vec::new();
+        rust_files(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut sources,
+        );
+        for path in sources {
+            let source = std::fs::read_to_string(&path).expect("read a source file");
+            for (at, _) in source.match_indices("\"PAMIN_") {
+                let rest = &source[at + 1..];
+                let Some(end) = rest.find('"') else { continue };
+                let name = &rest[..end];
+                // A name, upper case and underscores, which rules out prose
+                // and the bare prefix this search is written with.
+                if name.len() == "PAMIN_".len()
+                    || !name
                         .bytes()
                         .all(|byte| byte.is_ascii_uppercase() || byte == b'_')
-                    {
-                        into.push(name.to_string());
+                {
+                    continue;
+                }
+                assert!(
+                    READ.contains(&name) || REMOVED.iter().any(|(removed, _)| *removed == name),
+                    "{} names {name}, which is neither read nor refused",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    /// Every server setting is documented: each flag a reader can see, and
+    /// each `config.toml` key.
+    #[test]
+    fn every_server_setting_is_documented() {
+        let documented = documented();
+        let command = Cli::command();
+        let mut flags = 0;
+        for argument in command.get_arguments() {
+            if argument.get_help_heading() != Some("Server settings") || argument.is_hide_set() {
+                continue;
+            }
+            let flag = format!("--{}", argument.get_long().expect("a long flag"));
+            assert!(documented.contains(&flag), "{flag} is not in docs/cli.md");
+            flags += 1;
+        }
+        assert!(flags >= 8, "only {flags} server flags found");
+
+        let root = tempfile::tempdir().unwrap();
+        let matches = Cli::command()
+            .try_get_matches_from(["pamin", "config"])
+            .unwrap();
+        let cli = Cli::from_arg_matches(&matches).unwrap();
+        let server = settings::Server::resolve(root.path(), &cli.server, &matches).unwrap();
+        for entry in &server.entries {
+            // Hidden, like its flag: a measurement switch, not a setting.
+            if entry.key == "fused_attention" {
+                continue;
+            }
+            let key = format!("`{}`", entry.key);
+            assert!(
+                documented.contains(&key),
+                "config key {key} is not in docs/cli.md"
+            );
+        }
+    }
+
+    /// The libraries read no `PAMIN_*` variable: the binary turns its flags,
+    /// its `config.toml` and the few variables it still reads into the values
+    /// the libraries take, so what a server runs with is what it was started
+    /// with, and a test varies a setting by building a value rather than
+    /// writing the environment every other thread shares.
+    ///
+    /// Any `"PAMIN_` literal in a library's product code -- outside comments,
+    /// outside its test module, and other than a compile-time `env!` stamp --
+    /// fails, which also catches a name read through a constant.
+    #[test]
+    fn the_libraries_read_no_pamin_variable() {
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crates directory");
+        let mut found = Vec::new();
+        let mut files = 0;
+        for library in ["pamin-core", "pamin-index", "pamin-store", "pamin-engine"] {
+            let mut sources = Vec::new();
+            rust_files(&crates.join(library).join("src"), &mut sources);
+            for path in sources {
+                files += 1;
+                let source = std::fs::read_to_string(&path).expect("read a source file");
+                // Up to the test module, however it is declared.
+                let product = source
+                    .match_indices("#[cfg(test)]\n")
+                    .find(|(at, marker)| {
+                        source[at + marker.len()..]
+                            .lines()
+                            .next()
+                            .is_some_and(|line| line.contains("mod tests"))
+                    })
+                    .map_or(source.as_str(), |(at, _)| &source[..at]);
+                for (number, line) in product.lines().enumerate() {
+                    let code = line.trim_start();
+                    if code.starts_with("//") {
+                        continue;
+                    }
+                    for (at, _) in code.match_indices("\"PAMIN_") {
+                        if !code[..at].ends_with("env!(") {
+                            found.push(format!("{}:{}: {code}", path.display(), number + 1));
+                        }
                     }
                 }
             }
         }
+        assert!(
+            files > 20,
+            "only read {files} files, so this is not reading the source"
+        );
+        assert!(
+            found.is_empty(),
+            "a library names a PAMIN_ variable: {found:#?}"
+        );
+    }
+
+    fn rust_files(dir: &std::path::Path, into: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("read a source directory") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                rust_files(&path, into);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                into.push(path);
+            }
+        }
+    }
+
+    /// A server flag after the subcommand counts as given, so it is both
+    /// forwarded to the server a command starts and asked of a running one.
+    #[test]
+    fn a_server_flag_after_the_subcommand_is_a_flag() {
+        let matches = Cli::command()
+            .try_get_matches_from(["pamin", "search", "q", "--model-idle", "5"])
+            .unwrap();
+        let cli = Cli::from_arg_matches(&matches).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let server = settings::Server::resolve(root.path(), &cli.server, &matches).unwrap();
+        let asked = server.asked();
+        assert_eq!(asked["model_idle"].value, "5");
+        assert!(asked["model_idle"].chosen);
+        assert_eq!(
+            settings::forwarded(&cli.server),
+            ["--model-idle", "5"].map(std::ffi::OsString::from)
+        );
     }
 
     /// The vector index a command gets when nobody names one.

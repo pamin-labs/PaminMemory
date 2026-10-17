@@ -91,34 +91,29 @@ impl Drop for Serving<'_> {
 /// A count cannot be made to mean bytes here: what an index costs depends on
 /// the model, the quantization, and how much has been written, and this
 /// process learns the last of those only by opening it. So the number stays a
-/// count, and [`OPEN_INDEXES_VAR`] lets whoever knows their machine say a
+/// count, and `--open-indexes` lets whoever knows their machine say a
 /// smaller one. Sizing it from a memory budget is [ADR 0001]'s hot-set
 /// residency work, which is where it belongs.
-const OPEN_INDEXES: usize = 16;
-
-/// Overrides [`OPEN_INDEXES`], for a machine too small for the default.
-///
-/// Read once, at open. A value that is not a positive number is ignored rather
-/// than refused: this is a tuning knob on a long-running process, and failing
-/// to start over a typo in an environment variable is the worse failure.
-const OPEN_INDEXES_VAR: &str = "PAMIN_OPEN_INDEXES";
-
-fn open_indexes() -> usize {
-    pamin_core::env::positive(OPEN_INDEXES_VAR).unwrap_or(OPEN_INDEXES)
-}
+pub(crate) const OPEN_INDEXES: usize = 16;
 
 impl Session {
     /// Connects, migrates, and holds the result.
     ///
     /// With a resident's pool: the server holding this is the only process
     /// the CLI talks to the cluster from.
-    pub async fn open(workspace: &Workspace) -> Result<Self> {
+    /// `open_indexes` is how many project indexes it keeps open at once; see
+    /// [`OPEN_INDEXES`].
+    pub async fn open(
+        workspace: &Workspace,
+        settings: pamin_engine::Settings,
+        open_indexes: usize,
+    ) -> Result<Self> {
         Ok(Self {
             workspace: workspace.clone(),
-            database: Database::open(workspace, Connections::Resident).await?,
-            models: Models::in_workspace(workspace),
+            database: Database::open(workspace, Connections::Resident, &settings.store).await?,
+            models: Models::new(workspace, settings),
             projects: Mutex::default(),
-            engines: Registry::with_capacity(open_indexes()),
+            engines: Registry::with_capacity(open_indexes),
             warming: std::sync::Mutex::default(),
             serving: AtomicUsize::new(0),
         })
@@ -223,7 +218,7 @@ impl Session {
     /// everything back by exiting, and closing an index it is about to use
     /// again would be the opposite of the point.
     pub fn close_what_is_idle(&self) -> (Vec<String>, bool, bool) {
-        let idle = pamin_engine::model_idle();
+        let idle = self.models.settings().model_idle;
         let engines = self.engines.close_idle(idle);
         let embedder = self.models.release_idle_embedder();
         let reranker = self.models.release_idle_reranker();

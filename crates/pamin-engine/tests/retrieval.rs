@@ -163,10 +163,7 @@ const SEARCH_LIMIT: u32 = RECALL_AT as u32 * 2;
 /// The defaults, deliberately: this measures the engine as shipped. Changing
 /// them is an experiment to run against these numbers, not a way to improve
 /// them.
-const DEPTHS: Depths = Depths {
-    channel: 50,
-    graph: 2,
-};
+const DEPTHS: Depths = Depths::DEFAULT;
 
 #[derive(serde::Deserialize)]
 struct Memory {
@@ -216,6 +213,7 @@ async fn retrieval_quality_by_group() {
         &project,
         VectorIndex::default(),
         Access::ReadWrite,
+        &crate::harness::settings(),
     )
     .await
     .expect("open the engine");
@@ -232,7 +230,7 @@ async fn retrieval_quality_by_group() {
         const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
         for (index, query) in queries.iter().enumerate() {
             let hits = engine
-                .search_fused(&query.query, WIDE, DEPTHS, Fusion::default())
+                .search_fused(&query.query, WIDE, harness::depths(), Fusion::default())
                 .await
                 .expect("search");
             let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
@@ -278,7 +276,7 @@ async fn retrieval_quality_by_group() {
             "own corpus",
             &questions,
             SEARCH_LIMIT,
-            DEPTHS,
+            harness::depths(),
             &variants,
             |index, into, hits| {
                 let query = &queries[index];
@@ -306,6 +304,7 @@ async fn retrieval_quality_by_group() {
             &format!("{project}-named"),
             VectorIndex::default(),
             Access::ReadWrite,
+            &crate::harness::settings(),
         )
         .await
         .expect("open the named project");
@@ -324,11 +323,11 @@ async fn retrieval_quality_by_group() {
         let mut paired = channels::Paired::default();
         for query in &queries {
             let before = engine
-                .search_fused(&query.query, WIDE, DEPTHS, Fusion::default())
+                .search_fused(&query.query, WIDE, harness::depths(), Fusion::default())
                 .await
                 .expect("search");
             let after = other
-                .search_fused(&query.query, WIDE, DEPTHS, Fusion::default())
+                .search_fused(&query.query, WIDE, harness::depths(), Fusion::default())
                 .await
                 .expect("search");
             let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
@@ -351,7 +350,7 @@ async fn retrieval_quality_by_group() {
         let mut routes = reranking::Routes::default();
         for query in &queries {
             let hits = tier
-                .search(&engine, &query.query, WIDE, DEPTHS)
+                .search(&engine, &query.query, WIDE, harness::depths())
                 .await
                 .expect("search");
             channels::enough_room(&hits, WIDE);
@@ -532,7 +531,7 @@ async fn shipped(
         // first place -- but expected-not-to-move is still measured, because
         // otherwise nothing guards it.
         let hits = tier
-            .search(engine, &query.query, SEARCH_LIMIT, DEPTHS)
+            .search(engine, &query.query, SEARCH_LIMIT, harness::depths())
             .await
             .expect("search");
 
@@ -633,15 +632,18 @@ async fn report_tiers(engine: &Engine, queries: &[Query]) {
 async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query]) {
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
-    let mut model =
-        pamin_index::Reranker::load(&workspace.root().join("models")).expect("load the reranker");
+    let mut model = pamin_index::Reranker::load(
+        &workspace.root().join("models"),
+        &crate::harness::support::inference(),
+    )
+    .expect("load the reranker");
 
     let labels = reranking::context_labels();
     let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
     let mut seeded = 0usize;
     for query in queries {
         let hits = tier
-            .search(engine, &query.query, WIDE, DEPTHS)
+            .search(engine, &query.query, WIDE, harness::depths())
             .await
             .expect("search");
         channels::enough_room(&hits, WIDE);
@@ -685,7 +687,7 @@ async fn rerank_rules(engine: &Engine, queries: &[Query]) {
     let mut priced = reranking::Priced::default();
     for query in queries {
         let hits = tier
-            .search(engine, &query.query, WIDE, DEPTHS)
+            .search(engine, &query.query, WIDE, harness::depths())
             .await
             .expect("search");
         channels::enough_room(&hits, WIDE);
@@ -764,7 +766,7 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
 
     for query in queries {
         let hits = engine
-            .search_fused(&query.query, WIDE, DEPTHS, Fusion::default())
+            .search_fused(&query.query, WIDE, harness::depths(), Fusion::default())
             .await
             .expect("search");
 
@@ -942,7 +944,12 @@ async fn run(
 ) {
     for query in queries {
         let hits = engine
-            .search_fused(&query.query, SEARCH_LIMIT, DEPTHS, fusion.clone())
+            .search_fused(
+                &query.query,
+                SEARCH_LIMIT,
+                harness::depths(),
+                fusion.clone(),
+            )
             .await
             .expect("search");
 

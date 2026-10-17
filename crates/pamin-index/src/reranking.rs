@@ -230,6 +230,7 @@
 //! divide the gain differently -- is now the MIRACL section above. It does
 //! divide it differently, and not in the direction the caveat guessed.
 
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -285,19 +286,15 @@ pub const TIER: &str = "accurate";
 /// pairs. Its wall time at thirty is under [`BATCH_TOKENS`], taken on a
 /// machine shared with other measurements rather than a quiet one, so it is
 /// the ratios there that carry.
-const DEPTH: usize = 30;
-
-/// The tuning constants above, overridable for a sweep.
 ///
-/// `DEPTH`, `BATCH` and `MAX_TOKENS` were each settled by measurement, and two
-/// of the three were settled on the scratch harness whose figures turned out to
-/// be about half again too high -- so they have to be re-settleable, and by the
-/// harness rather than by editing a constant and rebuilding. Same shape as the
-/// evaluation's own `SWEEP` and `TIERS`: unset means the constant, so nothing a
-/// user runs is affected.
-fn tuned(name: &str, fallback: usize) -> usize {
-    pamin_core::env::positive(name).unwrap_or(fallback)
-}
+/// The default of a search's own depth (`pamin_engine::Depths::rerank`), so a
+/// sweep sets it per search rather than per process. `DEPTH`, `BATCH` and
+/// `MAX_TOKENS` were each settled by measurement, and two of the three were
+/// settled on the scratch harness whose figures turned out to be about half
+/// again too high -- so they have to be re-settleable by the harness rather
+/// than by editing a constant and rebuilding: this one through the search,
+/// the other two through [`crate::RerankSettings`].
+pub const DEPTH: usize = 30;
 
 /// How many padded tokens go through the model at once, on an accelerator; on
 /// the CPU a pass takes one pair (see [`CPU_BATCH`]), which this never limits.
@@ -351,7 +348,7 @@ fn tuned(name: &str, fallback: usize) -> usize {
 /// to 8; the saving grows with contention, and it is the paired ratio rather
 /// than either set of milliseconds that carries. Measured on the `accurate`
 /// tier.
-const BATCH_TOKENS: usize = 512;
+pub(crate) const BATCH_TOKENS: usize = 512;
 
 /// How many pairs go through the model at once, at most, on an accelerator.
 /// See [`BATCH_TOKENS`].
@@ -388,35 +385,27 @@ const BATCH: usize = 4;
 /// would run one after another -- that case keeps [`BATCH`], as before.
 const CPU_BATCH: usize = 1;
 
-/// How much the model reads at once, and how long a candidate. See [`tuned`].
-fn batch_tokens() -> usize {
-    tuned("PAMIN_RERANK_BATCH_TOKENS", BATCH_TOKENS)
-}
-
 /// The most pairs a pass of `model` takes. See [`batch_on`].
-fn batch(model: &Encoder) -> usize {
-    batch_on(model.runs_side_by_side(), side_by_side_budget())
-}
-
-/// `PAMIN_RERANK_BATCH`, or by default [`CPU_BATCH`] where passes run side by
-/// side and more than one can run at once -- the budget `Encoder::run_each`
-/// divides them over -- and [`BATCH`] otherwise: on an accelerator, and on a
-/// CPU with a budget of one thread.
-fn batch_on(side_by_side: bool, budget: usize) -> usize {
-    let overlap = side_by_side && budget > 1;
-    tuned(
-        "PAMIN_RERANK_BATCH",
-        if overlap { CPU_BATCH } else { BATCH },
+fn batch(model: &Encoder, settings: &crate::InferenceSettings) -> usize {
+    batch_on(
+        model.runs_side_by_side(),
+        side_by_side_budget(settings),
+        settings.rerank.batch,
     )
 }
 
-/// The inference budget, as `Encoder::run_each` reads it; one if unreadable.
-fn side_by_side_budget() -> usize {
-    crate::inference::budget().unwrap_or(1)
+/// `explicit`, or by default [`CPU_BATCH`] where passes run side by side and
+/// more than one can run at once -- the budget `Encoder::run_each` divides
+/// them over -- and [`BATCH`] otherwise: on an accelerator, and on a CPU with
+/// a budget of one thread.
+fn batch_on(side_by_side: bool, budget: usize, explicit: Option<NonZeroUsize>) -> usize {
+    let overlap = side_by_side && budget > 1;
+    explicit.map_or(if overlap { CPU_BATCH } else { BATCH }, NonZeroUsize::get)
 }
 
-fn max_tokens() -> usize {
-    tuned("PAMIN_RERANK_MAX_TOKENS", MAX_TOKENS)
+/// The inference budget, as `Encoder::run_each` reads it; one if unreadable.
+fn side_by_side_budget(settings: &crate::InferenceSettings) -> usize {
+    settings.budget().unwrap_or(1)
 }
 
 /// The longest candidate the model reads.
@@ -469,12 +458,7 @@ fn max_tokens() -> usize {
 /// nowhere, and costs a third more a search on MuSiQue for a reading of the
 /// seed's text that did not help; 192 is a fifth cheaper there and loses
 /// significantly on exactly the corpus where it truncates.
-const MAX_TOKENS: usize = 256;
-
-/// How deep into the fused list the reranker reaches.
-pub fn depth() -> usize {
-    tuned("PAMIN_RERANK_DEPTH", DEPTH)
-}
+pub(crate) const MAX_TOKENS: usize = 256;
 
 /// Which export of the model to fetch, for the device it will run on.
 ///
@@ -491,10 +475,16 @@ fn onnx(device: Device) -> &'static str {
 }
 
 /// The key the reranker's execution plans are measured and cached under.
-fn plan_key(repository: &str, maximum_tokens: usize, batch_tokens: usize) -> String {
-    let cpu = batch_on(true, side_by_side_budget());
-    let accelerator = batch_on(false, side_by_side_budget());
-    format!("reranker-v4:{TIER}:{repository}:{maximum_tokens}:{cpu}/{accelerator}:{batch_tokens}")
+fn plan_key(repository: &str, settings: &crate::InferenceSettings) -> String {
+    let budget = side_by_side_budget(settings);
+    let cpu = batch_on(true, budget, settings.rerank.batch);
+    let accelerator = batch_on(false, budget, settings.rerank.batch);
+    let crate::RerankSettings {
+        max_tokens,
+        batch_tokens,
+        ..
+    } = settings.rerank;
+    format!("reranker-v4:{TIER}:{repository}:{max_tokens}:{cpu}/{accelerator}:{batch_tokens}")
 }
 
 /// How many logical pair scores are remembered across complete batches.
@@ -815,6 +805,8 @@ pub struct Ranked {
 /// A loaded reranker, and what it has already scored.
 pub struct Reranker {
     cache_dir: PathBuf,
+    /// What it was loaded with, and what a reload after a failure uses.
+    settings: crate::InferenceSettings,
     model: Encoder,
     device: Device,
     scores: Scores,
@@ -900,11 +892,12 @@ impl Reranker {
     ///
     /// Through the same cache as the embedding model, so a workspace holds one
     /// directory of weights rather than two.
-    pub fn load(cache_dir: &Path) -> Result<Self> {
-        let (model, device) = load_model(cache_dir)?;
+    pub fn load(cache_dir: &Path, settings: &crate::InferenceSettings) -> Result<Self> {
+        let (model, device) = load_model(cache_dir, settings)?;
 
         Ok(Self {
             cache_dir: cache_dir.to_path_buf(),
+            settings: settings.clone(),
             model,
             device,
             scores: Scores::default(),
@@ -920,9 +913,13 @@ impl Reranker {
     /// For a caller loading the reranker before anybody has asked for it -- a
     /// resident server warming a project -- which should not be what
     /// downloads it.
-    pub fn is_downloaded(cache_dir: &Path) -> bool {
+    pub fn is_downloaded(cache_dir: &Path, settings: &crate::InferenceSettings) -> bool {
         Repository::open(cache_dir, REPOSITORY).is_ok_and(|repository| {
-            crate::prepared::is_ready(&repository.file(cache_dir, onnx(Device::Cpu)), cache_dir)
+            crate::prepared::is_ready(
+                &repository.file(cache_dir, onnx(Device::Cpu)),
+                cache_dir,
+                settings,
+            )
         })
     }
 
@@ -959,14 +956,17 @@ impl Reranker {
     /// The passes [`rank`](Self::rank) makes of pairs whose encodings are
     /// `lengths` tokens long (see [`lengths`](Self::lengths)), as positions
     /// into `lengths`, in the order it runs them: this model's limits under
-    /// the active `PAMIN_RERANK_BATCH_TOKENS` and `PAMIN_RERANK_BATCH`, and
+    /// the batch settings it was loaded with ([`crate::RerankSettings`]), and
     /// the planner `rank` runs. For an evaluation replaying its passes; the
     /// pairs already in the score cache are still planned, as `rank` plans
     /// them before it looks them up. On the CPU, where the passes of a call
     /// run side by side, they start longest first and overlap, so no order of
     /// one after another is the one they ran in.
     pub fn plan(&self, lengths: &[usize]) -> Vec<Vec<usize>> {
-        let (budget, most) = self.model.batch_limits(batch_tokens(), batch(&self.model));
+        let (budget, most) = self.model.batch_limits(
+            self.settings.rerank.batch_tokens,
+            batch(&self.model, &self.settings),
+        );
         plan_positions(lengths, budget, most, |length| {
             self.model.batching_length(length)
         })
@@ -991,13 +991,17 @@ impl Reranker {
             if crate::inference::needs_revalidation(&self.model) {
                 self.scores.invalidate();
             }
-            let limits = self.model.batch_limits(batch_tokens(), batch(&self.model));
+            let limits = self.model.batch_limits(
+                self.settings.rerank.batch_tokens,
+                batch(&self.model, &self.settings),
+            );
             let list = ListKey::of(&keys, limits);
             if let Some(attempt) = self.scores.replay(list, documents.len()) {
                 break attempt.commit(&mut self.scores, &mut self.work, &mut self.lengths, 0);
             }
             let reranking = |error: IndexError| IndexError::Engine(format!("reranking: {error}"));
             let cache_dir = &self.cache_dir;
+            let settings = &self.settings;
             let cached = &self.scores;
             let ((attempt, encode_us), replaced) = crate::inference::retry_model(
                 &mut self.model,
@@ -1013,7 +1017,8 @@ impl Reranker {
                             .collect::<Vec<_>>(),
                     )?;
                     let encode_us = start.elapsed().as_micros() as u64;
-                    let limits = model.batch_limits(batch_tokens(), batch(model));
+                    let limits =
+                        model.batch_limits(settings.rerank.batch_tokens, batch(model, settings));
                     let list = ListKey::of(&keys, limits);
                     let planned = model_batches_at(model, encodings, limits);
                     let attempt = cached.score(
@@ -1025,7 +1030,7 @@ impl Reranker {
                     )?;
                     Ok((attempt, encode_us))
                 },
-                || load_model(cache_dir),
+                || load_model(cache_dir, settings),
             )
             .map_err(reranking)?;
             if replaced && self.scores.replaced(attempt.hits) {
@@ -1101,36 +1106,37 @@ impl Reranker {
 fn cpu_model(
     repository: &Repository,
     cache_dir: &Path,
+    settings: &crate::InferenceSettings,
     providers: impl Into<crate::inference::Target>,
 ) -> Result<Encoder> {
+    let threads = settings.budget()?;
+    let max_tokens = settings.rerank.max_tokens;
     let weights = repository.file(cache_dir, onnx(Device::Cpu));
-    let path = crate::prepared::load_path(&weights, cache_dir)?;
+    let path = crate::prepared::load_path(&weights, cache_dir, settings)?;
     let encoder = if crate::prepared::is_copy(&path, cache_dir) {
-        let tokenizer = crate::tokenizer::load(repository, max_tokens())?;
-        Encoder::side_by_side(
-            path,
-            crate::inference::budget()?,
-            tokenizer,
-            repository.revision(),
-        )
+        let tokenizer = crate::tokenizer::load(repository, max_tokens)?;
+        Encoder::side_by_side(path, threads, tokenizer, repository.revision())
     } else {
-        Encoder::load(|| Ok(path), repository, max_tokens(), providers)
+        Encoder::load(threads, || Ok(path), repository, max_tokens, providers)
     }
     .map_err(|error| error.context("loading the reranker"))?;
-    crate::prepared::release(&weights, cache_dir);
+    crate::prepared::release(&weights, cache_dir, settings);
     Ok(encoder)
 }
 
 /// Keep the ordering proof first. Accurate also times long candidates, so
 /// maximum-length execution affects selection rather than only compatibility.
-fn load_model(cache_dir: &Path) -> Result<(Encoder, Device)> {
+fn load_model(cache_dir: &Path, settings: &crate::InferenceSettings) -> Result<(Encoder, Device)> {
     std::fs::create_dir_all(cache_dir)?;
+    let threads = settings.budget()?;
+    let max_tokens = settings.rerank.max_tokens;
+    let batch_tokens = settings.rerank.batch_tokens;
 
     let repository = Repository::open(cache_dir, REPOSITORY)?;
 
     let session = |device: Device, providers, _validated: bool| -> Result<Encoder> {
         if device == Device::Cpu {
-            return cpu_model(&repository, cache_dir, providers);
+            return cpu_model(&repository, cache_dir, settings, providers);
         }
         let model = || match device {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -1142,12 +1148,12 @@ fn load_model(cache_dir: &Path) -> Result<(Encoder, Device)> {
         };
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let loaded = if device == Device::CoreMl {
-            Encoder::load_fixed_coreml(model, &repository, max_tokens())
+            Encoder::load_fixed_coreml(threads, model, &repository, max_tokens)
         } else {
-            Encoder::load(model, &repository, max_tokens(), providers)
+            Encoder::load(threads, model, &repository, max_tokens, providers)
         };
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        let loaded = Encoder::load(model, &repository, max_tokens(), providers);
+        let loaded = Encoder::load(threads, model, &repository, max_tokens, providers);
         let encoder = loaded.map_err(|error| error.context("loading the reranker"))?;
         // The shared calibration compares actual candidate scores with
         // the already resident product CPU reference. Do not allocate a
@@ -1159,11 +1165,8 @@ fn load_model(cache_dir: &Path) -> Result<(Encoder, Device)> {
     let (model, device) = {
         let references = std::cell::RefCell::new(crate::inference::References::default());
         crate::inference::measured(
-            &plan_key(
-                &repository.identity(cache_dir),
-                max_tokens(),
-                batch_tokens(),
-            ),
+            settings,
+            &plan_key(&repository.identity(cache_dir), settings),
             cache_dir,
             &references,
             crate::inference::ReferenceShape {
@@ -1173,15 +1176,15 @@ fn load_model(cache_dir: &Path) -> Result<(Encoder, Device)> {
             session,
             |model, _device| {
                 let mut reference = references.borrow_mut();
-                let long = "harbour migration rollback policy ".repeat(max_tokens());
+                let long = "harbour migration rollback policy ".repeat(max_tokens);
                 let encoded = model.encode(vec![(ORDER_PAIRS[0].0, long.as_str())])?;
                 let longest = encoded.iter().map(|row| row.len()).max().unwrap_or(0);
-                if longest != max_tokens() {
+                if longest != max_tokens {
                     return Err(IndexError::Engine(
                         "maximum-token fixture did not reach the configured limit".into(),
                     ));
                 }
-                let values = score(model, encoded, batch_tokens(), batch(model))?.0;
+                let values = score(model, encoded, batch_tokens, batch(model, settings))?.0;
                 if values.len() != 1 || !values[0].is_finite() {
                     return Err(IndexError::Numerical(
                         "maximum-token reranker fixture returned invalid output".into(),
@@ -1191,7 +1194,7 @@ fn load_model(cache_dir: &Path) -> Result<(Encoder, Device)> {
                     let pairs = calibration_pairs(&long);
                     let count = pairs.len();
                     let encoded = model.encode(pairs)?;
-                    let values = score(model, encoded, batch_tokens(), batch(model))?.0;
+                    let values = score(model, encoded, batch_tokens, batch(model, settings))?.0;
                     if values.len() != count || !values.iter().all(|v| v.is_finite()) {
                         return Err(IndexError::Numerical(
                             "reranker calibration returned invalid scores".into(),
@@ -2593,14 +2596,15 @@ mod tests {
     /// time; side by side is as many one-threaded passes at once as there are
     /// cores, all on one shared session, longest first. A fixed list of pairs from a few tokens to the
     /// truncation limit, in more batches than cores. The models are read
-    /// from, or downloaded into, `PAMIN_TEST_MODEL_CACHE`.
+    /// from, or downloaded into, `PAMIN_EVAL_MODEL_CACHE`.
     #[test]
-    #[ignore = "downloads reranker model weights; set PAMIN_TEST_MODEL_CACHE"]
+    #[ignore = "downloads reranker model weights; set PAMIN_EVAL_MODEL_CACHE"]
     fn side_by_side_batches_are_each_batch_alone() {
         let cache = PathBuf::from(
-            std::env::var_os("PAMIN_TEST_MODEL_CACHE").expect("set PAMIN_TEST_MODEL_CACHE"),
+            std::env::var_os("PAMIN_EVAL_MODEL_CACHE").expect("set PAMIN_EVAL_MODEL_CACHE"),
         );
-        let long = "harbour migration rollback policy ".repeat(max_tokens());
+        let settings = crate::InferenceSettings::default();
+        let long = "harbour migration rollback policy ".repeat(settings.rerank.max_tokens);
         let documents: Vec<String> = (0..64)
             .map(|at| match at % 4 {
                 0 => format!("The harbour pilot boards ship {at} at the outer buoy."),
@@ -2616,8 +2620,13 @@ mod tests {
         // accelerator, which runs no batches side by side.
         std::fs::create_dir_all(&cache).expect("create the model cache");
         let repository = Repository::open(&cache, REPOSITORY).expect("open the repository");
-        let mut model = cpu_model(&repository, &cache, vec![crate::inference::cpu()])
-            .expect("load the reranker");
+        let mut model = cpu_model(
+            &repository,
+            &cache,
+            &settings,
+            vec![crate::inference::cpu()],
+        )
+        .expect("load the reranker");
         let encodings = model
             .encode(
                 documents
@@ -2631,11 +2640,15 @@ mod tests {
                     .collect::<Vec<_>>(),
             )
             .unwrap();
-        let batches: Vec<Vec<Encoding>> =
-            model_batches(&model, encodings, batch_tokens(), batch(&model))
-                .into_iter()
-                .map(|batch| batch.encodings)
-                .collect();
+        let batches: Vec<Vec<Encoding>> = model_batches(
+            &model,
+            encodings,
+            settings.rerank.batch_tokens,
+            batch(&model, &settings),
+        )
+        .into_iter()
+        .map(|batch| batch.encodings)
+        .collect();
         assert!(batches.len() > 4, "{} batches", batches.len());
         let alone: Vec<Vec<u32>> = batches
             .iter()
@@ -2664,16 +2677,17 @@ mod tests {
     /// and a plan measured with one cap is not a measurement of the other.
     #[test]
     fn the_plan_key_names_both_batch_caps() {
+        let settings = crate::InferenceSettings::default();
         assert_eq!(
-            plan_key("onnx-community/bge-reranker-v2-m3-ONNX@abc", 256, 512),
+            plan_key("onnx-community/bge-reranker-v2-m3-ONNX@abc", &settings),
             format!(
                 "reranker-v4:accurate:onnx-community/bge-reranker-v2-m3-ONNX@abc:256:{}/{}:512",
-                batch_on(true, side_by_side_budget()),
-                batch_on(false, side_by_side_budget())
+                batch_on(true, side_by_side_budget(&settings), None),
+                batch_on(false, side_by_side_budget(&settings), None)
             )
         );
         assert_ne!(
-            plan_key("r@abc", 256, 512),
+            plan_key("r@abc", &settings),
             "reranker-v3:accurate:r@abc:256:4:512"
         );
     }
@@ -2683,14 +2697,15 @@ mod tests {
     /// keep [`BATCH`].
     #[test]
     fn one_pair_a_pass_only_when_passes_can_overlap() {
-        if std::env::var_os("PAMIN_RERANK_BATCH").is_some() {
-            return; // an explicit override is the answer at every budget
-        }
-        assert_eq!(batch_on(true, 4), CPU_BATCH);
-        assert_eq!(batch_on(true, 2), CPU_BATCH);
-        assert_eq!(batch_on(true, 1), BATCH);
-        assert_eq!(batch_on(false, 4), BATCH);
-        assert_eq!(batch_on(false, 1), BATCH);
+        assert_eq!(batch_on(true, 4, None), CPU_BATCH);
+        assert_eq!(batch_on(true, 2, None), CPU_BATCH);
+        assert_eq!(batch_on(true, 1, None), BATCH);
+        assert_eq!(batch_on(false, 4, None), BATCH);
+        assert_eq!(batch_on(false, 1, None), BATCH);
+        // An explicit batch is the answer at every budget.
+        let two = NonZeroUsize::new(2);
+        assert_eq!(batch_on(true, 4, two), 2);
+        assert_eq!(batch_on(false, 1, two), 2);
     }
 
     /// Every pair lands in exactly one batch, in order, and no batch pads

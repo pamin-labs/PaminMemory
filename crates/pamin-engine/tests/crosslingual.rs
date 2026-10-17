@@ -178,7 +178,7 @@
 //!
 //! ```text
 //! env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p pamin-engine --test crosslingual prepare_pinned_xquad_models -- --exact --ignored
-//! env -u HF_HOME -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_SEARCH_EFFORT -u PAMIN_PREPARED -u PAMIN_FUSED_ATTENTION PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_DEVICE=cpu cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
+//! env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_EVAL_DEVICE=cpu cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
 //! ```
 //!
 //! The dataset is fetched with `curl` into `$PAMIN_EVAL_HOME/xquad-r`, or into
@@ -186,6 +186,12 @@
 //! this repository is Apache-2.0. Setting `PAMIN_EVAL_HOME` also keeps the
 //! embeddings and the indexed workspace between runs, which is the difference
 //! between minutes and most of an hour.
+//!
+//! The search refuses to run with any `PAMIN_EVAL_*` setting but the CPU
+//! device and a PostgreSQL prefix, `PAMIN_EVAL_POSTGRES_DIR` (see
+//! `require_the_shipped_settings_on_the_cpu`): an inference thread
+//! count, for one, changes how many pairs a reranker pass takes, and with it
+//! the rankings.
 //!
 //! `XQUAD_ALL_QUERIES=1` asks every question in all eleven languages, 13,090
 //! queries. The default asks each question in one language, rotating through
@@ -246,10 +252,7 @@ const DEPTH: usize = RECALL_AT + LANGUAGES.len() - 1;
 ///
 /// The shipped defaults, so the second test measures the product rather than a
 /// configuration invented for the benchmark.
-const DEPTHS: Depths = Depths {
-    channel: 50,
-    graph: 2,
-};
+const DEPTHS: Depths = Depths::DEFAULT;
 
 /// Per group: the nDCG@10 and recall@50 floors for the embedding space.
 ///
@@ -1036,24 +1039,86 @@ fn prepare_pinned_model(api: &hf_hub::api::sync::Api, models: &Path, model: &ser
     println!("  prepared {name} at {revision}");
 }
 
+/// The reproducible XQuAD-R baseline is the shipped settings on the CPU:
+/// `PAMIN_EVAL_DEVICE=cpu`, and no other `PAMIN_EVAL_*` setting that can move
+/// a ranking. Checked rather than asked of the command line, because a knob
+/// left exported in the shell would otherwise be measured under the
+/// baseline's name -- an inference thread count, for one, changes how many
+/// pairs a reranker pass takes, and with it the rankings.
+///
+/// `PAMIN_EVAL_POSTGRES_DIR` is allowed: it says where a PostgreSQL
+/// installation is, which a host without a downloadable one needs, and no
+/// ranking reads it (see [`ranking`]).
+fn require_the_shipped_settings_on_the_cpu() {
+    assert_eq!(
+        ranking(harness::settings()),
+        shipped_on_the_cpu(),
+        "the reproducible XQuAD-R baseline runs the shipped settings on the CPU: set \
+         PAMIN_EVAL_DEVICE=cpu and no other PAMIN_EVAL_ setting but PAMIN_EVAL_POSTGRES_DIR"
+    );
+    assert_eq!(
+        harness::depths(),
+        Depths::DEFAULT,
+        "the reproducible XQuAD-R baseline searches at the shipped depths: unset \
+         PAMIN_EVAL_RERANK_DEPTH and PAMIN_EVAL_SEARCH_EFFORT"
+    );
+}
+
+/// The settings the XQuAD-R baseline runs with.
+fn shipped_on_the_cpu() -> pamin_engine::Settings {
+    pamin_engine::Settings {
+        inference: pamin_index::InferenceSettings {
+            device: pamin_index::DeviceChoice::Cpu,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// `settings` without what only says where something is installed: the
+/// PostgreSQL prefix. Everything else stays, ranking or not, so the guard
+/// errs on the side of refusing.
+fn ranking(mut settings: pamin_engine::Settings) -> pamin_engine::Settings {
+    settings.store.postgres_dir = None;
+    settings
+}
+
+/// A supplied PostgreSQL passes the baseline's guard; a setting that can
+/// move a ranking does not.
+#[test]
+fn the_baseline_guard_allows_a_postgres_prefix_and_nothing_that_ranks() {
+    let mut supplied = shipped_on_the_cpu();
+    supplied.store.postgres_dir = Some("/usr/lib/postgresql/17".into());
+    assert_eq!(ranking(supplied), shipped_on_the_cpu());
+
+    let mut threads = shipped_on_the_cpu();
+    threads.inference.threads = std::num::NonZeroUsize::new(2);
+    assert_ne!(ranking(threads), shipped_on_the_cpu());
+    let mut device = shipped_on_the_cpu();
+    device.inference.device = pamin_index::DeviceChoice::Auto;
+    assert_ne!(ranking(device), shipped_on_the_cpu());
+}
+
 /// A cheap real-loader check for the reproduction log and verifier, without
 /// indexing or scoring a corpus. The Python verifier consumes its stdout.
 #[test]
-#[ignore = "loads cached pinned CPU models; set PAMIN_EVAL_HOME and PAMIN_DEVICE=cpu"]
+#[ignore = "loads cached pinned CPU models; set PAMIN_EVAL_HOME and PAMIN_EVAL_DEVICE=cpu"]
 fn pinned_model_loads_report_actual_graph_paths() {
     // Loads models: one test at a time (see `harness::ModelsTurn`).
     let _turn = harness::load_models();
     let Some(home) = pinned_benchmark_home("pinned_model_loads_report_actual_graph_paths") else {
         return;
     };
-    assert_eq!(std::env::var("PAMIN_DEVICE").as_deref(), Ok("cpu"));
+    require_the_shipped_settings_on_the_cpu();
     assert!(std::env::var_os("HF_HOME").is_none());
     let models = Path::new(&home).join("models");
     pinned_embedding_id(&models);
     pinned_model_id(&models, "reranker");
     report_loaded_graphs();
-    let _embedder = pamin_index::Embedder::load(&models).expect("load pinned embedding model");
-    let reranker = pamin_index::Reranker::load(&models).expect("load pinned reranking model");
+    let _embedder = pamin_index::Embedder::load(&models, &crate::harness::support::inference())
+        .expect("load pinned embedding model");
+    let reranker = pamin_index::Reranker::load(&models, &crate::harness::support::inference())
+        .expect("load pinned reranking model");
     assert_eq!(reranker.device(), pamin_index::Device::Cpu);
 }
 
@@ -1156,7 +1221,7 @@ async fn report_channels(
 
     for query in queries {
         let hits = engine
-            .search_fused(query.text(), WIDE, DEPTHS, Fusion::default())
+            .search_fused(query.text(), WIDE, harness::depths(), Fusion::default())
             .await
             .expect("search");
 
@@ -1530,7 +1595,8 @@ fn the_model_reaches_across_languages() {
     let home = eval_home();
     shape.observe_models();
     let embedder = harness::shape::owned(
-        Embedder::load(&home.join("models")).expect("load the embedding model"),
+        Embedder::load(&home.join("models"), &crate::harness::support::inference())
+            .expect("load the embedding model"),
     );
     // No engine: the record's providers are the harness's own models,
     // read once the run is over.
@@ -1652,11 +1718,7 @@ async fn search_reaches_across_languages() {
         std::env::var_os("HF_HOME").is_none(),
         "unset HF_HOME for this pinned benchmark"
     );
-    assert_eq!(
-        std::env::var("PAMIN_DEVICE").as_deref(),
-        Ok("cpu"),
-        "set PAMIN_DEVICE=cpu for the reproducible XQuAD-R baseline"
-    );
+    require_the_shipped_settings_on_the_cpu();
     report_loaded_graphs();
     let git = Command::new("git")
         .args(["-C", env!("CARGO_MANIFEST_DIR"), "rev-parse", "HEAD"])
@@ -1714,6 +1776,7 @@ async fn search_reaches_across_languages() {
         &project,
         VectorIndex::default(),
         Access::ReadWrite,
+        &crate::harness::settings(),
     )
     .await
     .expect("open the engine");
@@ -1817,7 +1880,7 @@ async fn search_reaches_across_languages() {
         harness::shape::table("features");
         for query in &queries {
             let hits = engine
-                .search_fused(query.text(), WIDE, DEPTHS, Fusion::default())
+                .search_fused(query.text(), WIDE, harness::depths(), Fusion::default())
                 .await
                 .expect("search");
             for group in GROUPS {
@@ -1866,7 +1929,7 @@ async fn search_reaches_across_languages() {
             &format!("XQuAD-R, {named}"),
             &questions,
             DEPTH as u32,
-            DEPTHS,
+            harness::depths(),
             &variants,
             |index, into, hits| {
                 let (query, group) = asked[index];
@@ -1895,7 +1958,7 @@ async fn search_reaches_across_languages() {
         let mut routes = reranking::Routes::default();
         for query in &queries {
             let hits = tier
-                .search(&engine, query.text(), WIDE, DEPTHS)
+                .search(&engine, query.text(), WIDE, harness::depths())
                 .await
                 .expect("search");
             channels::enough_room(&hits, WIDE);
@@ -2219,7 +2282,7 @@ async fn labels(engine: &Engine, queries: &[Query<'_>], named: &str) {
         "query tokens",
     ];
 
-    let head = pamin_index::reranking::depth();
+    let head = crate::harness::depths().rerank;
     let mut samples: Vec<Sample> = Vec::new();
     let mut per_tier: Vec<BTreeMap<String, Scores>> =
         LADDER.iter().map(|_| BTreeMap::new()).collect();
@@ -2243,7 +2306,7 @@ async fn labels(engine: &Engine, queries: &[Query<'_>], named: &str) {
     // the only ordering a router gets to look at.
     for (index, query) in queries.iter().enumerate() {
         let hits = Rerank::Off
-            .search(engine, query.text(), DEPTH as u32, DEPTHS)
+            .search(engine, query.text(), DEPTH as u32, harness::depths())
             .await
             .expect("search with the reranker off");
 
@@ -2423,7 +2486,7 @@ async fn calibration(engine: &Engine, queries: &[Query<'_>], named: &str) {
     harness::shape::table("calibration");
     for (at, query) in queries.iter().enumerate() {
         let hits = tier
-            .search(engine, query.text(), DEPTH as u32, DEPTHS)
+            .search(engine, query.text(), DEPTH as u32, harness::depths())
             .await
             .expect("search at the default tier");
 
@@ -2809,11 +2872,11 @@ async fn gate_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
     );
     for query in queries {
         let off = Rerank::Off
-            .search(engine, query.text(), DEPTH as u32, DEPTHS)
+            .search(engine, query.text(), DEPTH as u32, harness::depths())
             .await
             .expect("search with the reranker off");
         let on = tier
-            .search(engine, query.text(), DEPTH as u32, DEPTHS)
+            .search(engine, query.text(), DEPTH as u32, harness::depths())
             .await
             .expect("search at the default tier");
 
@@ -3009,7 +3072,7 @@ async fn pairs_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
     const CAPS: [usize; 8] = [0, 2, 4, 6, 8, 10, 12, usize::MAX];
 
     let tier = Rerank::default();
-    let head = pamin_index::reranking::depth();
+    let head = crate::harness::depths().rerank;
 
     let mut shipped: BTreeMap<String, Scores> = BTreeMap::new();
     let mut fused_only: BTreeMap<String, Scores> = BTreeMap::new();
@@ -3026,11 +3089,11 @@ async fn pairs_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
     );
     for query in queries {
         let off = Rerank::Off
-            .search(engine, query.text(), DEPTH as u32, DEPTHS)
+            .search(engine, query.text(), DEPTH as u32, harness::depths())
             .await
             .expect("search with the reranker off");
         let on = tier
-            .search(engine, query.text(), DEPTH as u32, DEPTHS)
+            .search(engine, query.text(), DEPTH as u32, harness::depths())
             .await
             .expect("search at the default tier");
 
@@ -3169,15 +3232,22 @@ async fn run<'a>(engine: &Engine, queries: &[Query<'a>], route: Route) -> BTreeM
             // to change.
             Route::Shipped(rerank) => {
                 rerank
-                    .search(engine, query.text(), DEPTH as u32, DEPTHS)
+                    .search(engine, query.text(), DEPTH as u32, harness::depths())
                     .await
             }
             Route::AtLimit(rerank, limit) => {
-                rerank.search(engine, query.text(), *limit, DEPTHS).await
+                rerank
+                    .search(engine, query.text(), *limit, harness::depths())
+                    .await
             }
             Route::Fused(fusion) => {
                 engine
-                    .search_fused(query.text(), DEPTH as u32, DEPTHS, fusion.clone())
+                    .search_fused(
+                        query.text(),
+                        DEPTH as u32,
+                        harness::depths(),
+                        fusion.clone(),
+                    )
                     .await
             }
         }
@@ -3195,7 +3265,7 @@ async fn rerank_rules(engine: &Engine, queries: &[Query<'_>], named: &str) {
     let mut priced = reranking::Priced::default();
     for query in queries {
         let hits = tier
-            .search(engine, query.text(), WIDE, DEPTHS)
+            .search(engine, query.text(), WIDE, harness::depths())
             .await
             .expect("search");
         channels::enough_room(&hits, WIDE);
@@ -3233,7 +3303,11 @@ async fn context(
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
     let model = harness::shape::owned(
-        pamin_index::Reranker::load(&workspace.root().join("models")).expect("load the reranker"),
+        pamin_index::Reranker::load(
+            &workspace.root().join("models"),
+            &crate::harness::support::inference(),
+        )
+        .expect("load the reranker"),
     );
     shape.also_ran("context reranker", &model, pamin_index::Reranker::plans);
     let labels = reranking::context_labels();
@@ -3241,7 +3315,7 @@ async fn context(
     harness::shape::tables(labels.iter().map(|(label, _)| label));
     for query in queries {
         let hits = tier
-            .search(engine, query.text(), WIDE, DEPTHS)
+            .search(engine, query.text(), WIDE, harness::depths())
             .await
             .expect("search");
         channels::enough_room(&hits, WIDE);

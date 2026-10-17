@@ -25,17 +25,38 @@ pub struct Args {
     /// that tunes this. An agent wanting control over retrieval should reach
     /// for the primitives — `grep`, `read`, `neighbors` — rather than adjust
     /// ranking internals it has no way to evaluate.
-    #[arg(long, env = "PAMIN_CHANNEL_DEPTH", default_value_t = Depths::default().channel)]
+    #[arg(long, default_value_t = Depths::DEFAULT.channel)]
     pub channel_depth: u32,
 
     /// How many edges the graph channel walks out from its seeds.
     #[arg(
         long,
-        env = "PAMIN_GRAPH_DEPTH",
-        default_value_t = Depths::default().graph,
+        default_value_t = Depths::DEFAULT.graph,
         value_parser = clap::value_parser!(u8).range(0..=pamin_store::graph::MAX_DEPTH as i64)
     )]
     pub graph_depth: u8,
+
+    /// How many fused candidates the reranker reads. For measuring the
+    /// reranker's depth against its cost; see `reranking::DEPTH`.
+    #[arg(
+        long,
+        hide = true,
+        default_value_t = Depths::DEFAULT.rerank,
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..)
+    )]
+    #[serde(default = "default_rerank_depth")]
+    pub rerank_depth: usize,
+
+    /// How wide the vector graph is searched. For measuring recall against
+    /// time; see `projection::SEARCH_EFFORT`.
+    #[arg(
+        long,
+        hide = true,
+        default_value_t = Depths::DEFAULT.effort,
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    #[serde(default = "default_search_effort")]
+    pub search_effort: u32,
 
     /// Always `accurate`, and read by nothing in this build.
     ///
@@ -47,6 +68,14 @@ pub struct Args {
     #[arg(skip = String::from("accurate"))]
     #[serde(default)]
     pub rerank: String,
+}
+
+fn default_rerank_depth() -> usize {
+    Depths::DEFAULT.rerank
+}
+
+fn default_search_effort() -> u32 {
+    Depths::DEFAULT.effort
 }
 
 /// One entry of the trace, as a caller sees it.
@@ -176,6 +205,8 @@ pub async fn execute(
     let depths = Depths {
         channel: args.channel_depth,
         graph: args.graph_depth,
+        rerank: args.rerank_depth,
+        effort: args.search_effort,
     };
     let hits = engine
         .search_reranked(&args.query, args.limit, depths)

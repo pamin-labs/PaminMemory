@@ -9,7 +9,7 @@
 //! cargo test --release -p pamin-index --test shared_vocabulary -- --ignored --nocapture
 //! ```
 //!
-//! and with `PAMIN_TEST_MODELS` pointing at a model directory that already
+//! and with `PAMIN_EVAL_MODELS` pointing at a model directory that already
 //! holds them to skip the downloads, as `tests/prepared.rs` takes it.
 //! `--release`, because the timing it prints is of tokenization as well as
 //! inference.
@@ -23,6 +23,8 @@
 //! and batched the way `Reranker::rank` sorts and batches them -- and the
 //! other is the product's own entry points.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
@@ -34,10 +36,10 @@ use fastembed::{
 use pamin_index::{Device, Embedder, Reranker};
 
 /// Which arm a child runs, and where its models are.
-const ARM: &str = "PAMIN_SHARED_ARM";
-const CACHE: &str = "PAMIN_SHARED_CACHE";
-const EMBEDDER_COPY: &str = "PAMIN_SHARED_EMBEDDER_COPY";
-const ACCURATE_COPY: &str = "PAMIN_SHARED_ACCURATE_COPY";
+const ARM: &str = "PAMIN_EVAL_SHARED_ARM";
+const CACHE: &str = "PAMIN_EVAL_SHARED_CACHE";
+const EMBEDDER_COPY: &str = "PAMIN_EVAL_SHARED_EMBEDDER_COPY";
+const ACCURATE_COPY: &str = "PAMIN_EVAL_SHARED_ACCURATE_COPY";
 
 /// What a child prints before each of its results.
 const MARK: &str = "shared-vocabulary-result";
@@ -235,16 +237,12 @@ fn the_encoder_matches_fastembed_and_holds_one_vocabulary() {
 
 /// The child: one arm, its outputs as bits, its memory and its timings.
 fn child(arm: &str, cache: &Path) {
-    for tuned in [
-        "PAMIN_RERANK_BATCH",
-        "PAMIN_RERANK_BATCH_TOKENS",
-        "PAMIN_RERANK_MAX_TOKENS",
-    ] {
-        assert!(
-            std::env::var_os(tuned).is_none(),
-            "{tuned} is set, so the product is not batching or truncating as the old arm does"
-        );
-    }
+    assert_eq!(
+        support::inference().rerank,
+        pamin_index::RerankSettings::default(),
+        "a PAMIN_EVAL_RERANK_* knob is set, so the product is not batching or truncating \
+         as the old arm does"
+    );
     let passages = passages();
     let texts: Vec<&str> = passages
         .iter()
@@ -255,17 +253,19 @@ fn child(arm: &str, cache: &Path) {
 
     match arm {
         "write-embedder" => {
-            Embedder::load(cache).expect("load the embedder");
+            Embedder::load(cache, &support::inference()).expect("load the embedder");
         }
         "write-accurate" => {
-            Reranker::load(cache).expect("load the reranker");
+            Reranker::load(cache, &support::inference()).expect("load the reranker");
         }
         "old" | "new" => {
             let before = anonymous();
             let started = Instant::now();
             let (mut embed, mut rank): (Embed, Rank) = if arm == "new" {
-                let mut embedder = Embedder::load(cache).expect("load the embedder");
-                let mut reranker = Reranker::load(cache).expect("load the reranker");
+                let mut embedder =
+                    Embedder::load(cache, &support::inference()).expect("load the embedder");
+                let mut reranker =
+                    Reranker::load(cache, &support::inference()).expect("load the reranker");
                 assert_eq!(reranker.device(), Device::Cpu, "the copy is for the CPU");
                 (
                     Box::new(move |texts| embedder.embed_passages(texts).expect("embed").concat()),
@@ -481,8 +481,8 @@ fn run(arm: &str, cache: &Path, env: &[(&str, &str)]) -> Report {
         ])
         .env(ARM, arm)
         .env(CACHE, cache)
-        .env("PAMIN_DEVICE", "cpu")
-        .env_remove("PAMIN_PREPARED");
+        .env("PAMIN_EVAL_DEVICE", "cpu")
+        .env_remove("PAMIN_EVAL_PREPARED");
     for (key, value) in env {
         command.env(key, value);
     }
@@ -526,7 +526,7 @@ fn only_new(copies: &Path, known: &[PathBuf]) -> PathBuf {
 /// and one missing from a linked directory would be downloaded into the
 /// directory it links to.
 fn link_models(cache: &Path) {
-    let Ok(existing) = std::env::var("PAMIN_TEST_MODELS") else {
+    let Ok(existing) = std::env::var("PAMIN_EVAL_MODELS") else {
         return;
     };
     let wanted =

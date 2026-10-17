@@ -179,8 +179,17 @@ pub trait Projection {
     /// that has a use for one.
     fn recall_naming(&self, name: &str, limit: u32) -> Result<Vec<TopicId>>;
 
-    /// Semantic recall over dense embeddings, nearest first.
-    fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>>;
+    /// Semantic recall over dense embeddings, nearest first, at the shipped
+    /// [`SEARCH_EFFORT`].
+    fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>> {
+        self.recall_vector_at(embedding, limit, SEARCH_EFFORT)
+    }
+
+    /// [`recall_vector`](Self::recall_vector) with the in-memory graph
+    /// searched `effort` wide: a search's own setting, so a sweep over it
+    /// varies the search and nothing else in the process. The on-disk graph
+    /// takes its width from the candidates asked for and ignores this.
+    fn recall_vector_at(&self, embedding: &[f32], limit: u32, effort: u32) -> Result<Vec<Scored>>;
 
     /// What this index holds for these topics, as it was written, in the
     /// order asked; `None` for a topic it does not hold.
@@ -725,27 +734,20 @@ pub fn wastes_disk(blocks: u64, documents: u64) -> bool {
 /// point where scanning it stops being the cheaper thing, which is a cost
 /// rather than a size, and it is read off a measurement already in this file
 /// rather than chosen.
-const UNINDEXED_BUDGET: u64 = 25_000;
+pub const UNINDEXED_BUDGET: u64 = 25_000;
 
 /// Whether enough documents sit outside the vector graph to be worth building.
 ///
 /// Takes the completeness rather than reading it, so the policy is testable
 /// without an index and the caller does the one FFI call it already makes.
-pub fn vector_index_lags(documents: u64, completeness: f32) -> bool {
-    let covered = (documents as f64 * f64::from(completeness.clamp(0.0, 1.0))) as u64;
-    documents.saturating_sub(covered) >= unindexed_budget()
-}
-
-/// The budget, or whatever a harness set it to.
 ///
-/// Same shape and the same reason as `reranking::tuned`: the assertion worth
-/// having here is that a drain leaves a graph behind, and asserting it at the
-/// shipped budget would mean writing and embedding twenty-five thousand
-/// memories to see it. Unset means the constant, so nothing a user runs is
-/// affected. Undocumented on purpose -- it exists so a test does not have to
-/// edit the tree.
-fn unindexed_budget() -> u64 {
-    pamin_core::env::positive("PAMIN_UNINDEXED_BUDGET").unwrap_or(UNINDEXED_BUDGET)
+/// `budget` is [`UNINDEXED_BUDGET`] wherever the product calls this. It is an
+/// argument so a test can lower it: the assertion worth having is that a
+/// drain leaves a graph behind, and asserting it at the shipped budget would
+/// mean writing and embedding twenty-five thousand memories to see it.
+pub fn vector_index_lags(documents: u64, completeness: f32, budget: u64) -> bool {
+    let covered = (documents as f64 * f64::from(completeness.clamp(0.0, 1.0))) as u64;
+    documents.saturating_sub(covered) >= budget
 }
 
 /// What one document in this index stands for.
@@ -859,14 +861,16 @@ impl VectorIndex {
         })
     }
 
-    /// Asks `search` for this index, wide enough for `candidates`.
-    fn ask(self, search: &mut SearchQuery, candidates: u32) -> Result<()> {
+    /// Asks `search` for this index, wide enough for `candidates`, the
+    /// in-memory graph searched `effort` wide.
+    fn ask(self, search: &mut SearchQuery, candidates: u32, effort: u32) -> Result<()> {
         match self {
             Self::Disk => search.set_diskann_params(DiskannQueryParams::new(
                 DISKANN_SEARCH_LIST.max(candidates as i32),
             ))?,
             Self::Memory => {
-                search.set_hnsw_params(HnswQueryParams::new(search_effort(), 0.0, false, false))?
+                let effort = i32::try_from(effort).unwrap_or(i32::MAX);
+                search.set_hnsw_params(HnswQueryParams::new(effort, 0.0, false, false))?
             }
         }
         Ok(())
@@ -984,14 +988,7 @@ const GRAPH_EFFORT: i32 = 500;
 ///
 /// A narrower width saves about a millisecond a query and fails the bar at
 /// fifty on both sets, so 700 stays for this index too.
-const SEARCH_EFFORT: i32 = 700;
-
-/// Overrides [`SEARCH_EFFORT`], for the sweep that settles it.
-const PAMIN_SEARCH_EFFORT: &str = "PAMIN_SEARCH_EFFORT";
-
-fn search_effort() -> i32 {
-    pamin_core::env::positive(PAMIN_SEARCH_EFFORT).unwrap_or(SEARCH_EFFORT)
-}
+pub const SEARCH_EFFORT: u32 = 700;
 
 impl ProjectionIndex {
     /// Opens the index at `dir`, creating it if absent.
@@ -1258,7 +1255,13 @@ impl ProjectionIndex {
         self.recall_fts(field, query, limit, false)
     }
 
-    fn recall_dense(&self, field: &str, embedding: &[f32], limit: u32) -> Result<Vec<Scored>> {
+    fn recall_dense(
+        &self,
+        field: &str,
+        embedding: &[f32],
+        limit: u32,
+        effort: u32,
+    ) -> Result<Vec<Scored>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -1267,7 +1270,7 @@ impl ProjectionIndex {
             SearchQuery::new(field, &crate::half::query(embedding), candidates as i32)?;
         search.set_output_fields(&[FIELD_ID])?;
         search.set_include_vector(true)?;
-        self.index.ask(&mut search, candidates)?;
+        self.index.ask(&mut search, candidates, effort)?;
 
         let length = dot(embedding, embedding).sqrt();
         let mut scored = Vec::with_capacity(candidates as usize);
@@ -1802,8 +1805,8 @@ impl Projection for ProjectionIndex {
     /// over half-precision vectors are not good enough to rank by. The score
     /// each keeps is that cosine similarity, where larger is better as
     /// `Scored` requires.
-    fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>> {
-        self.recall_dense(FIELD_VECTOR, embedding, limit)
+    fn recall_vector_at(&self, embedding: &[f32], limit: u32, effort: u32) -> Result<Vec<Scored>> {
+        self.recall_dense(FIELD_VECTOR, embedding, limit, effort)
     }
 
     /// Flushes buffered writes so a later query sees them.
@@ -2029,7 +2032,10 @@ fn collect_scored(keys: Keys, docs: Vec<Doc>, orient: impl Fn(f32) -> f32) -> Ve
 
 #[cfg(test)]
 mod upkeep {
-    use super::{Segmentation, is_fragmented, segment_documents, vector_index_lags, wastes_disk};
+    use super::{
+        Segmentation, UNINDEXED_BUDGET, is_fragmented, segment_documents, vector_index_lags,
+        wastes_disk,
+    };
 
     /// A workspace that grew from empty holds the floor's segments, and the
     /// report says so; one built knowing its size does not.
@@ -2124,7 +2130,7 @@ mod upkeep {
              cannot be the graph's"
         );
         assert!(
-            vector_index_lags(30_000, 0.0),
+            vector_index_lags(30_000, 0.0, UNINDEXED_BUDGET),
             "thirty thousand documents outside the graph has to queue a build"
         );
     }
@@ -2132,11 +2138,11 @@ mod upkeep {
     /// Below the crossover, waiting is right rather than merely tolerable.
     #[test]
     fn a_remainder_cheaper_to_scan_than_to_index_waits() {
-        assert!(!vector_index_lags(1_000, 0.0));
-        assert!(!vector_index_lags(100_000, 0.9));
+        assert!(!vector_index_lags(1_000, 0.0, UNINDEXED_BUDGET));
+        assert!(!vector_index_lags(100_000, 0.9, UNINDEXED_BUDGET));
         // The bound is on the remainder, not on the project: the size that
         // never fired as a threshold is fully indexed here.
-        assert!(!vector_index_lags(1_000_000, 1.0));
+        assert!(!vector_index_lags(1_000_000, 1.0, UNINDEXED_BUDGET));
     }
 
     /// A small index is compacted after a few flushes, not after the file
@@ -2204,8 +2210,8 @@ mod upkeep {
     /// A completeness outside 0.0..=1.0 must not read as a negative remainder.
     #[test]
     fn a_nonsense_completeness_does_not_wrap() {
-        assert!(vector_index_lags(30_000, -1.0));
-        assert!(!vector_index_lags(30_000, 2.0));
+        assert!(vector_index_lags(30_000, -1.0, UNINDEXED_BUDGET));
+        assert!(!vector_index_lags(30_000, 2.0, UNINDEXED_BUDGET));
     }
 }
 

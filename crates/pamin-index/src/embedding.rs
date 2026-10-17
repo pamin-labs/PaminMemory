@@ -74,6 +74,8 @@ pub const DIMENSIONS: u32 = 1024;
 /// Turns text into vectors.
 pub struct Embedder {
     cache_dir: std::path::PathBuf,
+    /// What it was loaded with, and what a reload after a failure uses.
+    settings: crate::InferenceSettings,
     model: Box<Encoder>,
     device: crate::inference::Device,
     /// Query vectors already computed.
@@ -89,11 +91,12 @@ impl Embedder {
     /// The model is fetched lazily rather than bundled: it is larger than the
     /// binary by an order of magnitude, and a user who never searches should
     /// not pay for it.
-    pub fn load(cache_dir: &std::path::Path) -> Result<Self> {
-        let (model, device) = primary_model(cache_dir)?;
+    pub fn load(cache_dir: &std::path::Path, settings: &crate::InferenceSettings) -> Result<Self> {
+        let (model, device) = primary_model(cache_dir, settings)?;
         tracing::info!(model = MODEL_ID, device = device.name(), "embedder loaded");
         Ok(Self {
             cache_dir: cache_dir.to_path_buf(),
+            settings: settings.clone(),
             model: Box::new(model),
             device,
             remembered: Queries::default(),
@@ -248,12 +251,13 @@ impl Embedder {
     fn run(&mut self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
         self.revalidate();
         let cache = &self.cache_dir;
+        let settings = &self.settings;
         let (vectors, replaced) = crate::inference::retry_model(
             &mut self.model,
             &mut self.device,
             cache,
             |model, _| vectors_of(model, &texts),
-            || primary_model(cache).map(|(model, device)| (Box::new(model), device)),
+            || primary_model(cache, settings).map(|(model, device)| (Box::new(model), device)),
         )?;
         if replaced {
             self.remembered = Queries::default();
@@ -262,7 +266,10 @@ impl Embedder {
     }
 }
 
-fn primary_model(cache_dir: &std::path::Path) -> Result<(Encoder, crate::inference::Device)> {
+fn primary_model(
+    cache_dir: &std::path::Path,
+    settings: &crate::InferenceSettings,
+) -> Result<(Encoder, crate::inference::Device)> {
     std::fs::create_dir_all(cache_dir)?;
     let repository = Repository::open_at(cache_dir, JOINT_REPOSITORY, "main")?;
     let identity = plan_key(MODEL_ID, &repository.identity(cache_dir));
@@ -274,6 +281,7 @@ fn primary_model(cache_dir: &std::path::Path) -> Result<(Encoder, crate::inferen
         long,
     ];
     let (model, device) = crate::inference::measured(
+        settings,
         &identity,
         cache_dir,
         &references,
@@ -282,7 +290,7 @@ fn primary_model(cache_dir: &std::path::Path) -> Result<(Encoder, crate::inferen
             queries: Some((2, DIMENSIONS as usize)),
             scores: None,
         },
-        |device, target, _validated| load_on(&repository, cache_dir, device, target),
+        |device, target, _validated| load_on(&repository, cache_dir, settings, device, target),
         |model, _device| {
             let mut reference = references.borrow_mut();
             // Reject an already incompatible short query before compiling
@@ -307,7 +315,7 @@ fn primary_model(cache_dir: &std::path::Path) -> Result<(Encoder, crate::inferen
     )?;
 
     if device == crate::inference::Device::Cpu {
-        crate::prepared::release(&repository.file(cache_dir, JOINT_FILE), cache_dir);
+        crate::prepared::release(&repository.file(cache_dir, JOINT_FILE), cache_dir, settings);
     }
     Ok((model, device))
 }
@@ -388,11 +396,12 @@ fn check_vectors(
 fn load_on(
     repository: &Repository,
     cache_dir: &std::path::Path,
+    settings: &crate::InferenceSettings,
     device: crate::inference::Device,
     target: crate::inference::Target,
 ) -> Result<Encoder> {
     let weights = repository.file(cache_dir, JOINT_FILE);
-    joint_session(repository, &weights, cache_dir, device, target)
+    joint_session(repository, &weights, cache_dir, settings, device, target)
 }
 
 /// Numerical compatibility with an already indexed CPU export. This is the
@@ -465,28 +474,26 @@ fn joint_session(
     repository: &Repository,
     weights: &impl crate::prepared::Download,
     cache_dir: &std::path::Path,
+    settings: &crate::InferenceSettings,
     device: crate::inference::Device,
     providers: impl Into<crate::inference::Target>,
 ) -> Result<Encoder> {
+    let threads = settings.budget()?;
     let mut download = None;
     if device == crate::inference::Device::Cpu {
-        let path = crate::prepared::load_path(weights, cache_dir)?;
+        let path = crate::prepared::load_path(weights, cache_dir, settings)?;
         // Side by side only over a mapped copy, whose weights the sessions
         // share. Over the download it falls back to, each session would copy
         // them onto the heap, so that loads the one session it did before.
         if crate::prepared::is_copy(&path, cache_dir) {
             let tokenizer = crate::tokenizer::load(repository, JOINT_MAX_TOKENS)?;
-            return Encoder::side_by_side(
-                path,
-                crate::inference::budget()?,
-                tokenizer,
-                repository.revision(),
-            )
-            .map_err(|error| error.context("loading embedding model"));
+            return Encoder::side_by_side(path, threads, tokenizer, repository.revision())
+                .map_err(|error| error.context("loading embedding model"));
         }
         download = Some(path);
     }
     let encoder = Encoder::load(
+        threads,
         || match download {
             Some(path) => Ok(path),
             None => repository.get(JOINT_FILE),
@@ -573,16 +580,18 @@ mod tests {
         let _ = tracing_subscriber::fmt()
             .with_writer(std::io::stdout)
             .try_init();
-        let cache = std::path::PathBuf::from(std::env::var("PAMIN_TEST_MODEL_CACHE").unwrap());
+        let cache = std::path::PathBuf::from(std::env::var("PAMIN_EVAL_MODEL_CACHE").unwrap());
         let repository = Repository::open(&cache, JOINT_REPOSITORY).unwrap();
+        let threads = crate::InferenceSettings::default().budget().unwrap();
         let weights = repository.file(&cache, JOINT_FILE);
         let inputs = [
             "How does a failed database migration roll back?",
             "数据库迁移失败后如何回滚？",
         ];
         let run = |device, provider| {
-            let model = if let Some(path) = std::env::var_os("PAMIN_TEST_JOINT_GRAPH") {
+            let model = if let Some(path) = std::env::var_os("PAMIN_EVAL_JOINT_GRAPH") {
                 Encoder::load(
+                    threads,
                     || Ok(std::path::PathBuf::from(path)),
                     &repository,
                     JOINT_MAX_TOKENS,
@@ -590,13 +599,22 @@ mod tests {
                 )
                 .unwrap()
             } else {
-                joint_session(&repository, &weights, &cache, device, vec![provider]).unwrap()
+                joint_session(
+                    &repository,
+                    &weights,
+                    &cache,
+                    &crate::InferenceSettings::default(),
+                    device,
+                    vec![provider],
+                )
+                .unwrap()
             };
             let mut embedder = Embedder {
                 cache_dir: cache.clone(),
                 model: Box::new(model),
                 device,
                 remembered: Queries::default(),
+                settings: crate::InferenceSettings::default(),
             };
             inputs
                 .iter()
@@ -604,10 +622,13 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let cpu = run(crate::inference::Device::Cpu, crate::inference::cpu());
-        let path = std::env::var_os("PAMIN_TEST_JOINT_GRAPH")
+        let path = std::env::var_os("PAMIN_EVAL_JOINT_GRAPH")
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| crate::prepared::load_path(&weights, &cache).unwrap());
-        let session = crate::inference::options(vec![crate::inference::cpu()])
+            .unwrap_or_else(|| {
+                crate::prepared::load_path(&weights, &cache, &crate::InferenceSettings::default())
+                    .unwrap()
+            });
+        let session = crate::inference::options(threads, vec![crate::inference::cpu()])
             .unwrap()
             .with_disabled_optimizers("MatMulAddFusion")
             .unwrap()
@@ -616,6 +637,7 @@ mod tests {
         let model = Encoder::from_session(session, &repository, JOINT_MAX_TOKENS).unwrap();
         let mut control = Embedder {
             cache_dir: cache.clone(),
+            settings: crate::InferenceSettings::default(),
             model: Box::new(model),
             device: crate::inference::Device::Cpu,
             remembered: Queries::default(),
@@ -682,7 +704,7 @@ mod tests {
             cosines.iter().any(|c| *c < 0.99999),
             "control must exercise the known incompatible CoreML graph"
         );
-        let mut accepted = Embedder::load(&cache).unwrap();
+        let mut accepted = Embedder::load(&cache, &crate::InferenceSettings::default()).unwrap();
         assert_eq!(
             accepted.device(),
             crate::inference::Device::Cpu,
@@ -702,14 +724,15 @@ mod tests {
     /// as there are cores, all on one shared session of one thread, taking
     /// texts in whatever order they finish. Lengths from a few tokens to the
     /// 512-token cap, more texts than cores, so every thread runs several.
-    /// The model is read from, or downloaded into, `PAMIN_TEST_MODEL_CACHE`.
+    /// The model is read from, or downloaded into, `PAMIN_EVAL_MODEL_CACHE`.
     #[test]
-    #[ignore = "downloads BGE-M3's int8 export; set PAMIN_TEST_MODEL_CACHE"]
+    #[ignore = "downloads BGE-M3's int8 export; set PAMIN_EVAL_MODEL_CACHE"]
     fn bge_side_by_side_is_each_text_alone() {
         let cache = std::path::PathBuf::from(
-            std::env::var_os("PAMIN_TEST_MODEL_CACHE").expect("set PAMIN_TEST_MODEL_CACHE"),
+            std::env::var_os("PAMIN_EVAL_MODEL_CACHE").expect("set PAMIN_EVAL_MODEL_CACHE"),
         );
-        let mut embedder = Embedder::load(&cache).expect("load the model");
+        let mut embedder =
+            Embedder::load(&cache, &crate::InferenceSettings::default()).expect("load the model");
         assert_eq!(embedder.device(), crate::inference::Device::Cpu);
         assert_eq!(
             embedder.model.side_by_side_passes(),

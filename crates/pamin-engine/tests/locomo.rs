@@ -116,18 +116,16 @@ const MISCITED: usize = 57;
 /// What the product's `pamin search` asks for by default. A constant because
 /// the rule replay sizes a constant from it; the test asserts it still equals
 /// [`Depths::default`].
-const DEPTHS: Depths = Depths {
-    channel: 50,
-    graph: 2,
-};
+const DEPTHS: Depths = Depths::DEFAULT;
 
-/// Runtime overrides the product reads on every search, outside `Depths`:
-/// the rerank shortlist, its token cap, and the vector search's width. A run
-/// with one set is a sweep, not the search `pamin search` ships.
+/// The knobs that tune a search away from what `pamin search` ships: the
+/// rerank shortlist, its token cap, and the vector search's width. A run with
+/// one set is a sweep, not the shipped search path, which this run searches
+/// with ([`DEPTHS`] and the default reranker settings).
 const TUNING: [&str; 3] = [
-    "PAMIN_RERANK_DEPTH",
-    "PAMIN_RERANK_MAX_TOKENS",
-    "PAMIN_SEARCH_EFFORT",
+    "PAMIN_EVAL_RERANK_DEPTH",
+    "PAMIN_EVAL_RERANK_MAX_TOKENS",
+    "PAMIN_EVAL_SEARCH_EFFORT",
 ];
 
 /// LOCOMO's adversarial category, whose evidence is the trap.
@@ -611,10 +609,11 @@ async fn locomo_evidence_with_and_without_links() {
     // One database and one model registry for every conversation, as a
     // resident server holds them: `Engine::open` makes a registry of its own,
     // which reloaded the weights for each conversation.
-    let database = Database::open(&workspace, Connections::PerCommand)
+    let settings = harness::settings();
+    let database = Database::open(&workspace, Connections::PerCommand, &settings.store)
         .await
         .expect("open the database");
-    let models = Models::in_workspace(&workspace);
+    let models = Models::new(&workspace, settings);
     let by = embedded_by(&database, &models, &workspace, &named).await;
 
     // [without the graph, with it], by category; each question in the same

@@ -1,7 +1,7 @@
 //! Where the first search after an idle release spends its time.
 //!
 //! A resident server gives back its indexes and both models after
-//! `PAMIN_MODEL_IDLE`, so the next `pamin search` opens the project's index,
+//! its idle window (`--model-idle`), so the next `pamin search` opens the project's index,
 //! loads BGE-M3 and the reranker, and only then answers. That wait is the
 //! latency a user sees after stepping away, and the parts of it are what
 //! decide what is worth making concurrent. So each round here starts from what
@@ -231,7 +231,7 @@ async fn open(database: &Database, workspace: &Workspace, project: &str) -> (Eng
     let started = Instant::now();
     let engine = Engine::attached(
         database.clone(),
-        &Models::in_workspace(workspace),
+        &Models::new(workspace, crate::harness::settings()),
         workspace,
         project,
         VectorIndex::default(),
@@ -310,7 +310,7 @@ async fn warmed(
     [query, other]: [&str; 2],
 ) -> (Duration, Duration, Duration) {
     let first = {
-        let models = Models::in_workspace(workspace);
+        let models = Models::new(workspace, crate::harness::settings());
         let started = Instant::now();
         let warming = {
             let models = models.clone();
@@ -323,7 +323,7 @@ async fn warmed(
         took
     };
 
-    let models = Models::in_workspace(workspace);
+    let models = Models::new(workspace, crate::harness::settings());
     let started = Instant::now();
     let warming = {
         let models = models.clone();
@@ -390,7 +390,10 @@ fn parts(models: &std::path::Path, [query, other]: [&str; 2]) -> Vec<(&'static s
 
     let mut embedder = None;
     time("parts: load the embedder", &mut || {
-        embedder = Some(Embedder::load(models).expect("load the embedder"));
+        embedder = Some(
+            Embedder::load(models, &crate::harness::support::inference())
+                .expect("load the embedder"),
+        );
     });
     let mut embedder = embedder.expect("loaded");
     time("parts: first query embedding", &mut || {
@@ -402,13 +405,16 @@ fn parts(models: &std::path::Path, [query, other]: [&str; 2]) -> Vec<(&'static s
     drop(embedder);
 
     // What a cold search hands it: up to the reranker's depth of candidates.
-    let documents: Vec<String> = (0..pamin_index::reranking::depth())
+    let documents: Vec<String> = (0..crate::harness::depths().rerank)
         .map(|n| format!("{other} {n}: a memory the lexical channels did not find"))
         .collect();
     let documents: Vec<&str> = documents.iter().map(String::as_str).collect();
     let mut reranker = None;
     time("parts: load the reranker", &mut || {
-        reranker = Some(Reranker::load(models).expect("load the reranker"));
+        reranker = Some(
+            Reranker::load(models, &crate::harness::support::inference())
+                .expect("load the reranker"),
+        );
     });
     let mut reranker = reranker.expect("loaded");
     time("parts: first rerank pass", &mut || {
@@ -423,8 +429,12 @@ fn parts(models: &std::path::Path, [query, other]: [&str; 2]) -> Vec<(&'static s
     let mut both = None;
     time("parts: load both at once", &mut || {
         both = Some(std::thread::scope(|scope| {
-            let embedder = scope.spawn(|| Embedder::load(models).expect("embedder"));
-            let reranker = scope.spawn(|| Reranker::load(models).expect("reranker"));
+            let embedder = scope.spawn(|| {
+                Embedder::load(models, &crate::harness::support::inference()).expect("embedder")
+            });
+            let reranker = scope.spawn(|| {
+                Reranker::load(models, &crate::harness::support::inference()).expect("reranker")
+            });
             (
                 embedder.join().expect("the embedder's load panicked"),
                 reranker.join().expect("the reranker's load panicked"),

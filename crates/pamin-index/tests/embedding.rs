@@ -3,6 +3,8 @@
 //! Ignored by default: the first run downloads model weights. Run with
 //! `cargo test -p pamin-index -- --ignored`.
 
+mod support;
+
 use pamin_core::TopicId;
 use pamin_index::{Access, Embedder, Projection, ProjectionIndex, VectorIndex};
 
@@ -15,7 +17,8 @@ fn id(byte: u8) -> TopicId {
 fn the_vector_channel_recalls_across_languages_without_translating() {
     let dir = tempfile::tempdir().expect("temp dir");
 
-    let mut embedder = Embedder::load(&dir.path().join("models")).expect("load model");
+    let mut embedder =
+        Embedder::load(&dir.path().join("models"), &support::inference()).expect("load model");
 
     let index = ProjectionIndex::open(
         &dir.path().join("index"),
@@ -69,7 +72,7 @@ fn the_vector_channel_recalls_across_languages_without_translating() {
 #[ignore = "downloads embedding model weights"]
 fn embeddings_have_the_width_the_index_is_built_for() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let mut embedder = Embedder::load(dir.path()).expect("load model");
+    let mut embedder = Embedder::load(dir.path(), &support::inference()).expect("load model");
 
     let vector = embedder.embed_passage("a durable claim").expect("embed");
     assert_eq!(
@@ -83,7 +86,7 @@ fn embeddings_have_the_width_the_index_is_built_for() {
 #[ignore = "downloads embedding model weights"]
 fn a_symmetric_model_is_left_alone() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let mut embedder = Embedder::load(dir.path()).expect("load model");
+    let mut embedder = Embedder::load(dir.path(), &support::inference()).expect("load model");
 
     let text = "the deployment pipeline runs on continuous integration";
     assert_eq!(
@@ -102,7 +105,7 @@ fn a_symmetric_model_is_left_alone() {
 #[ignore = "downloads embedding model weights"]
 fn a_batch_gives_each_text_the_vector_it_would_have_got_alone() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let mut embedder = Embedder::load(dir.path()).expect("load model");
+    let mut embedder = Embedder::load(dir.path(), &support::inference()).expect("load model");
 
     let texts = [
         "the deployment pipeline runs on continuous integration",

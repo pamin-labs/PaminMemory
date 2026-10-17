@@ -14,6 +14,13 @@ pub mod compiled;
 pub mod shape;
 pub mod vectors;
 
+/// The `PAMIN_EVAL_*` knobs and the inference settings they build, shared
+/// with the index's own tests.
+#[path = "../../../pamin-index/tests/support/mod.rs"]
+pub mod support;
+
+pub use support::eval;
+
 use std::path::PathBuf;
 
 use pamin_core::Fusion;
@@ -31,11 +38,10 @@ pub const PROFILE: &str = "accuracy";
 /// is written, and by every other test here that loads a model
 /// ([`load_models`]), so no two of them load at once.
 ///
-/// It is also the turn at the process environment: an experimental arm
-/// that sets a variable the product reads (`PAMIN_RERANK_DEPTH`,
-/// `PAMIN_SEARCH_EFFORT`) does so only while its thread holds the turn,
-/// taking it first if it does not ([`environment_turn`]), so no
-/// evaluation's settings snapshot reads another test's transient arm.
+/// Nothing here sets the process environment for an arm: an arm varies the
+/// value it passes -- a search's [`Depths`], an engine's settings -- so no
+/// evaluation's settings snapshot can read another test's arm (see
+/// [`KnobSweep`]).
 ///
 /// What the loads fetched and prepared is counted process wide
 /// (`pamin_index::LoadActivity`), and libtest runs the tests of one binary
@@ -137,13 +143,6 @@ pub fn holds_turn() -> bool {
         == Some(std::thread::current().id())
 }
 
-/// The turn for code about to set the process environment: none if this
-/// thread holds it already -- an evaluation, or a model-loading test --
-/// and otherwise this thread's own, waited for, to hold while it sets it.
-pub fn environment_turn() -> Option<ModelsTurn> {
-    (!holds_turn()).then(load_models)
-}
-
 impl Drop for ModelsTurn {
     fn drop(&mut self) {
         // The cache's and the home's turns first: a thread of this process
@@ -157,48 +156,37 @@ impl Drop for ModelsTurn {
     }
 }
 
-/// A `PAMIN_` knob an arm sweeps through the process environment --
-/// `PAMIN_RERANK_DEPTH` for depth variants, `PAMIN_SEARCH_EFFORT` for the
-/// effort sweep -- claimed holding the turn.
+/// A `PAMIN_EVAL_*` knob an arm sweeps -- `PAMIN_EVAL_RERANK_DEPTH` for
+/// depth variants, `PAMIN_EVAL_SEARCH_EFFORT` for the effort sweep.
 ///
 /// A value the caller set is refused: it would name the record while no
-/// pass ran under it. Dropped, panicking or not, the guard unsets the
-/// knob, and it is dropped before the turn it was claimed under, so no
-/// later evaluation reads a pass's value as its own setting. Every sweep
-/// sets its knob through one of these; none sets the environment itself.
+/// pass ran under it. The sweep itself sets no variable: each pass takes its
+/// value in the [`Depths`] it searches with, a value of its own that nothing
+/// else in the process sees, so a pass that panics leaves nothing behind.
+/// Every sweep claims its knob through one of these.
 pub struct KnobSweep {
     name: &'static str,
 }
 
 impl KnobSweep {
-    /// Claims `name` for a sweep. This thread must hold the turn.
+    /// Claims `name` for a sweep, refusing it if the caller set it.
     pub fn claim(name: &'static str) -> Self {
-        assert!(holds_turn(), "a sweep sets {name} only holding the turn");
+        Self::claimed(name, std::env::var_os(name).is_some())
+    }
+
+    /// [`claim`](Self::claim), with whether the caller set `name` given.
+    fn claimed(name: &'static str, set: bool) -> Self {
         assert!(
-            std::env::var_os(name).is_none(),
-            "this arm sets {name} itself: unset it for this run"
+            eval::KNOBS.iter().any(|(knob, _)| *knob == name),
+            "{name} is not a knob a run can set (see `support/eval.rs`)"
         );
+        assert!(!set, "this arm sets {name} itself: unset it for this run");
         Self { name }
     }
 
-    /// Sets the knob to `value` for the passes that follow.
-    pub fn set(&self, value: &str) {
-        // SAFETY: claimed holding the turn, which this guard is dropped
-        // before; every test that reads the environment for its settings
-        // waits for the turn.
-        unsafe { std::env::set_var(self.name, value) };
-    }
-
-    /// Unsets the knob, for a pass under the shipped value.
-    pub fn unset(&self) {
-        // SAFETY: as for `set`.
-        unsafe { std::env::remove_var(self.name) };
-    }
-}
-
-impl Drop for KnobSweep {
-    fn drop(&mut self) {
-        self.unset();
+    /// The knob this sweep varies.
+    pub fn name(&self) -> &'static str {
+        self.name
     }
 }
 
@@ -216,6 +204,53 @@ pub fn dataset_dir(var: &str, name: &str) -> PathBuf {
     match std::env::var(var) {
         Ok(dir) => PathBuf::from(dir),
         Err(_) => eval_home().join(name),
+    }
+}
+
+/// The settings a run measures: the product's defaults, and whatever the
+/// `PAMIN_EVAL_*` knobs change about them (see [`eval::KNOBS`]).
+///
+/// Read once per call into a value the harness hands to [`Engine::open`],
+/// rather than read by the libraries on every load: the libraries read no
+/// environment, so a sweep varies a setting by building another value, never
+/// by writing a variable every other test thread in the binary shares.
+pub fn settings() -> pamin_engine::Settings {
+    let default = pamin_engine::Settings::default();
+    pamin_engine::Settings {
+        inference: support::inference(),
+        store: store(),
+        model_idle: eval::parsed::<std::num::NonZeroU64>("PAMIN_EVAL_MODEL_IDLE")
+            .map_or(default.model_idle, |seconds| {
+                std::time::Duration::from_secs(seconds.get())
+            }),
+        unindexed_budget: eval::parsed::<std::num::NonZeroU64>("PAMIN_EVAL_UNINDEXED_BUDGET")
+            .map_or(default.unindexed_budget, std::num::NonZeroU64::get),
+    }
+}
+
+/// The store settings a run measures: the defaults, and `PAMIN_EVAL_JIT` and
+/// `PAMIN_EVAL_POSTGRES_DIR`.
+pub fn store() -> pamin_store::StoreSettings {
+    eval::check();
+    let default = pamin_store::StoreSettings::default();
+    pamin_store::StoreSettings {
+        jit: eval::switch("PAMIN_EVAL_JIT").unwrap_or(default.jit),
+        postgres_dir: eval::path("PAMIN_EVAL_POSTGRES_DIR").or(default.postgres_dir),
+    }
+}
+
+/// The depths a run searches with: the product's, and the reranker's depth
+/// and the vector graph's width as `PAMIN_EVAL_RERANK_DEPTH` and
+/// `PAMIN_EVAL_SEARCH_EFFORT` say. A search's own value, so an arm that varies
+/// one passes another [`Depths`].
+pub fn depths() -> Depths {
+    eval::check();
+    Depths {
+        rerank: eval::parsed::<std::num::NonZeroUsize>("PAMIN_EVAL_RERANK_DEPTH")
+            .map_or(Depths::DEFAULT.rerank, std::num::NonZeroUsize::get),
+        effort: eval::parsed::<std::num::NonZeroU32>("PAMIN_EVAL_SEARCH_EFFORT")
+            .map_or(Depths::DEFAULT.effort, std::num::NonZeroU32::get),
+        ..Depths::DEFAULT
     }
 }
 
@@ -354,30 +389,18 @@ pub async fn drain(engine: &Engine) -> Drained {
 
 #[cfg(test)]
 mod tests {
-    /// Each sweep's knob is refused when the caller set it, and a sweep that
-    /// panics mid-pass leaves no value behind.
+    /// Each sweep's knob is refused when the caller set it, and only a knob
+    /// a run can set is claimed.
     #[test]
-    fn a_knob_sweep_refuses_a_set_value_and_unsets_its_own() {
-        let _turn = super::environment_turn();
-        for name in ["PAMIN_RERANK_DEPTH", "PAMIN_SEARCH_EFFORT"] {
-            let before = std::env::var_os(name);
-            // SAFETY: this thread holds the turn.
-            unsafe { std::env::set_var(name, "30") };
-            assert!(std::panic::catch_unwind(|| super::KnobSweep::claim(name)).is_err());
-            unsafe { std::env::remove_var(name) };
-
-            let swept = std::panic::catch_unwind(|| {
-                let sweep = super::KnobSweep::claim(name);
-                sweep.set("15");
-                panic!("a search failed mid-pass");
-            });
-            assert!(swept.is_err());
-            assert_eq!(std::env::var_os(name), None, "{name}");
-            if let Some(before) = before {
-                // SAFETY: as above.
-                unsafe { std::env::set_var(name, before) };
-            }
+    fn a_knob_sweep_refuses_a_set_value() {
+        for name in ["PAMIN_EVAL_RERANK_DEPTH", "PAMIN_EVAL_SEARCH_EFFORT"] {
+            assert!(std::panic::catch_unwind(|| super::KnobSweep::claimed(name, true)).is_err());
+            assert_eq!(super::KnobSweep::claimed(name, false).name(), name);
         }
+        assert!(
+            std::panic::catch_unwind(|| super::KnobSweep::claimed("PAMIN_RERANK_DEPTH", false))
+                .is_err()
+        );
     }
 
     /// The turn waits for another process holding the evaluation home's --

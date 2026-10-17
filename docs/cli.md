@@ -18,21 +18,76 @@ The examples below are real output from a workspace built by the writes in
 | `--vector-index <name>` | `PAMIN_VECTOR_INDEX` | `memory` | Vector index a project is built with: `disk` or `memory` |
 | `--json` | | off | Emit JSON instead of text, on one line |
 | `--pretty` | | off | Indent that JSON. Requires `--json` |
-| | `PAMIN_POSTGRES_DIR` | unset | Use a PostgreSQL already on this machine instead of installing one |
-| | `PAMIN_JIT` | `off` | Let PostgreSQL compile query expressions with LLVM |
-| | `PAMIN_MODEL_IDLE` | `1800` | Seconds a resident server holds a model nothing is asking for |
-| | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use, or on the CPU, for the batches of a rerank and stored texts of the embedding model (BGE-M3), how many single-threaded passes run at once |
-| | `PAMIN_DEVICE` | automatic shared model route | `cpu` forces optimized CPU |
-| | `PAMIN_EP_LIBRARIES` | none | Platform-separated absolute paths to installed, ABI-compatible NPU plugin EP libraries; only discovered NPU devices participate in automatic plugin routing. Unavailable/incompatible libraries retain ordinary GPU/CPU fallback |
-| | `PAMIN_PREPARED` | on | `off` loads a model from its download rather than from a mapped copy, fetching the download again if it was removed |
 
 The JSON is compact because the usual caller pays for every token of it, and
 indenting a ten-hit search costs about a thousand of them. `--pretty` is for
 the person who has piped it to a terminal.
 
-`PAMIN_POSTGRES_DIR` points at an installation prefix holding `bin/initdb` --
-`/usr/lib/postgresql/17` on Debian and Ubuntu, `$(brew --prefix
-postgresql@17)` on macOS. Unset, a workspace installs its own copy, which is
+`PAMIN_LOG` sets the log filter (`PAMIN_LOG=debug`). Logs go to stderr, so they
+never contaminate the JSON on stdout.
+
+### Server settings
+
+These govern the server process -- which device, how many threads, how long a
+model stays loaded -- so they are fixed when the server starts. Every command
+takes them, because any command may be the one that starts the server, and
+each can also be set in the `[serve]` table of `$PAMIN_HOME/config.toml`, by
+the key in the second column. A flag wins over the file, and the file over the
+default.
+
+| Flag | `config.toml` key | Default | Meaning |
+| --- | --- | --- | --- |
+| `--device <auto\|cpu>` | `device` | `auto` | `auto` measures every viable accelerator and CPU plan and picks the fastest; `cpu` forces optimized CPU. Also read from `PAMIN_DEVICE` |
+| `--inference-threads <n>` | `inference_threads` | one per core | Threads one forward pass may use, or on the CPU, for the batches of a rerank and stored texts of the embedding model (BGE-M3), how many single-threaded passes run at once |
+| `--ep-library <path>` | `ep_libraries` | none | A path to an installed, ABI-compatible NPU plugin EP library; repeat the flag, or list them in the file. Only discovered NPU devices participate in automatic plugin routing. Unavailable/incompatible libraries retain ordinary GPU/CPU fallback |
+| `--prepared <true\|false>` | `prepared` | `true` | `false` loads a model from its download rather than from a mapped copy, fetching the download again if it was removed |
+| `--model-idle <seconds>` | `model_idle` | `1800` | Seconds a resident server holds a model nothing is asking for |
+| `--open-indexes <n>` | `open_indexes` | `16` | How many project indexes a server keeps open at once |
+| `--jit <true\|false>` | `jit` | `false` | Let PostgreSQL compile query expressions with LLVM |
+| `--postgres-dir <path>` | `postgres_dir` | unset | Use a PostgreSQL already on this machine instead of installing one |
+
+```toml
+# $PAMIN_HOME/config.toml
+[serve]
+device = "cpu"
+model_idle = 600
+open_indexes = 4
+ep_libraries = ["/opt/vendor/lib/libnpu_ep.so"]
+```
+
+A relative path is made absolute when settings are resolved: in a flag,
+against the directory the command ran in; in the file, against the workspace
+(`$PAMIN_HOME`).
+
+A key the file does not know, or a value a flag would refuse, stops every
+command with the file's path and the offending line, rather than leaving the
+setting at its default. `pamin config` prints what a command would run with and
+where each value came from -- `flag`, `env` (`PAMIN_DEVICE`), `config` or
+`default` -- without starting anything; `--json` gives the same as an object.
+
+**Settings are fixed when the server starts.** A command sends the settings it
+resolved -- its flags over the file over the defaults -- to the running server,
+and a server running with different ones refuses the command, naming each
+setting that differs and what it is running with, rather than answering with
+settings nobody asked for or replacing a server another agent may be using. To
+change them, stop the server and run the command again:
+
+```console
+$ pamin stop
+$ pamin search "deployment" --device cpu    # starts a server with --device cpu
+```
+
+A command forwards the flags it was given to the server it starts. A setting a
+command leaves to the default does not conflict with one a server was started
+with as a flag, so `pamin serve --model-idle 60` answers commands that name no
+idle window; one it took from `config.toml` does, so edit the file and stop
+the server together.
+
+`--postgres-dir` points at an installation prefix holding `bin/initdb` and
+`bin/pg_ctl` -- `/usr/lib/postgresql/17` on Debian and Ubuntu, `$(brew --prefix
+postgresql@17)` on macOS. A prefix without them is refused, naming the flag or
+the file and what is missing, rather than replaced by a downloaded copy.
+Unset, a workspace installs its own copy, which is
 the default because it is what makes `pamin` work with nothing else installed;
 set, that copy is not downloaded and not stored, which is several hundred
 megabytes a workspace does not spend. Two things to know before setting it.
@@ -42,7 +97,7 @@ built by somebody else is a figure for that server: fine for checking
 behaviour, not interchangeable with the numbers in
 [measured.md](measured.md).
 
-`PAMIN_JIT=on` turns on PostgreSQL's LLVM compilation of query expressions.
+`--jit true` turns on PostgreSQL's LLVM compilation of query expressions.
 It is off by default because it is measurably unreachable at every size
 measured here, not because compiling is disliked: PostgreSQL only reaches for
 it above a plan cost of 100000, and on a 13,014-topic project the read path's
@@ -60,7 +115,7 @@ constant. Two notes: it applies at `pamin stop` and the next start, like every
 cluster-level setting here; and with it off, a workspace it installed itself
 does not keep the 25 MB of LLVM bitcode that only inlining reads.
 
-`PAMIN_MODEL_IDLE` is how long `pamin serve` keeps a model and the indexes
+`--model-idle` is how long `pamin serve` keeps a model and the indexes
 pinning it after nothing has asked for them. It is a memory setting and the
 trade is measured on both sides: on a 13,014-document project a server holding
 the embedder and the since-removed `fast` reranker was 2,263 MB resident and 88-101 MB once it
@@ -72,7 +127,7 @@ searches, and a server left running overnight pays it once. Lower it on a
 machine where memory is scarcer than four seconds; raise it if a search every
 few minutes is worth 2.2 GB to you.
 
-`PAMIN_INFERENCE_THREADS` is how many threads one forward pass may use.
+`--inference-threads` is how many threads one forward pass may use.
 Unset, the inference library uses one per core, which is right for a single
 query and wrong for a server: measured on four cores with nothing shared,
 throughput *falls* as callers are added, 182 embeddings a second at one worker
@@ -147,7 +202,7 @@ deleted; see [Upgrading from profiles and tiers](#upgrading-from-profiles-and-ti
 stopped; the next load downloads the model
 again. The download is kept when `HF_HOME` is set -- that cache is shared with
 other tools -- or when the model directory, or one model's directory inside it,
-is a link to somewhere else. `PAMIN_PREPARED=off` loads from the download,
+is a link to somewhere else. `--prepared false` loads from the download,
 fetching it again if it was removed, for a measurement that needs the unmapped
 load or a disk that cannot spare the copy's extra size. When a copy cannot be
 written -- a full or read-only disk -- the model loads from the download and
@@ -157,8 +212,9 @@ Where the runtime left a model's attention as separate operators -- the
 `accurate` reranker's int8 export -- the copy also gets a second graph,
 `attention.onnx`, with each layer's attention as one fused operator; it is
 kept only if it scores a probe bit-for-bit as the first does, and otherwise
-`attention.unfused` says why. `PAMIN_FUSED_ATTENTION=off` loads the unfused
-graph, for measuring one against the other.
+`attention.unfused` says why. `--fused-attention false`, a hidden flag with no
+`config.toml` key, loads the unfused graph, for measuring one against the
+other.
 
 CoreML packages written by older versions under
 `models/typed-reranker-v3/<SHA-256>/coreml-all-v1`
@@ -190,7 +246,7 @@ Eligible registered NPU devices are considered first, followed by CUDA on x86-64
 Provider selection is logged when a
 model loads; Core ML may itself use CPU, GPU or ANE, and its internal placement
 is not established by the provider label. The different weight exports can
-produce different scores. `PAMIN_DEVICE=cpu` forces CPU for comparable tests
+produce different scores. `--device cpu` forces CPU for comparable tests
 or when another job needs the accelerator. Embedding also tries shared
 accelerator plans using the same export, tokenizer and indexed model
 identity. Compatibility checks compare vectors with the CPU export; a rejected
@@ -226,15 +282,16 @@ checks. The `every_device_orders_like_the_cpu` test in
 `crates/pamin-index/tests/reranking.rs` checks clearly separated pairs; it is
 not a replacement for a corpus-level accuracy result.
 
-A handful of other `PAMIN_*` variables exist and are deliberately not listed
-here: they shorten a window or a budget so a test can reach a case, and a
-caller has no way to evaluate them. They are named where they are read, and a
-unit test checks that everything *not* on that list appears in the table
-above, so a setting cannot be added without being documented or deliberately
-excluded.
-
-`PAMIN_LOG` sets the log filter (`PAMIN_LOG=debug`). Logs go to stderr, so they
-never contaminate the JSON on stdout.
+A few measured values have no flag and no `config.toml` key: the reranker's
+batch and the longest candidate it reads, and how many documents may sit
+outside the vector graph before it is built. They are fixed where they were
+measured; the evaluation harnesses set them as `PAMIN_EVAL_*` variables, which
+`pamin` itself never reads. `pamin search` has two hidden flags of the same
+kind; see [`pamin search`](#pamin-search). The only variables `pamin` reads are
+`PAMIN_HOME`, `PAMIN_PROJECT`, `PAMIN_VECTOR_INDEX`, `PAMIN_DEVICE` and
+`PAMIN_LOG`; the ones that used to configure anything else are refused, as
+[Upgrading from settings variables](#upgrading-from-settings-variables)
+lists, and a unit test checks this page against what the binary reads.
 
 Every project embeds with one model, and every search reranks with one
 reranker. There is nothing to choose between:
@@ -251,6 +308,30 @@ doubled cross-lingual retrieval against multilingual-e5-base (`balanced`),
 matched it on same-language queries, and cost nine milliseconds more. The index
 records the model it was built with and refuses to open under another, naming
 `reindex` in the error rather than silently mixing two vector spaces.
+
+### Upgrading from settings variables
+
+Settings other than the five above were environment variables. Each is now a
+flag (and, for a server setting, a `config.toml` key), or gone, and setting one
+-- to any value -- fails with a message naming what replaced it, rather than
+being ignored by a server that would then run with settings its operator did
+not intend. Unset it, and use the replacement:
+
+| Variable | Now |
+| --- | --- |
+| `PAMIN_INFERENCE_THREADS` | `--inference-threads`, `inference_threads` |
+| `PAMIN_EP_LIBRARIES` | `--ep-library`, once per library; `ep_libraries` |
+| `PAMIN_PREPARED` | `--prepared <true\|false>`, `prepared` |
+| `PAMIN_FUSED_ATTENTION` | `--fused-attention <true\|false>` (hidden) |
+| `PAMIN_MODEL_IDLE` | `--model-idle`, `model_idle` |
+| `PAMIN_OPEN_INDEXES` | `--open-indexes`, `open_indexes` |
+| `PAMIN_JIT` | `--jit <true\|false>`, `jit` |
+| `PAMIN_POSTGRES_DIR` | `--postgres-dir`, `postgres_dir` |
+| `PAMIN_CHANNEL_DEPTH`, `PAMIN_GRAPH_DEPTH` | `pamin search --channel-depth`, `--graph-depth` |
+| `PAMIN_RERANK_DEPTH`, `PAMIN_SEARCH_EFFORT` | `pamin search --rerank-depth`, `--search-effort` (hidden) |
+| `PAMIN_RERANK_BATCH`, `PAMIN_RERANK_BATCH_TOKENS`, `PAMIN_RERANK_MAX_TOKENS`, `PAMIN_UNINDEXED_BUDGET`, `PAMIN_CATCH_UP_BATCH` | removed: fixed at their measured values |
+
+`PAMIN_DEVICE` is still read, as the fallback for `--device`.
 
 ### Upgrading from profiles and tiers
 
@@ -543,7 +624,10 @@ them, including what the filter never promoted.
 
 `--channel-depth` sets how many candidates each channel contributes before
 fusion (default 50) and `--graph-depth` how many edges the graph walks out
-(default 2). Both take `PAMIN_CHANNEL_DEPTH` and `PAMIN_GRAPH_DEPTH`.
+(default 2). Two hidden flags go with them: `--rerank-depth`, how many fused
+candidates the reranker reads (default 30), and `--search-effort`, how wide the
+vector graph is searched (default 700). All four are per search: a server
+answers each search at the depths that search asks for.
 
 These exist for the evaluation harness, which is what settles them. They are
 not a tuning surface for ordinary use: raising the depth costs latency for
@@ -619,7 +703,7 @@ and one search with the since-removed 130 MB `fast` model took it to 2,007 or
 2,271 MB -- the difference being the inference runtime's arenas rather than
 the weights. `accurate`'s model is 571 MB against 119, and its resident cost
 has not been taken on its own. `pamin serve` gives it back after
-`PAMIN_MODEL_IDLE` with nothing asking for it; the arena growth above that
+`--model-idle` seconds with nothing asking for it; the arena growth above that
 stays.
 
 A reranker reads the query and a memory together, which lets it correct an
@@ -1253,7 +1337,10 @@ command connected to PostgreSQL, checked migrations, opened the index, and
 loaded an embedding model before it did any work of its own.
 
 `pamin serve` runs it in the foreground instead, which is useful when you want
-to watch it. A server started in the background writes to
+to watch it. It takes the [server settings](#server-settings) as flags, reads
+the rest from `config.toml`, logs each setting and where it came from at the
+`info` level, and keeps them until it stops: a command asking for others is
+refused with how to restart it, never answered with these. A server started in the background writes to
 `$PAMIN_HOME/serve.log`; `PAMIN_LOG` sets its level, as everywhere else.
 
 Between requests it brings indexes up to date with work a deferred write or a
@@ -1271,7 +1358,7 @@ indexes open; the seventeenth closes the one nobody has touched for longest.
 Sixteen is a count of file descriptors, which is what the bound was built for,
 and not a budget in bytes, which is what actually runs out: an open index costs
 about 205 MB with BGE-M3, so sixteen of them is 3.3 GB. On a machine where that is too
-much, `PAMIN_OPEN_INDEXES` sets a smaller number. Lowering it costs nothing but
+much, `--open-indexes` sets a smaller number. Lowering it costs nothing but
 a reopen when a query lands on a project that has fallen out.
 
 Every command goes through the server except two. `serve` is the server, and

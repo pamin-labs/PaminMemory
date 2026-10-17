@@ -37,8 +37,9 @@ pub(crate) struct Encoder {
     token_type_ids: bool,
     /// The graph [`run_each`](Self::run_each) loads its single-threaded
     /// session from, and that session once it has been loaded; `None` runs
-    /// every text on [`session`](Self::session).
-    side_by_side: Option<(PathBuf, Option<SharedCpuSession>)>,
+    /// every text on [`session`](Self::session); and how many passes it runs
+    /// at once.
+    side_by_side: Option<(PathBuf, Option<SharedCpuSession>, usize)>,
     /// The most passes [`run_each`](Self::run_each) has had running at once.
     #[cfg(test)]
     most_at_once: usize,
@@ -71,12 +72,13 @@ impl Encoder {
     /// read for nothing -- and, since `model` is asked for only once the
     /// device has registered, before its export is fetched for nothing.
     pub(crate) fn load(
+        threads: usize,
         model: impl FnOnce() -> Result<PathBuf>,
         repository: &Repository,
         max_length: usize,
         providers: impl Into<crate::inference::Target>,
     ) -> Result<Self> {
-        let session = crate::inference::session(providers, model)?;
+        let session = crate::inference::session(threads, providers, model)?;
         Self::from_session(session, repository, max_length)
     }
 
@@ -121,13 +123,14 @@ impl Encoder {
     ) -> Result<Self> {
         let session = crate::inference::cpu_session(&model, threads)?;
         Ok(Self {
-            side_by_side: Some((model, None)),
+            side_by_side: Some((model, None, threads)),
             ..Self::from_parts(session, tokenizer, revision)
         })
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(crate) fn load_fixed_coreml(
+        threads: usize,
         model: impl FnOnce() -> Result<PathBuf>,
         repository: &Repository,
         max_length: usize,
@@ -137,12 +140,13 @@ impl Encoder {
                 &"static CoreML reranker currently requires at most 256 tokens",
             ));
         }
-        let path = crate::inference::coreml_source(model)?;
+        let path = crate::inference::coreml_source(threads, model)?;
         // Validate every independently compiled shape inside `preferred`'s
         // fallback window. A lazy shape failure otherwise breaks later searches
         // after the model has already been accepted as CoreML.
         let (session, short, long) = coreml_buckets(|rows, tokens| {
-            crate::inference::fixed_coreml(|| Ok(path.clone()), rows, tokens).map(|loaded| loaded.0)
+            crate::inference::fixed_coreml(threads, || Ok(path.clone()), rows, tokens)
+                .map(|loaded| loaded.0)
         })?;
         let tokenizer = crate::tokenizer::load(repository, max_length)?;
         Ok(Self {
@@ -223,10 +227,10 @@ impl Encoder {
     /// `run_each` calls this itself; a caller that times its passes calls it
     /// first, so that loading the session is not counted as running them.
     pub(crate) fn ready(&mut self, batches: usize) -> Result<usize> {
-        let Some((model, shared)) = &mut self.side_by_side else {
+        let Some((model, shared, budget)) = &mut self.side_by_side else {
             return Ok(1);
         };
-        let wanted = crate::inference::budget()?.min(batches);
+        let wanted = (*budget).min(batches);
         // One pass at a time gains nothing on a session of its own.
         if wanted < 2 {
             return Ok(1);
@@ -276,7 +280,7 @@ impl Encoder {
     ) -> Result<Vec<T>> {
         let workers = self.ready(batches.len())?;
         let session = match &self.side_by_side {
-            Some((_, Some(session))) if workers > 1 => session,
+            Some((_, Some(session), _)) if workers > 1 => session,
             _ => {
                 return batches
                     .into_iter()
@@ -339,7 +343,7 @@ impl Encoder {
         let loaded = self
             .side_by_side
             .as_ref()
-            .map_or(0, |(_, shared)| usize::from(shared.is_some()));
+            .map_or(0, |(_, shared, _)| usize::from(shared.is_some()));
         (loaded, self.most_at_once)
     }
 
@@ -689,15 +693,12 @@ mod tests {
             .join("tests/fixtures/coreml-normalization.onnx");
         let mut encoder = Encoder::side_by_side(
             model.clone(),
-            1,
+            4,
             crate::tokenizer::tests::fixture(),
             String::from("fixture"),
         )
         .expect("a CPU graph loads");
-        encoder.side_by_side = Some((model.with_file_name("missing.onnx"), None));
-        if crate::inference::budget().expect("budget") < 2 {
-            return;
-        }
+        encoder.side_by_side = Some((model.with_file_name("missing.onnx"), None, 4));
         assert_eq!(encoder.ready(4).expect("falls back"), 1);
         assert!(!encoder.runs_side_by_side());
     }

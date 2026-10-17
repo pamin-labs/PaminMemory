@@ -471,8 +471,8 @@ impl Projection for Recording {
         self.inner.recall_naming(name, limit)
     }
 
-    fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>> {
-        self.inner.recall_vector(embedding, limit)
+    fn recall_vector_at(&self, embedding: &[f32], limit: u32, effort: u32) -> Result<Vec<Scored>> {
+        self.inner.recall_vector_at(embedding, limit, effort)
     }
 
     fn stored(&self, topics: &[TopicId]) -> Result<Vec<Option<Stored>>> {
@@ -571,7 +571,7 @@ impl Projection for Closed {
         self.refuse()
     }
 
-    fn recall_vector(&self, _: &[f32], _: u32) -> Result<Vec<Scored>> {
+    fn recall_vector_at(&self, _: &[f32], _: u32, _: u32) -> Result<Vec<Scored>> {
         self.refuse()
     }
 
