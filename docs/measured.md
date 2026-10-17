@@ -893,6 +893,93 @@ and `internal-docs/pamin-memory/research/2026-10-16/raw/q42/`, the accuracy at
 `internal-docs/pamin-memory/research/2026-10-16/q44-b1-entry-point-accuracy.md`
 and `internal-docs/pamin-memory/research/2026-10-16/raw/q44/`.
 
+**The shared session, and one pair a pass, step by step at the entry point.**
+The paragraph above gives the second step's ratios; these are both steps with
+their absolute figures. Each step is measured against its immediate
+predecessor on the same machine, in the same rotated runs:
+
+- **Builds.** Before the shared session: `ddf0800`, where each side-by-side
+  pass had a session of its own, with up to four pairs a pass. Shared session:
+  `710ceec`, one shared single-threaded session per model, still four pairs.
+  One pair a pass: `710ceec` with its rerank batch set to one pair, which is
+  what `b972ead` made the default on a multi-core CPU; `b972ead` itself was not
+  timed.
+- **Host.** 4 vCPU Xeon @ 2.8 GHz (AVX-512 VNNI, no AMX). ONNX Runtime 1.28,
+  statically linked, CPU execution provider, four inference threads.
+- **Models.** `gpahal/bge-m3-onnx-int8` @ `2b34e84d` and the int8
+  bge-reranker-v2-m3 @ `6f5ff652`, both loaded from their mapped copies.
+- **Workload.** `pamin import` of the same 3,230 texts in a fixed order, then
+  20 warm-up and 120 timed `pamin search` queries, against a fresh home and
+  server for each phase.
+- **Runs.** Twelve counted runs, three an arm, in rotated order (A S SB AB,
+  SB AB A S, S A AB SB, where A is before the shared session, S the shared
+  session, SB one pair a pass, and AB one pair a pass without the shared
+  session, a fourth arm not reported here). Each run asserted its binary,
+  environment, execution provider, session counts, and that no model or plan
+  changed; two runs that failed one of those, and one with load from another
+  process, were left out.
+- **Scope.** Memory is the `pamin serve` process alone: no PostgreSQL, no
+  accelerator service. Disk is the project's index directory and the model
+  cache the server loaded. CIs are 95% bootstrap over runs.
+- **Known exposure.** This host has the CUDA provider built in but cannot
+  register it, which a resident server retries every five minutes by
+  reloading its models (see [cli.md](cli.md#accelerator-plan-recovery)). Every
+  search phase had one such reload, in every arm, and the medians excluding
+  the queries that overlapped one moved the ratios by at most 0.004.
+
+The shared session, before `ddf0800` and after `710ceec`:
+
+| metric | before | after | absolute difference | % change | after/before, or difference [95% CI] |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| nDCG@10 | N/A: not measured | N/A | N/A | N/A | N/A |
+| top-5 results, 120 queries | reference | identical order on 120 of 120 | N/A: identity, not a difference | N/A | N/A |
+| search p50 ms (pooled) | 3,072.7 | 3,206.7 | +134.1 | +4.4% | 1.044 [0.937, 1.157] |
+| search p95 ms (pooled) | 5,135.0 | 5,128.4 | −6.6 | −0.1% | 0.999 [0.880, 1.191] |
+| search server CPU user s, 120 queries | 1,295.0 | 1,328.1 | +33.0 | +2.6% | 1.026 [0.951, 1.114] |
+| search server CPU system s, 120 queries | 38.3 | 42.5 | +4.3 | +11.1% | 1.111 [0.983, 1.253] |
+| search server peak RSS MB (VmHWM) | 5,656 | 3,021 | −2,636 | −46.6% | 0.534 [0.509, 0.556] |
+| search server Pss_Anon MB after 120 queries | 1,827 | 1,488 | −338 | −18.5% | 0.815 [0.627, 0.991] |
+| ingest wall s (import and drain) | 294.7 | 295.8 | +1.2 | +0.4% | 1.004 [0.941, 1.072] |
+| ingest server peak RSS MB (VmHWM) | 3,795 | 2,158 | −1,637 | −43.1% | 0.569 [0.480, 0.647] |
+| index directory MB allocated | 27.4 | 28.9 | +1.5 | +5.6% | 1.056 [0.946, 1.195] |
+| model cache in use MB | 2,788 | 2,788 | 0 | 0.0% | N/A: same model files |
+
+**The shared session bought memory and no speed.** Every latency CI includes
+1.0. A component measurement of the same change, a rerank timed alone, had
+come out at 0.81 of its predecessor; at `pamin search` that did not carry
+over. What it does carry is memory: one session per model in place of one a
+pass took the search server's peak from 5.7 GB to 3.0 GB.
+
+One pair a pass, before `710ceec` at four pairs and after at one:
+
+| metric | before | after | absolute difference | % change | after/before, or difference [95% CI] |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| nDCG@10, XQuAD-R cross-lingual, 1,190 queries | 0.7231 | 0.7229 | −0.0001 | −0.01% | [−0.0020, +0.0016], Holm p = 1.00 |
+| nDCG@10, XQuAD-R same-language, 1,190 queries | 0.8679 | 0.8667 | −0.0012 | −0.14% | [−0.0037, +0.0011], Holm p = 1.00 |
+| nDCG@10, XQuAD-R single-target, 1,190 queries | 0.6662 | 0.6649 | −0.0013 | −0.20% | [−0.0052, +0.0026], Holm p = 1.00 |
+| nDCG@10, MuSiQue 2-hop, first 200 | 0.7669 | 0.7709 | +0.0040 | +0.52% | [−0.0029, +0.0113], Holm p = 1.00 |
+| top-5 results, 120 queries | reference | same set on 82 of 120, same order on 38 | N/A: identity, not a difference | N/A | N/A |
+| search p50 ms (pooled) | 3,206.7 | 2,675.3 | −531.4 | −16.6% | 0.834 [0.757, 0.931] |
+| search p95 ms (pooled) | 5,128.4 | 4,359.3 | −769.1 | −15.0% | 0.850 [0.715, 0.997] |
+| search server CPU user s, 120 queries | 1,328.1 | 1,214.1 | −113.9 | −8.6% | 0.914 [0.842, 0.991] |
+| search server CPU system s, 120 queries | 42.5 | 19.3 | −23.2 | −54.6% | 0.454 [0.377, 0.540] |
+| search server peak RSS MB (VmHWM) | 3,021 | 2,671 | −350 | −11.6% | 0.884 [0.841, 0.930] |
+| search server Pss_Anon MB after 120 queries | 1,488 | 1,308 | −180 | −12.1% | 0.879 [0.726, 1.132] |
+| ingest wall s (import and drain) | 295.8 | 283.3 | −12.6 | −4.2% | 0.958 [0.904, 1.014] |
+| ingest server peak RSS MB (VmHWM) | 2,158 | 1,942 | −216 | −10.0% | 0.900 [0.876, 0.920] |
+| index directory MB allocated | 28.9 | 27.4 | −1.5 | −5.3% | 0.947 [0.837, 1.057] |
+| model cache in use MB | 2,788 | 2,788 | 0 | 0.0% | N/A: same model files |
+
+Against `ddf0800`, the two steps together took the search p50 to 0.871
+[0.796, 0.963] and the search server's peak to 0.472 of what it was. A CPU
+with an inference budget of one thread keeps four pairs a pass (`4ca4c6f`),
+and that path was not measured in either step. The nDCG@10 rows were taken
+through `Engine::search_reranked` over byte-identical copies of one index, as
+the paragraph above describes, not at `pamin search`; recall@50 was identical
+in every group. CPU time counts the server's
+worker threads, so it exceeds wall time; no accelerator ran. The raw rows,
+per-run premises and harness are in the same private q42 folder as above.
+
 **Truncating at 192 or 384 tokens rather than 256 was measured, and neither
 ships.** In the same runs, each limit paired against 256 with the new batching:
 192 made a search 0.80 of what it was on MuSiQue, where half the pairs reach
