@@ -28,12 +28,11 @@ pub(crate) struct Repository {
 impl Repository {
     /// Opens `name`, cached under `cache_dir`.
     ///
-    /// Or under `HF_HOME`, and fetched from `HF_ENDPOINT`, when those are set:
-    /// that is what `fastembed` does when it fetches a model itself, which is
-    /// how the embedding model was always fetched. The reranker used to ignore
-    /// both, so under either it was fetched from somewhere the embedder was
-    /// not -- a mirror set for one and not the other, or two copies of the
-    /// cache. Now the two are fetched alike.
+    /// Or under `HF_HOME`'s hub cache, and fetched from `HF_ENDPOINT`, when
+    /// those are set (see [`cache_root`]). The reranker used to ignore both,
+    /// so under either it was fetched from somewhere the embedder was not --
+    /// a mirror set for one and not the other, or two copies of the cache.
+    /// Now the two are fetched alike.
     pub(crate) fn open(cache_dir: &Path, name: &str) -> Result<Self> {
         Self::open_at(cache_dir, name, "main")
     }
@@ -429,13 +428,25 @@ fn referenced_elsewhere(directory: &Path, own: &Path, blob: &Path) -> std::io::R
     Ok(false)
 }
 
-/// Where the hub's files are cached: `HF_HOME` when it is set, as
-/// [`Repository::open`] reads it, and the workspace's model directory
+/// Where the hub's files are cached: `hub` under `HF_HOME` when it is set,
+/// as [`Repository::open`] reads it, and the workspace's model directory
 /// otherwise.
+///
+/// `hub` because that is where the hub client's own `Cache::from_env` and
+/// Hugging Face's other tools keep repositories under `HF_HOME`, so a model
+/// one of them downloaded is found rather than fetched into a second tree
+/// beside it. (`fastembed` 6 fetches into `HF_HOME` itself, but nothing here
+/// fetches through it.)
 pub fn cache_root(cache_dir: &Path) -> PathBuf {
-    std::env::var_os("HF_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| cache_dir.to_path_buf())
+    cache_root_under(std::env::var_os("HF_HOME"), cache_dir)
+}
+
+/// [`cache_root`], with `HF_HOME` given.
+fn cache_root_under(hf_home: Option<std::ffi::OsString>, cache_dir: &Path) -> PathBuf {
+    hf_home.map_or_else(
+        || cache_dir.to_path_buf(),
+        |home| PathBuf::from(home).join("hub"),
+    )
 }
 
 /// Whether `text` is a full commit id: forty hexadecimal digits.
@@ -553,6 +564,18 @@ mod tests {
         // A requested commit is resolved without a ref.
         let at = Repository::open_at(dir.path(), NAME, OLD).expect("open");
         assert_eq!(at.identity(dir.path()), at.identity(dir.path()));
+    }
+
+    /// Under `HF_HOME` the cache is its `hub` directory, where the hub
+    /// client's `Cache::from_env` keeps it; without, the model directory.
+    #[test]
+    fn hf_home_caches_in_its_hub_directory() {
+        let models = Path::new("/workspace/models");
+        assert_eq!(cache_root_under(None, models), models);
+        assert_eq!(
+            cache_root_under(Some("/shared/hf".into()), models),
+            Path::new("/shared/hf/hub")
+        );
     }
 
     /// A commit's snapshot is read without a ref named by the commit: the
