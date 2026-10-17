@@ -238,9 +238,12 @@ impl Embedder {
     /// same for both: the CPU runs the int8 export and an accelerator another,
     /// and their outputs are not bit-identical. `None` when a model runs on no
     /// plan, whose identity would name a device and nothing that produced the
-    /// numbers, so nothing can be shown to match it.
+    /// numbers, so nothing can be shown to match it -- and when a model runs
+    /// on a plan that is not stable across processes, a DirectML adapter
+    /// ordinal or an NPU id another process may give other hardware
+    /// ([`crate::inference::recorded_use`]).
     pub fn encoding(&self) -> Option<String> {
-        self.encoding_by(crate::inference::planned_use)
+        self.encoding_by(crate::inference::recorded_use)
     }
 
     /// [`Embedder::encoding`], for a caller deciding whether a vector already
