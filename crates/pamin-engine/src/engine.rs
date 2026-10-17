@@ -155,6 +155,108 @@ fn unheld(index: &dyn Projection, wanted: &[(TopicId, &str)], encoding: Option<&
     }
 }
 
+/// What a sync needs of the model: the plan a stored vector has to have been
+/// embedded under to stand in for a pass, and the pass.
+///
+/// A trait only so the order [`write_unheld`] asks these in can be tested
+/// against a model whose plan moves; [`Embedder`] is the one implementation the
+/// product runs.
+trait PassageEncoder {
+    /// [`Embedder::reusable_encoding`].
+    fn reusable_encoding(&self) -> Option<String>;
+    /// [`Embedder::encode_passages`]: the vectors, and the plan that produced
+    /// every one of them.
+    fn encode_passages(
+        &mut self,
+        texts: &[&str],
+    ) -> pamin_index::Result<(Vec<pamin_index::Encoded>, Option<String>)>;
+}
+
+impl PassageEncoder for Embedder {
+    fn reusable_encoding(&self) -> Option<String> {
+        Embedder::reusable_encoding(self)
+    }
+
+    fn encode_passages(
+        &mut self,
+        texts: &[&str],
+    ) -> pamin_index::Result<(Vec<pamin_index::Encoded>, Option<String>)> {
+        Embedder::encode_passages(self, texts)
+    }
+}
+
+/// Embeds and writes each of `wanted` the index does not already hold under
+/// the plan the model would embed it with ([`unheld`]); `passages` is what
+/// each one's vector is embedded from.
+///
+/// Which states are held is decided against one plan, and the model can move
+/// off it before their vectors are worth keeping: a fallback whose retry
+/// deadline passes while the index is read, a pass that revalidates it onto
+/// the accelerator, an accelerator that fails during the pass. A state skipped
+/// as held would then keep a vector of the plan the model left, beside new
+/// vectors and queries of the plan it moved to. So the plan is asked again
+/// after the read, and if it changed nothing is held; and the plan the pass
+/// ran under is compared with the one the check matched, and if they differ
+/// the skipped states are embedded after all.
+///
+/// `index` takes the index lock per call, so the pass runs without it and a
+/// search is not held up behind a forward pass.
+fn write_unheld<G>(
+    index: impl Fn() -> G,
+    encoder: &mut impl PassageEncoder,
+    wanted: &[(TopicId, &str)],
+    passages: &[&str],
+) -> pamin_index::Result<()>
+where
+    G: std::ops::Deref<Target = Arc<dyn Projection + Send + Sync>>,
+{
+    let reusable = encoder.reusable_encoding();
+    let mut unheld = unheld(&**index(), wanted, reusable.as_deref());
+    if encoder.reusable_encoding() != reusable {
+        unheld.fill(true);
+    }
+    let (fresh, held): (Vec<usize>, Vec<usize>) = (0..wanted.len()).partition(|&at| unheld[at]);
+    if fresh.is_empty() {
+        return Ok(());
+    }
+    let encoding = write_encoded(&index, encoder, wanted, passages, &fresh)?;
+    if !held.is_empty() && encoding != reusable {
+        write_encoded(&index, encoder, wanted, passages, &held)?;
+    }
+    Ok(())
+}
+
+/// Embeds the states of `wanted` at these positions in one pass, writes them
+/// recording the plan that produced them, and returns that plan.
+fn write_encoded<G>(
+    index: &impl Fn() -> G,
+    encoder: &mut impl PassageEncoder,
+    wanted: &[(TopicId, &str)],
+    passages: &[&str],
+    at: &[usize],
+) -> pamin_index::Result<Option<String>>
+where
+    G: std::ops::Deref<Target = Arc<dyn Projection + Send + Sync>>,
+{
+    let texts: Vec<&str> = at.iter().map(|&at| passages[at]).collect();
+    let (embeddings, encoding) = encoder.encode_passages(&texts)?;
+    let documents: Vec<VectorDocument<'_>> = at
+        .iter()
+        .zip(&embeddings)
+        .map(|(&at, embedding)| {
+            let (topic, content) = wanted[at];
+            (
+                topic,
+                content,
+                embedding.primary.as_slice(),
+                embedding.secondary.as_deref(),
+            )
+        })
+        .collect();
+    index().upsert_encoded(&documents, encoding.as_deref())?;
+    Ok(encoding)
+}
+
 /// The store, the index, and the embedder, wired together.
 ///
 /// Cheap to clone, and every method takes `&self`, so one engine serves many
@@ -546,6 +648,32 @@ impl Models {
             held.lock()
                 .expect("the reranker lock is poisoned")
                 .counted(),
+        )
+    }
+
+    /// The passes the reranker loaded at `tier` makes over `documents` for
+    /// `query` (see [`Reranker::plan`]), or `None` if this process has not
+    /// loaded that tier. Never loads one. The handle is cloned out from under
+    /// the registry lock first, as in [`counted`](Self::counted).
+    fn passes(
+        &self,
+        tier: Rerank,
+        query: &str,
+        documents: &[&str],
+    ) -> Option<Result<Vec<Vec<usize>>, pamin_index::IndexError>> {
+        let held = {
+            let rerankers = self
+                .rerankers
+                .lock()
+                .expect("the reranker registry lock is poisoned");
+            let (_, reranker) = rerankers.get(&tier)?;
+            Arc::clone(reranker)
+        };
+        let reranker = held.lock().expect("the reranker lock is poisoned");
+        Some(
+            reranker
+                .lengths(query, documents)
+                .map(|lengths| reranker.plan(&lengths)),
         )
     }
 
@@ -1167,40 +1295,8 @@ impl Engine {
                 .iter()
                 .map(|state| (state.topic_id, state.content.as_str()))
                 .collect();
-            // The reusable plan, not the resident one: a fallback past
-            // its retry deadline holds nothing, so the pass runs and
-            // revalidates it rather than being skipped with it.
-            let unheld = unheld(
-                &**self.index(),
-                &wanted,
-                embedder.reusable_encoding().as_deref(),
-            );
-            let (states, contents): (Vec<&TopicState>, Vec<&str>) = states
-                .iter()
-                .zip(&passages)
-                .zip(unheld)
-                .filter(|(_, unheld)| *unheld)
-                .map(|((state, passage), _)| (state, passage.as_str()))
-                .unzip();
-            if states.is_empty() {
-                return Ok(());
-            }
-
-            let embeddings = embedder.encode_passages(&contents)?;
-            let encoding = embedder.encoding();
-            let documents: Vec<VectorDocument<'_>> = states
-                .iter()
-                .zip(&embeddings)
-                .map(|(state, embedding)| {
-                    (
-                        state.topic_id,
-                        state.content.as_str(),
-                        embedding.primary.as_slice(),
-                        embedding.secondary.as_deref(),
-                    )
-                })
-                .collect();
-            self.index().upsert_encoded(&documents, encoding.as_deref())
+            let passages: Vec<&str> = passages.iter().map(String::as_str).collect();
+            write_unheld(|| self.index(), &mut *embedder, &wanted, &passages)
         })?;
         Ok(())
     }
@@ -1645,6 +1741,24 @@ impl Engine {
     /// totals for the loaded model and are lost when an idle tier is released.
     pub fn reranked(&self, tier: Rerank) -> Option<pamin_index::Reranked> {
         self.models.counted(tier)
+    }
+
+    /// The passes this engine's reranker at `tier` would make over
+    /// `documents` for `query`, in the order it runs them -- its own planner,
+    /// at the execution target it is on now -- or `None` if this process has
+    /// not loaded that tier. Never loads one.
+    ///
+    /// Nothing in the product calls it. An evaluation replaying the passes a
+    /// search ran asks the engine's reranker rather than loading a second
+    /// copy of the model for its tokenizer and limits.
+    #[doc(hidden)]
+    pub fn rerank_passes(
+        &self,
+        tier: Rerank,
+        query: &str,
+        documents: &[&str],
+    ) -> Option<std::result::Result<Vec<Vec<usize>>, pamin_index::IndexError>> {
+        self.models.passes(tier, query, documents)
     }
 
     /// Loads the embedding model now, if it is not loaded yet, rather than at
@@ -2213,9 +2327,11 @@ impl Engine {
             // What the old index holds first, in one pass over it, then
             // whatever it could not supply.
             let lent = match &previous {
-                Some(previous) => previous.lend(&wanted, REINDEX_BATCH, |documents| {
-                    index.upsert_vectors(documents)
-                })?,
+                Some(previous) => {
+                    previous.lend(&wanted, REINDEX_BATCH, |documents, encoding| {
+                        index.upsert_encoded(documents, encoding)
+                    })?
+                }
                 None => std::collections::HashSet::new(),
             };
             let missing: Vec<(&TopicState, &str)> = states
@@ -2234,8 +2350,7 @@ impl Engine {
                 let model = embedder
                     .as_mut()
                     .expect("the model is loaded whenever a vector is missing");
-                let embeddings = model.encode_passages(&texts)?;
-                let encoding = model.encoding();
+                let (embeddings, encoding) = model.encode_passages(&texts)?;
                 let documents: Vec<_> = batch
                     .iter()
                     .zip(&embeddings)
@@ -2911,6 +3026,24 @@ mod tests {
         preloads.settle().await;
     }
 
+    /// Planning a replay's passes asks only a reranker already loaded: with
+    /// none, it answers `None` and loads nothing, so an evaluation that
+    /// plans through it holds one reranker model, the one the engine loaded.
+    #[test]
+    fn planning_passes_never_loads_a_reranker() {
+        let models = super::Models {
+            dir: std::path::PathBuf::from("/nonexistent/pamin-models"),
+            loaded: std::sync::Arc::default(),
+            rerankers: std::sync::Arc::default(),
+        };
+        assert!(
+            models
+                .passes(Rerank::Accurate, "query", &["one", "two"])
+                .is_none()
+        );
+        assert!(models.rerankers.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn idle_sweep_skips_registries_while_a_model_load_holds_them() {
         use std::sync::mpsc;
@@ -3484,8 +3617,8 @@ mod tests {
     /// write the vector that is there, and that holds only for the plan that
     /// produced it: the CPU's int8 export and an accelerator's do not agree to
     /// the bit. So the same text under another plan, under no plan, or stored
-    /// with nothing recorded -- written before this was, or lent by a rebuild
-    /// -- is not held. Comparing the text alone passes the first and the last.
+    /// with nothing recorded -- written before this was, or by an unstable
+    /// plan -- is not held. Comparing the text alone passes the first and the last.
     #[test]
     fn a_vector_from_another_plan_is_embedded_again() {
         use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
@@ -3524,6 +3657,141 @@ mod tests {
             [true, true]
         );
         assert_eq!(super::unheld(&index, &wanted, None), [true, true]);
+    }
+
+    /// A model whose plan moves when asked, for [`super::write_unheld`].
+    struct Moving {
+        /// What `reusable_encoding` answers, call by call; the last repeats.
+        reusable: std::cell::RefCell<Vec<Option<String>>>,
+        /// The plan a pass runs under, and the one the next pass moves to.
+        plan: String,
+        moves_to: Option<String>,
+        passes: Vec<Vec<String>>,
+    }
+
+    impl Moving {
+        fn on(plan: &str) -> Self {
+            Self {
+                reusable: std::cell::RefCell::new(vec![Some(plan.to_string())]),
+                plan: plan.to_string(),
+                moves_to: None,
+                passes: Vec::new(),
+            }
+        }
+    }
+
+    impl super::PassageEncoder for Moving {
+        fn reusable_encoding(&self) -> Option<String> {
+            let mut answers = self.reusable.borrow_mut();
+            if answers.len() > 1 {
+                answers.remove(0)
+            } else {
+                answers[0].clone()
+            }
+        }
+
+        fn encode_passages(
+            &mut self,
+            texts: &[&str],
+        ) -> pamin_index::Result<(Vec<pamin_index::Encoded>, Option<String>)> {
+            if let Some(next) = self.moves_to.take() {
+                self.plan = next;
+            }
+            self.passes
+                .push(texts.iter().map(|text| text.to_string()).collect());
+            let width = pamin_index::Profile::Speed.dimensions() as usize;
+            let encoded = texts
+                .iter()
+                .map(|_| pamin_index::Encoded {
+                    primary: vec![0.1; width],
+                    secondary: None,
+                })
+                .collect();
+            Ok((encoded, Some(self.plan.clone())))
+        }
+    }
+
+    /// A state is skipped as held only if the plan its vector was matched
+    /// against is the one the model is still on once the batch is written.
+    ///
+    /// The pass can move the model -- revalidating an expired fallback onto
+    /// the accelerator, or falling back from one that failed -- and the plan
+    /// can expire while the index is read. Either way a state skipped on the
+    /// old plan would keep that plan's vector beside the new plan's vectors
+    /// and queries, so it is embedded after all.
+    #[test]
+    fn a_held_state_is_embedded_when_the_plan_moves_under_it() {
+        use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
+        use std::sync::Arc;
+
+        let setup = || {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let index: Arc<dyn Projection + Send + Sync> = Arc::new(
+                ProjectionIndex::open(
+                    dir.path(),
+                    &dir.path().join("legacy"),
+                    Profile::Speed,
+                    VectorIndex::default(),
+                    Access::ReadWrite,
+                    0,
+                )
+                .expect("open index"),
+            );
+            let held = TopicId::new();
+            let vector = vec![0.1; Profile::Speed.dimensions() as usize];
+            index
+                .upsert_encoded(
+                    &[(held, "alpha", vector.as_slice(), None)],
+                    Some("cpu:fallback"),
+                )
+                .expect("write");
+            (dir, index, held, TopicId::new())
+        };
+        let encodings = |index: &Arc<dyn Projection + Send + Sync>, topics: &[TopicId]| {
+            index
+                .stored(topics)
+                .expect("read back")
+                .into_iter()
+                .map(|stored| stored.expect("stored").encoding)
+                .collect::<Vec<_>>()
+        };
+
+        // The plan stays: the held state is skipped.
+        let (_dir, index, held, new) = setup();
+        let wanted = [(held, "alpha"), (new, "beta")];
+        let mut model = Moving::on("cpu:fallback");
+        super::write_unheld(|| &index, &mut model, &wanted, &["alpha", "beta"]).expect("sync");
+        assert_eq!(model.passes, [vec!["beta".to_string()]]);
+        assert_eq!(
+            encodings(&index, &[held, new]),
+            [Some("cpu:fallback".into()), Some("cpu:fallback".into())]
+        );
+
+        // The pass moves the model: the held state is embedded after all, and
+        // both documents name the plan that produced them.
+        let (_dir, index, held, new) = setup();
+        let wanted = [(held, "alpha"), (new, "beta")];
+        let mut model = Moving::on("cpu:fallback");
+        model.moves_to = Some("npu:restored".into());
+        super::write_unheld(|| &index, &mut model, &wanted, &["alpha", "beta"]).expect("sync");
+        assert_eq!(
+            model.passes,
+            [vec!["beta".to_string()], vec!["alpha".to_string()]]
+        );
+        assert_eq!(
+            encodings(&index, &[held, new]),
+            [Some("npu:restored".into()), Some("npu:restored".into())]
+        );
+
+        // The plan expires while the index is read: nothing is held, even in
+        // a batch where everything matched, so the pass runs and revalidates.
+        let (_dir, index, held, _) = setup();
+        let mut model = Moving::on("cpu:fallback");
+        model.reusable = std::cell::RefCell::new(vec![Some("cpu:fallback".into()), None]);
+        model.moves_to = Some("npu:restored".into());
+        super::write_unheld(|| &index, &mut model, &[(held, "alpha")], &["alpha"]).expect("sync");
+        assert_eq!(model.passes, [vec!["alpha".to_string()]]);
+        assert_eq!(encodings(&index, &[held]), [Some("npu:restored".into())]);
     }
 
     /// A write the index has buffered and not yet flushed is already held.
