@@ -28,6 +28,7 @@ promotes it**. So "I wrote it and `search` cannot find it" is usually not a bug:
 ```console
 $ pamin write --topic oncall "ok"
 Held in evidence only: content was too short to carry a durable claim
+Stored as oncall source version 1
 ```
 
 That content is still recoverable with `grep`. It is not a memory.
