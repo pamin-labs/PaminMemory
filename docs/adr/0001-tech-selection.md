@@ -3055,7 +3055,7 @@ column appeared to say the opposite.
 
 **What the cores are divided between is worth setting, and is not worth
 changing by default.** ONNX Runtime splits one forward pass across every core
-unless told otherwise, and `PAMIN_INFERENCE_THREADS` is the other way to divide
+unless told otherwise, and `PAMIN_INFERENCE_THREADS` (now `--inference-threads`) is the other way to divide
 them — fewer threads per pass, more passes at once. Throughput in queries a
 second, same sweep:
 

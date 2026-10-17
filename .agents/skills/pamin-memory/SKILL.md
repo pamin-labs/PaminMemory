@@ -151,7 +151,8 @@ that two topics really are related the way it claims.
 
 Every search reranks with one cross-encoder, and there is no flag for it:
 `--rerank` and `PAMIN_RERANK` were removed, and setting `PAMIN_RERANK` is an
-error. A search against a warm server on four cores costs more than a second,
+error, as is every other retired settings variable (`docs/cli.md` lists them
+and the flags that replaced them). A search against a warm server on four cores costs more than a second,
 most of it the reranker (`docs/cli.md`).
 
 **Leave `--channel-depth` and `--graph-depth` alone.** They exist for the
@@ -243,9 +244,18 @@ than that the claim was wrong.
 - **The first command is slow and the rest are not.** It starts a server holding
   the database, the index and the model. You do not need to start or stop it;
   `pamin stop` exists but running it between commands throws away the thing that
-  makes the rest fast.
-- **Projects are namespaces, not tags.** `--project` (or `PAMIN_PROJECT`) picks
-  one; nothing crosses between them.
+  makes the rest fast. A few later commands are slow too: the first write, which
+  downloads BGE-M3 and writes its mapped copy; the first search, which downloads
+  and prepares the reranker; the first search after the server has given its
+  models back (30 idle minutes, `--model-idle`); and the first search after an
+  upgrade, which measures the reranker's execution plan again.
+- **Server settings are fixed when the server starts.** Flags such as
+  `--device` or `--model-idle`, and `$PAMIN_HOME/config.toml`, decide them. A
+  command asking for settings the running server does not have fails and says
+  so; run `pamin stop` only if you mean to restart it with them.
+- **Projects are namespaces, not tags.** `--project` (or `PAMIN_PROJECT`, one
+  of the few variables `pamin` still reads) picks one; nothing crosses between
+  them.
 - **Results are stable for stable inputs**, ties broken on identifier, so an
   assembled context can be cached rather than rebuilt.
 - **`cascade` in a write's JSON** says whether the index caught up before the
