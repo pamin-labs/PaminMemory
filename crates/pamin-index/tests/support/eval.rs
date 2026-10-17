@@ -127,6 +127,20 @@ const PRODUCT: &[&str] = &[
     "PAMIN_VECTOR_INDEX",
 ];
 
+/// Variables a build script sets with `cargo:rustc-env` -- `pamin-index`'s
+/// two and `pamin-engine`'s four -- which Cargo also sets on every test of
+/// that package it runs. They describe the build, are no setting, and are
+/// what a record names its build by, so no check refuses them and no arm is
+/// named by them.
+pub const BUILD: [&str; 6] = [
+    "PAMIN_ENGINE_BUILD_ENVIRONMENT",
+    "PAMIN_ENGINE_COMMIT",
+    "PAMIN_ENGINE_DIRTY",
+    "PAMIN_ENGINE_SOURCES",
+    "PAMIN_INFERENCE_BUILD",
+    "PAMIN_INFERENCE_CARGO",
+];
+
 /// Refuses any `PAMIN_*` variable a run would silently ignore: a misspelled
 /// knob, or a product setting the libraries no longer read (`PAMIN_DEVICE`,
 /// `PAMIN_RERANK_DEPTH`), which a harness takes as `PAMIN_EVAL_*` instead.
@@ -135,6 +149,7 @@ pub fn check() {
         let Some(name) = name.to_str() else { continue };
         if !name.starts_with("PAMIN_")
             || PRODUCT.contains(&name)
+            || BUILD.contains(&name)
             || KNOBS.iter().any(|(knob, _)| *knob == name)
         {
             continue;
@@ -193,4 +208,20 @@ fn text(name: &str) -> Option<String> {
         Err(std::env::VarError::NotPresent) => None,
         Err(error) => panic!("{name}: {error}"),
     }
+}
+
+/// `cargo test` sets this package's build-script variables on the test
+/// itself, and the check lets them through. Asserted present first, so the
+/// test fails rather than passes if Cargo stops setting them.
+#[test]
+fn the_check_lets_build_variables_through() {
+    let set: Vec<&str> = BUILD
+        .into_iter()
+        .filter(|name| std::env::var_os(name).is_some())
+        .collect();
+    assert!(
+        !set.is_empty(),
+        "cargo test set none of {BUILD:?}, so this checks nothing"
+    );
+    check();
 }
