@@ -2,9 +2,14 @@
 //!
 //! One kernel per instruction set, chosen at run time on x86-64 so a single
 //! binary uses AVX-512 or AVX2 where the CPU has them. NEON is part of every
-//! aarch64 target, Linux and Apple alike, so it needs no detection. On an M4
-//! the NEON kernel beat Accelerate's `cblas_sdot` at 1024 dimensions (5.25 µs
-//! against 6.00 µs per 100 rows, p50), so Apple silicon uses it too.
+//! aarch64 target, so it needs no detection; non-Apple aarch64 (Linux on
+//! Graviton, Ampere, a Raspberry Pi 5) uses it, because it has no Accelerate.
+//! Apple silicon keeps Accelerate's `cblas_sdot`: the library kernel stays the
+//! default until a measurement justifies replacing it. The NEON kernel still
+//! compiles and is tested there, so a clean measurement can switch to it. The
+//! one comparison so far, an M4 screen taken under background load, favoured
+//! NEON (5.25 µs against 6.00 µs per 100 rows, p50), but it is provisional and
+//! covers no M1–M3.
 //! Intel Macs take the same x86 kernels as Linux, so every x86-64 host runs
 //! one implementation; nothing has timed them against Accelerate there.
 //! Every other target gets a portable reduction over eight independent
@@ -18,11 +23,24 @@
 //! Accelerate on an M4 (`benchmarks/results/inference/rescore-simd-2026-10-12`).
 //! The unit test holds every kernel within 1e-5 × √n of an f64 sum.
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[link(name = "Accelerate", kind = "framework")]
+unsafe extern "C" {
+    fn cblas_sdot(n: i32, x: *const f32, incx: i32, y: *const f32, incy: i32) -> f32;
+}
+
 /// The dot product of the dimensions `left` and `right` share.
 pub(crate) fn dot(left: &[f32], right: &[f32]) -> f32 {
     let count = left.len().min(right.len());
     let (left, right) = (&left[..count], &right[..count]);
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        let count = i32::try_from(count).expect("vector dimensions fit i32");
+        // SAFETY: both slices contain `count` contiguous f32 values, and the
+        // framework reads them only for this synchronous call.
+        unsafe { cblas_sdot(count, left.as_ptr(), 1, right.as_ptr(), 1) }
+    }
+    #[cfg(all(target_arch = "aarch64", not(target_os = "macos")))]
     {
         neon::dot(left, right)
     }
@@ -158,7 +176,9 @@ mod x86 {
 mod neon {
     use std::arch::aarch64::*;
 
-    /// Takes slices of equal length; four accumulators, as on x86.
+    /// Takes slices of equal length; four accumulators, as on x86. On macOS
+    /// only the tests call it, so it stays ready for a measured switch.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub(super) fn dot(left: &[f32], right: &[f32]) -> f32 {
         let count = left.len();
         let (a, b) = (left.as_ptr(), right.as_ptr());
