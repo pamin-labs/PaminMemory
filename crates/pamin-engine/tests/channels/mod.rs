@@ -1014,10 +1014,18 @@ pub async fn compare_reranked(
     crate::harness::shape::tables(&tables);
     let mut measured: Vec<BTreeMap<String, crate::scoring::Scores>> =
         vec![BTreeMap::new(); settings.len()];
+    // The environment is the process's: only the test holding the turn may
+    // set it, or another evaluation could read this arm's depth as its own
+    // settings (see `harness::ModelsTurn`).
+    assert!(
+        crate::harness::turn_taken(),
+        "an experimental arm set the environment without the turn"
+    );
     for (index, (text, group)) in questions.iter().enumerate() {
         for ((setting, into), table) in settings.iter().zip(&mut measured).zip(&tables) {
-            // SAFETY: the harness runs one test on one thread, and nothing
-            // else reads the environment while this is written.
+            // SAFETY: this test holds the turn (asserted above), and every
+            // other test that reads the environment for its settings waits
+            // for it.
             match setting.depth {
                 Some(depth) => unsafe {
                     std::env::set_var("PAMIN_RERANK_DEPTH", depth.to_string())
