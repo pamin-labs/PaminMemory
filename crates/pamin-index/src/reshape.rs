@@ -26,7 +26,7 @@
 //! place. A process that dies between the two renames leaves the served index
 //! aside and nothing where it was, which [`Reshape::recover`] puts back.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -326,25 +326,35 @@ impl Reshape {
     ///
     /// Returns how many it wrote.
     fn apply(&self, topics: &[TopicId], stored: &[Option<Stored>]) -> Result<u64> {
-        let mut present: Vec<VectorDocument<'_>> = Vec::with_capacity(topics.len());
+        // Grouped by what produced the vectors, so the copy records it as the
+        // served index did: a copy that dropped it would leave every document
+        // one a served write has to embed again.
+        let mut present: BTreeMap<Option<&str>, Vec<VectorDocument<'_>>> = BTreeMap::new();
         let mut absent: Vec<TopicId> = Vec::new();
         for (topic, document) in topics.iter().zip(stored) {
             match document {
-                Some(document) => present.push((
-                    *topic,
-                    document.content.as_str(),
-                    document.embedding.as_slice(),
-                )),
+                Some(document) => present
+                    .entry(document.encoding.as_deref())
+                    .or_default()
+                    .push((
+                        *topic,
+                        document.content.as_str(),
+                        document.embedding.as_slice(),
+                    )),
                 None => absent.push(*topic),
             }
         }
 
         let next = self.next();
-        next.upsert_batch(&present)?;
+        let mut copied = 0;
+        for (encoding, documents) in &present {
+            next.upsert_encoded(documents, *encoding)?;
+            copied += documents.len() as u64;
+        }
         if !absent.is_empty() {
             next.delete(&absent)?;
         }
-        Ok(present.len() as u64)
+        Ok(copied)
     }
 
     fn next(&self) -> &ProjectionIndex {
@@ -438,6 +448,15 @@ impl Projection for Recording {
     fn upsert_batch(&self, documents: &[VectorDocument<'_>]) -> Result<()> {
         self.touch(documents.iter().map(|(topic, ..)| *topic));
         self.inner.upsert_batch(documents)
+    }
+
+    fn upsert_encoded(
+        &self,
+        documents: &[VectorDocument<'_>],
+        encoding: Option<&str>,
+    ) -> Result<()> {
+        self.touch(documents.iter().map(|(topic, ..)| *topic));
+        self.inner.upsert_encoded(documents, encoding)
     }
 
     fn recall_segmented(&self, query: &str, limit: u32) -> Result<Vec<Scored>> {
@@ -618,6 +637,9 @@ mod tests {
 
     const DOCUMENTS: u128 = 3_001;
 
+    /// What the fixture records as having produced its vectors.
+    const SERVED_ENCODING: &str = "cpu:served";
+
     fn topic(n: u128) -> TopicId {
         TopicId(uuid::Uuid::from_u128(n))
     }
@@ -666,13 +688,15 @@ mod tests {
         .expect("open the served index");
         let contents: Vec<String> = (1..=DOCUMENTS).map(content).collect();
         let vectors: Vec<Vec<f32>> = (1..=DOCUMENTS).map(vector).collect();
-        let documents: Vec<(TopicId, &str, &[f32])> = (1..=DOCUMENTS)
+        let documents: Vec<VectorDocument<'_>> = (1..=DOCUMENTS)
             .map(|n| {
                 let at = (n - 1) as usize;
                 (topic(n), contents[at].as_str(), vectors[at].as_slice())
             })
             .collect();
-        index.upsert_batch(&documents).expect("write");
+        index
+            .upsert_encoded(&documents, Some(SERVED_ENCODING))
+            .expect("write");
         index.flush().expect("flush");
         Arc::new(Mutex::new(Arc::new(index)))
     }
@@ -720,7 +744,14 @@ mod tests {
         {
             let served = lock(&held);
             served
-                .upsert(topic(5), "memory number 5 was edited", &vector(1005))
+                .upsert_encoded(
+                    &[(
+                        topic(5),
+                        "memory number 5 was edited",
+                        vector(1005).as_slice(),
+                    )],
+                    Some("cuda:edited"),
+                )
                 .expect("edit");
             served.delete(&[topic(7)]).expect("delete");
         }
@@ -767,6 +798,7 @@ mod tests {
                     Some(Stored {
                         content: content(n),
                         embedding: crate::as_stored(&vector(n)),
+                        encoding: Some(SERVED_ENCODING.to_string()),
                     }),
                 )
             })
@@ -774,7 +806,12 @@ mod tests {
         expected[4].1 = Some(Stored {
             content: "memory number 5 was edited".to_string(),
             embedding: crate::as_stored(&vector(1005)),
+            encoding: Some("cuda:edited".to_string()),
         });
+        // Written with nothing recorded, and copied the same way.
+        if let Some((_, Some(written))) = expected.last_mut() {
+            written.encoding = None;
+        }
         expected[6].1 = None;
         let topics: Vec<TopicId> = expected.iter().map(|(topic, _)| *topic).collect();
         let stored = served.stored(&topics).expect("read back");
@@ -782,7 +819,8 @@ mod tests {
             assert!(
                 got == want,
                 "topic {topic} did not survive the reshape: it holds {:?}",
-                got.as_ref().map(|document| &document.content)
+                got.as_ref()
+                    .map(|document| (&document.content, &document.encoding))
             );
         }
 
