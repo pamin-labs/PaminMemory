@@ -893,12 +893,21 @@ fn pinned_model_id(models: &Path, role: &str) -> String {
     let source_hash = match std::fs::read(snapshot.join(weights)) {
         Ok(bytes) => format!("{:x}", Sha256::digest(bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // The record of this revision (`<label>.<revision tag>.source`),
+            // or one an older build wrote under the label alone.
             let label = format!(
-                "{}--{}.source",
+                "{}--{}",
                 repository.replace('/', "--"),
                 weights.replace('/', "--")
             );
-            std::fs::read_to_string(models.join("prepared").join(label))
+            let tag: String = format!(
+                "{:x}",
+                Sha256::digest(format!("{repository}@{revision}").as_bytes())
+            )[..16]
+                .to_string();
+            let prepared = models.join("prepared");
+            std::fs::read_to_string(prepared.join(format!("{label}.{tag}.source")))
+                .or_else(|_| std::fs::read_to_string(prepared.join(format!("{label}.source"))))
                 .expect("the released download must have a prepared source record")
                 .lines()
                 .nth(3)
