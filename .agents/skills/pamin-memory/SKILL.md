@@ -148,9 +148,11 @@ tells you how much to trust the hit:
   judge whether that route is relevant to what you asked. `asserted_from` and
   `asserted_to` say which way the edge itself runs, which the walk ignores.
 - **`reranked`** means the cross-encoder read the query and this memory
-  together; its place blends that score with fusion's. Every hit in the fused
-  top thirty carries it, lexical matches included. A hit without it sat below
-  that head and was not one of the strongest finds only the graph made.
+  together; its place blends that score with fusion's. When the search found
+  two or more candidates, every hit in the fused top thirty carries it,
+  lexical matches included, and a hit without it sat below that head and was
+  not one of the strongest finds only the graph made. With fewer than two
+  candidates nothing is reranked, so no hit carries it.
 
 Ranks travel between channels; scores do not, which is why fusion combines
 ranks. A `path` entry is verifiable in a way a rank is not — anyone can check
