@@ -845,7 +845,7 @@ async fn search() {
     // `RERANK_RULES`: other rules for using the shipped tier's scores, priced
     // from one shipped run. See `reranking`.
     if std::env::var("RERANK_RULES").is_ok() {
-        rerank_rules(&engine, &corpus, &named, &workspace.root().join("models")).await;
+        rerank_rules(&engine, &corpus, &named).await;
         return;
     }
 
@@ -1035,10 +1035,10 @@ async fn run(engine: &Engine, corpus: &Corpus, route: Route) -> Scores {
 }
 
 /// Every rule in `reranking::rules` over the shipped tier's own scores.
-async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str, models: &std::path::Path) {
+async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
-    let mut priced = reranking::Priced::new(models);
+    let mut priced = reranking::Priced::default();
     for query in &corpus.queries {
         let hits = engine
             .search_reranked(&query.text, WIDE, DEPTHS, tier)
@@ -1047,6 +1047,7 @@ async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str, models: &st
         channels::enough_room(&hits, WIDE);
         let replayed = reranking::replay(&hits, tier);
         priced.observe(
+            engine,
             GROUP,
             &query.text,
             &hits,
@@ -1060,7 +1061,6 @@ async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str, models: &st
                 );
             },
         );
-        priced.planned_like(engine);
     }
     priced.report(&format!(
         "rules for the {} reranker's scores, MIRACL, {named}",
