@@ -171,6 +171,11 @@ const USED: &str = "used";
 /// module's documentation).
 const UNUSED_FOR: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 
+/// How long a record's partial file is left before a collection removes it:
+/// a release writes and renames one within moments, so one this old was
+/// left by a release that stopped between the two.
+const RECORD_PARTIAL_FOR: Duration = Duration::from_secs(60 * 60);
+
 /// The lock of every copy this process has loaded, held shared until it exits
 /// so that no other process removes the copy (see the module's documentation).
 ///
@@ -691,8 +696,9 @@ fn unused(done: &Path, now: SystemTime) -> bool {
 
 /// Removes, from `root`, every copy that is not the one this runtime and CPU
 /// load for a model recorded there, that has gone [`UNUSED_FOR`] without a
-/// load and that no process holds, and every partial directory no writer
-/// holds. See the module's documentation for the rule and why it is safe.
+/// load and that no process holds, every partial directory no writer
+/// holds, and every record partial file [`RECORD_PARTIAL_FOR`] old. See the
+/// module's documentation for the rule and why it is safe.
 ///
 /// Best effort, entry by entry: what cannot be removed now -- a copy Windows
 /// will not let go of, say -- is warned about and tried again on the next
@@ -761,6 +767,23 @@ fn collect_one(
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return Ok(());
     };
+    // A record's partial file (`<record>.<key>.<writer>.partial`), not a
+    // copy's: each writer's own, so it is never resumed, only left behind.
+    if name
+        .strip_suffix(".partial")
+        .is_some_and(|stem| stem.contains(".source."))
+    {
+        let stale = std::fs::metadata(path)
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|written| now.duration_since(written).ok())
+            .is_some_and(|age| age >= RECORD_PARTIAL_FOR);
+        return if stale && path.is_file() {
+            std::fs::remove_file(path)
+        } else {
+            Ok(())
+        };
+    }
     let (key, partial) = match name.strip_suffix(".partial") {
         Some(key) => (key, true),
         None => (name, false),
@@ -1989,6 +2012,36 @@ mod tests {
             "a copy under a key this build does not load was kept"
         );
         assert!(record.exists(), "the record was removed");
+    }
+
+    /// A record's partial file a release left behind goes once it is an hour
+    /// old; a fresh one, which a release may be about to rename, stays.
+    #[test]
+    fn a_left_record_partial_goes_after_an_hour() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path().join("prepared");
+        std::fs::create_dir_all(&root).expect("the copies' directory");
+        let name = |n: u8| {
+            format!(
+                "someone--model--onnx--model.onnx.0123456789abcdef.source.{}.42-{n}.partial",
+                key_of(n)
+            )
+        };
+        let (old, fresh) = (root.join(name(1)), root.join(name(2)));
+        let now = SystemTime::now();
+        for (path, at) in [(&old, now - 2 * RECORD_PARTIAL_FOR), (&fresh, now)] {
+            std::fs::write(path, "half a record").expect("a partial record");
+            File::options()
+                .write(true)
+                .open(path)
+                .and_then(|file| file.set_modified(at))
+                .expect("its time");
+        }
+
+        collect(&root, now);
+
+        assert!(!old.exists(), "an hour-old record partial was kept");
+        assert!(fresh.exists(), "a fresh record partial was removed");
     }
 
     /// A load stamps the copy it hands out and holds it, so a collection in
