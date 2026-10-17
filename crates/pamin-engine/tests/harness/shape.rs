@@ -3588,10 +3588,7 @@ mod tests {
     /// cache's producer.
     #[test]
     fn an_index_setting_names_the_index_not_the_vectors() {
-        let budget = settings([(
-            "PAMIN_EVAL_UNINDEXED_BUDGET".to_string(),
-            "64".to_string(),
-        )]);
+        let budget = settings([("PAMIN_EVAL_UNINDEXED_BUDGET".to_string(), "64".to_string())]);
         assert!(runtime(budget.clone(), false).is_empty());
         assert_eq!(runtime(budget, true), ["PAMIN_EVAL_UNINDEXED_BUDGET=64"]);
         let device = settings([("PAMIN_EVAL_DEVICE".to_string(), "cpu".to_string())]);

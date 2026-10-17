@@ -1139,6 +1139,10 @@ pub(crate) fn measured<T: RuntimeModel>(
 /// [`measured`] over these `discovered` accelerators: none, as
 /// [`accelerators`] finds under `PAMIN_DEVICE=cpu` or on a machine without
 /// one, selects the CPU without measuring anything.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "measured's inputs, plus the accelerators a test supplies in place of discovery"
+)]
 fn measured_among<T: RuntimeModel>(
     settings: &crate::InferenceSettings,
     discovered: Vec<(Device, Target)>,
