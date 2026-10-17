@@ -59,6 +59,26 @@ jobs:
       - name: Check inference and its tests
         run: cargo check -p pamin-index --all-targets --all-features
 
+  simd-kernels:
+    name: SIMD kernels on ${{ matrix.os }}
+    # The host vector kernels pick an instruction set per CPU: NEON on Linux
+    # aarch64, Accelerate on Apple silicon (whose tests also run the NEON
+    # kernel), F16C/AVX2/AVX-512 on x86-64. The `check`
+    # job only ever runs the x86-64 ones, so these run each other path's own
+    # tests on its own hardware.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Cache dependency builds
+        uses: Swatinem/rust-cache@v2
+      - name: Test the vector kernels
+        run: cargo test -p pamin-index --lib -- vector_math "half::tests"
+
   licences:
     name: dependency licences
     # Its own job rather than a step in the one above, because it needs no

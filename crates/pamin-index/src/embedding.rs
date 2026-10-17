@@ -928,7 +928,7 @@ fn check_complementary_retrieval(
         .iter()
         .map(|v| crate::half::as_stored(v))
         .collect();
-    let dot = crate::projection::dot;
+    let dot = crate::vector_math::dot;
     let similarity = |query: &[f32], document: &[f32]| {
         let lengths = dot(query, query).sqrt() * dot(document, document).sqrt();
         if lengths > 0.0 {
