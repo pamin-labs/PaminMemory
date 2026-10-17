@@ -804,6 +804,9 @@ struct Indexed {
     /// This index's build lock, held from counting what it holds until the
     /// run is over (see [`Shape::claim_index`]).
     building: Option<std::fs::File>,
+    /// Counts the documents the index holds now: asked again before a
+    /// build's stamp is promoted.
+    count: Box<dyn Fn() -> usize + Send>,
 }
 
 /// Everything that tells one run's record from another's, serialised
@@ -1380,7 +1383,7 @@ impl Shape {
             label,
             stamp,
             Box::new(move || super::vectors::index_producer(&engine)),
-            || counting.indexed_documents().expect("count documents") as usize,
+            Box::new(move || counting.indexed_documents().expect("count documents") as usize),
             total,
         );
     }
@@ -1400,7 +1403,7 @@ impl Shape {
         label: &str,
         stamp: PathBuf,
         producer: Box<dyn Fn() -> Option<String> + Send>,
-        count: impl FnOnce() -> usize,
+        count: Box<dyn Fn() -> usize + Send>,
         total: usize,
     ) {
         // An index this run has already claimed is locked by it: a second
@@ -1420,6 +1423,7 @@ impl Shape {
             total,
             start: None,
             building: Some(building),
+            count,
         });
     }
 
@@ -1524,9 +1528,29 @@ impl Shape {
                     short(&now)
                 ));
             } else if index.found == 0 && stamped.as_deref() == Some(pending(&now).as_str()) {
-                // Built whole from empty by one producer: now it vouches --
-                // once the stamp that says so is on disk. Unpublished, the
-                // stamp stays pending, and the run vouches for nothing.
+                let held = (index.count)();
+                if held < index.total {
+                    // Begun empty, but not holding the corpus now: a ledger
+                    // that already held every memory -- the index directory
+                    // deleted without it -- writes nothing again, and the
+                    // index stays as empty as it began. The stamp stays
+                    // pending.
+                    lines.push(format!(
+                        "{}: {state} by {}, not stamped: it holds {held} of {}",
+                        index.label,
+                        short(&now),
+                        index.total
+                    ));
+                    reasons.push(format!(
+                        "{} index incomplete: {held} of {}",
+                        index.label, index.total
+                    ));
+                    continue;
+                }
+                // Built whole from empty by one producer, and holding the
+                // corpus: now it vouches -- once the stamp that says so is
+                // on disk. Unpublished, the stamp stays pending, and the run
+                // vouches for nothing.
                 match write_stamp(&index.stamp, &now) {
                     Ok(()) => lines.push(format!("{}: {state} by {}", index.label, short(&now))),
                     Err(error) => {
@@ -2295,6 +2319,8 @@ mod tests {
             total: 4,
             start: None,
             building: None,
+            // The build wrote the whole corpus.
+            count: Box::new(|| 4),
         };
         // One run: published at `commit`, canonical or not, its index begun
         // before writing; and, unless interrupted, checked at the end.
@@ -2435,6 +2461,8 @@ mod tests {
             total: 4,
             start: None,
             building: None,
+            // The build wrote the whole corpus.
+            count: Box::new(|| 4),
         };
         let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut shape = Shape::new("test", String::new(), None);
@@ -2457,6 +2485,33 @@ mod tests {
         );
     }
 
+    /// An index begun empty that does not hold the corpus at the end is not
+    /// vouched for: the ledger held every memory already -- the index
+    /// directory deleted without it -- so every write was skipped and the
+    /// projection stayed empty. Its stamp stays pending.
+    #[test]
+    fn an_index_still_empty_at_the_end_is_not_vouched_for() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let stamp = dir.path().join("index").join("p.eval-producer");
+        let mut shape = Shape::new("test", String::new(), None);
+        shape.source.commit = "a".into();
+        // Counted empty at the start, and nothing written since.
+        shape.claim_index(
+            "primary",
+            stamp.clone(),
+            Box::new(|| Some("plan=cpu@a".into())),
+            Box::new(|| 0),
+            4,
+        );
+        let (lines, reasons) = shape.check_indexes();
+        assert_eq!(reasons, ["primary index incomplete: 0 of 4"], "{lines:?}");
+        assert!(lines[0].contains("not stamped"), "{lines:?}");
+        assert_eq!(
+            std::fs::read_to_string(&stamp).ok().as_deref(),
+            Some("pending\nplan=cpu@a\ncommit=a")
+        );
+    }
+
     /// A build whose final stamp cannot be published vouches for nothing:
     /// the run is not canonical and the stamp on disk stays pending.
     #[test]
@@ -2473,6 +2528,8 @@ mod tests {
             total: 4,
             start: None,
             building: None,
+            // The build wrote the whole corpus.
+            count: Box::new(|| 4),
         });
         // The publication's partial file cannot be written, root or not.
         std::fs::create_dir(stamp.with_extension("partial")).expect("block the write");
@@ -2505,7 +2562,7 @@ mod tests {
                 "primary",
                 stamp,
                 Box::new(|| Some("plan=cpu@a".into())),
-                move || documents.load(Ordering::SeqCst),
+                Box::new(move || documents.load(Ordering::SeqCst)),
                 4,
             );
         };
