@@ -4,7 +4,7 @@
 //! `cargo test -p pamin-index -- --ignored`.
 
 use pamin_core::TopicId;
-use pamin_index::{Access, Embedder, Profile, Projection, ProjectionIndex, VectorIndex};
+use pamin_index::{Access, Embedder, Projection, ProjectionIndex, VectorIndex};
 
 fn id(byte: u8) -> TopicId {
     TopicId(uuid::Uuid::from_bytes([byte; 16]))
@@ -15,15 +15,11 @@ fn id(byte: u8) -> TopicId {
 fn the_vector_channel_recalls_across_languages_without_translating() {
     let dir = tempfile::tempdir().expect("temp dir");
 
-    // The smallest profile, because this test is about cross-language recall
-    // rather than about which profile is most accurate.
-    let profile = Profile::Speed;
-    let mut embedder = Embedder::load(profile, &dir.path().join("models")).expect("load model");
+    let mut embedder = Embedder::load(&dir.path().join("models")).expect("load model");
 
     let index = ProjectionIndex::open(
         &dir.path().join("index"),
         &dir.path().join("legacy"),
-        profile,
         VectorIndex::default(),
         Access::ReadWrite,
         0,
@@ -71,35 +67,15 @@ fn the_vector_channel_recalls_across_languages_without_translating() {
 
 #[test]
 #[ignore = "downloads embedding model weights"]
-fn embeddings_have_the_width_their_profile_declares() {
+fn embeddings_have_the_width_the_index_is_built_for() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let profile = Profile::Speed;
-    let mut embedder = Embedder::load(profile, dir.path()).expect("load model");
+    let mut embedder = Embedder::load(dir.path()).expect("load model");
 
     let vector = embedder.embed_passage("a durable claim").expect("embed");
     assert_eq!(
         vector.len() as u32,
-        profile.dimensions(),
+        pamin_index::DIMENSIONS,
         "the index is built for this width, so a mismatch would be silent corruption"
-    );
-}
-
-#[test]
-#[ignore = "downloads embedding model weights"]
-fn e5_encodes_a_query_and_a_passage_differently() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let mut embedder = Embedder::load(Profile::Speed, dir.path()).expect("load model");
-
-    let text = "the deployment pipeline runs on continuous integration";
-    let as_query = embedder.embed_query(text).expect("embed query");
-    let as_passage = embedder.embed_passage(text).expect("embed passage");
-
-    // E5 was trained with `query: ` and `passage: ` in front of the text.
-    // Feeding it the bare string produces vectors that are merely worse, never
-    // wrong, so nothing else in the pipeline would report this.
-    assert_ne!(
-        as_query, as_passage,
-        "an asymmetric model must see its query and passage prefixes"
     );
 }
 
@@ -107,7 +83,7 @@ fn e5_encodes_a_query_and_a_passage_differently() {
 #[ignore = "downloads embedding model weights"]
 fn a_symmetric_model_is_left_alone() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let mut embedder = Embedder::load(Profile::Accuracy, dir.path()).expect("load model");
+    let mut embedder = Embedder::load(dir.path()).expect("load model");
 
     let text = "the deployment pipeline runs on continuous integration";
     assert_eq!(
@@ -117,26 +93,16 @@ fn a_symmetric_model_is_left_alone() {
     );
 }
 
-/// Batching has to be free of consequence, on every profile that ships.
+/// Batching has to be free of consequence.
 ///
-/// It was asserted on `Profile::Speed` alone, which is `Model::Text`. The
-/// default is `Profile::Accuracy`, which is `Model::Joint` -- a different
-/// branch, and the quantized one -- so the profile the product actually runs
-/// was the one this did not cover. That matters now rather than in principle:
 /// `reindex` embeds in batches of 256 and the cascade embeds one document at a
 /// time, so if a batch changed a vector the two paths would already disagree
 /// about what the same text embeds to.
 #[test]
 #[ignore = "downloads embedding model weights"]
 fn a_batch_gives_each_text_the_vector_it_would_have_got_alone() {
-    for profile in [Profile::Speed, Profile::Accuracy] {
-        a_batch_changes_nothing_on(profile);
-    }
-}
-
-fn a_batch_changes_nothing_on(profile: Profile) {
     let dir = tempfile::tempdir().expect("temp dir");
-    let mut embedder = Embedder::load(profile, dir.path()).expect("load model");
+    let mut embedder = Embedder::load(dir.path()).expect("load model");
 
     let texts = [
         "the deployment pipeline runs on continuous integration",
@@ -157,10 +123,6 @@ fn a_batch_changes_nothing_on(profile: Profile) {
     // simply return the wrong memories.
     assert_eq!(together.len(), alone.len());
     for (index, (batched, single)) in together.iter().zip(&alone).enumerate() {
-        assert_eq!(
-            batched, single,
-            "{profile:?}: {:?} came back changed",
-            texts[index]
-        );
+        assert_eq!(batched, single, "{:?} came back changed", texts[index]);
     }
 }

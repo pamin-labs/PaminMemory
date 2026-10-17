@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use pamin_core::{Scored, TopicId};
 
-use crate::embedding::Profile;
+use crate::embedding::{DIMENSIONS, MODEL_ID};
 use zvec_rust::{
     Collection, CollectionOptions, CollectionSchema, DataType, DiskannQueryParams, Doc,
     FieldSchema, Fts, FtsQueryParams, HnswQueryParams, IndexParams, MetricType, SearchQuery,
@@ -76,7 +76,6 @@ const FIELD_SEGMENTED: &str = "content_segmented";
 /// Substring recall over raw text: paths, error codes, identifiers.
 const FIELD_NGRAM: &str = "content_ngram";
 const FIELD_VECTOR: &str = "embedding";
-const FIELD_SECONDARY: &str = "embedding_secondary";
 /// What produced a document's vectors ([`Stored::encoding`]). Nullable, and
 /// absent from a collection created before it was recorded.
 const FIELD_ENCODING: &str = "encoding";
@@ -103,9 +102,9 @@ pub enum Access {
     ReadWrite,
 }
 
-/// A topic's text, primary vector and optional complementary vector.
-pub type VectorDocument<'a> = (TopicId, &'a str, &'a [f32], Option<&'a [f32]>);
-type PendingVectorDocument<'a> = (TopicId, &'a str, Vec<f32>, Option<Vec<f32>>);
+/// A topic, its text and its vector.
+pub type VectorDocument<'a> = (TopicId, &'a str, &'a [f32]);
+type PendingVectorDocument<'a> = (TopicId, &'a str, Vec<f32>);
 
 /// What the layer above needs a projection to do.
 ///
@@ -137,22 +136,13 @@ pub trait Projection {
 
     /// Adds or replaces one topic.
     fn upsert(&self, topic: TopicId, content: &str, embedding: &[f32]) -> Result<()> {
-        self.upsert_vectors(&[(topic, content, embedding, None)])
+        self.upsert_batch(&[(topic, content, embedding)])
     }
 
     /// Adds or replaces many.
-    fn upsert_batch(&self, documents: &[(TopicId, &str, &[f32])]) -> Result<()> {
-        let vectors: Vec<_> = documents
-            .iter()
-            .map(|(topic, content, embedding)| (*topic, *content, *embedding, None))
-            .collect();
-        self.upsert_vectors(&vectors)
-    }
+    fn upsert_batch(&self, documents: &[VectorDocument<'_>]) -> Result<()>;
 
-    /// Adds or replaces documents with all vector fields in one write.
-    fn upsert_vectors(&self, documents: &[VectorDocument<'_>]) -> Result<()>;
-
-    /// [`upsert_vectors`](Self::upsert_vectors), recording beside every
+    /// [`upsert_batch`](Self::upsert_batch), recording beside every
     /// document what produced its vectors ([`Stored::encoding`]).
     ///
     /// By default the record is dropped, which is the safe direction: a
@@ -164,7 +154,7 @@ pub trait Projection {
         encoding: Option<&str>,
     ) -> Result<()> {
         let _ = encoding;
-        self.upsert_vectors(documents)
+        self.upsert_batch(documents)
     }
 
     /// Word-level lexical recall, best first.
@@ -191,9 +181,6 @@ pub trait Projection {
 
     /// Semantic recall over dense embeddings, nearest first.
     fn recall_vector(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>>;
-
-    /// Recall in the complementary dense space, when the index has one.
-    fn recall_secondary(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>>;
 
     /// What this index holds for these topics, as it was written, in the
     /// order asked; `None` for a topic it does not hold.
@@ -290,10 +277,8 @@ pub struct Stored {
     /// The vector, as it was embedded under the index's [`Passage`] and then
     /// stored: each component rounded to half precision (see [`crate::as_stored`]).
     pub embedding: Vec<f32>,
-    /// The complementary vector, absent in a single-vector index.
-    pub secondary: Option<Vec<f32>>,
     /// What produced the vectors, as [`crate::Embedder::encoding`] names it:
-    /// the execution plan of each model. `None` when nothing recorded it --
+    /// the execution plan of the model. `None` when nothing recorded it --
     /// one written before this was recorded, one lent by a rebuild from a
     /// document that had none, or any in an index created before then -- or
     /// when the plan was not one a record can name.
@@ -308,7 +293,6 @@ pub struct ProjectionIndex {
     /// Which vector index this collection was built with, as its marker
     /// records -- and so how a query asks it.
     index: VectorIndex,
-    secondary_dimensions: Option<u32>,
     /// What this index's vectors were embedded from. See [`Passage`].
     passage: Passage,
     /// How this index spells a topic as a primary key. See [`Keys`].
@@ -817,7 +801,7 @@ const GRAPH_DEGREE: i32 = 32;
 ///
 /// The marker records which one an index was built with, and an index is
 /// never searched as the other: opening one under the other is refused with a
-/// message naming `pamin reindex`, as a profile change is. Reading an index
+/// message naming `pamin reindex`, as a model change is. Reading an index
 /// built one way as another is the silent-wrong-answer shape ADR 0001 records
 /// from the first attempt at quantization, which returned recall@10 of 0.000
 /// with no error. `pamin reindex` lends every vector the old index holds to
@@ -1023,7 +1007,6 @@ impl ProjectionIndex {
     pub fn open(
         dir: &Path,
         legacy_dir: &Path,
-        profile: Profile,
         index: VectorIndex,
         access: Access,
         documents: u64,
@@ -1036,27 +1019,33 @@ impl ProjectionIndex {
             return Err(IndexError::LegacyLayout);
         }
 
-        Self::open_sized(dir, profile, index, access, segment_documents(documents))
+        Self::open_sized(dir, index, access, segment_documents(documents))
     }
 
-    /// The profile the index at `dir` was built with, if there is one there.
+    /// The vector index the index at `dir` was built with, if there is one
+    /// there that this build can open.
     ///
     /// For a caller that has to open an index nobody asked it to and so has
-    /// no profile in hand: the resident server, bringing up to date a project
-    /// that was written to by a process that is gone. Opening under a guess is
-    /// not an option -- a wrong guess is refused, and a guess at a directory
-    /// with no index creates one for that profile.
+    /// no vector index in hand: the resident server, bringing up to date a
+    /// project that was written to by a process that is gone. Opening under a
+    /// guess is not an option -- a wrong guess is refused, and a guess at a
+    /// directory with no index creates one.
     ///
-    /// `None` for no index, and for one recorded with a model no profile runs
-    /// any more or a vector index no build makes any more, which only a
-    /// rebuild can open.
-    pub fn built_for(dir: &Path) -> Result<Option<(Profile, VectorIndex)>> {
-        Ok(Marker::read(dir)?.and_then(|recorded| {
-            let profile = Profile::ALL
-                .into_iter()
-                .find(|profile| profile.model_id() == recorded.model)?;
-            Some((profile, VectorIndex::parse(&recorded.storage)?))
-        }))
+    /// `None` for no index, and for one recorded with a vector index no build
+    /// makes any more, which only a rebuild can open. An index recorded with
+    /// another embedding model is [`IndexError::ModelMismatch`], so that a
+    /// caller can say which and that `pamin reindex` rebuilds it, rather than
+    /// passing over it as if there were nothing there.
+    pub fn built_for(dir: &Path) -> Result<Option<VectorIndex>> {
+        let Some(recorded) = Marker::read(dir)? else {
+            return Ok(None);
+        };
+        if recorded.model != MODEL_ID {
+            return Err(IndexError::ModelMismatch {
+                indexed: recorded.model,
+            });
+        }
+        Ok(VectorIndex::parse(&recorded.storage))
     }
 
     /// Opens the index at `dir`, creating it with segments of `segment`
@@ -1067,7 +1056,6 @@ impl ProjectionIndex {
     /// is in -- many segments -- without writing fifty thousand documents.
     pub(crate) fn open_sized(
         dir: &Path,
-        profile: Profile,
         index: VectorIndex,
         access: Access,
         segment: u64,
@@ -1075,10 +1063,9 @@ impl ProjectionIndex {
         std::fs::create_dir_all(dir)?;
         let (passage, keys) = match Marker::read(dir)? {
             Some(recorded) => {
-                if recorded.model != profile.model_id() {
-                    return Err(IndexError::ProfileMismatch {
+                if recorded.model != MODEL_ID {
+                    return Err(IndexError::ModelMismatch {
                         indexed: recorded.model,
-                        requested: profile.model_id().to_string(),
                     });
                 }
                 if recorded.grain != DOCUMENT_GRAIN {
@@ -1103,19 +1090,12 @@ impl ProjectionIndex {
                 (recorded.passage, recorded.keys)
             }
             None => {
-                Marker::current(profile, index).write(dir)?;
+                Marker::current(index).write(dir)?;
                 (PASSAGE, KEYS)
             }
         };
 
-        let mut opened = Self::open_with_dimensions(
-            dir,
-            profile.dimensions(),
-            profile.secondary_dimensions(),
-            index,
-            access,
-            segment,
-        )?;
+        let mut opened = Self::open_with_dimensions(dir, DIMENSIONS, index, access, segment)?;
         opened.passage = passage;
         opened.keys = keys;
         Ok(opened)
@@ -1128,7 +1108,7 @@ impl ProjectionIndex {
     /// source's encoding: a copy of an index whose vectors were embedded from
     /// content alone must go on being written that way, and writing the
     /// current marker would label those vectors `name: content`. Reopening
-    /// then checks the copied marker against `profile` like any other open.
+    /// then checks the copied marker against the model like any other open.
     ///
     /// Except for the [`Keys`]: the copy is written a document at a time
     /// through this index, which spells every key itself, so nothing of the
@@ -1139,7 +1119,6 @@ impl ProjectionIndex {
     pub(crate) fn create_beside(
         source: &Path,
         dir: &Path,
-        profile: Profile,
         index: VectorIndex,
         documents: u64,
     ) -> Result<Self> {
@@ -1156,13 +1135,7 @@ impl ProjectionIndex {
             ..recorded
         }
         .write(dir)?;
-        Self::open_sized(
-            dir,
-            profile,
-            index,
-            Access::ReadWrite,
-            segment_documents(documents),
-        )
+        Self::open_sized(dir, index, Access::ReadWrite, segment_documents(documents))
     }
 
     /// Opens the index at `dir` for writing, refusing to create one.
@@ -1170,20 +1143,19 @@ impl ProjectionIndex {
     /// For reopening an index after its directory was moved into place, where
     /// finding nothing there is a fault: an open that created an empty index
     /// would hand the caller a project with no memories and no error.
-    pub(crate) fn reopen(dir: &Path, profile: Profile, index: VectorIndex) -> Result<Self> {
+    pub(crate) fn reopen(dir: &Path, index: VectorIndex) -> Result<Self> {
         if !std::fs::exists(dir.join(COLLECTION))? {
             return Err(IndexError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("no index at {}", dir.display()),
             )));
         }
-        Self::open_sized(dir, profile, index, Access::ReadWrite, segment_documents(0))
+        Self::open_sized(dir, index, Access::ReadWrite, segment_documents(0))
     }
 
     fn open_with_dimensions(
         dir: &Path,
         dimensions: u32,
-        secondary_dimensions: Option<u32>,
         index: VectorIndex,
         access: Access,
         segment: u64,
@@ -1228,18 +1200,9 @@ impl ProjectionIndex {
                 DataType::VectorFp16,
                 dimensions,
                 index.params()?,
-            );
-        let schema = match secondary_dimensions {
-            Some(dimensions) => schema.add_vector_field(
-                FIELD_SECONDARY,
-                DataType::VectorFp16,
-                dimensions,
-                index.params()?,
-            ),
-            None => schema,
-        }
-        .max_doc_count_per_segment(segment)
-        .build()?;
+            )
+            .max_doc_count_per_segment(segment)
+            .build()?;
 
         // The engine refuses to create over an existing path, so reopen when
         // the collection is already there. Every command after the first opens
@@ -1264,7 +1227,6 @@ impl ProjectionIndex {
             segmenter: Arc::new(Segmenter::new()),
             dir: dir.to_path_buf(),
             index,
-            secondary_dimensions,
             passage: PASSAGE,
             keys: KEYS,
             encodings,
@@ -1277,14 +1239,8 @@ impl ProjectionIndex {
         topic: TopicId,
         content: &str,
         embedding: &[f32],
-        secondary: Option<&[f32]>,
         encoding: Option<&str>,
     ) -> Result<Doc> {
-        if self.secondary_dimensions.is_some() != secondary.is_some() {
-            return Err(IndexError::Engine(
-                "a document must carry exactly the vector fields of its index".into(),
-            ));
-        }
         let mut doc = Doc::new()?;
         let key = self.keys.key(topic);
         doc.set_pk(&key);
@@ -1292,9 +1248,6 @@ impl ProjectionIndex {
         doc.add_string(FIELD_SEGMENTED, &self.segmenter.segment_for_index(content))?;
         doc.add_string(FIELD_NGRAM, content)?;
         crate::half::add(&mut doc, FIELD_VECTOR, embedding)?;
-        if let Some(secondary) = secondary {
-            crate::half::add(&mut doc, FIELD_SECONDARY, secondary)?;
-        }
         if let Some(encoding) = encoding.filter(|_| self.encodings) {
             doc.add_string(FIELD_ENCODING, encoding)?;
         }
@@ -1343,10 +1296,6 @@ impl ProjectionIndex {
         });
         scored.truncate(limit as usize);
         Ok(scored)
-    }
-
-    fn vector_fields(&self) -> impl Iterator<Item = &'static str> {
-        std::iter::once(FIELD_VECTOR).chain(self.secondary_dimensions.map(|_| FIELD_SECONDARY))
     }
 
     /// Lexical recall, either ranking whatever matches or requiring every term.
@@ -1467,10 +1416,10 @@ struct Marker {
 impl Marker {
     const FILE: &str = "profile";
 
-    /// What an index built now, for this profile and vector index, is.
-    fn current(profile: Profile, index: VectorIndex) -> Self {
+    /// What an index built now, with this vector index, is.
+    fn current(index: VectorIndex) -> Self {
         Self {
-            model: profile.model_id().to_string(),
+            model: MODEL_ID.to_string(),
             grain: DOCUMENT_GRAIN.to_string(),
             storage: index.label().to_string(),
             passage: PASSAGE,
@@ -1566,10 +1515,10 @@ impl Previous {
     /// compute them. A directory left aside by a rebuild that did not finish is
     /// discarded first: what is in `dir` is then that rebuild's partial output
     /// or its finished one, and the ledger reproduces either.
-    pub fn set_aside(dir: &Path, profile: Profile) -> Result<Option<Self>> {
+    pub fn set_aside(dir: &Path) -> Result<Option<Self>> {
         let aside = dir.with_extension("previous");
         ProjectionIndex::discard(&aside)?;
-        let current = Marker::current(profile, VectorIndex::default());
+        let current = Marker::current(VectorIndex::default());
         let Some(recorded) = Marker::read(dir)?.filter(|recorded| recorded.matches(&current))
         else {
             ProjectionIndex::discard(dir)?;
@@ -1580,8 +1529,7 @@ impl Previous {
         // schema the engine does not read.
         let mut index = ProjectionIndex::open_with_dimensions(
             &aside,
-            profile.dimensions(),
-            profile.secondary_dimensions(),
+            DIMENSIONS,
             VectorIndex::default(),
             Access::ReadOnly,
             segment_documents(0),
@@ -1636,9 +1584,7 @@ impl Previous {
             |encoding: &Option<String>, pending: &mut Vec<PendingVectorDocument<'_>>| {
                 let documents: Vec<VectorDocument<'_>> = pending
                     .iter()
-                    .map(|(topic, content, vector, secondary)| {
-                        (*topic, *content, vector.as_slice(), secondary.as_deref())
-                    })
+                    .map(|(topic, content, vector)| (*topic, *content, vector.as_slice()))
                     .collect();
                 take(&documents, encoding.as_deref())?;
                 pending.clear();
@@ -1656,19 +1602,10 @@ impl Previous {
             let vector = vector.ok_or_else(|| {
                 IndexError::Engine(format!("the document for topic {topic} has no vector"))
             })?;
-            let secondary = if self.index.secondary_dimensions.is_some() {
-                Some(crate::half::get(&doc, FIELD_SECONDARY)?.ok_or_else(|| {
-                    IndexError::Engine(format!(
-                        "the document for topic {topic} has no secondary vector"
-                    ))
-                })?)
-            } else {
-                None
-            };
             let encoding = self.index.encoding_of(&doc)?;
             lent.insert(topic);
             let group = pending.entry(encoding.clone()).or_default();
-            group.push((topic, wanted[&topic], vector, secondary));
+            group.push((topic, wanted[&topic], vector));
             if group.len() == batch {
                 hand_over(&encoding, group)?;
             }
@@ -1763,7 +1700,7 @@ impl Projection for ProjectionIndex {
     /// No flush: a caller writing in batches decides when the result becomes
     /// visible, and flushing between batches would make that decision for them
     /// once per batch.
-    fn upsert_vectors(&self, documents: &[VectorDocument<'_>]) -> Result<()> {
+    fn upsert_batch(&self, documents: &[VectorDocument<'_>]) -> Result<()> {
         self.upsert_encoded(documents, None)
     }
 
@@ -1775,8 +1712,8 @@ impl Projection for ProjectionIndex {
         for chunk in documents.chunks(WRITE_BATCH) {
             let docs = chunk
                 .iter()
-                .map(|(topic, content, embedding, secondary)| {
-                    self.document(*topic, content, embedding, *secondary, encoding)
+                .map(|(topic, content, embedding)| {
+                    self.document(*topic, content, embedding, encoding)
                 })
                 .collect::<Result<Vec<_>>>()?;
 
@@ -1797,15 +1734,6 @@ impl Projection for ProjectionIndex {
                 let Some(doc) = stored.get(topic) else {
                     return Ok(None);
                 };
-                let secondary = if self.secondary_dimensions.is_some() {
-                    Some(crate::half::get(doc, FIELD_SECONDARY)?.ok_or_else(|| {
-                        IndexError::Engine(format!(
-                            "the document for topic {topic} came back without its secondary vector"
-                        ))
-                    })?)
-                } else {
-                    None
-                };
                 match (
                     doc.get_string(FIELD_NGRAM)?,
                     crate::half::get(doc, FIELD_VECTOR)?,
@@ -1813,7 +1741,6 @@ impl Projection for ProjectionIndex {
                     (Some(content), Some(embedding)) => Ok(Some(Stored {
                         content,
                         embedding,
-                        secondary,
                         encoding: self.encoding_of(doc)?,
                     })),
                     _ => Err(IndexError::Engine(format!(
@@ -1879,14 +1806,6 @@ impl Projection for ProjectionIndex {
         self.recall_dense(FIELD_VECTOR, embedding, limit)
     }
 
-    fn recall_secondary(&self, embedding: &[f32], limit: u32) -> Result<Vec<Scored>> {
-        if self.secondary_dimensions.is_some() {
-            self.recall_dense(FIELD_SECONDARY, embedding, limit)
-        } else {
-            Ok(Vec::new())
-        }
-    }
-
     /// Flushes buffered writes so a later query sees them.
     fn flush(&self) -> Result<()> {
         self.collection.flush()?;
@@ -1926,16 +1845,14 @@ impl Projection for ProjectionIndex {
     /// at a cost that grows with the project.
     fn vector_index_completeness(&self) -> Result<f32> {
         let stats = self.collection.stats()?;
-        Ok(self
-            .vector_fields()
-            .map(|field| {
-                stats
-                    .indexes
-                    .iter()
-                    .find(|index| index.name == field)
-                    .map_or(0.0, |index| index.completeness)
-            })
-            .fold(1.0, f32::min))
+        Ok(f32::min(
+            1.0,
+            stats
+                .indexes
+                .iter()
+                .find(|index| index.name == FIELD_VECTOR)
+                .map_or(0.0, |index| index.completeness),
+        ))
     }
 
     /// How many documents the index holds.
@@ -1993,19 +1910,12 @@ impl Projection for ProjectionIndex {
                             .collect()
                     },
                 );
-                // One flush writes both fields. Count the worst field's
-                // fragmentation, so adding a field does not double upkeep frequency.
-                self.vector_fields()
-                    .map(|field| {
-                        let prefix = format!("{field}.index.");
-                        let blocks = names
-                            .iter()
-                            .filter(|name| name.starts_with(&prefix) && name.ends_with(".proxima"))
-                            .count() as u64;
-                        blocks.saturating_sub(1)
-                    })
-                    .max()
-                    .unwrap_or(0)
+                let prefix = format!("{FIELD_VECTOR}.index.");
+                let blocks = names
+                    .iter()
+                    .filter(|name| name.starts_with(&prefix) && name.ends_with(".proxima"))
+                    .count() as u64;
+                blocks.saturating_sub(1)
             })
             .sum())
     }
@@ -2300,132 +2210,6 @@ mod upkeep {
 }
 
 #[cfg(test)]
-mod secondary_vectors {
-    use super::*;
-
-    #[test]
-    fn dual_marker_requires_reindex_and_lends_both_vectors() {
-        let dir = tempfile::tempdir().unwrap();
-        let primary = {
-            let mut values = vec![0.0; 1024];
-            values[0] = 1.0;
-            values
-        };
-        let secondary = {
-            let mut values = vec![0.0; 1024];
-            values[1] = 1.0;
-            values
-        };
-        let legacy_dir = dir.path().join("legacy");
-        let legacy = ProjectionIndex::open_sized(
-            &legacy_dir,
-            Profile::Accuracy,
-            VectorIndex::Memory,
-            Access::ReadWrite,
-            1000,
-        )
-        .unwrap();
-        drop(legacy);
-        assert!(
-            ProjectionIndex::open_sized(
-                &legacy_dir,
-                Profile::DualAccuracy,
-                VectorIndex::Memory,
-                Access::ReadWrite,
-                100
-            )
-            .is_err()
-        );
-        let current = dir.path().join("dual");
-        let index = ProjectionIndex::open_sized(
-            &current,
-            Profile::DualAccuracy,
-            VectorIndex::Memory,
-            Access::ReadWrite,
-            1000,
-        )
-        .unwrap();
-        assert_eq!(
-            ProjectionIndex::built_for(&current).unwrap(),
-            Some((Profile::DualAccuracy, VectorIndex::Memory))
-        );
-        let topic = TopicId::new();
-        index
-            .upsert_vectors(&[(topic, "same text", &primary, Some(&secondary))])
-            .unwrap();
-        index.flush().unwrap();
-        index.optimize().unwrap();
-        drop(index);
-        let previous = Previous::set_aside(&current, Profile::DualAccuracy)
-            .unwrap()
-            .unwrap();
-        let wanted = HashMap::from([(topic, "same text")]);
-        let mut seen = 0;
-        let lent = previous
-            .lend(&wanted, 10, |docs, _| {
-                for (actual, _, a, b) in docs {
-                    assert_eq!(*actual, topic);
-                    assert_eq!(*a, primary);
-                    assert_eq!(*b, Some(secondary.as_slice()));
-                    seen += 1;
-                }
-                Ok(())
-            })
-            .unwrap();
-        assert_eq!(seen, 1);
-        assert!(lent.contains(&topic));
-    }
-
-    #[test]
-    fn two_vector_fields_share_the_document_and_survive_reopen() {
-        let dir = tempfile::tempdir().unwrap();
-        let open = || {
-            ProjectionIndex::open_with_dimensions(
-                dir.path(),
-                2,
-                Some(2),
-                VectorIndex::Memory,
-                Access::ReadWrite,
-                segment_documents(2),
-            )
-            .unwrap()
-        };
-        let first = TopicId::new();
-        let second = TopicId::new();
-        let index = open();
-        index
-            .upsert_vectors(&[
-                (first, "first topic", &[1.0, 0.0], Some(&[0.0, 1.0])),
-                (second, "second topic", &[0.0, 1.0], Some(&[1.0, 0.0])),
-            ])
-            .unwrap();
-        assert!(
-            index
-                .upsert(TopicId::new(), "incomplete", &[1.0, 0.0])
-                .is_err()
-        );
-        index.flush().unwrap();
-        index.optimize().unwrap();
-        assert_eq!(index.document_count().unwrap(), 2);
-        assert_eq!(index.vector_index_completeness().unwrap(), 1.0);
-        assert_eq!(index.recall_vector(&[1.0, 0.0], 1).unwrap()[0].topic, first);
-        assert_eq!(
-            index.recall_secondary(&[1.0, 0.0], 1).unwrap()[0].topic,
-            second
-        );
-        let stored = index.stored(&[first]).unwrap().pop().unwrap().unwrap();
-        assert_eq!(stored.embedding, vec![1.0, 0.0]);
-        assert_eq!(stored.secondary, Some(vec![0.0, 1.0]));
-        drop(index);
-        let reopened = open();
-        assert_eq!(
-            reopened.recall_secondary(&[1.0, 0.0], 1).unwrap()[0].topic,
-            second
-        );
-    }
-}
-
-#[cfg(test)]
 mod keys {
     use super::{KEYS, Keys};
     use pamin_core::TopicId;
@@ -2494,37 +2278,33 @@ mod keys {
 
 #[cfg(test)]
 mod marker {
-    use super::{Marker, ProjectionIndex, VectorIndex};
-    use crate::Profile;
+    use super::{IndexError, Marker, ProjectionIndex, VectorIndex};
 
-    /// What an index was built with reads back as the profile that built it.
+    /// What an index was built with reads back as the vector index that built
+    /// it.
     ///
     /// The server opens a project nobody asked for under this answer, and
     /// the answer being wrong has no quiet failure: the open is refused, or
     /// -- for a directory with no index -- an empty one is created under the
-    /// guess. So every profile is written and read back, and an empty
+    /// guess. So every vector index is written and read back, and an empty
     /// directory has to answer that there is nothing to open.
     #[test]
-    fn an_index_reads_back_the_profile_it_was_built_with() {
-        for profile in Profile::ALL {
-            for index in VectorIndex::ALL {
-                let dir = tempfile::tempdir().expect("a directory");
-                Marker::current(profile, index)
-                    .write(dir.path())
-                    .expect("marking");
-                assert_eq!(
-                    ProjectionIndex::built_for(dir.path()).expect("reading"),
-                    Some((profile, index))
-                );
-            }
+    fn an_index_reads_back_what_it_was_built_with() {
+        for index in VectorIndex::ALL {
+            let dir = tempfile::tempdir().expect("a directory");
+            Marker::current(index).write(dir.path()).expect("marking");
+            assert_eq!(
+                ProjectionIndex::built_for(dir.path()).expect("reading"),
+                Some(index)
+            );
         }
 
-        // An index from before the vector indexes names no profile to open it
+        // An index from before the vector indexes names nothing to open it
         // under: only a rebuild can.
         let legacy = tempfile::tempdir().expect("a directory");
         std::fs::write(
             legacy.path().join("profile"),
-            format!("{}\ntopic\nfp32\nnamed", Profile::Accuracy.model_id()),
+            format!("{}\ntopic\nfp32\nnamed", super::MODEL_ID),
         )
         .expect("marking");
         assert_eq!(
@@ -2532,11 +2312,25 @@ mod marker {
             None
         );
 
+        // An index from a retired profile is not passed over as if it were
+        // not there: it is named, so a caller can say `pamin reindex`.
+        let retired = tempfile::tempdir().expect("a directory");
+        Marker {
+            model: "intfloat/multilingual-e5-small+p1".to_string(),
+            ..Marker::current(VectorIndex::default())
+        }
+        .write(retired.path())
+        .expect("marking");
+        assert!(matches!(
+            ProjectionIndex::built_for(retired.path()),
+            Err(IndexError::ModelMismatch { indexed }) if indexed == "intfloat/multilingual-e5-small+p1"
+        ));
+
         let empty = tempfile::tempdir().expect("a directory");
         assert_eq!(
             ProjectionIndex::built_for(empty.path()).expect("reading"),
             None,
-            "a directory with no index named a profile to open it under"
+            "a directory with no index named something to open it under"
         );
     }
 }

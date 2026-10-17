@@ -10,11 +10,9 @@ pub enum IndexError {
     #[error("projection index: {0}")]
     Engine(String),
 
-    #[error(
-        "index was built with embedding model {indexed} but {requested} was requested; \
-         run `pamin reindex` to rebuild it"
-    )]
-    ProfileMismatch { indexed: String, requested: String },
+    /// The index was built with an embedding model this build does not run.
+    #[error("{}", model_mismatch(.indexed))]
+    ModelMismatch { indexed: String },
 
     #[error(
         "this index holds one document per {indexed} and this build expects one per {expected}; \
@@ -66,6 +64,21 @@ impl From<zvec_rust::Error> for IndexError {
     }
 }
 
+/// What [`IndexError::ModelMismatch`] says: the retired profile by name when
+/// the recorded model is one a profile shipped, since that is what a user
+/// chose and will recognise, and the model id otherwise.
+fn model_mismatch(indexed: &str) -> String {
+    let current = crate::embedding::MODEL_ID;
+    let built = match crate::embedding::retired_profile(indexed) {
+        Some(profile) => format!("the retired `{profile}` profile's embedding model ({indexed})"),
+        None => format!("embedding model {indexed}"),
+    };
+    format!(
+        "this index was built with {built}, and every project now uses BGE-M3 ({current}); \
+         run `pamin reindex` to rebuild it"
+    )
+}
+
 /// Result alias for index operations.
 pub type Result<T> = std::result::Result<T, IndexError>;
 
@@ -86,5 +99,38 @@ mod tests {
             IndexError::Engine("pressure".into()).context("loader"),
             IndexError::Engine(_)
         ));
+    }
+
+    /// An index from a retired profile is named by the profile the user
+    /// chose, and the remedy is the same for any model this build lacks.
+    #[test]
+    fn a_retired_model_is_named_with_its_profile_and_the_remedy() {
+        for (model, profile) in [
+            ("intfloat/multilingual-e5-small+p1", "speed"),
+            ("intfloat/multilingual-e5-base+p1", "balanced"),
+            (
+                "bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4",
+                "dual_accuracy",
+            ),
+        ] {
+            let message = IndexError::ModelMismatch {
+                indexed: model.to_string(),
+            }
+            .to_string();
+            assert!(
+                message.contains(&format!("`{profile}` profile")),
+                "{message}"
+            );
+            assert!(message.contains(model), "{message}");
+            assert!(message.contains("pamin reindex"), "{message}");
+        }
+
+        let unknown = IndexError::ModelMismatch {
+            indexed: "someone/else".to_string(),
+        }
+        .to_string();
+        assert!(!unknown.contains("profile"), "{unknown}");
+        assert!(unknown.contains("someone/else"), "{unknown}");
+        assert!(unknown.contains("pamin reindex"), "{unknown}");
     }
 }

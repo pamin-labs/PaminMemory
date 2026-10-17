@@ -197,19 +197,6 @@ impl Encoder {
             .max_length
     }
 
-    /// One forward pass over `inputs` -- texts, or pairs of them -- as one
-    /// batch.
-    pub(crate) fn run<'s, E>(&mut self, inputs: Vec<E>) -> Result<SessionOutputs<'_>>
-    where
-        E: Into<EncodeInput<'s>> + Send,
-    {
-        let encodings = self
-            .tokenizer
-            .encode_batch(inputs, true)
-            .map_err(|error| failed(&error))?;
-        self.forward(&encodings)
-    }
-
     /// How many passes [`run_each`](Self::run_each) runs at once for
     /// `batches` batches, with the sessions it runs them on loaded: 1 when it
     /// runs them one after another on [`session`](Self::session).
@@ -327,7 +314,7 @@ impl Encoder {
     ///
     /// For a caller that groups inputs by length before running them, and so
     /// has to know the lengths first. [`run_encoded`](Self::run_encoded) pads
-    /// a group of these exactly as [`run`](Self::run) pads what it tokenizes:
+    /// a group of these exactly as `encode_batch` pads what it tokenizes:
     /// `encode_batch` is `encode` on each input and then this padding, so the
     /// model is handed the same ids either way.
     pub(crate) fn encode<'s, E>(&self, inputs: Vec<E>) -> Result<Vec<Encoding>>

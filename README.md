@@ -13,7 +13,7 @@ It is designed to turn durable evidence into versioned knowledge that agents can
 
 - Preserves raw evidence and source spans as the authority behind memory.
 - Tracks versioned memories so current, stale, contradicted, and historical facts can be separated.
-- Combines lexical matching, semantic recall, relationship structure, and tier-specific reranking of the fused candidates.
+- Combines lexical matching, semantic recall, relationship structure, and cross-encoder reranking of the fused candidates.
 - Builds explainable context from the same evidence ledger rather than opaque one-off summaries.
 - Prioritizes local-first operation so developers can inspect and control their memory stack.
 
@@ -215,7 +215,7 @@ costs a reindex rather than a migration.
 
 [docs/architecture.md](docs/architecture.md) has the diagram and the pieces
 behind it: the ledger, the transactional outbox, the four recall channels and
-how they are fused, the tiered cross-encoder, and what runs locally. The
+how they are fused, the cross-encoder, and what runs locally. The
 decisions, their trade-offs, and the ones that reversed when they were
 measured, are in [docs/adr/](docs/adr/).
 
@@ -246,8 +246,10 @@ systems, and what it holds fixed, is in
 [docs/benchmarks.md](docs/benchmarks.md); the committed evidence behind both is
 under [benchmarks/results/](benchmarks/results).
 
-A new or reindexed `accuracy` index embeds `name: content`, and the `accurate`
-tier reranks the whole fused head, blending model and fusion scores. Older
+A new or reindexed index embeds `name: content` with BGE-M3, and the reranker
+(bge-reranker-v2-m3) scores the whole fused head, blending model and fusion
+scores. Both were the defaults, `accuracy` and `accurate`, while there were
+profiles and tiers; they are now the only model and reranker. Older
 indexes retain content-only vectors until `pamin reindex`. Through the product
 `search_reranked` path, the complete revision-bound XQuAD-R run records:
 
@@ -266,12 +268,11 @@ statistically significant. Embedding stayed CPU int8. See the
 [CPU control and raw query evidence](benchmarks/results/inference/coreml-search-full-2026-09-30.md)
 for pinned models, index completeness and measurement scope.
 
-The opt-in `fast` tier takes a different route on Apple Silicon: its
+The since-removed `fast` tier took a different route on Apple Silicon: its
 [complete XQuAD-R backend comparison](benchmarks/results/inference/fast-apple-backend-2026-09-30.md)
 found no significant quality loss for ARM INT8 CPU versus CoreML FP32, and
-CPU was faster on all 1,190 paired searches. The CoreML latency distribution
-was completed across two processes after a disk-guard interruption; the
-`accurate` default above still uses its measured CoreML route.
+CPU was faster on all 1,190 paired searches. The reranker above still uses its
+measured CoreML route.
 
 The existing MIRACL full-head run is described in [docs/cli.md](docs/cli.md).
 It is outside this headline table until its code, device and raw-run evidence
@@ -284,12 +285,12 @@ cannot be carried over to the current retrieval rows.
 | historical measurement | result | condition |
 | --- | --- | --- |
 | MIRACL Swahili dev, one language | nDCG@10 0.7654 | 131,924 passages, earlier `accurate` path |
-| one `pamin search` over a socket | 25.7 ms | LOCOMO, `fast` tier, earlier build |
+| one `pamin search` over a socket | 25.7 ms | LOCOMO, since-removed `fast` tier, earlier build |
 | one `pamin search` as a whole CLI invocation | 1241 ms | XQuAD-R, earlier `accurate` path |
 | one `pamin write` | 30.1 ms | 2,400 memories, earlier build |
 | resident, one project | 2,088 MB | earlier model and index inside the server |
 
-Latency is a corpus, a tier and a machine before it is a number; the full
+Latency is a corpus, a path and a machine before it is a number; the full
 matrix and the older conditions are on [the measurement page](docs/measured.md).
 
 The historical rows used the vector index that shipped before the current
@@ -441,7 +442,7 @@ binary plus the native libraries it links — the size budget counts exactly
 that. Weights are fetched from the Hugging Face hub by the user's own machine
 the first time a command asks for one.
 
-[NOTICE](NOTICE) lists every model a profile or a reranker tier will download
+[NOTICE](NOTICE) lists every model a search will download
 and the licence it carries, including the export that carries no tag of its
 own and the chain to a licensed source for it. [deny.toml](deny.toml)
 is the separate question of what the crate graph may be licensed under, which

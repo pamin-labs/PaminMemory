@@ -13,8 +13,7 @@ use pamin_core::{
     Scored, SourceKind, TopicId, TopicState, TopicStateId, Validity, Why,
 };
 use pamin_index::{
-    Access, Embedder, Previous, Profile, Projection, ProjectionIndex, Rerank, Reranker,
-    VectorDocument, VectorIndex,
+    Access, Embedder, Previous, Projection, ProjectionIndex, Reranker, VectorDocument, VectorIndex,
 };
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
 use pamin_store::{Connections, Database, PgConnection, Workspace, graph, jobs, repository};
@@ -169,7 +168,7 @@ trait PassageEncoder {
     fn encode_passages(
         &mut self,
         texts: &[&str],
-    ) -> pamin_index::Result<(Vec<pamin_index::Encoded>, Option<String>)>;
+    ) -> pamin_index::Result<(Vec<Vec<f32>>, Option<String>)>;
 }
 
 impl PassageEncoder for Embedder {
@@ -180,7 +179,7 @@ impl PassageEncoder for Embedder {
     fn encode_passages(
         &mut self,
         texts: &[&str],
-    ) -> pamin_index::Result<(Vec<pamin_index::Encoded>, Option<String>)> {
+    ) -> pamin_index::Result<(Vec<Vec<f32>>, Option<String>)> {
         Embedder::encode_passages(self, texts)
     }
 }
@@ -245,12 +244,7 @@ where
         .zip(&embeddings)
         .map(|(&at, embedding)| {
             let (topic, content) = wanted[at];
-            (
-                topic,
-                content,
-                embedding.primary.as_slice(),
-                embedding.secondary.as_deref(),
-            )
+            (topic, content, embedding.as_slice())
         })
         .collect();
     index().upsert_encoded(&documents, encoding.as_deref())?;
@@ -397,17 +391,13 @@ pub struct Engine {
     /// `docs/architecture.md` says only this crate holds. A command that never
     /// embeds now never loads: a server serving those alone stays at 29 MB.
     ///
-    /// Shared with every other engine on the same profile, which is why it
-    /// comes from [`Models`] rather than being built here -- two projects are
-    /// two indexes and one model, and the registry is where two callers
-    /// arriving at a cold profile queue rather than both loading it. This cell
+    /// Shared with every other engine, which is why it comes from [`Models`]
+    /// rather than being built here -- two projects are two indexes and one
+    /// model, and the registry is where two callers arriving at a cold model
+    /// queue rather than both loading it. This cell
     /// is a per-engine cache of that lookup, so a search does not take the
     /// registry's lock to find what it already has.
     embedder: std::sync::OnceLock<Arc<Mutex<Embedder>>>,
-    /// Which model this engine's index was built with, and therefore the only
-    /// one it may embed with. Held because the load is deferred and the
-    /// deferred load has to ask for the same profile the index recorded.
-    pub(crate) profile: Profile,
     /// Which vector index this engine's index was built with, which is also
     /// the one it was asked for: opening under another is refused.
     pub(crate) vector_index: VectorIndex,
@@ -471,25 +461,22 @@ struct Rebuilding {
     _exclusive: tokio::sync::OwnedMutexGuard<()>,
 }
 
-/// The embedding models this process has loaded, one per profile.
+/// The models this process has loaded.
 ///
 /// Shared between projects rather than held by each. The weights are the same
 /// hundreds of megabytes whichever project asks for an embedding, so a process
-/// serving a hundred projects on one profile holds one model, not a hundred.
-/// Keyed by profile because that is what decides which weights these are; the
-/// project decides nothing about them.
+/// serving a hundred projects holds one model, not a hundred: the project
+/// decides nothing about them.
 #[derive(Clone)]
 pub struct Models {
     dir: std::path::PathBuf,
-    loaded: Arc<Mutex<std::collections::HashMap<Profile, Held<Embedder>>>>,
-    /// The same arrangement for rerankers, keyed by tier for the same reason:
-    /// the tier is what decides which weights these are.
+    loaded: Arc<Mutex<Option<Held<Embedder>>>>,
+    /// The same arrangement for the one reranker, while it is loaded.
     ///
-    /// Each carries when it was last handed out, because unlike an embedder a
-    /// reranker can stop being wanted. Every search needs a query vector; a
-    /// reranker is a tier a caller chose once, and a workspace in one language
-    /// is told by `docs/cli.md` to choose `off`.
-    rerankers: Arc<Mutex<std::collections::HashMap<Rerank, Held<Reranker>>>>,
+    /// It carries when it was last handed out, because unlike an embedder a
+    /// reranker can stop being wanted: every write needs an embedding, and
+    /// only a search reranks.
+    reranker: Arc<Mutex<Option<Held<Reranker>>>>,
 }
 
 /// A loaded model and when it was last handed out.
@@ -544,54 +531,54 @@ impl Models {
         Self {
             dir: workspace.root().join("models"),
             loaded: Arc::default(),
-            rerankers: Arc::default(),
+            reranker: Arc::default(),
         }
     }
 
-    /// The model for a profile, loading it the first time it is asked for.
+    /// The embedding model, loading it the first time it is asked for.
     ///
     /// Blocking, and the registry lock is held across the load. That makes a
-    /// second caller for the same profile wait out the first one's download
-    /// instead of starting its own, which is the whole point; the wait it pays
-    /// is the wait it would have paid loading its own copy.
-    fn get(&self, profile: Profile) -> Result<Arc<Mutex<Embedder>>, pamin_index::IndexError> {
+    /// second caller wait out the first one's download instead of starting
+    /// its own, which is the whole point; the wait it pays is the wait it
+    /// would have paid loading its own copy.
+    fn embedder(&self) -> Result<Arc<Mutex<Embedder>>, pamin_index::IndexError> {
         let mut loaded = self
             .loaded
             .lock()
             .expect("the model registry lock is poisoned");
 
-        if let Some((last_used, embedder)) = loaded.get_mut(&profile) {
+        if let Some((last_used, embedder)) = loaded.as_mut() {
             *last_used = Instant::now();
             return Ok(Arc::clone(embedder));
         }
 
-        let embedder = Arc::new(Mutex::new(Embedder::load(profile, &self.dir)?));
-        loaded.insert(profile, (Instant::now(), Arc::clone(&embedder)));
+        let embedder = Arc::new(Mutex::new(Embedder::load(&self.dir)?));
+        *loaded = Some((Instant::now(), Arc::clone(&embedder)));
         Ok(embedder)
     }
 
-    /// The reranker for a tier, loading it the first time it is asked for.
+    /// The reranker, loading it the first time it is asked for.
     ///
-    /// Lazily rather than with the project: a workspace that never reranks
-    /// never downloads one, and the tier is chosen per search.
-    fn reranker(&self, tier: Rerank) -> Result<Arc<Mutex<Reranker>>, pamin_index::IndexError> {
-        let mut rerankers = self
-            .rerankers
+    /// Lazily rather than with the project: a workspace that only writes
+    /// never downloads one.
+    fn reranker(&self) -> Result<Arc<Mutex<Reranker>>, pamin_index::IndexError> {
+        let mut held = self
+            .reranker
             .lock()
             .expect("the reranker registry lock is poisoned");
 
-        if let Some((last_used, reranker)) = rerankers.get_mut(&tier) {
+        if let Some((last_used, reranker)) = held.as_mut() {
             *last_used = Instant::now();
             return Ok(Arc::clone(reranker));
         }
 
-        let reranker = Arc::new(Mutex::new(Reranker::load(tier, &self.dir)?));
-        rerankers.insert(tier, (Instant::now(), Arc::clone(&reranker)));
+        let reranker = Arc::new(Mutex::new(Reranker::load(&self.dir)?));
+        *held = Some((Instant::now(), Arc::clone(&reranker)));
         Ok(reranker)
     }
 
-    /// Loads the embedder for `profile` and the reranker for `tier`, at once,
-    /// before anything has asked for either.
+    /// Loads the embedder and the reranker, at once, before anything has
+    /// asked for either.
     ///
     /// For a resident server that has just been asked something about a
     /// project it holds nothing for: most of the first search after an idle
@@ -604,22 +591,20 @@ impl Models {
     /// asks for it -- so warming a model nobody then uses costs it for one
     /// idle window and no longer.
     ///
-    /// The reranker only if its weights are on disk already. A tier this
-    /// workspace has never searched at may be one it never will -- `off` is
-    /// what `docs/cli.md` tells a one-language workspace to choose -- and a
-    /// warm-up that fetched half a gigabyte for it would be the opposite of
-    /// the point. The embedder is loaded either way: every write and every
-    /// search needs it.
+    /// The reranker only if its weights are on disk already. A workspace that
+    /// has never searched may be one that only writes, and a warm-up that
+    /// fetched half a gigabyte for it would be the opposite of the point. The
+    /// embedder is loaded either way: every write and every search needs it.
     ///
     /// Blocking, and both loads hold their registry's lock, so a search that
     /// arrives meanwhile waits for the load in flight instead of starting a
     /// second. Two threads because the two loads are independent: the `COLD`
     /// arm measured them at 1,300 ms together, against 1,089 and 977 alone.
-    pub fn warm(&self, profile: Profile, tier: Rerank) -> Result<(), pamin_index::IndexError> {
+    pub fn warm(&self) -> Result<(), pamin_index::IndexError> {
         std::thread::scope(|scope| {
-            let reranker = Reranker::is_downloaded(tier, &self.dir)
-                .then(|| scope.spawn(|| self.reranker(tier)));
-            let embedder = self.get(profile);
+            let reranker =
+                Reranker::is_downloaded(&self.dir).then(|| scope.spawn(|| self.reranker()));
+            let embedder = self.embedder();
             let reranker =
                 reranker.map(|loading| loading.join().expect("a reranker load panicked"));
             embedder?;
@@ -628,20 +613,19 @@ impl Models {
         })
     }
 
-    /// What a loaded reranker has been asked to do, or `None` if this process
-    /// never loaded that tier.
+    /// What the reranker has been asked to do, or `None` if it is not
+    /// loaded.
     ///
     /// The handle is cloned out from under the registry lock before the
     /// reranker's own lock is taken, so asking this while a search is in the
-    /// middle of a forward pass waits for that pass rather than for every
-    /// other tier as well.
-    fn counted(&self, tier: Rerank) -> Option<pamin_index::Reranked> {
+    /// middle of a forward pass waits for that pass and not for a load.
+    fn counted(&self) -> Option<pamin_index::Reranked> {
         let held = {
-            let rerankers = self
-                .rerankers
+            let held = self
+                .reranker
                 .lock()
                 .expect("the reranker registry lock is poisoned");
-            let (_, reranker) = rerankers.get(&tier)?;
+            let (_, reranker) = held.as_ref()?;
             Arc::clone(reranker)
         };
         Some(
@@ -651,22 +635,21 @@ impl Models {
         )
     }
 
-    /// The passes the reranker loaded at `tier` makes over `documents` for
-    /// `query` (see [`Reranker::plan`]), or `None` if this process has not
-    /// loaded that tier. Never loads one. The handle is cloned out from under
-    /// the registry lock first, as in [`counted`](Self::counted).
+    /// The passes the reranker makes over `documents` for `query` (see
+    /// [`Reranker::plan`]), or `None` if this process has not loaded it.
+    /// Never loads it. The handle is cloned out from under the registry lock
+    /// first, as in [`counted`](Self::counted).
     fn passes(
         &self,
-        tier: Rerank,
         query: &str,
         documents: &[&str],
     ) -> Option<Result<Vec<Vec<usize>>, pamin_index::IndexError>> {
         let held = {
-            let rerankers = self
-                .rerankers
+            let held = self
+                .reranker
                 .lock()
                 .expect("the reranker registry lock is poisoned");
-            let (_, reranker) = rerankers.get(&tier)?;
+            let (_, reranker) = held.as_ref()?;
             Arc::clone(reranker)
         };
         let reranker = held.lock().expect("the reranker lock is poisoned");
@@ -677,32 +660,22 @@ impl Models {
         )
     }
 
-    /// The execution plans of every reranker this process has loaded, as
-    /// `reranking <tier>`, in tier-name order. Handles are cloned out from
-    /// under the registry lock first, as in [`counted`](Self::counted).
+    /// The execution plans of the reranker if this process has loaded it,
+    /// as [`reranker_role`]. The handle is cloned out from under the registry
+    /// lock first, as in [`counted`](Self::counted).
     fn reranker_plans(&self) -> Vec<(String, pamin_index::PlanUse)> {
-        let Some(registry) = held_now(self.rerankers.as_ref()) else {
-            return Vec::new();
-        };
-        let held: Vec<(Rerank, Arc<Mutex<Reranker>>)> = registry
-            .iter()
-            .map(|(tier, (_, reranker))| (*tier, Arc::clone(reranker)))
-            .collect();
-        drop(registry);
-        let mut plans: Vec<(String, pamin_index::PlanUse)> = held
-            .into_iter()
-            .filter_map(|(tier, reranker)| {
-                let plans = held_now(reranker.as_ref())?.plans();
-                let role = format!("reranking {}", tier.name());
-                Some(plans.into_iter().map(move |plan| (role.clone(), plan)))
-            })
-            .flatten()
-            .collect();
-        plans.sort_by(|left, right| left.0.cmp(&right.0));
+        let reranker = held_now(self.reranker.as_ref())
+            .and_then(|held| held.as_ref().map(|(_, reranker)| Arc::clone(reranker)));
+        let plans = reranker
+            .and_then(|reranker| held_now(reranker.as_ref()).map(|reranker| reranker.plans()))
+            .unwrap_or_default();
         plans
+            .into_iter()
+            .map(|plan| (reranker_role(), plan))
+            .collect()
     }
 
-    /// Gives back the embedders no open engine is holding any more.
+    /// Gives back the embedder if no open engine is holding it any more.
     ///
     /// **Costs 1.6 GB to hold and 29 MB not to.** Measured on a server over
     /// the 13,014-document project, four cores: it is 29 MB resident having
@@ -728,61 +701,56 @@ impl Models {
     /// releases nothing.
     /// A model still loading is not idle; skip this tick rather than block
     /// the server's upkeep on its registry lock.
-    pub fn release_idle_embedders(&self) -> Vec<Profile> {
+    pub fn release_idle_embedder(&self) -> bool {
         let mut loaded = match self.loaded.try_lock() {
             Ok(loaded) => loaded,
-            Err(TryLockError::WouldBlock) => return Vec::new(),
+            Err(TryLockError::WouldBlock) => return false,
             Err(TryLockError::Poisoned(_)) => panic!("the model registry lock is poisoned"),
         };
 
-        let now = Instant::now();
-        let idle: Vec<Profile> = loaded
-            .iter()
-            .filter(|(_, (last_used, embedder))| {
-                is_idle(*last_used, now, model_idle()) && Arc::strong_count(embedder) == 1
-            })
-            .map(|(profile, _)| *profile)
-            .collect();
-
-        for profile in &idle {
-            loaded.remove(profile);
+        let idle = loaded.as_ref().is_some_and(|(last_used, embedder)| {
+            is_idle(*last_used, Instant::now(), model_idle()) && Arc::strong_count(embedder) == 1
+        });
+        if idle {
+            *loaded = None;
         }
         idle
     }
 
-    /// Gives back the rerankers nothing has asked for lately.
+    /// Gives back the reranker if nothing has asked for it lately.
     ///
     /// For a resident process to call on a schedule; a command that exits
-    /// after one search has nothing to give back. Returns what it released, so
-    /// the caller can say so in a log rather than guess.
+    /// after one search has nothing to give back. Returns whether it released
+    /// it, so the caller can say so in a log rather than guess.
     ///
-    /// A tier a search is *using* is never released, even if the last hand-out
+    /// A reranker a search is *using* is never released, even if the last hand-out
     /// was long enough ago -- a long rerank over a large shortlist is exactly
     /// that case. Dropping the registry's handle while a search holds its own
     /// would not free anything, it would only make the next search load a
     /// second copy alongside the first, which is the opposite of the point.
     /// A model still loading is not idle; the next upkeep tick can retry.
-    pub fn release_idle_rerankers(&self) -> Vec<Rerank> {
-        let mut rerankers = match self.rerankers.try_lock() {
-            Ok(rerankers) => rerankers,
-            Err(TryLockError::WouldBlock) => return Vec::new(),
+    pub fn release_idle_reranker(&self) -> bool {
+        let mut held = match self.reranker.try_lock() {
+            Ok(held) => held,
+            Err(TryLockError::WouldBlock) => return false,
             Err(TryLockError::Poisoned(_)) => panic!("the reranker registry lock is poisoned"),
         };
 
-        let now = Instant::now();
-        let idle: Vec<Rerank> = rerankers
-            .iter()
-            .filter(|(_, (last_used, reranker))| {
-                is_idle(*last_used, now, model_idle()) && Arc::strong_count(reranker) == 1
-            })
-            .map(|(tier, _)| *tier)
-            .collect();
-
-        for tier in &idle {
-            rerankers.remove(tier);
+        let idle = held.as_ref().is_some_and(|(last_used, reranker)| {
+            is_idle(*last_used, Instant::now(), model_idle()) && Arc::strong_count(reranker) == 1
+        });
+        if idle {
+            *held = None;
         }
         idle
     }
+}
+
+/// The provider label the reranker's plans are reported under:
+/// `reranking accurate`, the name it had as a tier, so evaluation records
+/// written before and after it was the only one compare.
+fn reranker_role() -> String {
+    format!("reranking {}", pamin_index::reranking::TIER)
 }
 
 /// `lock` if it is free now, read through a poison: for a caller that must
@@ -840,7 +808,6 @@ impl Engine {
     pub async fn open(
         workspace: &Workspace,
         project: &str,
-        profile: Profile,
         vector_index: VectorIndex,
         access: Access,
     ) -> Result<Self> {
@@ -851,7 +818,6 @@ impl Engine {
             &models,
             workspace,
             project,
-            profile,
             vector_index,
             access,
             false,
@@ -869,7 +835,6 @@ impl Engine {
         models: &Models,
         workspace: &Workspace,
         project: &str,
-        profile: Profile,
         vector_index: VectorIndex,
         access: Access,
     ) -> Result<Self> {
@@ -878,7 +843,6 @@ impl Engine {
             models,
             workspace,
             project,
-            profile,
             vector_index,
             access,
             false,
@@ -896,7 +860,6 @@ impl Engine {
         models: &Models,
         workspace: &Workspace,
         project: &str,
-        profile: Profile,
         vector_index: VectorIndex,
     ) -> Result<Self> {
         Self::assemble(
@@ -904,7 +867,6 @@ impl Engine {
             models,
             workspace,
             project,
-            profile,
             vector_index,
             Access::ReadWrite,
             true,
@@ -912,13 +874,11 @@ impl Engine {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn assemble(
         database: Database,
         models: &Models,
         workspace: &Workspace,
         project: &str,
-        profile: Profile,
         vector_index: VectorIndex,
         access: Access,
         discard: bool,
@@ -957,7 +917,7 @@ impl Engine {
             // Set aside rather than deleted, so the rebuild can take the
             // vectors it still holds instead of embedding every memory again.
             let previous = if discard {
-                let previous = Previous::set_aside(&dir, profile)?;
+                let previous = Previous::set_aside(&dir)?;
                 // A rebuild is also the migration off the shared layout, which
                 // is what the error about it tells the caller to run.
                 ProjectionIndex::discard(&legacy)?;
@@ -966,11 +926,10 @@ impl Engine {
                 None
             };
 
-            let index =
-                ProjectionIndex::open(&dir, &legacy, profile, vector_index, access, documents)?;
+            let index = ProjectionIndex::open(&dir, &legacy, vector_index, access, documents)?;
             // The model is not loaded here. It was, and that made opening an
             // engine cost the weights -- see the `embedder` field. What is lost
-            // is that a cold profile's download used to surface at open rather
+            // is that a cold model's download used to surface at open rather
             // than at the first embedding; what is gained is every command
             // that does not embed.
             Ok::<_, pamin_index::IndexError>((
@@ -998,7 +957,6 @@ impl Engine {
                 _exclusive: exclusive,
             }))),
             embedder: std::sync::OnceLock::new(),
-            profile,
             vector_index,
             models: models.clone(),
             preloads: Preloads::default(),
@@ -1174,7 +1132,7 @@ impl Engine {
                 // fail. Two callers racing here both ask the registry, which
                 // hands out the same model to both -- so the loser discards an
                 // `Arc` clone rather than a second copy of the weights.
-                let loaded = self.models.get(self.profile)?;
+                let loaded = self.models.embedder()?;
                 self.embedder.get_or_init(|| loaded)
             }
         };
@@ -1203,17 +1161,12 @@ impl Engine {
             .expect("one passage for one state");
         off_the_runtime(|| {
             let mut embedder = self.embedding()?;
-            let embedding = embedder.encode_passage(&passage)?;
+            let embedding = embedder.embed_passage(&passage)?;
             // Read after the pass, so it names the plan that ran it even when
             // the pass itself moved the model to another.
             let encoding = embedder.encoding();
             self.index().upsert_encoded(
-                &[(
-                    state.topic_id,
-                    &state.content,
-                    embedding.primary.as_slice(),
-                    embedding.secondary.as_deref(),
-                )],
+                &[(state.topic_id, &state.content, embedding.as_slice())],
                 encoding.as_deref(),
             )
         })?;
@@ -1731,22 +1684,23 @@ impl Engine {
             .count())
     }
 
-    /// What the reranker at `tier` has done in this process, or `None` if it
-    /// was never loaded.
+    /// What the reranker has done in this process, or `None` if it is not
+    /// loaded.
     ///
     /// Reports offered pairs, actual model work and complete identical-batch
     /// reuse -- see [`pamin_index::Reranked`]. Reuse does not measure document
     /// recurrence or establish hot-set/precomputation viability; those need
     /// separate recurrence and storage/cost measurements. These are lifetime
-    /// totals for the loaded model and are lost when an idle tier is released.
-    pub fn reranked(&self, tier: Rerank) -> Option<pamin_index::Reranked> {
-        self.models.counted(tier)
+    /// totals for the loaded model and are lost when an idle reranker is
+    /// released.
+    pub fn reranked(&self) -> Option<pamin_index::Reranked> {
+        self.models.counted()
     }
 
-    /// The passes this engine's reranker at `tier` would make over
-    /// `documents` for `query`, in the order it runs them -- its own planner,
-    /// at the execution target it is on now -- or `None` if this process has
-    /// not loaded that tier. Never loads one.
+    /// The passes this engine's reranker would make over `documents` for
+    /// `query`, in the order it runs them -- its own planner, at the
+    /// execution target it is on now -- or `None` if this process has not
+    /// loaded it. Never loads it.
     ///
     /// Nothing in the product calls it. An evaluation replaying the passes a
     /// search ran asks the engine's reranker rather than loading a second
@@ -1754,11 +1708,10 @@ impl Engine {
     #[doc(hidden)]
     pub fn rerank_passes(
         &self,
-        tier: Rerank,
         query: &str,
         documents: &[&str],
     ) -> Option<std::result::Result<Vec<Vec<usize>>, pamin_index::IndexError>> {
-        self.models.passes(tier, query, documents)
+        self.models.passes(query, documents)
     }
 
     /// Loads the embedding model now, if it is not loaded yet, rather than at
@@ -1781,8 +1734,7 @@ impl Engine {
     }
 
     /// Every execution plan each model this engine has used ran on, by role:
-    /// `embedding`, `embedding secondary` for a profile with a second vector
-    /// model, and `reranking <tier>` for each tier this process has loaded --
+    /// `embedding`, and `reranking accurate` if this process has loaded the reranker --
     /// oldest first, so a model that fell back to the CPU during a run lists
     /// the plan it left and then the CPU's. Each plan is its target as plans
     /// are keyed, the hash of its full plan key, and whether it is stable
@@ -1801,26 +1753,21 @@ impl Engine {
             for plan in embedder.plans() {
                 providers.push(("embedding".to_string(), plan));
             }
-            for plan in embedder.secondary_plans().into_iter().flatten() {
-                providers.push(("embedding secondary".to_string(), plan));
-            }
         }
         providers.extend(self.models.reranker_plans());
         providers
     }
 
     /// Search, then reorder the head of the result with a cross-encoder.
-    /// `accurate` sees the whole head; `fast` keeps the non-lexical rule.
     ///
     /// Fused deeper than it returns, because a reranker that only sees what the
-    /// caller asked for has nothing to work with: the tier's depth was measured
+    /// caller asked for has nothing to work with: the reranker's depth was measured
     /// over a list of fifty and the default `--limit` is five, so cutting first
     /// left it reordering five candidates and usually declining to reorder at
     /// all.
     ///
-    /// The `accurate` tier scores the whole head and blends the model's score
-    /// with fusion's, so graph and channel agreement still contribute. The
-    /// `fast` tier stays confined to candidates no lexical channel found.
+    /// The reranker scores the whole head and blends the model's score with
+    /// fusion's, so graph and channel agreement still contribute.
     ///
     /// This was a language comparison first, since "written in another
     /// language" is what the case really is. The two pick the same candidates
@@ -1836,9 +1783,8 @@ impl Engine {
         query: &str,
         limit: u32,
         depths: Depths,
-        rerank: Rerank,
     ) -> Result<Vec<SearchHit>> {
-        self.search_reranked_with(query, limit, depths, rerank, Fusion::default())
+        self.search_reranked_with(query, limit, depths, Fusion::default())
             .await
     }
 
@@ -1851,7 +1797,6 @@ impl Engine {
         query: &str,
         limit: u32,
         depths: Depths,
-        rerank: Rerank,
         fusion: Fusion,
     ) -> Result<Vec<SearchHit>> {
         // The reranker is needed after retrieval and was loaded only then, so
@@ -1877,20 +1822,18 @@ impl Engine {
         // The search never waits for the load itself, only for the model when
         // it reranks; a search that returns before then leaves the load
         // running, which [`settle_loads`](Self::settle_loads) waits for.
-        if rerank != Rerank::Off {
-            let models = self.models.clone();
-            self.preloads.start(move || drop(models.reranker(rerank)));
-        }
+        let models = self.models.clone();
+        self.preloads.start(move || drop(models.reranker()));
 
-        // The whole fused list rather than the caller's limit or the tier's
-        // head: the reranker is also shown the strongest candidates only the
+        // The whole fused list rather than the caller's limit or the
+        // reranker's head: the reranker is also shown the strongest candidates only the
         // graph found, wherever fusion put them (see [`GRAPH_SHOWN_FROM`]).
         // Every one of them is already resolved against the ledger. What is
         // not made for all of them is the hit -- the state, the topic's name
         // and the seed's content, copied -- which is made only for what the
         // caller is given; the reranker reads the few it is shown in place.
         let mut fused = self.fused(query, depths, fusion).await?;
-        if rerank == Rerank::Off || fused.results.is_empty() {
+        if fused.results.is_empty() {
             return Ok(fused.hits(limit));
         }
 
@@ -1899,7 +1842,7 @@ impl Engine {
             .iter()
             .map(|result| result.why.as_slice())
             .collect();
-        let unlexical = rerankable(&traces, rerank);
+        let unlexical = rerankable(&traces);
         if !can_be_seen(&unlexical, limit) {
             return Ok(fused.hits(limit));
         }
@@ -1910,7 +1853,7 @@ impl Engine {
             .collect();
         let documents: Vec<&str> = shown.iter().map(String::as_str).collect();
         // Finding the reranker is inside this too, not just using it. The
-        // first search of a tier downloads its weights, holding the registry
+        // first search downloads the weights, holding the registry
         // lock so that twenty concurrent searches fetch one model rather than
         // twenty -- and a lock held across a download is a lock held for a long
         // time. Taken on a runtime thread, that blocks the thread rather than
@@ -1920,7 +1863,7 @@ impl Engine {
         // readers against a cold cache wedged it indefinitely.
         let ordered = off_the_runtime(|| {
             self.models
-                .reranker(rerank)?
+                .reranker()?
                 .lock()
                 .expect("the reranker lock is poisoned")
                 .rank(query, &documents)
@@ -1938,23 +1881,19 @@ impl Engine {
                     score: ranked.score,
                 });
         }
-        let best_first: Vec<usize> = if rerank == Rerank::Accurate {
-            let fused_scores: Vec<f64> = unlexical
-                .iter()
-                .map(|at| f64::from(fused.results[*at].score))
-                .collect();
-            let mut model_scores = vec![0.0; ordered.len()];
-            for ranked in &ordered {
-                model_scores[ranked.position] = f64::from(ranked.score);
-            }
-            score_blend_order(&fused_scores, &model_scores, RERANK_FUSION)
-        } else {
-            ordered.iter().map(|ranked| ranked.position).collect()
-        };
+        let fused_scores: Vec<f64> = unlexical
+            .iter()
+            .map(|at| f64::from(fused.results[*at].score))
+            .collect();
+        let mut model_scores = vec![0.0; ordered.len()];
+        for ranked in &ordered {
+            model_scores[ranked.position] = f64::from(ranked.score);
+        }
+        let best_first = score_blend_order(&fused_scores, &model_scores, RERANK_FUSION);
         fused.results = place(
             std::mem::take(&mut fused.results),
             &unlexical,
-            rerank.depth(),
+            pamin_index::reranking::depth(),
             &best_first,
         );
         Ok(fused.hits(limit))
@@ -1989,14 +1928,9 @@ impl Engine {
             // Embedded before the index is read, and the model lock released
             // before the read lock is taken: holding both is what would turn
             // one slow inference into a queue for every reader.
-            let embedding = self.embedding()?.encode_query(query)?;
+            let embedding = self.embedding()?.embed_query(query)?;
             let index = self.index();
-            let primary_depth = if embedding.secondary.is_some() {
-                depths.channel.div_ceil(2)
-            } else {
-                depths.channel
-            };
-            let mut lists = vec![
+            let lists = vec![
                 ChannelResults::new(
                     Channel::LexicalSegmented,
                     index.recall_segmented(query, depths.channel)?,
@@ -2007,18 +1941,11 @@ impl Engine {
                 ),
                 ChannelResults::new(
                     Channel::Vector,
-                    index.recall_vector(&embedding.primary, primary_depth)?,
+                    index.recall_vector(&embedding, depths.channel)?,
                 ),
             ];
-            if let Some(secondary) = embedding.secondary {
-                lists.push(ChannelResults::new(
-                    Channel::VectorSecondary,
-                    index.recall_secondary(&secondary, depths.channel / 2)?,
-                ));
-            }
             Ok::<_, pamin_index::IndexError>(lists)
         })?;
-        let fusion = dense_fusion(self.profile, depths.channel, fusion);
 
         // Only the ledger knows what a topic stands for now, what it is worth,
         // and whether it still stands for anything -- so what the index
@@ -2355,12 +2282,7 @@ impl Engine {
                     .iter()
                     .zip(&embeddings)
                     .map(|((state, _), embedding)| {
-                        (
-                            state.topic_id,
-                            state.content.as_str(),
-                            embedding.primary.as_slice(),
-                            embedding.secondary.as_deref(),
-                        )
+                        (state.topic_id, state.content.as_str(), embedding.as_slice())
                     })
                     .collect();
                 index.upsert_encoded(&documents, encoding.as_deref())?;
@@ -2767,25 +2689,15 @@ const GRAPH_SHOWN_FROM: f32 = 0.5;
 /// eight. Thirty is the cap the threshold was measured with, not a tuned value.
 const GRAPH_SHOWN_AT_MOST: usize = 30;
 
-/// The positions of a fused list the reranker is shown: the whole head for
-/// `accurate`, the head's non-lexical candidates for `fast`, and those below the head that only the
-/// graph found with a graph score of at least [`GRAPH_SHOWN_FROM`], strongest
+/// The positions of a fused list the reranker is shown: the whole head, and
+/// those below the head that only the graph found with a graph score of at least [`GRAPH_SHOWN_FROM`], strongest
 /// first and at most [`GRAPH_SHOWN_AT_MOST`] of them. Ascending.
 ///
 /// One rule, public so the harnesses that replay a search from its trace use
 /// this rather than a copy that could drift from it. `traces` is each fused
 /// result's `why`, in fused order.
-pub fn rerankable(traces: &[&[Why]], rerank: Rerank) -> Vec<usize> {
-    let head = rerank.depth().min(traces.len());
-    let lexical = |why: &[Why]| {
-        why.iter().any(|entry| {
-            matches!(
-                entry,
-                Why::Channel { channel, .. }
-                    if *channel == Channel::LexicalSegmented || *channel == Channel::LexicalNgram
-            )
-        })
-    };
+pub fn rerankable(traces: &[&[Why]]) -> Vec<usize> {
+    let head = pamin_index::reranking::depth().min(traces.len());
     let graph_only = |why: &[Why]| -> Option<f32> {
         let mut graph = None;
         for entry in why {
@@ -2799,9 +2711,7 @@ pub fn rerankable(traces: &[&[Why]], rerank: Rerank) -> Vec<usize> {
         graph
     };
 
-    let mut positions: Vec<usize> = (0..head)
-        .filter(|at| rerank == Rerank::Accurate || !lexical(traces[*at]))
-        .collect();
+    let mut positions: Vec<usize> = (0..head).collect();
     let mut graph: Vec<(usize, f32)> = (head..traces.len())
         .filter_map(|at| graph_only(traces[at]).map(|score| (at, score)))
         .collect();
@@ -2850,14 +2760,6 @@ pub fn score_blend_order(fused: &[f64], model: &[f64], fusion: f64) -> Vec<usize
             .then_with(|| left.cmp(right))
     });
     positions
-}
-
-fn dense_fusion(profile: Profile, depth: u32, fusion: Fusion) -> Fusion {
-    if profile == Profile::DualAccuracy && depth >= 2 {
-        fusion.with_secondary_vector()
-    } else {
-        fusion
-    }
 }
 
 /// Puts the candidates the reranker scored back into the list, best first.
@@ -2962,22 +2864,6 @@ fn can_be_seen(unlexical: &[usize], limit: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn dual_depth_one_preserves_the_single_stream_vote() {
-        let primary = pamin_core::ChannelResults::new(
-            pamin_core::Channel::Vector,
-            vec![pamin_core::Scored::new(pamin_core::TopicId::new(), 1.0)],
-        );
-        let expected = pamin_core::Fusion::default().fuse(std::slice::from_ref(&primary));
-        let actual = super::dense_fusion(
-            pamin_index::Profile::DualAccuracy,
-            1,
-            pamin_core::Fusion::default(),
-        )
-        .fuse(&[primary]);
-        assert_eq!(actual[0].score, expected[0].score);
-    }
-
     use std::time::{Duration, Instant};
 
     use super::{
@@ -2985,7 +2871,6 @@ mod tests {
         path_strength, place, rerankable, runs_of_tokens, score_blend_order, seed_relevance, shown,
     };
     use pamin_core::{Channel, ChannelResults, TopicId};
-    use pamin_index::Rerank;
 
     /// A load started ahead of its need returns at once, is waited for by
     /// settling, and once finished is not held by a server that never settles.
@@ -3034,14 +2919,10 @@ mod tests {
         let models = super::Models {
             dir: std::path::PathBuf::from("/nonexistent/pamin-models"),
             loaded: std::sync::Arc::default(),
-            rerankers: std::sync::Arc::default(),
+            reranker: std::sync::Arc::default(),
         };
-        assert!(
-            models
-                .passes(Rerank::Accurate, "query", &["one", "two"])
-                .is_none()
-        );
-        assert!(models.rerankers.lock().unwrap().is_empty());
+        assert!(models.passes("query", &["one", "two"]).is_none());
+        assert!(models.reranker.lock().unwrap().is_none());
     }
 
     #[test]
@@ -3051,26 +2932,33 @@ mod tests {
         let models = super::Models {
             dir: std::path::PathBuf::new(),
             loaded: std::sync::Arc::default(),
-            rerankers: std::sync::Arc::default(),
+            reranker: std::sync::Arc::default(),
         };
 
         let embedder_load = models.loaded.lock().unwrap();
         let (sent, received) = mpsc::channel();
         let sweeping = models.clone();
-        let worker = std::thread::spawn(move || sent.send(sweeping.release_idle_embedders()));
+        let worker = std::thread::spawn(move || sent.send(sweeping.release_idle_embedder()));
         let embedder_result = received.recv_timeout(Duration::from_secs(1));
         drop(embedder_load);
         worker.join().unwrap().unwrap();
-        assert_eq!(embedder_result.unwrap(), Vec::<pamin_index::Profile>::new());
+        assert!(!embedder_result.unwrap());
 
-        let reranker_load = models.rerankers.lock().unwrap();
+        let reranker_load = models.reranker.lock().unwrap();
         let (sent, received) = mpsc::channel();
         let sweeping = models.clone();
-        let worker = std::thread::spawn(move || sent.send(sweeping.release_idle_rerankers()));
+        let worker = std::thread::spawn(move || sent.send(sweeping.release_idle_reranker()));
         let reranker_result = received.recv_timeout(Duration::from_secs(1));
         drop(reranker_load);
         worker.join().unwrap().unwrap();
-        assert_eq!(reranker_result.unwrap(), Vec::<Rerank>::new());
+        assert!(!reranker_result.unwrap());
+    }
+
+    /// The reranker's plans are reported under the label they had as the
+    /// `accurate` tier, which evaluation records are matched on.
+    #[test]
+    fn the_reranker_is_reported_as_reranking_accurate() {
+        assert_eq!(super::reranker_role(), "reranking accurate");
     }
 
     /// The reranker reads a candidate under its name, and a graph arrival with
@@ -3269,8 +3157,8 @@ mod tests {
     use pamin_index::Segmenter;
     use pamin_index::segmentation::names;
 
-    /// Accurate sees the whole head; fast keeps the old non-lexical rule.
-    /// Both see strong graph-only candidates below the head.
+    /// The reranker sees the whole head, and strong graph-only candidates
+    /// below it.
     #[test]
     fn the_accurate_reranker_sees_the_whole_head_and_strong_graph_finds() {
         use pamin_core::Why;
@@ -3282,7 +3170,7 @@ mod tests {
             weight: 1.0,
             contribution: 0.0,
         };
-        let head = Rerank::Accurate.depth();
+        let head = pamin_index::reranking::depth();
         let mut traces: Vec<Vec<Why>> = Vec::new();
         for at in 0..head {
             // Every other head position has lexical evidence.
@@ -3312,17 +3200,9 @@ mod tests {
         }
         let borrowed: Vec<&[Why]> = traces.iter().map(Vec::as_slice).collect();
 
-        let shown = rerankable(&borrowed, Rerank::Accurate);
+        let shown = rerankable(&borrowed);
         let head_shown: Vec<usize> = shown.iter().copied().filter(|at| *at < head).collect();
         assert_eq!(head_shown, (0..head).collect::<Vec<_>>());
-        let fast_head = Rerank::Fast.depth();
-        assert_eq!(
-            rerankable(&borrowed, Rerank::Fast)
-                .into_iter()
-                .filter(|at| *at < fast_head)
-                .collect::<Vec<_>>(),
-            (0..fast_head).filter(|at| at % 2 == 1).collect::<Vec<_>>()
-        );
         let below: Vec<usize> = shown.iter().copied().filter(|at| *at >= head).collect();
         // The strongest GRAPH_SHOWN_AT_MOST, which are the last ones pushed;
         // the weakest three that reach the threshold lose to the cap.
@@ -3333,7 +3213,7 @@ mod tests {
         // With fewer finds at the threshold than the cap, every one of them is
         // shown, the one exactly at it included, and none under it.
         let few: Vec<&[Why]> = borrowed[..first_strong + 2].to_vec();
-        let shown = rerankable(&few, Rerank::Accurate);
+        let shown = rerankable(&few);
         let below: Vec<usize> = shown.iter().copied().filter(|at| *at >= head).collect();
         assert_eq!(below, vec![first_strong, first_strong + 1]);
     }
@@ -3489,125 +3369,111 @@ mod tests {
     /// skip rests on, and why the two indexes must end up identical.
     #[test]
     fn a_topic_back_where_the_index_left_it_is_not_embedded_again() {
-        use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
+        use pamin_index::{Access, Projection, ProjectionIndex, VectorIndex};
 
         /// One plan throughout, so the skip is the only thing that differs.
         const PLAN: &str = "cpu:plan";
 
-        for profile in [Profile::Speed, Profile::DualAccuracy] {
-            let open = |dir: &std::path::Path| {
-                ProjectionIndex::open(
-                    dir,
-                    &dir.join("legacy"),
-                    profile,
-                    VectorIndex::default(),
-                    Access::ReadWrite,
-                    0,
-                )
-                .expect("open index")
-            };
-            let encode = |text: &str, dimensions: u32| -> Vec<f32> {
-                let seed = text.bytes().fold(7u32, |hash, byte| {
-                    hash.wrapping_mul(31).wrapping_add(u32::from(byte))
-                });
-                (0..dimensions)
-                    .map(|at| {
-                        ((seed.wrapping_add(at.wrapping_mul(2_654_435_761)) >> 8) % 1000) as f32
-                            / 1000.0
-                            - 0.5
-                    })
-                    .collect()
-            };
-            let every_dir = tempfile::tempdir().expect("temp dir");
-            let skipping_dir = tempfile::tempdir().expect("temp dir");
-            let every = open(every_dir.path());
-            let skipping = open(skipping_dir.path());
+        let open = |dir: &std::path::Path| {
+            ProjectionIndex::open(
+                dir,
+                &dir.join("legacy"),
+                VectorIndex::default(),
+                Access::ReadWrite,
+                0,
+            )
+            .expect("open index")
+        };
+        let encode = |text: &str, dimensions: u32| -> Vec<f32> {
+            let seed = text.bytes().fold(7u32, |hash, byte| {
+                hash.wrapping_mul(31).wrapping_add(u32::from(byte))
+            });
+            (0..dimensions)
+                .map(|at| {
+                    ((seed.wrapping_add(at.wrapping_mul(2_654_435_761)) >> 8) % 1000) as f32
+                        / 1000.0
+                        - 0.5
+                })
+                .collect()
+        };
+        let every_dir = tempfile::tempdir().expect("temp dir");
+        let skipping_dir = tempfile::tempdir().expect("temp dir");
+        let every = open(every_dir.path());
+        let skipping = open(skipping_dir.path());
 
-            let (one, two) = (TopicId::new(), TopicId::new());
-            // Each round is the writes committed before a drain, in order; a
-            // topic written twice in a round owes one sync, of its last text.
-            // `None` removes the topic's document, as a sync of a topic with no
-            // current state does.
-            let rounds: Vec<Vec<(TopicId, Option<&str>)>> = vec![
-                vec![(one, Some("alpha")), (two, Some("xi"))],
-                vec![(one, Some("beta")), (one, Some("alpha"))],
-                vec![(two, Some("ypsilon"))],
-                vec![(one, Some("alpha")), (two, Some("ypsilon"))],
-                vec![(one, Some("alpha ")), (two, None)],
-                vec![(two, Some("ypsilon"))],
-            ];
-            // Encoded per round by the path that writes every drained state,
-            // and by the path that skips what is held.
-            let mut encoded = (Vec::new(), Vec::new());
-            for round in &rounds {
-                let mut owed: Vec<(TopicId, Option<&str>)> = Vec::new();
-                for (topic, text) in round {
-                    owed.retain(|(owing, _)| owing != topic);
-                    owed.push((*topic, *text));
-                }
-                let (present, absent): (Vec<_>, Vec<_>) =
-                    owed.iter().partition(|(_, text)| text.is_some());
-                let wanted: Vec<(TopicId, &str)> = present
-                    .iter()
-                    .map(|(topic, text)| (*topic, text.expect("present")))
-                    .collect();
-                let absent: Vec<TopicId> = absent.iter().map(|(topic, _)| *topic).collect();
-
-                let unheld = super::unheld(&skipping, &wanted, Some(PLAN));
-                let needed: Vec<(TopicId, &str)> = wanted
-                    .iter()
-                    .zip(&unheld)
-                    .filter(|(_, unheld)| **unheld)
-                    .map(|(wanted, _)| *wanted)
-                    .collect();
-                for (index, writes) in [(&every, &wanted), (&skipping, &needed)] {
-                    let vectors: Vec<(Vec<f32>, Option<Vec<f32>>)> = writes
-                        .iter()
-                        .map(|(_, text)| {
-                            (
-                                encode(text, profile.dimensions()),
-                                profile
-                                    .secondary_dimensions()
-                                    .map(|dimensions| encode(text, dimensions)),
-                            )
-                        })
-                        .collect();
-                    let documents: Vec<pamin_index::VectorDocument<'_>> = writes
-                        .iter()
-                        .zip(&vectors)
-                        .map(|((topic, text), (primary, secondary))| {
-                            (*topic, *text, primary.as_slice(), secondary.as_deref())
-                        })
-                        .collect();
-                    index.upsert_encoded(&documents, Some(PLAN)).expect("write");
-                    index.delete(&absent).expect("delete");
-                    index.flush().expect("flush");
-                }
-                encoded.0.push(wanted.len());
-                encoded.1.push(needed.len());
+        let (one, two) = (TopicId::new(), TopicId::new());
+        // Each round is the writes committed before a drain, in order; a
+        // topic written twice in a round owes one sync, of its last text.
+        // `None` removes the topic's document, as a sync of a topic with no
+        // current state does.
+        let rounds: Vec<Vec<(TopicId, Option<&str>)>> = vec![
+            vec![(one, Some("alpha")), (two, Some("xi"))],
+            vec![(one, Some("beta")), (one, Some("alpha"))],
+            vec![(two, Some("ypsilon"))],
+            vec![(one, Some("alpha")), (two, Some("ypsilon"))],
+            vec![(one, Some("alpha ")), (two, None)],
+            vec![(two, Some("ypsilon"))],
+        ];
+        // Encoded per round by the path that writes every drained state,
+        // and by the path that skips what is held.
+        let mut encoded = (Vec::new(), Vec::new());
+        for round in &rounds {
+            let mut owed: Vec<(TopicId, Option<&str>)> = Vec::new();
+            for (topic, text) in round {
+                owed.retain(|(owing, _)| owing != topic);
+                owed.push((*topic, *text));
             }
+            let (present, absent): (Vec<_>, Vec<_>) =
+                owed.iter().partition(|(_, text)| text.is_some());
+            let wanted: Vec<(TopicId, &str)> = present
+                .iter()
+                .map(|(topic, text)| (*topic, text.expect("present")))
+                .collect();
+            let absent: Vec<TopicId> = absent.iter().map(|(topic, _)| *topic).collect();
 
-            // Round two is the A -> B -> A topic, round four a sync of two
-            // topics already current, round six a removed topic restored to
-            // the text it had: that one has no document to keep, so it is
-            // embedded again. A trailing space is a different text.
-            assert_eq!(encoded.0, [2, 1, 1, 2, 1, 1], "{profile:?}");
-            assert_eq!(encoded.1, [2, 0, 1, 0, 1, 1], "{profile:?}");
+            let unheld = super::unheld(&skipping, &wanted, Some(PLAN));
+            let needed: Vec<(TopicId, &str)> = wanted
+                .iter()
+                .zip(&unheld)
+                .filter(|(_, unheld)| **unheld)
+                .map(|(wanted, _)| *wanted)
+                .collect();
+            for (index, writes) in [(&every, &wanted), (&skipping, &needed)] {
+                let vectors: Vec<Vec<f32>> = writes
+                    .iter()
+                    .map(|(_, text)| encode(text, pamin_index::DIMENSIONS))
+                    .collect();
+                let documents: Vec<pamin_index::VectorDocument<'_>> = writes
+                    .iter()
+                    .zip(&vectors)
+                    .map(|((topic, text), vector)| (*topic, *text, vector.as_slice()))
+                    .collect();
+                index.upsert_encoded(&documents, Some(PLAN)).expect("write");
+                index.delete(&absent).expect("delete");
+                index.flush().expect("flush");
+            }
+            encoded.0.push(wanted.len());
+            encoded.1.push(needed.len());
+        }
 
-            let topics = [one, two];
+        // Round two is the A -> B -> A topic, round four a sync of two
+        // topics already current, round six a removed topic restored to
+        // the text it had: that one has no document to keep, so it is
+        // embedded again. A trailing space is a different text.
+        assert_eq!(encoded.0, [2, 1, 1, 2, 1, 1]);
+        assert_eq!(encoded.1, [2, 0, 1, 0, 1, 1]);
+
+        let topics = [one, two];
+        assert_eq!(
+            every.stored(&topics).expect("read back"),
+            skipping.stored(&topics).expect("read back"),
+        );
+        for text in ["alpha", "alpha ", "ypsilon"] {
+            let query = encode(text, pamin_index::DIMENSIONS);
             assert_eq!(
-                every.stored(&topics).expect("read back"),
-                skipping.stored(&topics).expect("read back"),
-                "{profile:?}"
+                every.recall_vector(&query, 2).expect("recall"),
+                skipping.recall_vector(&query, 2).expect("recall"),
             );
-            for text in ["alpha", "alpha ", "ypsilon"] {
-                let query = encode(text, profile.dimensions());
-                assert_eq!(
-                    every.recall_vector(&query, 2).expect("recall"),
-                    skipping.recall_vector(&query, 2).expect("recall"),
-                    "{profile:?}"
-                );
-            }
         }
     }
 
@@ -3621,25 +3487,24 @@ mod tests {
     /// plan -- is not held. Comparing the text alone passes the first and the last.
     #[test]
     fn a_vector_from_another_plan_is_embedded_again() {
-        use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
+        use pamin_index::{Access, Projection, ProjectionIndex, VectorIndex};
 
         let dir = tempfile::tempdir().expect("temp dir");
         let index = ProjectionIndex::open(
             dir.path(),
             &dir.path().join("legacy"),
-            Profile::Speed,
             VectorIndex::default(),
             Access::ReadWrite,
             0,
         )
         .expect("open index");
         let (cpu, unrecorded) = (TopicId::new(), TopicId::new());
-        let vector = vec![0.1; Profile::Speed.dimensions() as usize];
+        let vector = vec![0.1; pamin_index::DIMENSIONS as usize];
         index
-            .upsert_encoded(&[(cpu, "alpha", vector.as_slice(), None)], Some("cpu:one"))
+            .upsert_encoded(&[(cpu, "alpha", vector.as_slice())], Some("cpu:one"))
             .expect("write");
         index
-            .upsert_vectors(&[(unrecorded, "alpha", vector.as_slice(), None)])
+            .upsert_batch(&[(unrecorded, "alpha", vector.as_slice())])
             .expect("write");
         index.flush().expect("flush");
 
@@ -3693,20 +3558,14 @@ mod tests {
         fn encode_passages(
             &mut self,
             texts: &[&str],
-        ) -> pamin_index::Result<(Vec<pamin_index::Encoded>, Option<String>)> {
+        ) -> pamin_index::Result<(Vec<Vec<f32>>, Option<String>)> {
             if let Some(next) = self.moves_to.take() {
                 self.plan = next;
             }
             self.passes
                 .push(texts.iter().map(|text| text.to_string()).collect());
-            let width = pamin_index::Profile::Speed.dimensions() as usize;
-            let encoded = texts
-                .iter()
-                .map(|_| pamin_index::Encoded {
-                    primary: vec![0.1; width],
-                    secondary: None,
-                })
-                .collect();
+            let width = pamin_index::DIMENSIONS as usize;
+            let encoded = texts.iter().map(|_| vec![0.1; width]).collect();
             Ok((encoded, Some(self.plan.clone())))
         }
     }
@@ -3721,7 +3580,7 @@ mod tests {
     /// and queries, so it is embedded after all.
     #[test]
     fn a_held_state_is_embedded_when_the_plan_moves_under_it() {
-        use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
+        use pamin_index::{Access, Projection, ProjectionIndex, VectorIndex};
         use std::sync::Arc;
 
         let setup = || {
@@ -3730,7 +3589,6 @@ mod tests {
                 ProjectionIndex::open(
                     dir.path(),
                     &dir.path().join("legacy"),
-                    Profile::Speed,
                     VectorIndex::default(),
                     Access::ReadWrite,
                     0,
@@ -3738,12 +3596,9 @@ mod tests {
                 .expect("open index"),
             );
             let held = TopicId::new();
-            let vector = vec![0.1; Profile::Speed.dimensions() as usize];
+            let vector = vec![0.1; pamin_index::DIMENSIONS as usize];
             index
-                .upsert_encoded(
-                    &[(held, "alpha", vector.as_slice(), None)],
-                    Some("cpu:fallback"),
-                )
+                .upsert_encoded(&[(held, "alpha", vector.as_slice())], Some("cpu:fallback"))
                 .expect("write");
             (dir, index, held, TopicId::new())
         };
@@ -3797,23 +3652,22 @@ mod tests {
     /// A write the index has buffered and not yet flushed is already held.
     #[test]
     fn a_buffered_write_is_already_held() {
-        use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
+        use pamin_index::{Access, Projection, ProjectionIndex, VectorIndex};
 
         let dir = tempfile::tempdir().expect("temp dir");
         let index = ProjectionIndex::open(
             dir.path(),
             &dir.path().join("legacy"),
-            Profile::Speed,
             VectorIndex::default(),
             Access::ReadWrite,
             0,
         )
         .expect("open index");
         let topic = TopicId::new();
-        let vector = vec![0.1; Profile::Speed.dimensions() as usize];
+        let vector = vec![0.1; pamin_index::DIMENSIONS as usize];
         let plan = Some("cpu:plan");
         index
-            .upsert_encoded(&[(topic, "alpha", vector.as_slice(), None)], plan)
+            .upsert_encoded(&[(topic, "alpha", vector.as_slice())], plan)
             .expect("write");
         assert_eq!(super::unheld(&index, &[(topic, "alpha")], plan), [false]);
         assert_eq!(super::unheld(&index, &[(topic, "Alpha")], plan), [true]);

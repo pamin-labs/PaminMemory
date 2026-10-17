@@ -1,7 +1,7 @@
 //! Compare the same embedding export on the automatic provider and CPU.
 //! Each arm runs in its own process; native inference threads never see an
 //! environment mutation after initialization.
-use pamin_index::{Device, Embedder, Profile};
+use pamin_index::{Device, Embedder};
 
 #[test]
 #[ignore = "loads embedding models; PAMIN_TEST_MODEL_CACHE reuses an existing cache"]
@@ -14,11 +14,7 @@ fn accelerated_embeddings_preserve_the_embedding_space() {
         let models = std::path::PathBuf::from(
             std::env::var_os("PAMIN_TEST_MODEL_CACHE").expect("the parent supplies a cache"),
         );
-        let profile = Profile::parse(
-            &std::env::var("PAMIN_TEST_PROFILE").unwrap_or_else(|_| "accuracy".into()),
-        )
-        .unwrap();
-        let mut model = Embedder::load(profile, &models).expect("embedding model");
+        let mut model = Embedder::load(&models).expect("embedding model");
         if std::env::var("PAMIN_DEVICE").as_deref() == Ok("cpu") {
             assert_eq!(model.device(), Device::Cpu);
         } else {
@@ -55,9 +51,6 @@ fn accelerated_embeddings_preserve_the_embedding_space() {
     let models = std::env::var_os("PAMIN_TEST_MODEL_CACHE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| temporary.path().join("models"));
-    let profile =
-        Profile::parse(&std::env::var("PAMIN_TEST_PROFILE").unwrap_or_else(|_| "accuracy".into()))
-            .unwrap();
     let run = |arm: &str| {
         let output = temporary.path().join(format!("{arm}.json"));
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
@@ -84,7 +77,7 @@ fn accelerated_embeddings_preserve_the_embedding_space() {
     let chosen = run("automatic");
     let cpu = run("cpu");
     for (index, (actual, expected)) in chosen.iter().zip(&cpu).enumerate() {
-        assert_eq!(actual.len(), profile.dimensions() as usize);
+        assert_eq!(actual.len(), pamin_index::DIMENSIONS as usize);
         assert_eq!(actual.len(), expected.len());
         assert!(actual.iter().chain(expected).all(|v| v.is_finite()));
         let dot: f64 = actual

@@ -1,7 +1,7 @@
 //! `pamin write` — record a memory.
 
 use anyhow::{Context, Result};
-use pamin_index::{Profile, VectorIndex};
+use pamin_index::VectorIndex;
 use serde::{Deserialize, Serialize};
 
 use crate::command::validity;
@@ -54,7 +54,6 @@ pub struct Written {
 pub async fn execute(
     session: &Session,
     project: &str,
-    profile: Profile,
     vector_index: VectorIndex,
     args: Args,
 ) -> Result<Written> {
@@ -70,7 +69,7 @@ pub async fn execute(
         .content
         .context("no content: pass it as an argument or on standard input")?;
 
-    let engine = session.engine(project, profile, vector_index).await?;
+    let engine = session.engine(project, vector_index).await?;
     let (verdict, recorded) = engine.remember(&args.topic, &content, validity).await?;
 
     // The projection catches up from the outbox rather than here. Draining now

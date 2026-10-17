@@ -26,7 +26,8 @@ One rule ran through all of it:
 | Vector index | Half-precision vectors under a DiskANN graph (`disk`) or an HNSW graph (`memory`, the default), candidates ranked again by an exact f32 cosine |
 | Segmentation | `icu_segmenter` (ICU4X) |
 | Language detection | `whatlang` |
-| Embeddings | ONNX Runtime through the shared session and `tokenizers`; BGE-M3 uses int8 weights by default, while the E5 profiles use FastEmbed's model registry and pooling with full-precision weights |
+| Embeddings | BGE-M3 with int8 weights (`gpahal/bge-m3-onnx-int8`), the one embedding model, through ONNX Runtime and `tokenizers` |
+| Reranking | bge-reranker-v2-m3 with int8 weights, on every search |
 | CLI | `clap` |
 
 Nothing is hand-written where a mature crate already covers it. The migration runner comes from `sqlx` rather than being hand-rolled, and the same rule applies to argument parsing, configuration, and logging.
@@ -1300,6 +1301,8 @@ The field indexes `zvec`'s default of two-character grams, and that was measured
 
 ### Embeddings: profiles, and two different meanings of INT8
 
+> Superseded on 2026-10-15 by [one embedding model and one reranker](#2026-10-15-one-embedding-model-and-one-reranker); kept as history.
+
 "INT8" names two operations whose costs differ by an order of magnitude, and conflating them is easy:
 
 | | What it is | Measured cost | State |
@@ -1510,6 +1513,8 @@ ms at 128 tokens, 1,458 at 512, 2,874 at 1,024, 10,670 at 2,048 and 24,459 at
 stays at 512.
 
 ### pplx-embed-v1-0.6b on the shipped path: measured, not adopted
+
+> Superseded on 2026-10-15 by [one embedding model and one reranker](#2026-10-15-one-embedding-model-and-one-reranker); kept as history.
 
 **Status: rejected.** BGE-M3 remains the default. The earlier experiment
 reported an accuracy gain and rejected its 3.4× slower write path; those
@@ -2010,6 +2015,8 @@ cascade jobs a minute, which is ten and a half of them.
 
 ### A cross-encoder reranker, once the opportunity was real
 
+> Superseded on 2026-10-15 by [one embedding model and one reranker](#2026-10-15-one-embedding-model-and-one-reranker); kept as history.
+
 An earlier version of this decision recorded that reranking was measured and did not help. That measurement stands; its premise does not. It ran on Påmin Memory's own 210-memory corpus, where the diagnostic said plainly that there was nothing to recover: across all 137 queries the relevant memory was already inside the top ten, so a second pass could only reorder what was already right, and both models reordered it worse. The conclusion drawn from it — *revisit when the opportunity is real* — named the measurement to run first, and an external corpus supplied it.
 
 On 13,014 sentences in eleven languages, 3,813 relevant sentences sit between rank 10 and rank 50, across 1,088 of 1,190 queries. That is the opportunity the small corpus could not produce, and in it reranking is the largest single retrieval gain measured in this repository. (It was 4,845 across 1,149 queries when this was first run. Correcting the fusion weights moved several hundred of them up into the top ten, which is the right direction and leaves the point standing: the space a reranker works in is still most of the corpus.)
@@ -2156,6 +2163,8 @@ Both routes rest on premises Påmin Memory has not measured — that the hot set
 Licensing was the blocker when this was first examined and is no longer. The embedding library's own four rerankers remain unusable — two English-only, one CC-BY-NC-4.0, and one carrying no licence at all — but its user-defined loader takes any ONNX, which is the path every tier here takes.
 
 ### What each shipped tier is licensed under, and what was surveyed against them
+
+> Superseded on 2026-10-15 by [one embedding model and one reranker](#2026-10-15-one-embedding-model-and-one-reranker); kept as history.
 
 Licences were checked at the leaf and at the base, because a fine-tune's card can declare a licence its base does not permit.
 
@@ -3246,6 +3255,8 @@ attribute the whole improvement to any one commit.
 
 ### 2026-09-30: route Apple Fast reranking to optimized CPU
 
+> Superseded on 2026-10-15 by [one embedding model and one reranker](#2026-10-15-one-embedding-model-and-one-reranker); kept as history.
+
 CoreML is not the fastest viable route for every model. On the same pinned
 Fast model and complete 1,190-query XQuAD-R index, Apple ARM INT8 CPU changed
 cross-language nDCG@10 by +0.001077 (four-metric adjusted p=0.1558),
@@ -3268,6 +3279,8 @@ the paired vectors and configurations through the shared diagnostic owner,
 with stdout retained beside them. No new weight is selected from old means.
 
 ### 2026-09-30: observe E5 scoring sessions
+
+> Superseded on 2026-10-15 by [one embedding model and one reranker](#2026-10-15-one-embedding-model-and-one-reranker); kept as history.
 
 The `speed` and `balanced` embedders previously created private FastEmbed
 sessions, outside the shared ONNX Runtime provider-assignment report. They now
@@ -3305,8 +3318,69 @@ Full XQuAD-R, MIRACL-Swahili and a shared 50k memory index found no accuracy or 
 
 ## Prototype follow-up evidence (2026-10-01)
 
+> Superseded on 2026-10-15 by [one embedding model and one reranker](#2026-10-15-one-embedding-model-and-one-reranker); kept as history.
+
 Dual-vector accuracy remains opt-in. At a fixed semantic depth and total vector vote budget, paired CPU XQuAD-R cross-language nDCG@10 improves 0.726706 → 0.734442, while recall@50 falls 0.903193 → 0.883109. This is a ranking/coverage tradeoff; do not promote the default on one corpus. Dual also adds sampled process RSS and projection bytes. The [complete comparison](../../benchmarks/results/compute/prototype-closeout-2026-10-01/README.md) retains raw rows, exact frozen revisions, corrected percentile definitions, independent process costs and provenance limits.
 
 Cached automatic search in the retained blocks is at main parity. Source BGE CoreML conformance is still unresolved; native Windows NPU has implementation/compile evidence, not measured hardware performance. Later calibration-policy fixes were not included in those frozen timings. CPU work uses optimized ORT kernels/SIMD where supported; exact integer pooled-vector normalization has a [separate kernel diagnostic](../../benchmarks/results/compute/i8-normalization-2026-10-01/README.md), which must not be reported as search speedup. Keep accuracy, latency, memory and disk priorities, and remeasure the actual entry point when changing default plans.
 
 The 2026-10-01 cluster inference is a post-hoc correction of a question-independence error, not preregistered confirmatory acceptance. Keep the original declaration, report the corrected exploratory evidence and require an independent-corpus check before default promotion.
+
+## 2026-10-15: one embedding model and one reranker
+
+**Decision.** Påmin Memory has one embedding model, BGE-M3 int8 (the former
+`accuracy` profile), and one reranker, bge-reranker-v2-m3 int8 (the former
+`accurate` tier), and no setting that chooses either. The `speed` and
+`balanced` (multilingual E5) and `dual_accuracy` (BGE-M3 beside PPLX 0.6B)
+profiles, the `off` and `fast` (MiniLM) tiers, `--profile`, `--rerank`,
+`PAMIN_PROFILE` and `PAMIN_RERANK` are removed. `fastembed`, which only the
+E5 profiles called, leaves the runtime dependencies and stays for one parity
+test.
+
+**Why.** Each alternative had already lost on this decision's own ordering of
+accuracy before latency, and was kept only as an option:
+
+- BGE-M3 roughly doubled cross-lingual nDCG@10 against `balanced` and matched
+  it on same-language queries, at nine milliseconds a query more
+  ([Embeddings](#embeddings-profiles-and-two-different-meanings-of-int8)).
+- `dual_accuracy` traded recall for ranking on one corpus -- cross-language
+  nDCG@10 0.726706 → 0.734442 but recall@50 0.903193 → 0.883109 -- and added
+  memory and disk; it stayed opt-in and was never promoted
+  ([Prototype follow-up evidence](#prototype-follow-up-evidence-2026-10-01)).
+- `accurate` was ahead of `fast` query by query wherever there were queries
+  enough to say, and `fast` was below no reranking at all on both
+  same-language measurements
+  ([A cross-encoder reranker](#a-cross-encoder-reranker-once-the-opportunity-was-real)).
+
+Every option is code, tests, evaluation arms and documentation that have to
+stay true. Options nobody should choose cost that without buying anything.
+
+**What is kept exactly.** A workspace that ran the defaults must not notice:
+the index marker still records `gpahal/bge-m3-onnx-int8`; the embedder's plan
+key keeps its `embedding-query-v4:max512:joint-singleton:e5-cpu256-accelerator8:`
+prefix and the reranker's its `reranker-v3:accurate:` prefix, so measured plans
+are reused rather than re-measured; plans keep the provider label
+`reranking accurate`; and evaluation records and cached projects keep the
+`accuracy` name. Each is pinned by a test. The change is meant to leave the
+default search path bit-identical, and the pull request that made it records
+the check.
+
+**Compatibility.** Setting `PAMIN_PROFILE` or `PAMIN_RERANK` to any value is
+an error naming the setting, following `PAMIN_NO_SERVER`, rather than being
+ignored: a caller that set one expected it to change something. An index built
+under a retired profile refuses to open with an error that names the profile
+and `pamin reindex`, and the server's catch-up logs it rather than passing over
+the project in silence. Retired model downloads are not deleted, because a
+model directory can be shared; [cli.md](../cli.md#upgrading-from-profiles-and-tiers)
+lists them.
+
+**Costs.** There is no longer a cheaper search to ask for: a workspace that
+used `fast` or `off` for latency now pays the full rerank, historically 1.2 to
+1.5 s a search on four cores, against 0.1 to 0.4 s for `off` and `fast`
+([cli.md](../cli.md#pamin-search)). The evaluation arms that
+depended on the MiniLM reranker (the cascade routes, the router's small-model
+features) went with it; fusion alone (`Engine::search_fused`) remains the
+evaluations' comparison for what reranking is worth.
+
+Both defaults above -- refusing the removed settings, and removing the MiniLM
+evaluation arms -- were taken by the implementer and are open to the owner.

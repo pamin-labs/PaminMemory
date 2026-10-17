@@ -19,10 +19,8 @@
 //! keeps this number where it is is that segments stop growing.
 
 use pamin_core::TopicId;
-use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
+use pamin_index::{Access, Projection, ProjectionIndex, VectorIndex};
 
-/// The default profile's width, so this measures the shape actually shipped.
-const PROFILE: Profile = Profile::Accuracy;
 const DOCS: usize = 50_000;
 const CLUSTERS: usize = 250;
 const QUERIES: usize = 100;
@@ -79,7 +77,7 @@ fn unit(mut vector: Vec<f32>) -> Vec<f32> {
 /// clustered, so this is too.
 fn corpus() -> (Vec<Vec<f32>>, Vec<Vec<f32>>) {
     let mut rng = Rng(0x5eed);
-    let dimensions = PROFILE.dimensions() as usize;
+    let dimensions = pamin_index::DIMENSIONS as usize;
 
     let centroids: Vec<Vec<f32>> = (0..CLUSTERS)
         .map(|_| unit((0..dimensions).map(|_| rng.next()).collect()))
@@ -154,7 +152,6 @@ fn the_vector_channel_returns_the_nearest_documents_and_not_merely_near_ones() {
     let index = ProjectionIndex::open(
         &dir.path().join("index"),
         &dir.path().join("legacy"),
-        PROFILE,
         VectorIndex::default(),
         Access::ReadWrite,
         DOCS as u64,
@@ -201,7 +198,7 @@ fn the_vector_channel_returns_the_nearest_documents_and_not_merely_near_ones() {
 
     println!(
         "\n  {DOCS} documents, {} dimensions\n  recall@{TOP} {recall:.4}   {:?} per query   {built:?} to build\n",
-        PROFILE.dimensions(),
+        pamin_index::DIMENSIONS,
         searching / QUERIES as u32,
     );
 

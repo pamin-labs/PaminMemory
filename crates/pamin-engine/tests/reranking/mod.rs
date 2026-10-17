@@ -26,7 +26,6 @@ use std::collections::{BTreeMap, HashMap};
 
 use pamin_core::{Channel, Fusion, Why};
 use pamin_engine::SearchHit;
-use pamin_index::Rerank;
 
 mod router;
 pub use router::Router;
@@ -133,49 +132,35 @@ pub fn rules() -> Vec<(String, Rule)> {
 
 /// Which row of [`rules`] ships.
 pub fn shipped(rules: &[(String, Rule)]) -> Option<usize> {
-    rules
-        .iter()
-        .position(|(_, rule)| *rule == shipped_rule(Rerank::default()))
+    rules.iter().position(|(_, rule)| *rule == shipped_rule())
 }
 
-fn shipped_rule(tier: Rerank) -> Rule {
-    match tier {
-        Rerank::Accurate => Rule::Blend {
-            fusion: pamin_engine::RERANK_FUSION,
-            scale: Scale::Score,
-        },
-        Rerank::Fast | Rerank::Off => Rule::Substitute,
+/// The rule `search_reranked` uses on the reranker's scores.
+fn shipped_rule() -> Rule {
+    Rule::Blend {
+        fusion: pamin_engine::RERANK_FUSION,
+        scale: Scale::Score,
     }
 }
 
 /// Ways of spending less on the reranker, each priced against spending all of
-/// it: a cascade, where the small model scores what the pass would show and
-/// the large one orders only its best `n`; and gates, where a signal read
-/// before the pass decides the query does not need it at all.
+/// it: gates, where a signal read before the pass decides the query does not
+/// need it at all, and a learned router over the same signals.
 ///
-/// **Why both.** The large model is 1.4 s of a 1.5 s search. Replacing it with
-/// the small one is measured to cost accuracy -- `fast` is below no reranking
-/// on same-language queries -- so the small model is only allowed to *choose*
-/// here, never to order what is returned. And on XQuAD-R no reranking at all
-/// was the cheapest sufficient choice for 43.4% of cross-lingual queries and
+/// The model is 1.4 s of a 1.5 s search. On XQuAD-R no reranking at all was
+/// the cheapest sufficient choice for 43.4% of cross-lingual queries and
 /// 98.4% of same-language ones, so a gate has room -- if anything visible
 /// before the pass can find those queries, which a relative-score gate could
-/// not.
-///
-/// One approximation, the one the pairs sweep states: the large model's scores
-/// are the ones it gave in the shipped batch, and a smaller batch would score
-/// a pair slightly differently. A chosen row is confirmed by a timed run.
+/// not. (A cascade, where the small MiniLM reranker chose what the large one
+/// ordered, was priced here too; it went with that model.)
 pub struct Routes {
     labels: Vec<(String, ())>,
     measured: Vec<BTreeMap<String, crate::scoring::Scores>>,
-    /// Per row, total pairs through the small model and through the large one.
-    pairs: Vec<(u64, u64)>,
+    /// Per row, total pairs through the model.
+    pairs: Vec<u64>,
     queries: u64,
     router: Router,
 }
-
-/// How many the cascade lets the large model order.
-const CASCADE: [usize; 5] = [4, 6, 8, 10, 12];
 
 /// The gates, each a rule on the fused list before the pass.
 const GATES: [&str; 5] = [
@@ -186,7 +171,10 @@ const GATES: [&str; 5] = [
     "skip: first in both lexical, no graph find",
 ];
 
-fn cascade_order(replayed: &Replayed, keep: &[usize]) -> Vec<String> {
+/// The list when the model scored only the movable candidates at `keep`:
+/// those are blended and placed as the engine places them, and the rest stay
+/// where fusion put them.
+fn subset_order(replayed: &Replayed, keep: &[usize]) -> Vec<String> {
     if keep.len() < 2 {
         return replayed.fused.clone();
     }
@@ -205,18 +193,13 @@ impl Default for Routes {
             ("fusion alone".to_string(), ()),
             ("accurate on all (ships)".to_string(), ()),
         ];
-        labels.extend(
-            CASCADE
-                .iter()
-                .map(|n| (format!("cascade: fast picks {n}"), ())),
-        );
         labels.extend(GATES.iter().map(|gate| (gate.to_string(), ())));
         crate::harness::shape::tables(labels.iter().map(|(label, _)| label));
         let rows = labels.len();
         Self {
             labels,
             measured: vec![BTreeMap::new(); rows],
-            pairs: vec![(0, 0); rows],
+            pairs: vec![0; rows],
             queries: 0,
             router: Router::default(),
         }
@@ -224,18 +207,15 @@ impl Default for Routes {
 }
 
 impl Routes {
-    /// One shipped search, its replay, and a small model to score what the
-    /// pass showed. `score` scores one ranking into `group`; `question` names
-    /// what is asked, so the learned router holds every asking of it out
-    /// together.
-    #[allow(clippy::too_many_arguments)]
+    /// One shipped search and its replay. `score` scores one ranking into
+    /// `group`; `question` names what is asked, so the learned router holds
+    /// every asking of it out together.
     pub fn observe(
         &mut self,
         group: &str,
         question: &str,
         hits: &[SearchHit],
         replayed: &Replayed,
-        small: &mut pamin_index::Reranker,
         query: &str,
         score: impl Fn(&mut crate::scoring::Scores, &[String]),
     ) {
@@ -281,55 +261,27 @@ impl Routes {
         ];
 
         let fused = replayed.fused.clone();
-        let shipped = replayed.order(shipped_rule(Rerank::default()));
-        let mut orders: Vec<(Vec<String>, u64, u64)> =
-            vec![(fused.clone(), 0, 0), (shipped.clone(), 0, shown)];
+        let shipped = replayed.order(shipped_rule());
+        let mut orders: Vec<(Vec<String>, u64)> =
+            vec![(fused.clone(), 0), (shipped.clone(), shown)];
 
-        // The small model scores exactly what the pass would show.
-        let documents: Vec<String> = replayed
-            .movable()
-            .iter()
-            .map(|name| {
-                let hit = by_name[name];
-                render(&hit.topic, &hit.state.content, hit.seed.as_deref(), true)
-            })
-            .collect();
-        let mut cheap = vec![0.0f32; documents.len()];
-        if !documents.is_empty() {
-            let borrowed: Vec<&str> = documents.iter().map(String::as_str).collect();
-            for ranked in small.rank(query, &borrowed).expect("rank") {
-                cheap[ranked.position] = ranked.score;
-            }
-        }
-        self.router
-            .observe(group, question, query, hits, replayed, &cheap);
-        for n in CASCADE {
-            let mut keep: Vec<usize> = (0..documents.len()).collect();
-            keep.sort_by(|left, right| {
-                cheap[*right].total_cmp(&cheap[*left]).then(left.cmp(right))
-            });
-            keep.truncate(n);
-            keep.sort_unstable();
-            let order = cascade_order(replayed, &keep);
-            orders.push((order, shown, keep.len() as u64));
-        }
+        self.router.observe(group, question, query, hits, replayed);
         for skip in skips {
             orders.push(if skip {
-                (fused.clone(), 0, 0)
+                (fused.clone(), 0)
             } else {
-                (shipped.clone(), 0, shown)
+                (shipped.clone(), shown)
             });
         }
 
-        for (((order, cheap_pairs, dear_pairs), (into, pairs)), (label, _)) in orders
+        for (((order, model_pairs), (into, pairs)), (label, _)) in orders
             .iter()
             .zip(self.measured.iter_mut().zip(self.pairs.iter_mut()))
             .zip(&self.labels)
         {
             crate::harness::shape::table(label);
             score(into.entry(group.to_string()).or_default(), order);
-            pairs.0 += cheap_pairs;
-            pairs.1 += dear_pairs;
+            *pairs += model_pairs;
         }
     }
 
@@ -341,12 +293,11 @@ impl Routes {
             &self.measured,
             crate::channels::Units::Questions,
         );
-        println!("  pairs a search, small model / large model");
-        for ((label, _), (cheap, dear)) in self.labels.iter().zip(&self.pairs) {
+        println!("  pairs a search");
+        for ((label, _), pairs) in self.labels.iter().zip(&self.pairs) {
             println!(
-                "  {label:<44}  {:>6.1} / {:>6.1}",
-                *cheap as f64 / self.queries.max(1) as f64,
-                *dear as f64 / self.queries.max(1) as f64
+                "  {label:<44}  {:>6.1}",
+                *pairs as f64 / self.queries.max(1) as f64
             );
         }
         self.router.report(&self.measured[0], &self.measured[1]);
@@ -434,7 +385,7 @@ fn rescored_rules(model: &str) -> Vec<(String, Rule)> {
     vec![
         (
             format!("rescored by {model}: shipped blend"),
-            shipped_rule(Rerank::default()),
+            shipped_rule(),
         ),
         (format!("rescored by {model}: substitute"), Rule::Substitute),
     ]
@@ -491,7 +442,7 @@ impl Default for Priced {
 }
 
 impl Priced {
-    /// One shipped search, which `engine` ran at the shipped tier. `score`
+    /// One shipped search, which `engine` ran. `score`
     /// scores one ranking into its group or groups; `group` only labels the
     /// sufficiency row.
     ///
@@ -564,7 +515,7 @@ impl Priced {
             Vec::new()
         } else {
             engine
-                .rerank_passes(Rerank::default(), query, &documents)
+                .rerank_passes(query, &documents)
                 .expect("the engine's reranker scored this search, so it is loaded")
                 .expect("plan the shortlist")
         };
@@ -597,7 +548,7 @@ impl Priced {
         }
         if let Some(file) = &mut self.sufficiency {
             use std::io::Write;
-            let shipped = replayed.order(shipped_rule(Rerank::default()));
+            let shipped = replayed.order(shipped_rule());
             // A one-result list scores above zero exactly when that result is
             // relevant, whatever the corpus's own judgements are.
             let mut first = BTreeMap::new();
@@ -795,11 +746,7 @@ pub fn in_context(
                 );
             }
         }
-        rendered[rendering] = Some(
-            replayed
-                .rescored(scores)
-                .order(shipped_rule(Rerank::default())),
-        );
+        rendered[rendering] = Some(replayed.rescored(scores).order(shipped_rule()));
     }
     orders.extend(
         rendered
@@ -837,11 +784,11 @@ pub struct Replayed {
     passes: Option<Vec<Vec<usize>>>,
 }
 
-/// Rebuilds one shipped search at `tier` and checks the rebuild.
+/// Rebuilds one shipped search and checks the rebuild.
 ///
 /// **Panics unless replaying the shipped rule reproduces `hits`' order**, which
 /// is the premise every other rule's figure rests on.
-pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
+pub fn replay(hits: &[SearchHit]) -> Replayed {
     let named: HashMap<_, &str> = hits
         .iter()
         .map(|hit| (hit.result.topic, hit.topic.as_str()))
@@ -856,13 +803,10 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
         })
         .collect();
 
-    // The fusion this search ran, a profile's secondary vector channel
-    // included, rather than the default.
-    let fusion = crate::channels::effective_fusion(hits, &Fusion::default());
-    let results = fusion.fuse(&crate::channels::replay(hits));
+    let results = Fusion::default().fuse(&crate::channels::replay(hits));
     // The engine's own rule for what the model is shown, not a copy of it.
     let traces: Vec<&[Why]> = results.iter().map(|result| result.why.as_slice()).collect();
-    let movable = pamin_engine::rerankable(&traces, tier);
+    let movable = pamin_engine::rerankable(&traces);
     let fused: Vec<String> = results
         .iter()
         .map(|result| named[&result.topic].to_string())
@@ -897,7 +841,7 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
             fusion: Vec::new(),
             model: Vec::new(),
             graph: Vec::new(),
-            head: tier.depth(),
+            head: pamin_index::reranking::depth(),
             lead,
             agree,
             passes: None,
@@ -936,7 +880,7 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
                         .unwrap_or(0.0)
                 })
                 .collect(),
-            head: tier.depth(),
+            head: pamin_index::reranking::depth(),
             lead,
             agree,
             passes: None,
@@ -947,7 +891,7 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
 
     let engine: Vec<&str> = hits.iter().map(|hit| hit.topic.as_str()).collect();
     assert_eq!(
-        replayed.order(shipped_rule(tier)),
+        replayed.order(shipped_rule()),
         engine,
         "replaying the shipped rule did not reproduce the engine's order, so every other \
          rule's figure would be a reconstruction error"
@@ -1009,7 +953,7 @@ impl Replayed {
     /// refilled in the rule's order, ties to the earlier position.
     pub fn order(&self, rule: Rule) -> Vec<String> {
         if let Some(keep) = self.scored(rule) {
-            return cascade_order(self, &keep);
+            return subset_order(self, &keep);
         }
         if let Rule::Blend {
             fusion,
@@ -1191,29 +1135,13 @@ mod tests {
     #[test]
     fn shipped_accurate_replay_blends_when_the_model_order_differs() {
         let scores = replayed(&[1.0, 0.0, 0.0], &[0.9, 1.0, 0.0]);
-        assert_eq!(
-            scores.order(shipped_rule(Rerank::Accurate)),
-            ["lexical", "a", "b", "c"]
-        );
-        assert_eq!(
-            scores.order(shipped_rule(Rerank::Fast)),
-            ["lexical", "b", "a", "c"]
-        );
-    }
-
-    #[test]
-    fn cascade_keeps_the_shipped_blend_on_selected_candidates() {
-        let scores = replayed(&[1.0, 0.0, 0.0], &[0.9, 1.0, 0.0]);
-        assert_eq!(
-            cascade_order(&scores, &[0, 1, 2]),
-            scores.order(shipped_rule(Rerank::Accurate))
-        );
+        assert_eq!(scores.order(shipped_rule()), ["lexical", "a", "b", "c"]);
     }
 
     #[test]
     fn scoring_every_candidate_first_is_the_shipped_pass() {
         let scores = replayed(&[1.0, 0.5, 0.0], &[0.0, 1.0, 2.0]);
-        let shipped = scores.order(shipped_rule(Rerank::Accurate));
+        let shipped = scores.order(shipped_rule());
         assert_eq!(scores.order(Rule::Prefix { n: 3 }), shipped);
         assert_eq!(scores.pairs(Rule::Prefix { n: 3 }), 3);
         // Unsettled: the fused first leads by nothing and nothing agrees.

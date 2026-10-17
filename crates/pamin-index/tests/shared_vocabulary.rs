@@ -1,10 +1,9 @@
-//! BGE-M3 and the rerankers, run through this crate's own encoder over a
+//! BGE-M3 and the reranker, run through this crate's own encoder over a
 //! shared vocabulary, produce exactly what `fastembed` produced for them, and
 //! hold one vocabulary where `fastembed` held two.
 //!
-//! Ignored by default: it needs BGE-M3 and the `accurate`, `balanced`,
-//! `noncommercial` and `fast` rerankers, and writes a prepared copy of the
-//! first two -- 1.8 GB of disk while it runs. Run with
+//! Ignored by default: it needs BGE-M3 and the `accurate` reranker, and
+//! writes a prepared copy of both -- 1.8 GB of disk while it runs. Run with
 //!
 //! ```sh
 //! cargo test --release -p pamin-index --test shared_vocabulary -- --ignored --nocapture
@@ -32,7 +31,7 @@ use fastembed::{
     Bgem3Embedding, InitOptionsUserDefined, OnnxSource, RerankInitOptionsUserDefined, TextRerank,
     TokenizerFiles, UserDefinedRerankingModel,
 };
-use pamin_index::{Device, Embedder, Profile, Rerank, Reranker};
+use pamin_index::{Device, Embedder, Reranker};
 
 /// Which arm a child runs, and where its models are.
 const ARM: &str = "PAMIN_SHARED_ARM";
@@ -45,11 +44,6 @@ const MARK: &str = "shared-vocabulary-result";
 
 const EMBEDDER: &str = "gpahal/bge-m3-onnx-int8";
 
-/// The rerankers checked for bit-identity from the file the hub serves, with
-/// the repository `fastembed` read each from. Not measured: their memory is a
-/// session's as much as a vocabulary's, and `accurate` is the one a server
-/// holds by default.
-const TIERS: &[(Rerank, &str)] = &[(Rerank::Fast, "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1")];
 const ACCURATE: &str = "onnx-community/bge-reranker-v2-m3-ONNX";
 
 /// How `Reranker::rank` groups pairs -- at most this many padded tokens and
@@ -237,26 +231,6 @@ fn the_encoder_matches_fastembed_and_holds_one_vocabulary() {
              fastest {fastest:?}"
         );
     }
-
-    // The other tiers, from the file the hub serves: the encoder runs every
-    // reranker, not only the one measured above.
-    let was = run("tiers-new", &cache, &[("PAMIN_PREPARED", "off")]);
-    let is = run("tiers-old", &cache, &[]);
-    for (tier, _) in TIERS {
-        let key = format!("rank-{}", tier.name());
-        assert!(!was.get(&key).is_empty(), "no {key} outputs");
-        assert_eq!(
-            was.get(&key),
-            is.get(&key),
-            "the {} tier: the encoder is not bit-identical to fastembed",
-            tier.name()
-        );
-        println!(
-            "  {}: {} scores bit-identical",
-            tier.name(),
-            was.get(&key).len()
-        );
-    }
 }
 
 /// The child: one arm, its outputs as bits, its memory and its timings.
@@ -281,19 +255,17 @@ fn child(arm: &str, cache: &Path) {
 
     match arm {
         "write-embedder" => {
-            Embedder::load(Profile::Accuracy, cache).expect("load the embedder");
+            Embedder::load(cache).expect("load the embedder");
         }
         "write-accurate" => {
-            Reranker::load(Rerank::Accurate, cache).expect("load the reranker");
+            Reranker::load(cache).expect("load the reranker");
         }
         "old" | "new" => {
             let before = anonymous();
             let started = Instant::now();
             let (mut embed, mut rank): (Embed, Rank) = if arm == "new" {
-                let mut embedder =
-                    Embedder::load(Profile::Accuracy, cache).expect("load the embedder");
-                let mut reranker =
-                    Reranker::load(Rerank::Accurate, cache).expect("load the reranker");
+                let mut embedder = Embedder::load(cache).expect("load the embedder");
+                let mut reranker = Reranker::load(cache).expect("load the reranker");
                 assert_eq!(reranker.device(), Device::Cpu, "the copy is for the CPU");
                 (
                     Box::new(move |texts| embedder.embed_passages(texts).expect("embed").concat()),
@@ -380,47 +352,6 @@ fn child(arm: &str, cache: &Path) {
             );
             drop((embed, rank));
         }
-        "tiers-new" => {
-            assert_eq!(
-                std::env::var("PAMIN_PREPARED").as_deref(),
-                Ok("off"),
-                "the tiers are compared over the file the hub serves"
-            );
-            for (tier, _) in TIERS {
-                let mut reranker = Reranker::load(*tier, cache).expect("load the reranker");
-                let ranked: Vec<f32> = QUERIES
-                    .iter()
-                    .flat_map(|query| {
-                        let mut scores = vec![f32::NAN; documents.len()];
-                        for ranked in reranker.rank(query, &documents).expect("rank") {
-                            scores[ranked.position] = ranked.score;
-                        }
-                        scores
-                    })
-                    .collect();
-                report(&format!("rank-{}", tier.name()), &bits(&ranked));
-            }
-        }
-        "tiers-old" => {
-            for (tier, repository) in TIERS {
-                let hub = hub(cache, repository);
-                let mut reranker = TextRerank::try_new_from_user_defined(
-                    UserDefinedRerankingModel::new(
-                        OnnxSource::File(hub.get(export(*tier)).expect("the export")),
-                        tokenizer(cache, repository),
-                    ),
-                    RerankInitOptionsUserDefined::new()
-                        .with_max_length(RERANK_TOKENS)
-                        .with_execution_providers(vec![cpu()]),
-                )
-                .expect("load fastembed's reranker");
-                let ranked: Vec<f32> = QUERIES
-                    .iter()
-                    .flat_map(|query| old_rank(&mut reranker, query, &documents))
-                    .collect();
-                report(&format!("rank-{}", tier.name()), &bits(&ranked));
-            }
-        }
         other => panic!("no such arm {other}"),
     }
 }
@@ -467,28 +398,6 @@ fn old_rank(model: &mut TextRerank, query: &str, documents: &[&str]) -> Vec<f32>
         start += size;
     }
     scores
-}
-
-/// The export `Reranker::load` fetches for a tier on this CPU.
-fn export(tier: Rerank) -> &'static str {
-    if tier != Rerank::Fast {
-        return "onnx/model_int8.onnx";
-    }
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("avx512vnni") {
-            return "onnx/model_qint8_avx512_vnni.onnx";
-        }
-        "onnx/model_quint8_avx2.onnx"
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        "onnx/model_qint8_arm64.onnx"
-    }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    {
-        "onnx/model.onnx"
-    }
 }
 
 /// The CPU provider every model here loads with: `inference::cpu`.

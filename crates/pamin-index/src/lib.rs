@@ -17,7 +17,6 @@ mod inference;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod native;
 mod onnx;
-mod pplx;
 mod prepared;
 pub mod projection;
 pub mod reranking;
@@ -30,7 +29,7 @@ mod winml;
 
 pub use activity::LoadActivity;
 pub use descriptors::raise_open_file_limit;
-pub use embedding::{Embedder, Encoded, Profile};
+pub use embedding::{DIMENSIONS, Embedder, MODEL_ID};
 pub use error::{IndexError, Result};
 pub use half::as_stored;
 pub use hub::cache_root as model_cache_root;
@@ -53,6 +52,6 @@ pub use projection::{
     Access, Passage, Previous, Projection, ProjectionIndex, Segmentation, Stored, VectorDocument,
     VectorIndex, is_fragmented, segment_documents, vector_index_lags, wastes_disk,
 };
-pub use reranking::{Ranked, Rerank, Reranked, Reranker};
+pub use reranking::{Ranked, Reranked, Reranker};
 pub use reshape::{Held, Reshape, Reshaped};
 pub use segmentation::{Segmenter, detect_language};
