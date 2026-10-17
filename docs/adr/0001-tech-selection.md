@@ -3080,6 +3080,13 @@ it was and the setting is documented instead: a deployment that knows it serves
 concurrent, mostly-distinct queries can take the quarter, and one serving a
 single agent should not.
 
+The setting has since taken on a second meaning, which this sweep predates: on
+the CPU it is also how many one-threaded passes run side by side for stored
+texts and for a rerank, and at one thread the reranker goes back to passes of
+up to four pairs
+([2026-10-16](#2026-10-16-side-by-side-passes-one-shared-session-one-pair-a-cpu-pass)).
+The table above was not re-measured under that meaning.
+
 **Idle inference threads block instead of spinning.** ONNX Runtime lets an
 intra-op thread that runs out of work spin before it sleeps, and nothing here
 had said otherwise, so every table above was taken with it spinning. The
