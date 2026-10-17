@@ -1120,12 +1120,27 @@ At the search entry point (`pamin import` and `pamin search` against a fresh
 `pamin serve`), the same two commits gave the rows below. Before is
 `67fd1f3` (`perf/rescore-simd`) and after is `21d249d`.
 
+**Scope.** These rows compare the tokenizer change with its parent on the
+stack as it stood then. Both commits are still ancestors of this branch, but
+the branch has since been merged forward onto a newer `perf/rescore-simd`
+(`d1643db`), which brought in other product changes, including changes to the
+engine, embedding, inference and reranking code. The rows therefore do not
+measure the branch as it now stands. A measurement of the current head against
+`d1643db`, its current parent, is pending; until it is retained, no figure
+here describes that pair.
+
 **Conditions.**
 
 - Host: a shared 4-vCPU Xeon @ 2.10 GHz (AVX-512 VNNI, AMX). ONNX Runtime
   1.28 on the CPU execution provider, with 4 threads.
 - Models: profile `accuracy`, which is BGE-M3 int8 with the `accurate`
-  reranker.
+  reranker. The resolved Hugging Face revisions were
+  `gpahal/bge-m3-onnx-int8` at `2b34e84df040034d4b9eabb62383a87c18955822`
+  and `onnx-community/bge-reranker-v2-m3-ONNX` (`onnx/model_int8.onnx`) at
+  `6f5ff65298512715a1e669753bc754d2bc8f367b`. These come from the model-cache
+  listing taken after the untimed seed run, which held one snapshot of each
+  repository. Every timed run checked that the cache still matched that
+  listing, before and after the run.
 - Workload: the corpus is 3,230 texts in a fixed order. The search phase is
   120 timed queries, after 20 warm-up queries, on a warm server for each
   phase.

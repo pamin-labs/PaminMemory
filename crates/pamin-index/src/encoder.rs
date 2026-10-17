@@ -232,7 +232,15 @@ impl Encoder {
             return Ok(1);
         }
         if shared.is_none() {
-            *shared = Some(SharedCpuSession::load(model)?);
+            // The shared session only saves time, and `session` still runs
+            // every batch: one that will not load leaves the passes to it.
+            match SharedCpuSession::load(model) {
+                Ok(session) => *shared = Some(session),
+                Err(error) => {
+                    tracing::warn!(%error, "could not load the side-by-side session");
+                    return Ok(1);
+                }
+            }
         }
         Ok(wanted)
     }
