@@ -642,9 +642,17 @@ pub(crate) fn plans_of(model: &impl RuntimeModel, device: Device) -> Vec<PlanUse
 /// history of two, which still says it fell back, rather than one that
 /// grows with every attempt.
 fn with_last(mut history: Vec<PlanUse>, plan: PlanUse) -> Vec<PlanUse> {
-    history.retain(|seen| *seen != plan);
+    history.retain(|seen| !same_plan(seen, &plan));
     history.push(plan);
     history
+}
+
+/// Whether `a` and `b` are one plan: the same target, plan key, stability
+/// and revision. Where a load found the plan is not what ran, so a plan
+/// read from its file and later recalibrated to the same key is one plan,
+/// listed once, with the origin of its latest load.
+fn same_plan(a: &PlanUse, b: &PlanUse) -> bool {
+    (&a.target, &a.plan, a.stable, &a.revision) == (&b.target, &b.plan, b.stable, &b.revision)
 }
 
 fn current_use(model: &impl RuntimeModel, device: Device) -> PlanUse {
@@ -2418,6 +2426,38 @@ mod tests {
         assert_eq!(targets.pop().as_deref(), Some("cpu"));
         targets.sort();
         assert_eq!(targets, ["cuda", "npu"]);
+    }
+
+    /// A plan read from its file that expires and is recalibrated to the
+    /// same target, key and revision is one plan, not two: the history
+    /// lists it once, with the origin of the load that runs it now.
+    #[test]
+    fn a_recalibrated_plan_is_listed_once() {
+        let root = tempfile::tempdir().unwrap();
+        let now = std::time::Instant::now();
+        let plan = |value, origin| {
+            let mut model = RuntimeFixture::new(value, "cuda");
+            model.plan.identity = "a".repeat(64);
+            model.plan.stable = true;
+            model.plan.origin = origin;
+            model
+        };
+        let mut model = plan(1, PlanOrigin::PersistedRecord);
+        model.plan.retry_at = Some(now);
+        let mut device = Device::Cuda;
+        let (answer, replaced) = retry_model_at(
+            &mut model,
+            &mut device,
+            root.path(),
+            now,
+            |candidate, _| Ok(candidate.value),
+            || Ok((plan(2, PlanOrigin::CalibratedNow), Device::Cuda)),
+        )
+        .unwrap();
+        assert_eq!((answer, replaced), (2, true));
+        let plans = plans_of(&model, device);
+        assert_eq!(plans.len(), 1, "{plans:?}");
+        assert_eq!(plans[0].origin, PlanOrigin::CalibratedNow);
     }
 
     /// A recovery whose CPU replacement fails on the real input too fails
