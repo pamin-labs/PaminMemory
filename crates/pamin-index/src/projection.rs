@@ -10,7 +10,7 @@
 //! list, weighting its members twice, and the per-channel ranks every result has
 //! to report would already be gone.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Once};
@@ -76,6 +76,9 @@ const FIELD_SEGMENTED: &str = "content_segmented";
 const FIELD_NGRAM: &str = "content_ngram";
 const FIELD_VECTOR: &str = "embedding";
 const FIELD_SECONDARY: &str = "embedding_secondary";
+/// What produced a document's vectors ([`Stored::encoding`]). Nullable, and
+/// absent from a collection created before it was recorded.
+const FIELD_ENCODING: &str = "encoding";
 
 static INITIALIZE: Once = Once::new();
 
@@ -148,6 +151,21 @@ pub trait Projection {
     /// Adds or replaces documents with all vector fields in one write.
     fn upsert_vectors(&self, documents: &[VectorDocument<'_>]) -> Result<()>;
 
+    /// [`upsert_vectors`](Self::upsert_vectors), recording beside every
+    /// document what produced its vectors ([`Stored::encoding`]).
+    ///
+    /// By default the record is dropped, which is the safe direction: a
+    /// document whose encoding is unknown is one [`holds`](Self::holds) never
+    /// matches, so it is embedded again rather than kept.
+    fn upsert_encoded(
+        &self,
+        documents: &[VectorDocument<'_>],
+        encoding: Option<&str>,
+    ) -> Result<()> {
+        let _ = encoding;
+        self.upsert_vectors(documents)
+    }
+
     /// Word-level lexical recall, best first.
     fn recall_segmented(&self, query: &str, limit: u32) -> Result<Vec<Scored>>;
 
@@ -184,6 +202,34 @@ pub trait Projection {
     /// index already holds it. A write the index has buffered and not yet
     /// flushed is read back like any other, because a query sees it too.
     fn stored(&self, topics: &[TopicId]) -> Result<Vec<Option<Stored>>>;
+
+    /// Whether this index already holds each topic with exactly the text
+    /// given for it, embedded under exactly `encoding`, in the order asked.
+    ///
+    /// The rule a rebuild lends a stored vector by ([`Previous::lend`]), asked
+    /// of a served index, and narrowed to the plan that produced the vector: a
+    /// document holding the same text was embedded from it under this index's
+    /// passage encoding, but only one recorded with the same
+    /// [`Stored::encoding`] holds the vector embedding it now would write. A
+    /// vector from another execution provider or plan is not bit-identical to
+    /// it, so it is never a match, and neither is one whose encoding was not
+    /// recorded. Read through [`stored`](Self::stored), so a buffered write
+    /// counts, a deleted topic does not, and a document missing a vector it
+    /// should have is an error rather than a match.
+    fn holds(&self, wanted: &[(TopicId, &str)], encoding: &str) -> Result<Vec<bool>> {
+        let topics: Vec<TopicId> = wanted.iter().map(|(topic, _)| *topic).collect();
+        Ok(self
+            .stored(&topics)?
+            .iter()
+            .zip(wanted)
+            .map(|(stored, (_, text))| {
+                stored.as_ref().is_some_and(|stored| {
+                    holds_exactly(Some(stored.content.as_str()), text)
+                        && stored.encoding.as_deref() == Some(encoding)
+                })
+            })
+            .collect())
+    }
 
     /// Removes these topics.
     ///
@@ -245,6 +291,12 @@ pub struct Stored {
     pub embedding: Vec<f32>,
     /// The complementary vector, absent in a single-vector index.
     pub secondary: Option<Vec<f32>>,
+    /// What produced the vectors, as [`crate::Embedder::encoding`] names it:
+    /// the execution plan of each model. `None` when nothing recorded it --
+    /// one written before this was recorded, one lent by a rebuild from a
+    /// document that had none, or any in an index created before then -- or
+    /// when the plan was not one a record can name.
+    pub encoding: Option<String>,
 }
 
 /// A lexical or vector index over topics.
@@ -260,6 +312,9 @@ pub struct ProjectionIndex {
     passage: Passage,
     /// How this index spells a topic as a primary key. See [`Keys`].
     keys: Keys,
+    /// Whether this collection has [`FIELD_ENCODING`]: one created before it
+    /// existed does not, and its documents are written and read without it.
+    encodings: bool,
     /// What [`Projection::files_after_optimize`] reports.
     optimized_files: AtomicU64,
 }
@@ -1164,6 +1219,8 @@ impl ProjectionIndex {
                 DataType::String,
                 IndexParams::fts(Some("ngram"), None, None)?,
             )
+            // Not indexed: read back by key, never searched.
+            .add_field(FieldSchema::new(FIELD_ENCODING, DataType::String, true, 0)?)
             // Half precision, and read back by the rescore; see `RESCORE`.
             .add_vector_field(
                 FIELD_VECTOR,
@@ -1199,6 +1256,7 @@ impl ProjectionIndex {
             }
             Ok(Collection::open(&path, options(access)?.as_ref())?)
         })?;
+        let encodings = collection.schema()?.has_field(FIELD_ENCODING);
 
         Ok(Self {
             collection,
@@ -1208,6 +1266,7 @@ impl ProjectionIndex {
             secondary_dimensions,
             passage: PASSAGE,
             keys: KEYS,
+            encodings,
             optimized_files: AtomicU64::new(saved_optimize_floor(dir)),
         })
     }
@@ -1218,6 +1277,7 @@ impl ProjectionIndex {
         content: &str,
         embedding: &[f32],
         secondary: Option<&[f32]>,
+        encoding: Option<&str>,
     ) -> Result<Doc> {
         if self.secondary_dimensions.is_some() != secondary.is_some() {
             return Err(IndexError::Engine(
@@ -1233,6 +1293,9 @@ impl ProjectionIndex {
         crate::half::add(&mut doc, FIELD_VECTOR, embedding)?;
         if let Some(secondary) = secondary {
             crate::half::add(&mut doc, FIELD_SECONDARY, secondary)?;
+        }
+        if let Some(encoding) = encoding.filter(|_| self.encodings) {
+            doc.add_string(FIELD_ENCODING, encoding)?;
         }
         Ok(doc)
     }
@@ -1320,6 +1383,24 @@ impl ProjectionIndex {
         ))
     }
 
+    /// The scalar fields [`fetch`](Self::fetch) reads back: the text, and what
+    /// produced the vectors when this collection records it.
+    fn stored_fields(&self) -> &'static [&'static str] {
+        if self.encodings {
+            &[FIELD_NGRAM, FIELD_ENCODING]
+        } else {
+            &[FIELD_NGRAM]
+        }
+    }
+
+    /// What produced a fetched document's vectors, if that was recorded.
+    fn encoding_of(&self, doc: &Doc) -> Result<Option<String>> {
+        if !self.encodings || !doc.has_field(FIELD_ENCODING) || doc.is_field_null(FIELD_ENCODING) {
+            return Ok(None);
+        }
+        Ok(doc.get_string(FIELD_ENCODING)?)
+    }
+
     /// The documents stored under these topics, keyed by the topic each is.
     ///
     /// How a reshape reads the index it is copying, and it has to be keyed:
@@ -1335,9 +1416,9 @@ impl ProjectionIndex {
         let mut stored: HashMap<TopicId, Doc> = HashMap::with_capacity(keys.len());
         for chunk in keys.chunks(WRITE_BATCH) {
             let chunk: Vec<&str> = chunk.iter().map(String::as_str).collect();
-            for doc in self
-                .collection
-                .fetch_with_options(&chunk, Some(&[FIELD_NGRAM]), true)?
+            for doc in
+                self.collection
+                    .fetch_with_options(&chunk, Some(self.stored_fields()), true)?
             {
                 if let Some(topic) = doc.get_pk().and_then(|key| self.keys.topic(key)) {
                     stored.insert(topic, doc);
@@ -1527,8 +1608,13 @@ impl Previous {
     }
 
     /// Hands `take` every document this index can lend, `batch` at a time,
-    /// as the topic, the text wanted for it and its stored vector; returns
-    /// the topics it lent.
+    /// as the topic, the text wanted for it and its stored vector, with what
+    /// produced those vectors ([`Stored::encoding`]); returns the topics it
+    /// lent.
+    ///
+    /// Each batch shares one encoding, so the caller can record it as this
+    /// index did: a rebuild that dropped it would leave every lent document
+    /// one the next sync of it has to embed again.
     ///
     /// A topic is lent when this index holds it with exactly the text in
     /// `wanted`; everything else is the caller's to embed. In the order this
@@ -1541,21 +1627,22 @@ impl Previous {
         &self,
         wanted: &HashMap<TopicId, &str>,
         batch: usize,
-        mut take: impl FnMut(&[VectorDocument<'_>]) -> Result<()>,
+        mut take: impl FnMut(&[VectorDocument<'_>], Option<&str>) -> Result<()>,
     ) -> Result<HashSet<TopicId>> {
         let mut lent = HashSet::new();
-        let mut pending: Vec<PendingVectorDocument<'_>> = Vec::with_capacity(batch);
-        let mut hand_over = |pending: &mut Vec<PendingVectorDocument<'_>>| {
-            let documents: Vec<VectorDocument<'_>> = pending
-                .iter()
-                .map(|(topic, content, vector, secondary)| {
-                    (*topic, *content, vector.as_slice(), secondary.as_deref())
-                })
-                .collect();
-            take(&documents)?;
-            pending.clear();
-            Ok::<_, IndexError>(())
-        };
+        let mut pending: BTreeMap<Option<String>, Vec<PendingVectorDocument<'_>>> = BTreeMap::new();
+        let mut hand_over =
+            |encoding: &Option<String>, pending: &mut Vec<PendingVectorDocument<'_>>| {
+                let documents: Vec<VectorDocument<'_>> = pending
+                    .iter()
+                    .map(|(topic, content, vector, secondary)| {
+                        (*topic, *content, vector.as_slice(), secondary.as_deref())
+                    })
+                    .collect();
+                take(&documents, encoding.as_deref())?;
+                pending.clear();
+                Ok::<_, IndexError>(())
+            };
         self.each(wanted, true, |topic, doc| {
             // The vector field is not nullable and every write here carries
             // one, so a document without it is an engine fault -- and the
@@ -1577,15 +1664,19 @@ impl Previous {
             } else {
                 None
             };
+            let encoding = self.index.encoding_of(&doc)?;
             lent.insert(topic);
-            pending.push((topic, wanted[&topic], vector, secondary));
-            if pending.len() == batch {
-                hand_over(&mut pending)?;
+            let group = pending.entry(encoding.clone()).or_default();
+            group.push((topic, wanted[&topic], vector, secondary));
+            if group.len() == batch {
+                hand_over(&encoding, group)?;
             }
             Ok(())
         })?;
-        if !pending.is_empty() {
-            hand_over(&mut pending)?;
+        for (encoding, group) in &mut pending {
+            if !group.is_empty() {
+                hand_over(encoding, group)?;
+            }
         }
         Ok(lent)
     }
@@ -1609,7 +1700,7 @@ impl Previous {
         let index = &self.index;
         for doc in index
             .collection
-            .iter_with_options(Some(&[FIELD_NGRAM]), vectors)?
+            .iter_with_options(Some(index.stored_fields()), vectors)?
         {
             let doc = doc?;
             let Some(topic) = doc.get_pk().and_then(|key| index.keys.topic(key)) else {
@@ -1618,7 +1709,7 @@ impl Previous {
             let Some(content) = wanted.get(&topic) else {
                 continue;
             };
-            if doc.get_string(FIELD_NGRAM)?.as_deref() == Some(*content) {
+            if holds_exactly(doc.get_string(FIELD_NGRAM)?.as_deref(), content) {
                 visit(topic, doc)?;
             }
         }
@@ -1631,6 +1722,16 @@ impl Previous {
         drop(index);
         ProjectionIndex::discard(&dir)
     }
+}
+
+/// Whether a document holding `stored` as its text already holds `wanted`.
+///
+/// Raw text, not normalised: the lexical fields are derived from this text and
+/// the vector was embedded from it, so a difference in whitespace or case is a
+/// different document. One rule for both a rebuild lending a vector and a
+/// served index skipping a write, so the two cannot drift apart.
+fn holds_exactly(stored: Option<&str>, wanted: &str) -> bool {
+    stored == Some(wanted)
 }
 
 impl Projection for ProjectionIndex {
@@ -1662,11 +1763,19 @@ impl Projection for ProjectionIndex {
     /// visible, and flushing between batches would make that decision for them
     /// once per batch.
     fn upsert_vectors(&self, documents: &[VectorDocument<'_>]) -> Result<()> {
+        self.upsert_encoded(documents, None)
+    }
+
+    fn upsert_encoded(
+        &self,
+        documents: &[VectorDocument<'_>],
+        encoding: Option<&str>,
+    ) -> Result<()> {
         for chunk in documents.chunks(WRITE_BATCH) {
             let docs = chunk
                 .iter()
                 .map(|(topic, content, embedding, secondary)| {
-                    self.document(*topic, content, embedding, *secondary)
+                    self.document(*topic, content, embedding, *secondary, encoding)
                 })
                 .collect::<Result<Vec<_>>>()?;
 
@@ -1704,6 +1813,7 @@ impl Projection for ProjectionIndex {
                         content,
                         embedding,
                         secondary,
+                        encoding: self.encoding_of(doc)?,
                     })),
                     _ => Err(IndexError::Engine(format!(
                         "the document for topic {topic} came back without its text or its vector"
@@ -2285,7 +2395,7 @@ mod secondary_vectors {
         let wanted = HashMap::from([(topic, "same text")]);
         let mut seen = 0;
         let lent = previous
-            .lend(&wanted, 10, |docs| {
+            .lend(&wanted, 10, |docs, _| {
                 for (actual, _, a, b) in docs {
                     assert_eq!(*actual, topic);
                     assert_eq!(*a, primary);

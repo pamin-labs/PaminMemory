@@ -992,7 +992,7 @@ fn lent(
 ) -> HashMap<TopicId, (String, Vec<f32>)> {
     let mut lent = HashMap::new();
     let topics = previous
-        .lend(wanted, 256, |documents| {
+        .lend(wanted, 256, |documents, _| {
             for (topic, content, vector, secondary) in documents {
                 assert!(secondary.is_none());
                 lent.insert(*topic, (content.to_string(), vector.to_vec()));
@@ -1006,6 +1006,76 @@ fn lent(
         "the topics reported lent are not the ones handed over"
     );
     lent
+}
+
+/// A rebuild hands each lent vector over with what produced it, in batches
+/// that share one, so the rebuilt index records it as the old one did. A
+/// rebuild that dropped it would leave every lent document one the next sync
+/// embeds again, and one that labelled a batch with another document's would
+/// let a vector from one plan stand in for another's.
+#[test]
+fn a_rebuild_keeps_what_produced_each_lent_vector() {
+    use pamin_index::Previous;
+
+    let root = tempfile::tempdir().expect("temp dir");
+    let dir = root.path().join("index");
+    let legacy = root.path().join("legacy");
+    let open = || {
+        ProjectionIndex::open(
+            &dir,
+            &legacy,
+            PROFILE,
+            VectorIndex::default(),
+            Access::ReadWrite,
+            0,
+        )
+        .expect("open")
+    };
+    let index = open();
+    let vector = stub();
+    let plans = [
+        Some("cpu:one"),
+        Some("npu:two"),
+        Some("cpu:one"),
+        None,
+        Some("cpu:one"),
+    ];
+    let topics: Vec<TopicId> = (1..=plans.len() as u128).map(numbered).collect();
+    for (topic, plan) in topics.iter().zip(plans) {
+        index
+            .upsert_encoded(&[(*topic, "same text", vector.as_slice(), None)], plan)
+            .expect("write");
+    }
+    index.flush().expect("flush");
+    drop(index);
+
+    let previous = Previous::set_aside(&dir, PROFILE)
+        .expect("set aside")
+        .expect("lendable");
+    let wanted: HashMap<TopicId, &str> = topics.iter().map(|topic| (*topic, "same text")).collect();
+    let rebuilt = open();
+    let mut batches: Vec<(Option<String>, usize)> = Vec::new();
+    let lent = previous
+        .lend(&wanted, 2, |documents, encoding| {
+            batches.push((encoding.map(str::to_string), documents.len()));
+            rebuilt.upsert_encoded(documents, encoding)
+        })
+        .expect("lend");
+    assert_eq!(lent.len(), plans.len());
+    assert!(batches.iter().all(|(_, size)| *size <= 2), "{batches:?}");
+    rebuilt.flush().expect("flush");
+    previous.discard().expect("discard");
+
+    let stored = rebuilt.stored(&topics).expect("read back");
+    for ((topic, plan), stored) in topics.iter().zip(plans).zip(&stored) {
+        let stored = stored.as_ref().expect("lent");
+        assert_eq!(stored.encoding.as_deref(), plan, "{topic:?}");
+    }
+    let wanted: Vec<(TopicId, &str)> = topics.iter().map(|topic| (*topic, "same text")).collect();
+    assert_eq!(
+        rebuilt.holds(&wanted, "cpu:one").expect("holds"),
+        [true, false, true, false, true]
+    );
 }
 
 /// A rebuild lends, through one pass of the engine's document iterator,
@@ -1160,11 +1230,13 @@ fn a_document_reads_back_as_it_was_written() {
                 content: "the release train leaves on fridays".to_string(),
                 embedding: pamin_index::as_stored(&separated(3)),
                 secondary: None,
+                encoding: None,
             }),
             Some(Stored {
                 content: "the oncall rota rotates weekly".to_string(),
                 embedding: pamin_index::as_stored(&separated(2)),
                 secondary: None,
+                encoding: None,
             }),
             None,
         ],
@@ -1317,7 +1389,9 @@ fn an_index_keyed_by_the_identifier_as_written_keeps_answering() {
     )
     .expect("rebuild");
     let lent = previous
-        .lend(&wanted, 256, |documents| rebuilt.upsert_vectors(documents))
+        .lend(&wanted, 256, |documents, encoding| {
+            rebuilt.upsert_encoded(documents, encoding)
+        })
         .expect("lend");
     assert_eq!(lent.len(), 2);
     rebuilt.flush().expect("flush");
@@ -1837,7 +1911,9 @@ fn an_fp32_index_from_before_is_refused_and_lends_to_its_rebuild() {
     )
     .expect("rebuild");
     previous
-        .lend(&wanted, 256, |documents| rebuilt.upsert_vectors(documents))
+        .lend(&wanted, 256, |documents, encoding| {
+            rebuilt.upsert_encoded(documents, encoding)
+        })
         .expect("lend");
     rebuilt.flush().expect("flush");
     previous.discard().expect("discard");
