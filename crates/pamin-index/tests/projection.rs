@@ -1107,10 +1107,12 @@ fn a_document_reads_back_as_it_was_written() {
             Some(Stored {
                 content: "the release train leaves on fridays".to_string(),
                 embedding: pamin_index::as_stored(&separated(3)),
+                encoding: None,
             }),
             Some(Stored {
                 content: "the oncall rota rotates weekly".to_string(),
                 embedding: pamin_index::as_stored(&separated(2)),
+                encoding: None,
             }),
             None,
         ],

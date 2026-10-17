@@ -161,36 +161,48 @@ measure from outside. If you want more control over retrieval, use `grep`,
 
 ### When to stop searching
 
-Every `search` costs more than a second and a page of results in your
-context. The 1522 ms `docs/cli.md` records was measured at twenty reranked
-candidates; a search now reranks thirty, and `docs/measured.md`
-records slower medians on busier machines. A second search pays off only when
+Every `search` costs a reranking pass and a page of results in your context.
+On a four-core CPU that is more than a second: the 1522 ms `docs/cli.md`
+records was measured when the reranker saw twenty candidates, it now sees a
+head of thirty plus up to thirty more that only the graph found, and
+`docs/measured.md` records slower medians on busier machines. On Apple
+silicon, where the reranker runs on CoreML, `docs/measured.md` records a
+whole-search p50 of 0.48 s and p95 of 0.81 s. A second search pays off only when
 it can find something the first could not. The rules below are a heuristic for
 spending that cost; no agent-task measurement yet shows how often a repeat
 search finds something new.
 
 - **Before searching again, name what is missing.** List the facts the
   question needs, then check them against the results you already have. Stop
-  when each one is either backed by a hit or is plainly not there. A result
-  that answers the question but that you have not read in full calls for
-  `read`, not another `search`.
+  when each one is backed by a hit. A fact missing from those results is
+  missing from one page of five, not from memory, so take it to the rules
+  below rather than concluding it is not there. A hit already carries its
+  topic's full current content; do not `read` it again. `read` is for its
+  earlier versions and the source span a claim came from.
 - **Rephrase at most once, and never to the same place.** If the second
-  phrasing brings back mostly the same topics (say, eight of the first ten),
+  phrasing brings back mostly the same topics (say, four of the five),
   the ranking is not the problem and a third phrasing will land there too.
   Switch to a path that does not rank:
-  - `grep` for an exact string you expect the answer to contain;
-  - `neighbors` from the best topic you found.
+  - `grep` for an exact string you expect the answer to contain. It searches
+    every version ever written, superseded ones included, so `read` the topic
+    named in a hit's `source` and answer from it only if the current version
+    still says so;
+  - `neighbors --depth 1` from the best topic you found, with `--kind` to
+    narrow it. The default depth is two and nothing caps how many it returns,
+    which on a well-connected topic can be most of the project.
 
   `topics` is not one of them: it merges name matches with the same ranked
-  search, unreranked, so only its name matches are new evidence. Use it to see
-  what the workspace calls things.
-- **After two searches and a `grep` miss, stop and say what you tried.**
-  Report that those probes found nothing, not that the memory does not exist:
-  `grep` matches one exact literal, case-sensitive unless you pass `-i`, and
-  `search` returns five results by default, so differently worded or
-  lower-ranked memories can still be there. More searching rarely changes
-  that, and an answer built from the closest near-miss is worse than an honest
-  "I searched for X and Y and found nothing".
+  search, unreranked. But it returns twenty by default against `search`'s
+  five, so a content hit you have not already seen is new evidence too, as is
+  any name match. It also shows what the workspace calls things.
+- **After two searches, a `grep` miss and a one-hop `neighbors` from the best
+  topic, stop and say what you tried.** Skip `neighbors` only when no hit is
+  related to the question. Report that those probes found nothing, not that
+  the memory does not exist: `grep` matches one exact literal, case-sensitive
+  unless you pass `-i`, and `search` returns five results by default, so
+  differently worded or lower-ranked memories can still be there. An answer
+  built from the closest near-miss is worse than an honest "I searched for X
+  and Y and found nothing".
 
 ## Relationships
 
