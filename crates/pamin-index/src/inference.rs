@@ -696,7 +696,19 @@ pub(crate) fn planned_use(model: &impl RuntimeModel, device: Device) -> Option<P
     (!model.runtime_plan().identity.is_empty()).then(|| current_use(model, device))
 }
 
-/// The plan `model` runs on now, as [`planned_use`], but only while that plan
+/// The plan `model` runs on now, as [`planned_use`], for recording beside what
+/// it embeds: `None` when that plan is not stable across processes.
+///
+/// A DirectML adapter ordinal or an NPU id names whichever device holds that
+/// number in this process ([`PlanUse::stable`]), so the same plan identity can
+/// name other hardware after a restart. A vector recorded under it could then
+/// match a plan that would not reproduce it, so such a plan records nothing,
+/// and nothing it embedded is ever reused.
+pub(crate) fn recorded_use(model: &impl RuntimeModel, device: Device) -> Option<PlanUse> {
+    planned_use(model, device).filter(|plan| plan.stable)
+}
+
+/// The plan `model` runs on now, as [`recorded_use`], but only while that plan
 /// is final: `None` once its retry deadline has passed ([`needs_revalidation`]).
 ///
 /// A plan past its deadline is a fallback the next forward pass may replace,
@@ -716,7 +728,7 @@ fn reusable_use_at(
     if needs_revalidation_at(model, now) {
         return None;
     }
-    planned_use(model, device)
+    recorded_use(model, device)
 }
 
 pub(crate) trait RuntimeModel {
@@ -2425,6 +2437,7 @@ mod tests {
         let now = std::time::Instant::now();
         let mut model = RuntimeFixture::new(0, "cpu");
         model.plan.identity = "cpu-plan".into();
+        model.plan.stable = true;
         model.plan.retry_at = Some(now + RUNTIME_RETRY);
         let mut device = Device::Cpu;
         let planned = planned_use(&model, device);
@@ -2445,6 +2458,7 @@ mod tests {
             || {
                 let mut restored = RuntimeFixture::new(42, "npu:first:1");
                 restored.plan.identity = "npu-plan".into();
+                restored.plan.stable = true;
                 Ok((restored, Device::Npu))
             },
         )
@@ -2452,6 +2466,29 @@ mod tests {
         let reusable = reusable_use_at(&model, device, expired).expect("revalidated");
         assert_eq!(reusable.target, "npu:first:1");
         assert_eq!(Some(reusable), planned_use(&model, device));
+    }
+
+    /// A plan that is not stable across processes -- a DirectML ordinal or an
+    /// NPU id -- is neither recorded nor reusable, while the plan itself is
+    /// still reported, so a vector it embedded is never kept for one another
+    /// process's plan of the same identity would embed.
+    #[test]
+    fn an_unstable_plan_is_neither_recorded_nor_reusable() {
+        let now = std::time::Instant::now();
+        let mut model = RuntimeFixture::new(0, "npu:first:1");
+        model.plan.identity = "npu-plan".into();
+        model.plan.stable = false;
+        let device = Device::Npu;
+        assert!(planned_use(&model, device).is_some_and(|plan| !plan.stable));
+        assert_eq!(recorded_use(&model, device), None);
+        assert_eq!(reusable_use_at(&model, device, now), None);
+
+        model.plan.stable = true;
+        assert_eq!(recorded_use(&model, device), planned_use(&model, device));
+        assert_eq!(
+            reusable_use_at(&model, device, now),
+            planned_use(&model, device)
+        );
     }
 
     /// A model that fell back keeps the plan it failed on in its history,
