@@ -2283,9 +2283,11 @@ impl Engine {
             // What the old index holds first, in one pass over it, then
             // whatever it could not supply.
             let lent = match &previous {
-                Some(previous) => previous.lend(&wanted, REINDEX_BATCH, |documents| {
-                    index.upsert_vectors(documents)
-                })?,
+                Some(previous) => {
+                    previous.lend(&wanted, REINDEX_BATCH, |documents, encoding| {
+                        index.upsert_encoded(documents, encoding)
+                    })?
+                }
                 None => std::collections::HashSet::new(),
             };
             let missing: Vec<(&TopicState, &str)> = states
@@ -3553,8 +3555,8 @@ mod tests {
     /// write the vector that is there, and that holds only for the plan that
     /// produced it: the CPU's int8 export and an accelerator's do not agree to
     /// the bit. So the same text under another plan, under no plan, or stored
-    /// with nothing recorded -- written before this was, or lent by a rebuild
-    /// -- is not held. Comparing the text alone passes the first and the last.
+    /// with nothing recorded -- written before this was, or by an unstable
+    /// plan -- is not held. Comparing the text alone passes the first and the last.
     #[test]
     fn a_vector_from_another_plan_is_embedded_again() {
         use pamin_index::{Access, Profile, Projection, ProjectionIndex, VectorIndex};
