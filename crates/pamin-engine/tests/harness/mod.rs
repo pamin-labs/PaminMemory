@@ -50,12 +50,15 @@ use pamin_index::Profile;
 ///
 /// Homes are not the only thing evaluations share: with `HF_HOME` set,
 /// every one of them fetches and prepares models in that one cache
-/// ([`pamin_index::model_cache_root`]), whichever home it runs from. A
-/// second evaluation waiting there on the first's snapshot or preparation
-/// lock would count no load of its own and record a contended run as
-/// warm. So the turn first locks `eval.lock` under the model cache's root,
-/// then the home's -- always in that order, so two processes never hold
-/// one each -- and one lock when the two roots are the same directory.
+/// ([`pamin_index::model_cache_root`]), whichever home it runs from, and
+/// without it, homes whose `models` directories are links to one directory
+/// share that. A second evaluation waiting there on the first's snapshot or
+/// preparation lock would count no load of its own and record a contended
+/// run as warm. So the turn first locks `eval.lock` under the model cache's
+/// root -- resolved from the model directory the loads are given, through
+/// any link -- then the home's, always in that order, so two processes
+/// never hold one each, and one lock when the two roots are the same
+/// directory.
 pub struct ModelsTurn {
     across: Vec<std::fs::File>,
 }
@@ -68,7 +71,15 @@ static TURN_FREED: std::sync::Condvar = std::sync::Condvar::new();
 /// thread.
 pub fn load_models() -> ModelsTurn {
     let home = eval_home();
-    load_models_at(&turn_locks(&pamin_index::model_cache_root(&home), &home))
+    load_models_at(&turn_locks(&model_cache(&home), &home))
+}
+
+/// The model cache the loads of an evaluation under `home` use: the root
+/// [`pamin_index::model_cache_root`] makes of the model directory they are
+/// given, `models` under the home -- [`pamin_engine::Models::in_workspace`]
+/// for a workspace at the home, `home.join("models")` for a direct load.
+fn model_cache(home: &std::path::Path) -> PathBuf {
+    pamin_index::model_cache_root(&home.join("models"))
 }
 
 /// The locks the turn across processes takes, in order: `eval` under the
@@ -341,7 +352,9 @@ mod tests {
     /// Two evaluations with different homes but one model cache take turns:
     /// the second waits for the first's lock on the shared cache. And a
     /// home that is its own cache is locked once, not twice -- a second
-    /// lock on the same file would wait for the first forever.
+    /// lock on the same file would wait for the first forever. Nor do
+    /// homes need `HF_HOME` to share a cache: two whose `models` link to
+    /// one directory lock that directory.
     #[test]
     fn evaluations_sharing_a_model_cache_take_turns() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -374,5 +387,37 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("the turn once the other evaluation let go");
         thread.join().expect("the thread that took the turn");
+
+        // Without `HF_HOME`, the cache is the home's `models` directory, and
+        // two homes whose `models` are links to one directory share it:
+        // their turns lock the same file there, the link's target.
+        #[cfg(unix)]
+        {
+            let shared = dir.path().join("models");
+            std::fs::create_dir_all(&shared).expect("the shared model directory");
+            for home in [&first, &second] {
+                std::fs::create_dir_all(home).expect("an evaluation home");
+                std::os::unix::fs::symlink(&shared, home.join("models")).expect("link its models");
+            }
+            // The roots `model_cache` makes of these homes when `HF_HOME` is
+            // unset; set, they are that one cache, the case above.
+            let (theirs, ours) = (first.join("models"), second.join("models"));
+            if std::env::var_os("HF_HOME").is_none() {
+                assert_eq!(super::model_cache(&first), theirs);
+                assert_eq!(super::model_cache(&second), ours);
+            }
+            let theirs = super::turn_locks(&theirs, &first);
+            let ours = super::turn_locks(&ours, &second);
+            assert_eq!(theirs.len(), 2);
+            assert_eq!(
+                theirs[0],
+                std::fs::canonicalize(&shared)
+                    .expect("resolve")
+                    .join("eval"),
+                "the lock is on the link's target"
+            );
+            assert_eq!(theirs[0], ours[0], "both homes lock the shared directory");
+            assert_ne!(theirs[1], ours[1], "and each its own home");
+        }
     }
 }
