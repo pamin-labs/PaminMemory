@@ -1342,9 +1342,9 @@ more primary-key join, to `source_versions`, costs about 0.3 ms at the
 150-candidate ceiling, which is the price of storing each memory once. A
 search pays it in up to three lookups — the channels' candidates, any topic the
 query names that no channel returned, and the graph's arrivals, at most fifty
-at the default depth — so under a millisecond, against the 99 ms
-[the CLI reference](cli.md) gives a search with reranking off and 1,522 ms at
-the default tier. The results
+at the default depth — so under a millisecond, against the historical 99 ms
+[the CLI reference](cli.md) gives a fusion-only search and 1,522 ms for one
+reranking twenty candidates; a search today reranks thirty. The results
 themselves did not move: the before workspace, migrated by the after build,
 returned byte-identical top tens for forty questions through
 `Engine::search_reranked` at its defaults, scores to six decimals, and read
