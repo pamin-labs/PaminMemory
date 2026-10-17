@@ -295,6 +295,7 @@ pub(crate) fn fixed_coreml(
     recover_coreml_cache(&cache)?;
     let reused = cache.join("ready").is_file();
     if !reused {
+        crate::activity::prepared();
         reset_coreml_cache(&cache)?;
     }
     let load = || -> Result<Session> {
@@ -352,6 +353,7 @@ fn publish_coreml_cache(cache: &Path) -> Result<()> {
 
 #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), test))]
 fn rebuild_coreml_cache<T>(cache: &Path, load: impl FnOnce() -> Result<T>) -> Result<T> {
+    crate::activity::prepared();
     let previous = cache.with_extension("previous");
     std::fs::rename(cache, &previous)?;
     std::fs::create_dir_all(cache)?;
@@ -578,30 +580,92 @@ pub(crate) struct RuntimePlan {
     /// Every plan this model's place has run on, oldest first: a model a
     /// failure or a revalidation replaced hands its history on.
     history: Vec<PlanUse>,
+    /// Where the load found this plan (see [`PlanUse::origin`]).
+    origin: PlanOrigin,
+}
+
+/// Where a load found the execution plan it runs on, as the selection
+/// itself decided it -- so a record can say whether a run paid for a
+/// calibration, rather than guess from which plan files were on disk.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PlanOrigin {
+    /// Calibrated by this load: the candidates were measured.
+    CalibratedNow,
+    /// Read from a plan file a calibration before this process wrote.
+    PersistedRecord,
+    /// Found in this process's cache of plans, calibrated or read by an
+    /// earlier load in the same process.
+    ProcessCache,
+    /// Nothing to calibrate: the CPU was the only candidate, as under
+    /// `PAMIN_DEVICE=cpu` or with no accelerator found.
+    CpuOnly,
+    /// Calibration deferred: the host's calibration lock could not be
+    /// taken, so the CPU runs until it is retried.
+    Deferred,
+    /// Loaded without a plan.
+    #[default]
+    Unplanned,
 }
 
 /// One execution plan a model ran on: its target as plans are keyed
 /// (`npu:<provider>:<id>`, or the device's name), the sha256 of the full plan
 /// key it was selected under -- model, build, settings, threads, cores,
 /// runtime, host, CPU features, provider libraries and CUDA inventory and
-/// selection -- and whether that plan is stable across processes (a
+/// selection -- whether that plan is stable across processes (a
 /// DirectML adapter ordinal or an NPU id is not, so such plans are never
-/// persisted either).
+/// persisted either), and the model it ran as `repository@commit`, the
+/// commit the cache's ref resolved to once the files were fetched.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PlanUse {
     pub target: String,
     pub plan: String,
     pub stable: bool,
+    pub revision: String,
+    /// Where the load found the plan: calibrated by it, read from a plan
+    /// file, reused from this process, or none to calibrate.
+    pub origin: PlanOrigin,
 }
 
-/// The plans `model` has run on, oldest first; the last is the one it runs
-/// on now. A model loaded without a plan is reported on its device.
+/// The plans `model` has run on, each once, in the order first seen except
+/// that the last is the one it runs on now. A model loaded without a plan is
+/// reported on its device.
 pub(crate) fn plans_of(model: &impl RuntimeModel, device: Device) -> Vec<PlanUse> {
-    let plan = model.runtime_plan();
-    let mut history = plan.history.clone();
+    with_last(
+        model.runtime_plan().history.clone(),
+        current_use(model, device),
+    )
+}
+
+/// `history` with `plan` moved or added to the end, so each plan appears
+/// once: a model that keeps falling back between the same two plans -- a
+/// revalidation that fails on the real input every few minutes -- keeps a
+/// history of two, which still says it fell back, rather than one that
+/// grows with every attempt.
+fn with_last(mut history: Vec<PlanUse>, plan: PlanUse) -> Vec<PlanUse> {
+    history.retain(|seen| !same_plan(seen, &plan));
+    history.push(plan);
+    history
+}
+
+/// Whether `a` and `b` are one plan: the same target, plan key, stability
+/// and revision. Where a load found the plan is not what ran, so a plan
+/// read from its file and later recalibrated to the same key is one plan,
+/// listed once, with the origin of its latest load.
+fn same_plan(a: &PlanUse, b: &PlanUse) -> bool {
+    (&a.target, &a.plan, a.stable, &a.revision) == (&b.target, &b.plan, b.stable, &b.revision)
+}
+
+/// The plans `model` has run on, oldest first, with the one it runs on now
+/// where it first ran -- added at the end if new, its origin updated if
+/// not -- for a history that goes on after it. Unlike [`plans_of`], this
+/// does not move the current plan to the end, so a fallback from it, then
+/// from another, then a recovery records the three in the order they ran.
+fn ran_on(model: &impl RuntimeModel, device: Device) -> Vec<PlanUse> {
+    let mut history = model.runtime_plan().history.clone();
     let now = current_use(model, device);
-    if history.last() != Some(&now) {
-        history.push(now);
+    match history.iter_mut().find(|seen| same_plan(seen, &now)) {
+        Some(seen) => seen.origin = now.origin,
+        None => history.push(now),
     }
     history
 }
@@ -616,6 +680,12 @@ fn current_use(model: &impl RuntimeModel, device: Device) -> PlanUse {
             plan.identity.clone()
         },
         stable: plan.identity.is_empty() || plan.stable,
+        revision: model.revision().to_string(),
+        origin: if plan.identity.is_empty() {
+            PlanOrigin::Unplanned
+        } else {
+            plan.origin
+        },
     }
 }
 
@@ -652,6 +722,8 @@ fn reusable_use_at(
 pub(crate) trait RuntimeModel {
     fn runtime_plan(&self) -> &RuntimePlan;
     fn runtime_plan_mut(&mut self) -> &mut RuntimePlan;
+    /// The model's `repository@commit`, for [`PlanUse::revision`].
+    fn revision(&self) -> &str;
 }
 
 impl<T: RuntimeModel> RuntimeModel for Box<T> {
@@ -660,6 +732,9 @@ impl<T: RuntimeModel> RuntimeModel for Box<T> {
     }
     fn runtime_plan_mut(&mut self) -> &mut RuntimePlan {
         (**self).runtime_plan_mut()
+    }
+    fn revision(&self) -> &str {
+        (**self).revision()
     }
 }
 
@@ -829,6 +904,7 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
         }
     }
     loop {
+        let trying = replacement.is_some();
         let (active, selected) = match &mut replacement {
             Some((active, selected)) => (active, *selected),
             None => (&mut *model, *device),
@@ -842,20 +918,21 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
                 if let Some((mut active, selected)) = replacement {
                     // The place keeps every plan it ran on, so a run that
                     // fell back says so.
-                    let history = plans_of(model, *device);
+                    let history = ran_on(model, *device);
                     let now = current_use(&active, selected);
-                    let plan = active.runtime_plan_mut();
-                    plan.history = history;
-                    if plan.history.last() != Some(&now) {
-                        plan.history.push(now);
-                    }
+                    active.runtime_plan_mut().history = with_last(history, now);
                     *model = active;
                     *device = selected;
                 }
                 return Ok((result, replaced));
             }
             Err(error) => {
+                // A replacement that ran the input and failed is dropped
+                // below; the place keeps its plan, as it keeps one that
+                // succeeded, so a run that tried it says so.
+                let attempted = trying.then(|| current_use(&*active, selected));
                 if selected == Device::Cpu {
+                    remember_attempt(model, *device, attempted);
                     if revalidating && replacement.is_some() {
                         return retain_fallback(model, *device, &mut clock, &mut operation);
                     }
@@ -863,6 +940,7 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
                 }
                 let target = active.runtime_plan().target.clone();
                 if failed_devices.contains(&target) {
+                    remember_attempt(model, *device, attempted);
                     if revalidating {
                         return retain_fallback(model, *device, &mut clock, &mut operation);
                     }
@@ -876,6 +954,7 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
                     model.runtime_plan_mut().restore_target = Some(failed_devices[0].clone());
                 }
                 model.runtime_plan_mut().retry_at = Some(now + RUNTIME_RETRY);
+                remember_attempt(model, *device, attempted);
                 drop(replacement.take());
                 let (mut active, selected) = match reload() {
                     Ok(plan) => plan,
@@ -901,6 +980,30 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
             }
         }
     }
+}
+
+/// Adds a discarded replacement's plan to `model`'s history, after the plans
+/// `model` itself ran on.
+fn remember_attempt<T: RuntimeModel>(model: &mut T, device: Device, attempted: Option<PlanUse>) {
+    let Some(attempted) = attempted else {
+        return;
+    };
+    model.runtime_plan_mut().history = with_last(ran_on(model, device), attempted);
+}
+
+/// The machine a plan is selected on, as every plan's identity names it: the
+/// cores this process may use, the runtime, the host and the CPU features
+/// kernels are chosen by. A CPU-only plan is named by it too, so two hosts
+/// running one binary from one path are two plans, as their vectors can
+/// differ.
+fn machine() -> String {
+    format!(
+        "cores:{:?}|runtime:{}|host:{}|features:{:?}",
+        std::thread::available_parallelism(),
+        ort::info(),
+        host_identity(),
+        crate::prepared::features()
+    )
 }
 
 fn retain_fallback<T: RuntimeModel, R>(
@@ -1002,6 +1105,29 @@ pub(crate) fn measured<T: RuntimeModel>(
     cache_dir: &Path,
     references: &std::cell::RefCell<References>,
     shape: ReferenceShape,
+    load: impl FnMut(Device, Target, bool) -> Result<T>,
+    evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
+) -> Result<(T, Device)> {
+    measured_among(
+        accelerators(),
+        identity,
+        cache_dir,
+        references,
+        shape,
+        load,
+        evaluate,
+    )
+}
+
+/// [`measured`] over these `discovered` accelerators: none, as
+/// [`accelerators`] finds under `PAMIN_DEVICE=cpu` or on a machine without
+/// one, selects the CPU without measuring anything.
+fn measured_among<T: RuntimeModel>(
+    discovered: Vec<(Device, Target)>,
+    identity: &str,
+    cache_dir: &Path,
+    references: &std::cell::RefCell<References>,
+    shape: ReferenceShape,
     mut load: impl FnMut(Device, Target, bool) -> Result<T>,
     evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
 ) -> Result<(T, Device)> {
@@ -1010,10 +1136,7 @@ pub(crate) fn measured<T: RuntimeModel>(
     static PLANS: OnceLock<Mutex<HashMap<String, CachedPlan>>> = OnceLock::new();
     // Model revision/export and supported shape policy live in identity.
     // Runtime/build and dispatch settings distinguish execution plans.
-    let mut settings: Vec<_> = std::env::vars_os()
-        .filter(|(key, _)| key.to_string_lossy().starts_with("PAMIN_"))
-        .collect();
-    settings.sort();
+    let settings = execution_settings(std::env::vars_os());
     let executable = executable_identity();
     let namespace = format!(
         "{identity}|executable:{executable:?}|{}|{}|{settings:?}|threads:{:?}",
@@ -1021,7 +1144,6 @@ pub(crate) fn measured<T: RuntimeModel>(
         ort::info(),
         threads()
     );
-    let discovered = accelerators();
     let target_ids: Vec<_> = discovered
         .iter()
         .map(|(device, target)| target_identity(*device, target))
@@ -1062,8 +1184,10 @@ pub(crate) fn measured<T: RuntimeModel>(
         let mut load = load;
         return load(Device::Cpu, vec![cpu()].into(), false).map(|mut model| {
             let plan = model.runtime_plan_mut();
-            plan.identity = fingerprint(&format!("cpu-only|{}", plan.namespace));
+            plan.identity = fingerprint(&format!("cpu-only|{}|{}", plan.namespace, machine()));
             plan.stable = true;
+            // Nothing was measured: the CPU was the only candidate.
+            plan.origin = PlanOrigin::CpuOnly;
             (model, Device::Cpu)
         });
     }
@@ -1074,11 +1198,7 @@ pub(crate) fn measured<T: RuntimeModel>(
             _ => device.name().to_string(),
         })
         .collect();
-    let settings: Vec<_> = std::env::vars_os()
-        .filter(|(key, _)| key.to_string_lossy().starts_with("PAMIN_"))
-        .collect();
-    let mut settings = settings;
-    settings.sort();
+    let settings = execution_settings(std::env::vars_os());
     let libraries: Vec<_> = std::env::var_os("PAMIN_EP_LIBRARIES")
         .into_iter()
         .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
@@ -1095,13 +1215,10 @@ pub(crate) fn measured<T: RuntimeModel>(
     let cuda_inventory = cuda.then(cuda_identity).flatten();
     let cuda_settings = CUDA_SELECTION.map(|name| (name, std::env::var_os(name)));
     let key = format!(
-        "persistent-plan-v6|executable:{executable:?}|build:{}|{identity}|{signature:?}|{settings:?}|threads:{:?}|cores:{:?}|runtime:{}|host:{}|features:{:?}|libraries:{libraries:?}|cuda:{cuda_inventory:?}|cuda-settings:{cuda_settings:?}",
+        "persistent-plan-v6|executable:{executable:?}|build:{}|{identity}|{signature:?}|{settings:?}|threads:{:?}|{}|libraries:{libraries:?}|cuda:{cuda_inventory:?}|cuda-settings:{cuda_settings:?}",
         env!("PAMIN_INFERENCE_BUILD"),
         threads(),
-        std::thread::available_parallelism(),
-        ort::info(),
-        host_identity(),
-        crate::prepared::features()
+        machine(),
     );
     let cache = PLANS.get_or_init(Default::default);
     // Only hashes and fixed-fixture outputs reach disk; the full key can
@@ -1116,6 +1233,9 @@ pub(crate) fn measured<T: RuntimeModel>(
         && persistence_supported(&plans, cuda_inventory.is_some()))
     .then(|| location.clone())
     .flatten();
+    // A plan found in the cache was put there earlier in this process; one
+    // read here comes from a file a calibration before it wrote.
+    let origin = std::cell::Cell::new(PlanOrigin::ProcessCache);
     if !cache
         .lock()
         .expect("compute-plan cache poisoned")
@@ -1129,6 +1249,7 @@ pub(crate) fn measured<T: RuntimeModel>(
             .lock()
             .expect("compute-plan cache poisoned")
             .insert(key.clone(), plan);
+        origin.set(PlanOrigin::PersistedRecord);
     }
     let (mut model, device, deadline) = calibrated_with_references(
         &key,
@@ -1140,6 +1261,7 @@ pub(crate) fn measured<T: RuntimeModel>(
             directory: coordination.as_deref(),
             shape: Some(shape),
             require_coordination: true,
+            origin: Some(&origin),
         },
         load,
         evaluate,
@@ -1148,6 +1270,7 @@ pub(crate) fn measured<T: RuntimeModel>(
     let plan = model.runtime_plan_mut();
     plan.identity = fingerprint(&key);
     plan.stable = device_persists(device, cuda_inventory.is_some());
+    plan.origin = origin.get();
     Ok((model, device))
 }
 
@@ -1344,32 +1467,39 @@ fn read_plan(path: &Path, key: &str, plans: &[(Device, Target)]) -> Option<Cache
     read_plan_shaped(path, key, plans, None)
 }
 
+/// The plan record at `path`, if it is one: not oversized, and whole.
+fn read_disk_plan(path: &Path) -> Option<DiskPlan> {
+    if std::fs::metadata(path).ok()?.len() > 1_048_576 {
+        return None;
+    }
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+/// What a saved plan must hold to be used at `now`, whatever its key: an
+/// unexpired deadline no further than a day off, valid references, and
+/// references at all for an accelerator.
+fn usable(saved: &DiskPlan, now: u64) -> bool {
+    saved.expires > now
+        && saved.expires <= now + 86400
+        && valid_references(&saved.references)
+        && (saved.target == Device::Cpu.name()
+            || saved.references.vectors.is_some()
+            || saved.references.queries.is_some()
+            || saved.references.scores.is_some())
+}
+
 fn read_plan_shaped(
     path: &Path,
     key: &str,
     plans: &[(Device, Target)],
     shape: Option<ReferenceShape>,
 ) -> Option<CachedPlan> {
-    if std::fs::metadata(path).ok()?.len() > 1_048_576 {
-        return None;
-    }
-    let saved: DiskPlan = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    let saved = read_disk_plan(path)?;
     let now = unix_seconds();
     if shape.is_some_and(|shape| !shape.accepts(&saved.references)) {
         return None;
     }
-    if saved.fingerprint != fingerprint(key)
-        || saved.expires <= now
-        || saved.expires > now + 86400
-        || !valid_references(&saved.references)
-    {
-        return None;
-    }
-    if saved.target != Device::Cpu.name()
-        && saved.references.vectors.is_none()
-        && saved.references.queries.is_none()
-        && saved.references.scores.is_none()
-    {
+    if saved.fingerprint != fingerprint(key) || !usable(&saved, now) {
         return None;
     }
     let (device, target) = if saved.target == Device::Cpu.name() {
@@ -1476,6 +1606,38 @@ fn device_persists(device: Device, cuda_identified: bool) -> bool {
         Device::Cuda => cuda_identified,
         Device::DirectMl | Device::Npu => false,
     }
+}
+
+/// The `PAMIN_` variables that change how a model executes: the device it
+/// may run on, the provider libraries and the threads it runs with, and
+/// which copy of its weights -- the download, or a prepared copy with or
+/// without fused attention -- it loads. A plan's key is named by these.
+///
+/// Only these: a plan's key named every `PAMIN_` variable set, so a knob
+/// that never reaches a model -- the reranker's depth, the search's effort,
+/// where the workspace is -- recalibrated every model and renamed every
+/// plan. What a model's own settings change, such as the reranker's batch
+/// and token limits, its identity names (see `reranking`).
+pub const EXECUTION_SETTINGS: [&str; 5] = [
+    "PAMIN_DEVICE",
+    "PAMIN_EP_LIBRARIES",
+    "PAMIN_FUSED_ATTENTION",
+    "PAMIN_INFERENCE_THREADS",
+    "PAMIN_PREPARED",
+];
+
+/// The [`EXECUTION_SETTINGS`] among `vars` that are set, sorted.
+fn execution_settings(
+    vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let mut settings: Vec<_> = vars
+        .filter(|(key, _)| {
+            key.to_str()
+                .is_some_and(|key| EXECUTION_SETTINGS.contains(&key))
+        })
+        .collect();
+    settings.sort();
+    settings
 }
 
 /// The variables that choose which CUDA devices a session sees, and in
@@ -1674,6 +1836,9 @@ struct PlanFiles<'a> {
     directory: Option<&'a Path>,
     shape: Option<ReferenceShape>,
     require_coordination: bool,
+    /// Where the selection found its plan, set as it decides: holding
+    /// where a plan already in the cache came from on the way in.
+    origin: Option<&'a std::cell::Cell<PlanOrigin>>,
 }
 
 impl<'a> PlanFiles<'a> {
@@ -1696,7 +1861,13 @@ fn calibrated_with_references<T>(
     mut load: impl FnMut(Device, Target, bool) -> Result<T>,
     mut evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
 ) -> Result<(T, Device, Option<std::time::Instant>)> {
+    let found = |origin| {
+        if let Some(cell) = files.origin {
+            cell.set(origin);
+        }
+    };
     if plans.is_empty() {
+        found(PlanOrigin::CpuOnly);
         return load(Device::Cpu, vec![cpu()].into(), false)
             .map(|model| (model, Device::Cpu, None));
     }
@@ -1760,6 +1931,7 @@ fn calibrated_with_references<T>(
             disk = None;
             if files.require_coordination {
                 // No timing decision may outlive uncoordinated contention.
+                found(PlanOrigin::Deferred);
                 let model = load(Device::Cpu, vec![cpu()].into(), false)?;
                 return Ok((
                     model,
@@ -1780,6 +1952,8 @@ fn calibrated_with_references<T>(
                         .is_none_or(|shape| shape.accepts(&plan.references))
             })
         {
+            // Another load in this process put it there while this waited.
+            found(PlanOrigin::ProcessCache);
             continue;
         }
         if let Some(plan) = disk.and_then(|path| {
@@ -1790,10 +1964,12 @@ fn calibrated_with_references<T>(
                 .lock()
                 .expect("compute-plan cache poisoned")
                 .insert(key.into(), plan);
+            found(PlanOrigin::PersistedRecord);
             continue;
         }
         break (calibration, host_lock);
     };
+    found(PlanOrigin::CalibratedNow);
     references.replace(References::default());
     let mut reference = load(Device::Cpu, vec![cpu()].into(), false)?;
     let mut transient_failure = false;
@@ -2057,6 +2233,9 @@ mod tests {
         fn runtime_plan_mut(&mut self) -> &mut RuntimePlan {
             &mut self.plan
         }
+        fn revision(&self) -> &str {
+            "fixture@0"
+        }
     }
 
     #[test]
@@ -2316,6 +2495,136 @@ mod tests {
         assert!(!device_persists(Device::Cuda, false));
     }
 
+    /// A plan's key names the variables that change how a model executes,
+    /// and no other `PAMIN_` variable: a reranker's depth or a search's
+    /// effort calibrates nothing again.
+    #[test]
+    fn a_plan_key_names_only_execution_settings() {
+        let vars = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(name, value)| (name.into(), value.into()))
+                .collect::<Vec<(std::ffi::OsString, std::ffi::OsString)>>()
+                .into_iter()
+        };
+        let shipped = execution_settings(vars(&[("PAMIN_DEVICE", "cpu")]));
+        assert_eq!(
+            execution_settings(vars(&[
+                ("PAMIN_RERANK_DEPTH", "20"),
+                ("PAMIN_SEARCH_EFFORT", "100"),
+                ("PAMIN_HOME", "/somewhere"),
+                ("PAMIN_DEVICE", "cpu"),
+            ])),
+            shipped
+        );
+        for name in EXECUTION_SETTINGS {
+            assert_ne!(
+                execution_settings(vars(&[("PAMIN_DEVICE", "cpu"), (name, "x")])),
+                shipped,
+                "{name}"
+            );
+        }
+    }
+
+    /// A recovery that fails on a second accelerator before the CPU runs
+    /// the input keeps every plan it ran on, the dropped one too, in the
+    /// order they ran: the first accelerator, the second, then the CPU.
+    #[test]
+    fn a_fallback_through_two_accelerators_keeps_each_in_order() {
+        let root = tempfile::tempdir().unwrap();
+        let now = std::time::Instant::now();
+        let mut model = RuntimeFixture::new(1, "cuda");
+        let mut device = Device::Cuda;
+        let mut loads = 0;
+        let (answer, replaced) = retry_model_at(
+            &mut model,
+            &mut device,
+            root.path(),
+            now,
+            |candidate, selected| {
+                if selected == Device::Cpu {
+                    Ok(candidate.value)
+                } else {
+                    Err(IndexError::Engine("the accelerator failed".into()))
+                }
+            },
+            || {
+                loads += 1;
+                Ok(if loads == 1 {
+                    (RuntimeFixture::new(2, "npu"), Device::Npu)
+                } else {
+                    (RuntimeFixture::new(3, "cpu"), Device::Cpu)
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!((answer, replaced, device), (3, true, Device::Cpu));
+        let targets: Vec<String> = plans_of(&model, device)
+            .into_iter()
+            .map(|plan| plan.target)
+            .collect();
+        assert_eq!(targets, ["cuda", "npu", "cpu"]);
+    }
+
+    /// A plan read from its file that expires and is recalibrated to the
+    /// same target, key and revision is one plan, not two: the history
+    /// lists it once, with the origin of the load that runs it now.
+    #[test]
+    fn a_recalibrated_plan_is_listed_once() {
+        let root = tempfile::tempdir().unwrap();
+        let now = std::time::Instant::now();
+        let plan = |value, origin| {
+            let mut model = RuntimeFixture::new(value, "cuda");
+            model.plan.identity = "a".repeat(64);
+            model.plan.stable = true;
+            model.plan.origin = origin;
+            model
+        };
+        let mut model = plan(1, PlanOrigin::PersistedRecord);
+        model.plan.retry_at = Some(now);
+        let mut device = Device::Cuda;
+        let (answer, replaced) = retry_model_at(
+            &mut model,
+            &mut device,
+            root.path(),
+            now,
+            |candidate, _| Ok(candidate.value),
+            || Ok((plan(2, PlanOrigin::CalibratedNow), Device::Cuda)),
+        )
+        .unwrap();
+        assert_eq!((answer, replaced), (2, true));
+        let plans = plans_of(&model, device);
+        assert_eq!(plans.len(), 1, "{plans:?}");
+        assert_eq!(plans[0].origin, PlanOrigin::CalibratedNow);
+    }
+
+    /// A recovery whose CPU replacement fails on the real input too fails
+    /// the call, and the model's history still names both plans it ran.
+    #[test]
+    fn a_failed_recovery_keeps_the_plans_it_ran() {
+        let root = tempfile::tempdir().unwrap();
+        let now = std::time::Instant::now();
+        let mut model = RuntimeFixture::new(1, "cuda");
+        let mut device = Device::Cuda;
+        let failed = retry_model_at(
+            &mut model,
+            &mut device,
+            root.path(),
+            now,
+            |_: &mut RuntimeFixture<i32>, _| -> Result<i32> {
+                Err(IndexError::Engine("the real input fails".into()))
+            },
+            || Ok((RuntimeFixture::new(2, "cpu"), Device::Cpu)),
+        );
+        assert!(failed.is_err());
+        let mut targets: Vec<String> = plans_of(&model, device)
+            .into_iter()
+            .map(|plan| plan.target)
+            .collect();
+        targets.sort();
+        assert_eq!(targets, ["cpu", "cuda"]);
+    }
+
     #[test]
     fn revalidation_real_input_failure_retains_the_healthy_fallback() {
         let root = tempfile::tempdir().unwrap();
@@ -2351,6 +2660,97 @@ mod tests {
         assert_eq!(model.value, 42);
         assert_eq!(device, Device::Cpu);
         assert_eq!(model.plan.retry_at, Some(now + RUNTIME_RETRY));
+        // The accelerator it tried and dropped is still in the history, so
+        // a record of the run does not read as CPU-only.
+        let targets: Vec<String> = plans_of(&model, device)
+            .into_iter()
+            .map(|plan| plan.target)
+            .collect();
+        assert_eq!(targets, ["cuda", "cpu"]);
+    }
+
+    /// A CPU-only plan is named by the machine as an accelerator plan's
+    /// persistent key is: its host, CPU features and cores.
+    #[test]
+    fn a_cpu_only_plan_names_the_machine() {
+        let named = machine();
+        assert!(named.contains(host_identity()), "{named}");
+        assert!(
+            named.contains(&format!("{:?}", crate::prepared::features())),
+            "{named}"
+        );
+        assert!(
+            named.contains(&format!("{:?}", std::thread::available_parallelism())),
+            "{named}"
+        );
+    }
+
+    /// With no accelerator to try -- `PAMIN_DEVICE=cpu`, or none found --
+    /// the CPU is selected without measuring anything, and its plan says
+    /// so; a model loaded without a plan says it has none.
+    #[test]
+    fn a_cpu_only_selection_is_not_calibrated() {
+        let root = tempfile::tempdir().unwrap();
+        let references = std::cell::RefCell::new(References::default());
+        let (model, device) = measured_among(
+            Vec::new(),
+            "cpu-only-test",
+            root.path(),
+            &references,
+            ReferenceShape {
+                vectors: None,
+                queries: None,
+                scores: None,
+            },
+            |_, _, _| Ok(RuntimeFixture::new(1, "cpu")),
+            |_: &mut RuntimeFixture<i32>, _| -> Result<std::time::Duration> {
+                panic!("nothing is measured when the CPU is the only candidate")
+            },
+        )
+        .unwrap();
+        assert_eq!(device, Device::Cpu);
+        let used = current_use(&model, device);
+        assert_ne!(used.plan, "unplanned");
+        assert_eq!(used.origin, PlanOrigin::CpuOnly, "{used:?}");
+
+        let unplanned = current_use(&RuntimeFixture::new(1, "cpu"), Device::Cpu);
+        assert_eq!(unplanned.origin, PlanOrigin::Unplanned);
+    }
+
+    /// A fallback that fails its revalidation again and again keeps one
+    /// entry per plan, not one per attempt.
+    #[test]
+    fn repeated_revalidation_failures_keep_a_bounded_history() {
+        let root = tempfile::tempdir().unwrap();
+        let start = std::time::Instant::now();
+        let mut model = RuntimeFixture::new(42, "cpu");
+        let mut device = Device::Cpu;
+        for attempt in 0..20u32 {
+            let now = start + RUNTIME_RETRY * (2 * attempt + 1);
+            model.plan.retry_at = Some(now);
+            let (answer, replaced) = retry_model_at(
+                &mut model,
+                &mut device,
+                root.path(),
+                now,
+                |candidate, selected| {
+                    if selected == Device::Cpu {
+                        Ok(candidate.value)
+                    } else {
+                        Err(IndexError::Engine("actual shape fails".into()))
+                    }
+                },
+                || Ok((RuntimeFixture::new(0, "cuda"), Device::Cuda)),
+            )
+            .unwrap();
+            assert_eq!((answer, replaced, device), (42, false, Device::Cpu));
+        }
+        let targets: Vec<String> = plans_of(&model, device)
+            .into_iter()
+            .map(|plan| plan.target)
+            .collect();
+        assert_eq!(targets, ["cuda", "cpu"]);
+        assert!(model.plan.history.len() <= 2, "{:?}", model.plan.history);
     }
 
     #[test]
@@ -3233,6 +3633,55 @@ mod tests {
         drop(held);
         worker.join().unwrap();
         assert_eq!(result.unwrap().unwrap(), Device::Cuda);
+    }
+
+    /// A selection says where it found its plan, as it decided: measured
+    /// now, reused from this process, read from a plan file written before,
+    /// or nothing to measure -- so a record does not count reusing a plan
+    /// as paying for its calibration.
+    #[test]
+    fn a_plan_says_where_the_load_found_it() {
+        use std::time::Duration;
+        let root = tempfile::tempdir().unwrap();
+        let path = plan_file(root.path(), "origins").unwrap();
+        let select = |cache: &std::sync::Mutex<std::collections::HashMap<String, CachedPlan>>,
+                      plans: Vec<(Device, Target)>| {
+            let origin = std::cell::Cell::new(PlanOrigin::ProcessCache);
+            calibrated_with_references(
+                "origins",
+                plans,
+                cache,
+                &std::cell::RefCell::default(),
+                PlanFiles {
+                    origin: Some(&origin),
+                    ..PlanFiles::for_record(&path)
+                },
+                |device, _, _| Ok(device),
+                |_, device| {
+                    Ok(Duration::from_millis(if device == Device::Cpu {
+                        1
+                    } else {
+                        5
+                    }))
+                },
+            )
+            .unwrap();
+            origin.get()
+        };
+        let cuda = || vec![(Device::Cuda, vec![cpu()].into())];
+        let cache = std::sync::Mutex::default();
+        assert_eq!(select(&cache, cuda()), PlanOrigin::CalibratedNow);
+        assert_eq!(select(&cache, cuda()), PlanOrigin::ProcessCache);
+        assert!(path.exists(), "the calibration wrote no plan file");
+        let another_process = std::sync::Mutex::default();
+        assert_eq!(
+            select(&another_process, cuda()),
+            PlanOrigin::PersistedRecord
+        );
+        assert_eq!(
+            select(&std::sync::Mutex::default(), Vec::new()),
+            PlanOrigin::CpuOnly
+        );
     }
 
     #[test]
