@@ -39,7 +39,7 @@ default.
 | --- | --- | --- | --- |
 | `--device <auto\|cpu>` | `device` | `auto` | `auto` measures every viable accelerator and CPU plan and picks the fastest; `cpu` forces optimized CPU. Also read from `PAMIN_DEVICE` |
 | `--inference-threads <n>` | `inference_threads` | one per core | Threads one forward pass may use, or on the CPU, for the batches of a rerank and stored texts of the embedding model (BGE-M3), how many single-threaded passes run at once |
-| `--ep-library <path>` | `ep_libraries` | none | An absolute path to an installed, ABI-compatible NPU plugin EP library; repeat the flag, or list them in the file. Only discovered NPU devices participate in automatic plugin routing. Unavailable/incompatible libraries retain ordinary GPU/CPU fallback |
+| `--ep-library <path>` | `ep_libraries` | none | A path to an installed, ABI-compatible NPU plugin EP library; repeat the flag, or list them in the file. Only discovered NPU devices participate in automatic plugin routing. Unavailable/incompatible libraries retain ordinary GPU/CPU fallback |
 | `--prepared <true\|false>` | `prepared` | `true` | `false` loads a model from its download rather than from a mapped copy, fetching the download again if it was removed |
 | `--model-idle <seconds>` | `model_idle` | `1800` | Seconds a resident server holds a model nothing is asking for |
 | `--open-indexes <n>` | `open_indexes` | `16` | How many project indexes a server keeps open at once |
@@ -54,6 +54,10 @@ model_idle = 600
 open_indexes = 4
 ep_libraries = ["/opt/vendor/lib/libnpu_ep.so"]
 ```
+
+A relative path is made absolute when settings are resolved: in a flag,
+against the directory the command ran in; in the file, against the workspace
+(`$PAMIN_HOME`).
 
 A key the file does not know, or a value a flag would refuse, stops every
 command with the file's path and the offending line, rather than leaving the

@@ -53,8 +53,8 @@ pub struct ServerArgs {
     #[arg(long, global = true, help_heading = "Server settings")]
     pub inference_threads: Option<NonZeroUsize>,
 
-    /// An absolute path to an NPU plugin execution-provider library to
-    /// register. Repeat for several.
+    /// A path to an NPU plugin execution-provider library to register,
+    /// relative to the current directory if not absolute. Repeat for several.
     #[arg(
         long = "ep-library",
         value_name = "PATH",
@@ -114,7 +114,8 @@ pub struct ServerArgs {
     pub jit: Option<bool>,
 
     /// A PostgreSQL installation prefix holding `bin/initdb` to use instead
-    /// of installing one into the workspace.
+    /// of installing one into the workspace, relative to the current
+    /// directory if not absolute.
     #[arg(
         long,
         value_name = "PATH",
@@ -253,24 +254,33 @@ impl Server {
             "one per core".to_string(),
         );
 
-        let ep_libraries = if args.ep_libraries.is_empty() {
-            serve.ep_libraries.clone().unwrap_or_default()
+        // A relative path in a flag is the caller's, against the directory it
+        // ran in; one in the file is the file's, against the workspace. Both
+        // are made absolute here, so the server and the comparison with a
+        // running one see the path meant, whatever directory they run in.
+        let from_flag = |path: &PathBuf| anchored(path, None);
+        let from_file = |path: &PathBuf| anchored(path, Some(workspace_root));
+        let flag_libraries = args
+            .ep_libraries
+            .iter()
+            .map(from_flag)
+            .collect::<Result<Vec<_>>>()?;
+        let file_libraries = serve
+            .ep_libraries
+            .as_ref()
+            .map(|paths| paths.iter().map(from_file).collect::<Result<Vec<_>>>())
+            .transpose()?;
+        let ep_libraries = if flag_libraries.is_empty() {
+            file_libraries.clone().unwrap_or_default()
         } else {
-            args.ep_libraries.clone()
-        };
-        let paths = |paths: &[PathBuf]| {
-            paths
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
+            flag_libraries.clone()
         };
         pick(
             "ep_libraries",
-            (!args.ep_libraries.is_empty()).then(|| paths(&args.ep_libraries)),
+            (!flag_libraries.is_empty()).then(|| libraries(&flag_libraries)),
             given("ep_libraries"),
-            serve.ep_libraries.as_deref().map(paths),
-            "none".to_string(),
+            file_libraries.as_deref().map(libraries),
+            libraries(&[]),
         );
 
         let prepared = args
@@ -331,12 +341,14 @@ impl Server {
             default.store.jit.to_string(),
         );
 
-        let postgres_dir = args.postgres_dir.clone().or(serve.postgres_dir.clone());
+        let flag_postgres = args.postgres_dir.as_ref().map(from_flag).transpose()?;
+        let file_postgres = serve.postgres_dir.as_ref().map(from_file).transpose()?;
+        let postgres_dir = flag_postgres.clone().or(file_postgres.clone());
         pick(
             "postgres_dir",
-            args.postgres_dir.as_ref().map(|p| p.display().to_string()),
+            flag_postgres.as_ref().map(|p| p.display().to_string()),
             given("postgres_dir"),
-            serve.postgres_dir.as_ref().map(|p| p.display().to_string()),
+            file_postgres.as_ref().map(|p| p.display().to_string()),
             "none (installs its own)".to_string(),
         );
 
@@ -504,6 +516,29 @@ impl Shown {
     }
 }
 
+/// `path` made absolute: against the current directory when `base` is
+/// `None`, otherwise against `base`.
+fn anchored(path: &Path, base: Option<&Path>) -> Result<PathBuf> {
+    let joined = match base {
+        Some(base) => base.join(path),
+        None => path.to_path_buf(),
+    };
+    std::path::absolute(&joined).with_context(|| format!("resolving {}", path.display()))
+}
+
+/// A list of libraries as a setting's value. An empty list is `none` however
+/// it was reached, so `ep_libraries = []` and no setting at all compare equal.
+fn libraries(paths: &[PathBuf]) -> String {
+    if paths.is_empty() {
+        return "none".to_string();
+    }
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn read(path: &Path) -> Result<File> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -613,6 +648,58 @@ mod tests {
         command.insert(0, "--jit=false");
         let server = resolve(root.path(), &command).unwrap();
         assert_eq!(server.settings.model_idle, Duration::from_secs(60));
+    }
+
+    /// A relative path is made absolute before it is stored or compared: a
+    /// flag's against the directory the command ran in, the file's against
+    /// the workspace.
+    #[test]
+    fn relative_paths_are_resolved_before_they_are_stored() {
+        let root = tempfile::tempdir().unwrap();
+        let here = std::env::current_dir().unwrap();
+        let server = resolve(
+            root.path(),
+            &["--postgres-dir", "pg", "--ep-library", "plugins/npu.so"],
+        )
+        .unwrap();
+        assert_eq!(server.settings.store.postgres_dir, Some(here.join("pg")));
+        assert_eq!(
+            server.settings.inference.ep_libraries,
+            [here.join("plugins/npu.so")]
+        );
+        let asked = server.asked();
+        assert_eq!(
+            asked["postgres_dir"].value,
+            here.join("pg").display().to_string()
+        );
+
+        std::fs::write(
+            root.path().join(CONFIG),
+            "[serve]\npostgres_dir = \"pg\"\nep_libraries = [\"npu.so\"]\n",
+        )
+        .unwrap();
+        let server = resolve(root.path(), &[]).unwrap();
+        assert_eq!(
+            server.settings.store.postgres_dir,
+            Some(root.path().join("pg"))
+        );
+        assert_eq!(
+            server.settings.inference.ep_libraries,
+            [root.path().join("npu.so")]
+        );
+    }
+
+    /// `ep_libraries = []` is the same setting as none at all, so a server
+    /// started from either answers a client with the other.
+    #[test]
+    fn an_empty_library_list_is_spelled_as_none() {
+        let root = tempfile::tempdir().unwrap();
+        let unset = resolve(root.path(), &[]).unwrap();
+        std::fs::write(root.path().join(CONFIG), "[serve]\nep_libraries = []\n").unwrap();
+        let empty = resolve(root.path(), &[]).unwrap();
+        assert_eq!(empty.asked()["ep_libraries"].value, "none");
+        assert_eq!(empty.mismatch(&unset.asked()), None);
+        assert_eq!(unset.mismatch(&empty.asked()), None);
     }
 
     #[test]
