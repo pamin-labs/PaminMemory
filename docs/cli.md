@@ -252,8 +252,9 @@ Earlier versions had embedding profiles (`--profile`, `PAMIN_PROFILE`:
 `speed`, `balanced`, `accuracy`, `dual_accuracy`) and reranking tiers
 (`--rerank`, `PAMIN_RERANK`: `off`, `fast`, `accurate`). What shipped as
 `accuracy` and `accurate` is what every project now uses, so a workspace that
-kept the defaults needs nothing: its indexes open as they are, and plans
-measured for the two models are reused.
+kept the defaults needs nothing: its indexes open as they are, and the
+embedder's measured plans are reused. The reranker's are measured again once,
+because a CPU pass now takes one pair and its plan key changed with that.
 
 - `--profile` and `--rerank` are unknown arguments. Setting `PAMIN_PROFILE` or
   `PAMIN_RERANK`, to any value, fails with a message naming the setting, as
