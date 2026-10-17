@@ -127,9 +127,12 @@ impl Embedder {
     /// same for both: the CPU runs the int8 export and an accelerator another,
     /// and their outputs are not bit-identical. `None` when the model runs on no
     /// plan, whose identity would name a device and nothing that produced the
-    /// numbers, so nothing can be shown to match it.
+    /// numbers, so nothing can be shown to match it -- and when a model runs
+    /// on a plan that is not stable across processes, a DirectML adapter
+    /// ordinal or an NPU id another process may give other hardware
+    /// ([`crate::inference::recorded_use`]).
     pub fn encoding(&self) -> Option<String> {
-        self.encoding_by(crate::inference::planned_use)
+        self.encoding_by(crate::inference::recorded_use)
     }
 
     /// [`Embedder::encoding`], for a caller deciding whether a vector already
@@ -176,6 +179,17 @@ impl Embedder {
         let vector = self.embed_one(text)?;
         self.remembered.put(text, &vector);
         Ok(vector)
+    }
+
+    /// Embeds many passages for storage, and names the plan that produced
+    /// every one of them ([`Embedder::encoding`]): `None` when no one plan did.
+    ///
+    /// The vectors come from one forward pass, which a fallback reruns whole,
+    /// so one plan produces them all and the plan read right after it is
+    /// that plan.
+    pub fn encode_passages(&mut self, texts: &[&str]) -> Result<(Vec<Vec<f32>>, Option<String>)> {
+        let vectors = self.embed_passages(texts)?;
+        Ok((vectors, self.encoding()))
     }
 
     /// Embeds many passages in one forward pass.
