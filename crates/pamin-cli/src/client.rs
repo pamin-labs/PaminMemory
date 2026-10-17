@@ -258,20 +258,11 @@ fn diagnose(log: &str, path: &Path) -> String {
 
 /// Asks a server to stop, and waits for its socket to go.
 async fn stop_and_wait(path: &Path) -> Result<()> {
-    let farewell = Request {
-        version: String::new(),
-        project: String::new(),
-        profile: String::new(),
-        vector_index: String::new(),
-        server: Default::default(),
-        call: Call::Stop,
-    };
-
     // The version is deliberately empty, and the server does not look at it for
     // `stop`: stopping means the same thing in every build, and a server that
     // refused it on a mismatch would be one nothing could ever replace.
     if let Ok(mut stream) = UnixStream::connect(path).await {
-        let _ = exchange(&mut stream, &farewell).await;
+        let _ = exchange(&mut stream, &farewell()).await;
     }
 
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -283,9 +274,33 @@ async fn stop_and_wait(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The `stop` a client sends to replace a server.
+///
+/// It names a vector index the server can parse, the default one: a server
+/// from a build that parses the index before it stops refused an empty name,
+/// and so ended without stopping the database, which then kept the settings
+/// the replacement was started to change.
+fn farewell() -> Request {
+    Request {
+        version: String::new(),
+        project: String::new(),
+        profile: String::new(),
+        vector_index: pamin_index::VectorIndex::default().label().to_string(),
+        server: Default::default(),
+        call: Call::Stop,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::diagnose;
+
+    /// The replacing `stop` names an index the server can parse.
+    #[test]
+    fn the_replacing_stop_names_a_vector_index() {
+        let request = super::farewell();
+        assert!(pamin_index::VectorIndex::parse(&request.vector_index).is_some());
+    }
     use std::path::Path;
 
     /// What `initdb` actually writes when a container runs as root, wrapped in

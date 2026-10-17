@@ -681,14 +681,21 @@ async fn answer(session: &Arc<Session>, request: Request) -> Result<Payload> {
         ..
     } = request;
 
+    // `stop` before the vector index is read: it opens no index, and a stop
+    // that was refused for the index it named would end this server with
+    // the database still running.
+    if let Call::Stop = call {
+        return json(command::stop::execute(session.workspace()).await?);
+    }
+
     let vector_index = VectorIndex::parse(&vector_index)
         .ok_or_else(|| anyhow::anyhow!("unknown vector index {vector_index:?}"))?;
 
     // Before the request, not after it: the loads are what the next search
     // would wait for, and this request is the earliest sign one is coming.
-    // Not for `stop`, which is about to end the process, nor for `reindex`,
-    // which discards the index a warm-up would be holding open.
-    if !matches!(call, Call::Stop | Call::Reindex(_)) {
+    // Not for `reindex`, which discards the index a warm-up would be holding
+    // open.
+    if !matches!(call, Call::Reindex(_)) {
         session.warm(&project, vector_index);
     }
 
@@ -717,7 +724,7 @@ async fn answer(session: &Arc<Session>, request: Request) -> Result<Payload> {
         Call::Cascade(args) => {
             json(command::cascade::answer(session, &project, vector_index, args).await?)?
         }
-        Call::Stop => json(command::stop::execute(session.workspace()).await?)?,
+        Call::Stop => unreachable!("answered above"),
     };
 
     Ok(value)
