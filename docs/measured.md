@@ -1109,7 +1109,9 @@ the test prints it:
 | `fast` reranker | 385 | **268** | 133 |
 
 Every score and every vector is bit-identical, and the figures repeated to the
-megabyte across two runs. What the copy leaves is mostly not the weights: a
+megabyte across two runs. Each load is one session over the copy; the shared
+single-threaded session side-by-side passes add on first use is not in them,
+and the shared-session table above has what a whole server holds with it. What the copy leaves is mostly not the weights: a
 bare runtime session adds 139 MB loading the `fast` reranker's download and
 12 MB loading its copy, so most of the 268 is what a load holds besides its
 session. The data file is the price, on disk rather than in memory -- larger
