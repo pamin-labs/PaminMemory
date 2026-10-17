@@ -75,10 +75,7 @@ const DATA_SHA256: &str = "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf
 /// What the product's `pamin search` asks for by default. A constant because
 /// the rule replay sizes a constant from it; the test asserts it still equals
 /// [`Depths::default`].
-const DEPTHS: Depths = Depths {
-    channel: 50,
-    graph: 2,
-};
+const DEPTHS: Depths = Depths::DEFAULT;
 
 /// LOCOMO's adversarial category, whose evidence is the trap.
 const ADVERSARIAL: usize = 5;
@@ -392,6 +389,7 @@ async fn locomo_evidence_with_and_without_links() {
                 ),
                 VectorIndex::default(),
                 Access::ReadWrite,
+                &crate::harness::settings(),
             )
             .await
             .expect("open the engine");
@@ -411,7 +409,7 @@ async fn locomo_evidence_with_and_without_links() {
             if let Some(rules) = &mut rules {
                 const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
                 let hits = engines[1]
-                    .search_reranked(&question.text, WIDE, DEPTHS)
+                    .search_reranked(&question.text, WIDE, harness::depths())
                     .await
                     .expect("search");
                 channels::enough_room(&hits, WIDE);
@@ -437,7 +435,7 @@ async fn locomo_evidence_with_and_without_links() {
             }
             for (side, engine) in engines.iter().enumerate() {
                 let hits = engine
-                    .search_reranked(&question.text, RECALL_AT as u32, DEPTHS)
+                    .search_reranked(&question.text, RECALL_AT as u32, harness::depths())
                     .await
                     .expect("search");
                 let ranked: Vec<String> = hits.into_iter().map(|hit| hit.topic).collect();

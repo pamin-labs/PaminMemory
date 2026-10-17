@@ -43,6 +43,37 @@ pub fn dataset_dir(var: &str, name: &str) -> PathBuf {
     }
 }
 
+/// The settings a run measures: the product's defaults, and whatever the
+/// environment running the harness changes about them.
+///
+/// Read once per call into a value the harness hands to [`Engine::open`],
+/// rather than read by the libraries on every load: the libraries read no
+/// environment, so a sweep varies a setting by building another value, never
+/// by writing a variable every other test thread in the binary shares.
+pub fn settings() -> pamin_engine::Settings {
+    let default = pamin_engine::Settings::default();
+    pamin_engine::Settings {
+        inference: pamin_index::InferenceSettings::from_environment(),
+        store: pamin_store::StoreSettings::from_environment(),
+        model_idle: pamin_core::env::positive("PAMIN_MODEL_IDLE")
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(default.model_idle),
+        unindexed_budget: pamin_core::env::positive("PAMIN_UNINDEXED_BUDGET")
+            .unwrap_or(default.unindexed_budget),
+    }
+}
+
+/// The depths a run searches with: the product's, and the reranker's depth
+/// and the vector graph's width as the environment running the harness says.
+/// A search's own value, so an arm that varies one passes another [`Depths`].
+pub fn depths() -> Depths {
+    Depths {
+        rerank: pamin_core::env::positive("PAMIN_RERANK_DEPTH").unwrap_or(Depths::DEFAULT.rerank),
+        effort: pamin_core::env::positive("PAMIN_SEARCH_EFFORT").unwrap_or(Depths::DEFAULT.effort),
+        ..Depths::DEFAULT
+    }
+}
+
 /// [`PROFILE`], once nothing asks for another.
 ///
 /// `PAMIN_PROFILE` chose the embedding model a harness measured. It chooses

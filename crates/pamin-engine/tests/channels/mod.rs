@@ -1027,7 +1027,7 @@ impl Paired {
 #[derive(Clone, Default)]
 pub struct Setting {
     pub fusion: Fusion,
-    /// `PAMIN_RERANK_DEPTH` for the pass; `None` leaves the shipped depth.
+    /// The reranker's depth for the pass; `None` leaves the shipped depth.
     pub depth: Option<usize>,
 }
 
@@ -1095,14 +1095,12 @@ pub async fn compare_reranked(
         vec![BTreeMap::new(); settings.len()];
     for (index, (text, group)) in questions.iter().enumerate() {
         for ((setting, into), table) in settings.iter().zip(&mut measured).zip(&tables) {
-            // SAFETY: the harness runs one test on one thread, and nothing
-            // else reads the environment while this is written.
-            match setting.depth {
-                Some(depth) => unsafe {
-                    std::env::set_var("PAMIN_RERANK_DEPTH", depth.to_string())
-                },
-                None => unsafe { std::env::remove_var("PAMIN_RERANK_DEPTH") },
-            }
+            // The depth is the search's own, so each pass sets it for itself
+            // and nothing else in the process sees it.
+            let depths = pamin_engine::Depths {
+                rerank: setting.depth.unwrap_or(pamin_index::reranking::DEPTH),
+                ..depths
+            };
             let hits = engine
                 .search_reranked_with(text, limit, depths, setting.fusion.clone())
                 .await
@@ -1111,7 +1109,6 @@ pub async fn compare_reranked(
             score(index, into.entry(group.clone()).or_default(), &hits);
         }
     }
-    unsafe { std::env::remove_var("PAMIN_RERANK_DEPTH") };
 
     println!("\n  {title}: the shipped search path under other settings, paired against it");
     for (group, shipped) in &measured[0] {

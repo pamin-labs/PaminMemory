@@ -162,10 +162,7 @@ pub async fn execute(
     args: Args,
 ) -> Result<Results> {
     let engine = session.engine(project, vector_index).await?;
-    let depths = Depths {
-        channel: args.channel_depth,
-        graph: args.graph_depth,
-    };
+    let depths = crate::settings::depths(args.channel_depth, args.graph_depth);
     let hits = engine
         .search_reranked(&args.query, args.limit, depths)
         .await?;

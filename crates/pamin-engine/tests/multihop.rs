@@ -119,10 +119,7 @@ fn sample() -> Option<usize> {
 /// How deep to retrieve, so recall@50 can be scored.
 const DEPTH: usize = RECALL_AT + 1;
 
-const DEPTHS: Depths = Depths {
-    channel: 50,
-    graph: 2,
-};
+const DEPTHS: Depths = Depths::DEFAULT;
 
 /// Past four times the channel depth, so a trace is never truncated.
 const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
@@ -584,6 +581,7 @@ async fn search_answers_questions_that_take_several_steps() {
         &project,
         VectorIndex::default(),
         Access::ReadWrite,
+        &crate::harness::settings(),
     )
     .await
     .expect("open the engine");
@@ -617,6 +615,7 @@ async fn search_answers_questions_that_take_several_steps() {
             &format!("{project}-named"),
             VectorIndex::default(),
             Access::ReadWrite,
+            &crate::harness::settings(),
         )
         .await
         .expect("open the named project");
@@ -638,11 +637,11 @@ async fn search_answers_questions_that_take_several_steps() {
         let mut paired = channels::Paired::default();
         for query in &corpus.queries {
             let before = engine
-                .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+                .search_fused(&query.text, WIDE, harness::depths(), Fusion::default())
                 .await
                 .expect("search");
             let after = other
-                .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+                .search_fused(&query.text, WIDE, harness::depths(), Fusion::default())
                 .await
                 .expect("search");
             paired.observe(&query.group, &before, &after, |into, ranking| {
@@ -663,7 +662,7 @@ async fn search_answers_questions_that_take_several_steps() {
         let mut routes = reranking::Routes::default();
         for query in &corpus.queries {
             let hits = engine
-                .search_reranked(&query.text, WIDE, DEPTHS)
+                .search_reranked(&query.text, WIDE, harness::depths())
                 .await
                 .expect("search");
             channels::enough_room(&hits, WIDE);
@@ -690,7 +689,7 @@ async fn search_answers_questions_that_take_several_steps() {
         let mut priced = reranking::Priced::new(&workspace.root().join("models"));
         for query in &corpus.queries {
             let hits = engine
-                .search_reranked(&query.text, WIDE, DEPTHS)
+                .search_reranked(&query.text, WIDE, harness::depths())
                 .await
                 .expect("search");
             channels::enough_room(&hits, WIDE);
@@ -720,6 +719,7 @@ async fn search_answers_questions_that_take_several_steps() {
             &format!("{project}-entities"),
             VectorIndex::default(),
             Access::ReadOnly,
+            &crate::harness::settings(),
         )
         .await
         .expect("open the entity project; run ENTITIES first");
@@ -743,7 +743,7 @@ async fn search_answers_questions_that_take_several_steps() {
         harness::shape::table("features");
         for query in &corpus.queries {
             let hits = engine
-                .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+                .search_fused(&query.text, WIDE, harness::depths(), Fusion::default())
                 .await
                 .expect("search");
             let asked = features::Asked {
@@ -767,7 +767,7 @@ async fn search_answers_questions_that_take_several_steps() {
         let mut diagnosis = channels::Diagnosis::default();
         for query in &corpus.queries {
             let hits = engine
-                .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+                .search_fused(&query.text, WIDE, harness::depths(), Fusion::default())
                 .await
                 .expect("search");
             channels::enough_room(&hits, WIDE);
@@ -790,7 +790,7 @@ async fn search_answers_questions_that_take_several_steps() {
             &format!("MuSiQue, {named}"),
             &questions,
             DEPTH as u32,
-            DEPTHS,
+            harness::depths(),
             &variants,
             |index, into, hits| {
                 let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
@@ -816,7 +816,7 @@ async fn search_answers_questions_that_take_several_steps() {
         let mut seeded = 0usize;
         for query in &corpus.queries {
             let hits = engine
-                .search_reranked(&query.text, WIDE, DEPTHS)
+                .search_reranked(&query.text, WIDE, harness::depths())
                 .await
                 .expect("search");
             channels::enough_room(&hits, WIDE);
@@ -863,7 +863,7 @@ async fn search_answers_questions_that_take_several_steps() {
         ] {
             harness::shape::table(table);
             let hits = engine
-                .search_reranked_with(&query.text, DEPTH as u32, DEPTHS, fusion)
+                .search_reranked_with(&query.text, DEPTH as u32, harness::depths(), fusion)
                 .await
                 .expect("search");
             let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
@@ -1001,6 +1001,7 @@ async fn entities(
         &format!("{project}-entities"),
         VectorIndex::default(),
         Access::ReadWrite,
+        &crate::harness::settings(),
     )
     .await
     .expect("open the entity project");
@@ -1119,7 +1120,7 @@ async fn entities(
                 "names only"
             });
             let hits = searcher
-                .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+                .search_fused(&query.text, WIDE, harness::depths(), Fusion::default())
                 .await
                 .expect("search");
             channels::enough_room(&hits, WIDE);
@@ -1228,7 +1229,7 @@ fn proper_names_are_runs_of_capitals_across_particles() {
 /// Where the supporting titles the fused list ranks badly actually are.
 ///
 /// The question it answers decides what to change next. The reranker reads
-/// the fused head -- the first `pamin_index::reranking::depth()` -- and nothing
+/// the fused head -- the first `crate::harness::depths().rerank` -- and nothing
 /// below it, so a supporting title that only the graph found helps a user only
 /// if fusion puts it inside that head. If the graph finds such titles and
 /// fusion leaves them below it, the bottleneck is the handoff to the reranker
@@ -1236,7 +1237,7 @@ fn proper_names_are_runs_of_capitals_across_particles() {
 async fn reach(engine: &Engine, corpus: &Corpus, label: &str) {
     use pamin_core::{Channel, Why};
 
-    let head = pamin_index::reranking::depth();
+    let head = crate::harness::depths().rerank;
     let mut missed = 0usize;
     let mut graph_only = 0usize;
     let mut graph_only_in_head = 0usize;
@@ -1246,7 +1247,7 @@ async fn reach(engine: &Engine, corpus: &Corpus, label: &str) {
     harness::shape::table(label);
     for query in &corpus.queries {
         let hits = engine
-            .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+            .search_fused(&query.text, WIDE, harness::depths(), Fusion::default())
             .await
             .expect("search");
         channels::enough_room(&hits, WIDE);

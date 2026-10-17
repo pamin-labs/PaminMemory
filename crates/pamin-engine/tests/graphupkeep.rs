@@ -24,7 +24,7 @@
 //! under it, which is the argument for asserting the structure rather than the
 //! recall.
 //!
-//! The budget is lowered through `PAMIN_UNINDEXED_BUDGET` rather than by
+//! The budget is lowered through `Settings::unindexed_budget` rather than by
 //! writing twenty-five thousand memories. That is the same trade as the
 //! reranker's sweep knobs: what is being asserted is that a drain acts on the
 //! condition, not what the shipped number is.
@@ -40,7 +40,17 @@ const MEMORIES: usize = 12;
 
 /// Low enough that twelve memories trip it, high enough that the first few do
 /// not, so the "before" half of the assertion has something to observe.
-const BUDGET: usize = 5;
+const BUDGET: u64 = 5;
+
+/// The product's settings, with the budget lowered to [`BUDGET`].
+fn settings() -> pamin_engine::Settings {
+    pamin_engine::Settings {
+        inference: pamin_index::InferenceSettings::from_environment(),
+        store: pamin_store::StoreSettings::from_environment(),
+        unindexed_budget: BUDGET,
+        ..pamin_engine::Settings::default()
+    }
+}
 
 fn request<'a>(topic: &'a str, content: &'a str, hash: &'a str) -> Write<'a> {
     Write {
@@ -60,10 +70,6 @@ fn request<'a>(topic: &'a str, content: &'a str, hash: &'a str) -> Write<'a> {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "provisions postgres and downloads model weights"]
 async fn a_drain_leaves_a_graph_over_what_it_wrote() {
-    // SAFETY: set before any engine exists, and this test binary holds one
-    // test, so nothing else in the process is reading it concurrently.
-    unsafe { std::env::set_var("PAMIN_UNINDEXED_BUDGET", BUDGET.to_string()) };
-
     let home = std::env::var("PAMIN_EVAL_HOME").ok();
     let scratch = home
         .is_none()
@@ -73,13 +79,9 @@ async fn a_drain_leaves_a_graph_over_what_it_wrote() {
         (None, Some(dir)) => Workspace::at(dir.path()),
         (None, None) => unreachable!("one of the two is always set"),
     };
-    let database = Database::open(
-        &workspace,
-        Connections::PerCommand,
-        &pamin_store::StoreSettings::from_environment(),
-    )
-    .await
-    .expect("open the database");
+    let database = Database::open(&workspace, Connections::PerCommand, &settings().store)
+        .await
+        .expect("open the database");
 
     // A name nothing else uses, so a rerun builds a fresh projection rather
     // than reopening one a previous run already optimized.
@@ -88,9 +90,15 @@ async fn a_drain_leaves_a_graph_over_what_it_wrote() {
         .await
         .expect("ensure project");
 
-    let engine = Engine::open(&workspace, &name, VectorIndex::default(), Access::ReadWrite)
-        .await
-        .expect("open the engine");
+    let engine = Engine::open(
+        &workspace,
+        &name,
+        VectorIndex::default(),
+        Access::ReadWrite,
+        &settings(),
+    )
+    .await
+    .expect("open the engine");
 
     for memory in 0..MEMORIES {
         let content = format!(

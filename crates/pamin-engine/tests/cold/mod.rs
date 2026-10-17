@@ -231,7 +231,7 @@ async fn open(database: &Database, workspace: &Workspace, project: &str) -> (Eng
     let started = Instant::now();
     let engine = Engine::attached(
         database.clone(),
-        &Models::in_workspace(workspace),
+        &Models::new(workspace, crate::harness::settings()),
         workspace,
         project,
         VectorIndex::default(),
@@ -310,7 +310,7 @@ async fn warmed(
     [query, other]: [&str; 2],
 ) -> (Duration, Duration, Duration) {
     let first = {
-        let models = Models::in_workspace(workspace);
+        let models = Models::new(workspace, crate::harness::settings());
         let started = Instant::now();
         let warming = {
             let models = models.clone();
@@ -323,7 +323,7 @@ async fn warmed(
         took
     };
 
-    let models = Models::in_workspace(workspace);
+    let models = Models::new(workspace, crate::harness::settings());
     let started = Instant::now();
     let warming = {
         let models = models.clone();
@@ -405,7 +405,7 @@ fn parts(models: &std::path::Path, [query, other]: [&str; 2]) -> Vec<(&'static s
     drop(embedder);
 
     // What a cold search hands it: up to the reranker's depth of candidates.
-    let documents: Vec<String> = (0..pamin_index::reranking::depth())
+    let documents: Vec<String> = (0..crate::harness::depths().rerank)
         .map(|n| format!("{other} {n}: a memory the lexical channels did not find"))
         .collect();
     let documents: Vec<&str> = documents.iter().map(String::as_str).collect();

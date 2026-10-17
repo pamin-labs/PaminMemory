@@ -112,16 +112,11 @@ impl Session {
     ///
     /// With a resident's pool: the server holding this is the only process
     /// the CLI talks to the cluster from.
-    pub async fn open(workspace: &Workspace) -> Result<Self> {
+    pub async fn open(workspace: &Workspace, settings: pamin_engine::Settings) -> Result<Self> {
         Ok(Self {
             workspace: workspace.clone(),
-            database: Database::open(
-                workspace,
-                Connections::Resident,
-                &pamin_store::StoreSettings::from_environment(),
-            )
-            .await?,
-            models: Models::in_workspace(workspace),
+            database: Database::open(workspace, Connections::Resident, &settings.store).await?,
+            models: Models::new(workspace, settings),
             projects: Mutex::default(),
             engines: Registry::with_capacity(open_indexes()),
             warming: std::sync::Mutex::default(),
@@ -228,7 +223,7 @@ impl Session {
     /// everything back by exiting, and closing an index it is about to use
     /// again would be the opposite of the point.
     pub fn close_what_is_idle(&self) -> (Vec<String>, bool, bool) {
-        let idle = pamin_engine::model_idle();
+        let idle = self.models.settings().model_idle;
         let engines = self.engines.close_idle(idle);
         let embedder = self.models.release_idle_embedder();
         let reranker = self.models.release_idle_reranker();

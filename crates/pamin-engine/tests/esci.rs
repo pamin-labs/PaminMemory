@@ -90,10 +90,7 @@ const LOCALES: [&str; 3] = ["us", "es", "jp"];
 /// How deep to retrieve, and how deep each channel goes.
 const DEPTH: usize = RECALL_AT + 1;
 
-const DEPTHS: Depths = Depths {
-    channel: 50,
-    graph: 2,
-};
+const DEPTHS: Depths = Depths::DEFAULT;
 
 /// A listing's key, so this corpus cannot collide with another in one
 /// workspace.
@@ -358,6 +355,7 @@ async fn search_ranks_product_listings() {
         &project,
         VectorIndex::default(),
         Access::ReadWrite,
+        &crate::harness::settings(),
     )
     .await
     .expect("open the engine");
@@ -373,7 +371,7 @@ async fn search_ranks_product_listings() {
     let started = std::time::Instant::now();
     for query in &corpus.queries {
         let hits = engine
-            .search_reranked(&query.text, DEPTH as u32, DEPTHS)
+            .search_reranked(&query.text, DEPTH as u32, harness::depths())
             .await
             .expect("search");
         let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
@@ -439,7 +437,7 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
 
     for query in &corpus.queries {
         let hits = engine
-            .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+            .search_fused(&query.text, WIDE, harness::depths(), Fusion::default())
             .await
             .expect("search");
 
