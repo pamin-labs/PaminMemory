@@ -756,11 +756,16 @@ fn pending(producer: &str) -> String {
     format!("pending\n{producer}")
 }
 
-/// Replaces the stamp at `path` with `stamp` whole.
-fn write_stamp(path: &Path, stamp: &str) {
-    let _ = std::fs::create_dir_all(path.parent().expect("a parent"));
+/// Replaces the stamp at `path` with `stamp` whole, or says why it could
+/// not, leaving what was there.
+fn write_stamp(path: &Path, stamp: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(path.parent().expect("a parent"))?;
     let partial = path.with_extension("partial");
-    let _ = std::fs::write(&partial, stamp).and_then(|()| std::fs::rename(&partial, path));
+    let written = std::fs::write(&partial, stamp).and_then(|()| std::fs::rename(&partial, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
+    written
 }
 
 /// Where the load of `role` found `plan`, as the selection says
@@ -1442,7 +1447,11 @@ impl Shape {
         } else if index.found == 0
             && let Some(start) = &index.start
         {
-            write_stamp(&index.stamp, &pending(start));
+            // Unwritten, the index is not this run's pending build, and the
+            // check at its end says so; nothing more is needed here.
+            if write_stamp(&index.stamp, &pending(start)).is_err() {
+                let _ = std::fs::remove_file(&index.stamp);
+            }
         } else if index.found < index.total
             && std::fs::read_to_string(&index.stamp).ok() != index.start.as_deref().map(pending)
         {
@@ -1515,9 +1524,23 @@ impl Shape {
                     short(&now)
                 ));
             } else if index.found == 0 && stamped.as_deref() == Some(pending(&now).as_str()) {
-                // Built whole from empty by one producer: now it vouches.
-                write_stamp(&index.stamp, &now);
-                lines.push(format!("{}: {state} by {}", index.label, short(&now)));
+                // Built whole from empty by one producer: now it vouches --
+                // once the stamp that says so is on disk. Unpublished, the
+                // stamp stays pending, and the run vouches for nothing.
+                match write_stamp(&index.stamp, &now) {
+                    Ok(()) => lines.push(format!("{}: {state} by {}", index.label, short(&now))),
+                    Err(error) => {
+                        lines.push(format!(
+                            "{}: {state} by {}, not stamped: {error}",
+                            index.label,
+                            short(&now)
+                        ));
+                        reasons.push(format!(
+                            "{} index stamp could not be published",
+                            index.label
+                        ));
+                    }
+                }
             } else if index.found >= index.total && stamped.as_deref() == Some(now.as_str()) {
                 lines.push(format!("{}: {state} by {}", index.label, short(&now)));
             } else if index.found > 0 && index.found < index.total {
@@ -2431,6 +2454,38 @@ mod tests {
         assert_eq!(
             reasons,
             ["primary index left pending by an unfinished build"]
+        );
+    }
+
+    /// A build whose final stamp cannot be published vouches for nothing:
+    /// the run is not canonical and the stamp on disk stays pending.
+    #[test]
+    fn an_unpublished_stamp_vouches_for_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let stamp = dir.path().join("index").join("p.eval-producer");
+        let mut shape = Shape::new("test", String::new(), None);
+        shape.source.commit = "a".into();
+        shape.begin_index(Indexed {
+            label: "primary".into(),
+            producer: Box::new(|| Some("plan=cpu@a".into())),
+            stamp: stamp.clone(),
+            found: 0,
+            total: 4,
+            start: None,
+            building: None,
+        });
+        // The publication's partial file cannot be written, root or not.
+        std::fs::create_dir(stamp.with_extension("partial")).expect("block the write");
+        let (lines, reasons) = shape.check_indexes();
+        assert_eq!(
+            reasons,
+            ["primary index stamp could not be published"],
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("not stamped"), "{lines:?}");
+        assert_eq!(
+            std::fs::read_to_string(&stamp).ok().as_deref(),
+            Some("pending\nplan=cpu@a\ncommit=a")
         );
     }
 
