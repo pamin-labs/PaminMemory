@@ -72,14 +72,14 @@ impl Cli {
         self.serve_with(filter, &[])
     }
 
-    /// A server with `env` set as well, for a test that shortens a window.
-    fn serve_with(&self, filter: &str, env: &[(&str, &str)]) -> std::process::Child {
+    /// A server given `flags` as well, for a test that shortens a window.
+    fn serve_with(&self, filter: &str, flags: &[&str]) -> std::process::Child {
         let log = std::fs::File::create(self.home().join("serve.log")).expect("server log");
         let child = Command::new(env!("CARGO_BIN_EXE_pamin"))
             .args(["serve"])
+            .args(flags)
             .env("PAMIN_HOME", self.home())
             .env("PAMIN_LOG", filter)
-            .envs(env.iter().copied())
             .stdout(log.try_clone().expect("a second handle on the log"))
             .stderr(log)
             .spawn()
@@ -2056,7 +2056,7 @@ fn a_warmed_project_is_given_back_when_idle() {
     const GIVE_UP_AFTER: Duration = Duration::from_secs(300);
 
     let cli = Cli::new();
-    let mut server = cli.serve_with("pamin=debug", &[("PAMIN_MODEL_IDLE", IDLE_SECONDS)]);
+    let mut server = cli.serve_with("pamin=debug", &["--model-idle", IDLE_SECONDS]);
     let log = || std::fs::read_to_string(cli.home().join("serve.log")).expect("the server log");
     let wait_for = |line: &str| {
         let deadline = Instant::now() + GIVE_UP_AFTER;

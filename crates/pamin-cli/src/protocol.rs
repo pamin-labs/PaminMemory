@@ -67,6 +67,12 @@ pub struct Request {
     /// still read.
     #[serde(default)]
     pub vector_index: String,
+    /// The server settings the client resolved -- its flags over the
+    /// workspace's `config.toml` over the defaults -- which a running server
+    /// started with others refuses rather than silently ignores. Defaulted, so
+    /// a request that carries none (a `stop`) asks for nothing.
+    #[serde(default)]
+    pub server: std::collections::BTreeMap<String, crate::settings::Asked>,
     pub call: Call,
 }
 

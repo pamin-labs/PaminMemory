@@ -14,7 +14,7 @@ mod session;
 mod settings;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use pamin_index::VectorIndex;
 use pamin_store::Workspace;
 
@@ -58,6 +58,9 @@ struct Cli {
     /// whitespace, and indenting a ten-hit search costs it about a thousand.
     #[arg(long, global = true, requires = "json")]
     pretty: bool,
+
+    #[command(flatten)]
+    server: settings::ServerArgs,
 
     #[command(subcommand)]
     command: Command,
@@ -109,6 +112,10 @@ enum Command {
     /// Started automatically by any command that needs one, so this is for
     /// running it in the foreground and watching it.
     Serve,
+
+    /// Show the server settings a command would run with, and where each
+    /// came from: a flag, `PAMIN_DEVICE`, `config.toml`, or the default.
+    Config,
 }
 
 #[tokio::main]
@@ -126,11 +133,16 @@ async fn main() -> Result<()> {
     // to avoid.
     refuse_removed_settings()?;
 
-    let cli = Cli::parse();
+    let matches = Cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     let workspace = match &cli.home {
         Some(path) => Workspace::at(path),
         None => Workspace::discover()?,
     };
+    // Resolved by every command, server or not: a client asks the running
+    // server for these, and a bad `config.toml` is refused here, before a
+    // server is started that would refuse it in a log nobody reads.
+    let server = settings::Server::resolve(workspace.root(), &cli.server, &matches)?;
     let format = output::Format::from_flags(cli.json, cli.pretty);
     // Checked here although the server parses it again, so that a misspelled
     // vector index is refused before a server is started for it.
@@ -150,14 +162,20 @@ async fn main() -> Result<()> {
             Ok(_) => {}
             Err(error) => tracing::warn!(%error, "could not raise the open-file limit"),
         }
-        return server::run(&workspace).await;
+        return server::run(&workspace, server).await;
+    }
+
+    if let Command::Config = cli.command {
+        let shown = settings::Shown::new(&workspace, &server);
+        format.emit(&shown, || shown.render());
+        return Ok(());
     }
 
     // Taken before the command is moved into the call below.
     let project = cli.project.clone();
 
     let call = match cli.command {
-        Command::Serve => unreachable!("handled above"),
+        Command::Serve | Command::Config => unreachable!("handled above"),
         Command::Init => protocol::Call::Init,
         Command::Write(args) => protocol::Call::Write(args),
         Command::Import(args) => protocol::Call::Import(args),
@@ -183,9 +201,11 @@ async fn main() -> Result<()> {
         project,
         profile: String::new(),
         vector_index: cli.vector_index.clone(),
+        server: server.asked(),
         call,
     };
-    if let Some(value) = client::ask(&workspace, &request).await? {
+    let serve = settings::forwarded(&cli.server);
+    if let Some(value) = client::ask(&workspace, &request, &serve).await? {
         return render(&request.call, &value, format);
     }
 
@@ -346,7 +366,6 @@ mod tests {
         // Compile-time source/compiler fingerprint, not a runtime user setting.
         "PAMIN_INFERENCE_BUILD",
         "PAMIN_INFERENCE_CARGO",
-        "PAMIN_CATCH_UP_BATCH",
         // Cached-export inputs used only by the native preparation regression.
         "PAMIN_NATIVE_MODEL_SOURCE",
         "PAMIN_NATIVE_TEST_CACHE",
@@ -360,8 +379,6 @@ mod tests {
         "PAMIN_RERANK_BATCH_TOKENS",
         "PAMIN_RERANK_DEPTH",
         "PAMIN_RERANK_MAX_TOKENS",
-        "PAMIN_SEARCH_EFFORT",
-        "PAMIN_UNINDEXED_BUDGET",
     ];
 
     /// Every setting the product reads is documented, or listed as not.
@@ -456,6 +473,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A server flag after the subcommand counts as given, so it is both
+    /// forwarded to the server a command starts and asked of a running one.
+    #[test]
+    fn a_server_flag_after_the_subcommand_is_a_flag() {
+        let matches = Cli::command()
+            .try_get_matches_from(["pamin", "search", "q", "--model-idle", "5"])
+            .unwrap();
+        let cli = Cli::from_arg_matches(&matches).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let server = settings::Server::resolve(root.path(), &cli.server, &matches).unwrap();
+        let asked = server.asked();
+        assert_eq!(asked["model_idle"].value, "5");
+        assert!(asked["model_idle"].chosen);
+        assert_eq!(
+            settings::forwarded(&cli.server),
+            ["--model-idle", "5"].map(std::ffi::OsString::from)
+        );
     }
 
     /// The vector index a command gets when nobody names one.
