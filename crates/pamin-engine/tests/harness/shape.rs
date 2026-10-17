@@ -1435,9 +1435,9 @@ impl Shape {
     }
 
     /// Marks an empty index pending before it is written; removes the stamp
-    /// for a run that is not canonical, or before writing into an index
-    /// that is not this run's own pending build; and keeps the index to
-    /// check.
+    /// before a run that is not canonical writes into the index, or before
+    /// writing into an index that is not this run's own pending build; and
+    /// keeps the index to check.
     ///
     /// A pending stamp vouches for nothing: the embedder can fall back to
     /// another plan between the start and the end of a build, and a build
@@ -1447,7 +1447,11 @@ impl Shape {
     fn begin_index(&mut self, mut index: Indexed) {
         index.start = (index.producer)().map(|producer| self.stamp_for(&producer));
         if self.source.noncanonical.is_some() {
-            let _ = std::fs::remove_file(&index.stamp);
+            // Only a run that writes invalidates: a complete index it just
+            // reads keeps what a canonical run vouched for.
+            if index.found < index.total {
+                let _ = std::fs::remove_file(&index.stamp);
+            }
         } else if index.found == 0
             && let Some(start) = &index.start
         {
@@ -1494,12 +1498,20 @@ impl Shape {
             let now = self.stamp_for(&producer);
             if self.source.noncanonical.is_some() {
                 // A run that cannot vouch for its source -- a dirty build
-                // names its clean HEAD -- vouches for no index either.
-                let _ = std::fs::remove_file(&index.stamp);
+                // names its clean HEAD -- vouches for no index either. One
+                // that wrote into it, or finds it stamped for another
+                // producer, invalidates the stamp; one that only read a
+                // matching, vouched index leaves it to the canonical runs.
+                let read_only = index.found >= index.total
+                    && std::fs::read_to_string(&index.stamp).ok().as_deref() == Some(now.as_str());
+                if !read_only {
+                    let _ = std::fs::remove_file(&index.stamp);
+                }
                 lines.push(format!(
-                    "{}: {state} by {}, not stamped: the run is not canonical",
+                    "{}: {state} by {}, not {}: the run is not canonical",
                     index.label,
-                    short(&now)
+                    short(&now),
+                    if read_only { "vouched" } else { "stamped" }
                 ));
                 continue;
             }
@@ -2438,6 +2450,46 @@ mod tests {
         assert_eq!(stamped(), None, "a dirty build's index was stamped");
         let (_, reasons) = run("a", false, index("plan=cpu@a", 4), true).unwrap();
         assert_eq!(reasons.len(), 1, "a dirty build's index was vouched for");
+    }
+
+    /// A run that is not canonical -- a gate-only run, say -- and only reads
+    /// a complete index vouched for its producer leaves the stamp to the
+    /// canonical runs; one that finds it stamped for another producer does
+    /// not.
+    #[test]
+    fn a_noncanonical_read_keeps_a_matching_stamp() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let stamp = dir.path().join("index").join("p.eval-producer");
+        let index = |producer: &'static str| Indexed {
+            label: "primary".into(),
+            producer: Box::new(move || Some(producer.to_string())),
+            stamp: stamp.clone(),
+            found: 4,
+            total: 4,
+            start: None,
+            building: None,
+            count: Box::new(|| 4),
+        };
+        let read = |noncanonical: Option<&str>, indexed: Indexed| {
+            let mut shape = Shape::new("test", String::new(), None);
+            shape.source.commit = "a".into();
+            shape.source.noncanonical = noncanonical.map(str::to_string);
+            shape.begin_index(indexed);
+            shape.check_indexes()
+        };
+        write_stamp(&stamp, "plan=cpu@a\ncommit=a").expect("stamp");
+
+        let (lines, reasons) = read(Some("significance gate only"), index("plan=cpu@a"));
+        assert!(reasons.is_empty(), "{lines:?}");
+        assert!(lines[0].contains("not vouched"), "{lines:?}");
+        let (lines, reasons) = read(None, index("plan=cpu@a"));
+        assert!(
+            reasons.is_empty(),
+            "the gate-only run invalidated it: {lines:?}"
+        );
+
+        let (_, _) = read(Some("significance gate only"), index("plan=cuda@b"));
+        assert_eq!(std::fs::read_to_string(&stamp).ok(), None);
     }
 
     /// A run that fails after building an index -- its documents written,
