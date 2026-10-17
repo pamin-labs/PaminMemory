@@ -632,6 +632,9 @@ pub struct Shape {
     loaded: Vec<Probe>,
     /// What `probe` answered, with `loaded`, once the coverage is checked.
     providers: Vec<String>,
+    /// The model each of those roles ran, `role=repository@commit`, read
+    /// with them.
+    models: Vec<String>,
     /// Vectors the run read from a cache rather than embedding, from
     /// [`cached`](Self::cached).
     caches: Vec<String>,
@@ -666,6 +669,12 @@ struct Identity {
     seed: Option<u64>,
     /// `engine/role=provider`: which engine, which model, where it ran.
     providers: Vec<String>,
+    /// `engine/role=repository@commit`: the revision each of those models
+    /// was read at, the commit the model cache's ref resolved to when it
+    /// loaded. XQuAD-R pins its models by a manifest the commit names;
+    /// without this, a run after a moved `refs/main` would take another
+    /// revision's weights under the same record name.
+    models: Vec<String>,
     /// `file: reused/total from producer`: vectors a run read from a cache
     /// rather than embedding, and the digest of who embedded them (see
     /// `harness::vectors`). A run that embedded everything itself says so
@@ -889,19 +898,19 @@ impl Identity {
 /// `Engine::providers` does neither.
 pub fn engines(
     engines: &[(&str, &pamin_engine::Engine)],
-) -> impl Fn() -> Vec<(String, String)> + Send + 'static {
+) -> impl Fn() -> Vec<(String, pamin_index::PlanUse)> + Send + 'static {
     let engines: Vec<(String, pamin_engine::Engine)> = engines
         .iter()
         .map(|(label, engine)| (label.to_string(), (*engine).clone()))
         .collect();
     move || {
-        let mut providers: Vec<(String, String)> = engines
+        let mut providers: Vec<(String, pamin_index::PlanUse)> = engines
             .iter()
             .flat_map(|(label, engine)| {
                 engine
                     .providers()
                     .into_iter()
-                    .map(move |(role, plan)| (format!("{label}/{role}"), provider(&plan)))
+                    .map(move |(role, plan)| (format!("{label}/{role}"), plan))
             })
             .collect();
         providers.sort();
@@ -951,8 +960,9 @@ fn plan_reasons(providers: &[(String, String)]) -> Vec<String> {
     reasons
 }
 
-/// How a shape asks its run which execution providers it ran on.
-type Probe = Box<dyn Fn() -> Vec<(String, String)> + Send>;
+/// How a shape asks its run which execution plans, and which model
+/// revisions, it ran on.
+type Probe = Box<dyn Fn() -> Vec<(String, pamin_index::PlanUse)> + Send>;
 
 /// A model the harness loaded and uses itself, shared with the record so
 /// that [`Shape::also_ran`] can read its plans once the run is over.
@@ -1023,20 +1033,26 @@ impl Shape {
             probe: None,
             loaded: Vec::new(),
             providers: Vec::new(),
+            models: Vec::new(),
             caches: Vec::new(),
             hardware: Hardware::default(),
         }
     }
 
-    /// How to ask, once the run is over, which execution provider each of
-    /// its models ran on, as `(role, provider)` pairs. The answer names the
-    /// record and is kept in it: two runs that differ only in what
-    /// `PAMIN_DEVICE=auto` found on the machine are two arms, not one record
-    /// written over the other. Asked at the end rather than now, because the
-    /// models load lazily -- a published shape comes before the first search
-    /// -- and an arm loads only the tiers it uses. A run that never says
-    /// fails its coverage.
-    pub fn ran_on(&mut self, probe: impl Fn() -> Vec<(String, String)> + Send + 'static) {
+    /// How to ask, once the run is over, which execution plan each of its
+    /// models ran on, as `(role, plan)` pairs: where it ran, and which
+    /// revision of the model. The answer names the record and is kept in
+    /// it: two runs that differ only in what `PAMIN_DEVICE=auto` found on
+    /// the machine, or in the commit a model cache's `refs/main` resolved
+    /// to, are two records, not one written over the other. Asked at the end
+    /// rather than now, because the models load lazily -- a published shape
+    /// comes before the first search, and on a fresh home before the first
+    /// download -- and an arm loads only the tiers it uses. A run that never
+    /// says fails its coverage.
+    pub fn ran_on(
+        &mut self,
+        probe: impl Fn() -> Vec<(String, pamin_index::PlanUse)> + Send + 'static,
+    ) {
         self.probe = Some(Box::new(probe));
     }
 
@@ -1064,9 +1080,7 @@ impl Shape {
                 Err(std::sync::TryLockError::Poisoned(model)) => plans(&model.into_inner()),
                 Err(std::sync::TryLockError::WouldBlock) => loaded.clone(),
             };
-            now.iter()
-                .map(|plan| (role.clone(), provider(plan)))
-                .collect()
+            now.into_iter().map(|plan| (role.clone(), plan)).collect()
         }));
     }
 
@@ -1084,7 +1098,8 @@ impl Shape {
     }
 
     /// Asks the probe, if there is one, and keeps its answer with `loaded`
-    /// as `engine/role=provider` lines; whether there was a probe to ask.
+    /// as `engine/role=provider` lines and `engine/role=repository@commit`
+    /// model lines; whether there was a probe to ask.
     /// The probe never panics (see [`engines`]), so a failing run asks it
     /// too.
     ///
@@ -1094,10 +1109,21 @@ impl Shape {
         let Some(probe) = &self.probe else {
             return false;
         };
-        let mut providers = probe();
+        let mut plans = probe();
         for loaded in &self.loaded {
-            providers.extend(loaded());
+            plans.extend(loaded());
         }
+        let mut models: Vec<String> = plans
+            .iter()
+            .map(|(role, plan)| format!("{role}={}", plan.revision))
+            .collect();
+        models.sort();
+        models.dedup();
+        self.models = models;
+        let mut providers: Vec<(String, String)> = plans
+            .iter()
+            .map(|(role, plan)| (role.clone(), provider(plan)))
+            .collect();
         providers.sort();
         providers.dedup();
         for reason in plan_reasons(&providers) {
@@ -1493,6 +1519,7 @@ impl Shape {
             selection: self.selection.clone(),
             seed: self.seed,
             providers: self.providers.clone(),
+            models: self.models.clone(),
             caches: self.caches.clone(),
             build: Build::compiled(),
             hardware: self.hardware.clone(),
@@ -1541,6 +1568,7 @@ impl Shape {
             "noncanonical_reason": self.source.noncanonical,
             "settings": self.settings,
             "providers": self.providers,
+            "models": self.models,
             "identity": self.identity(),
             "identity_sha256_12": self.identity().short(),
             "corpus_sha256": self.digest(),
@@ -1957,8 +1985,12 @@ mod tests {
         let record = {
             let mut shape = asked();
             shape.providers = vec![
-                "embedding=cpu".to_string(),
-                "reranking accurate=coreml".to_string(),
+                format!("embedding=cpu@{}", "a".repeat(16)),
+                format!("reranking accurate=coreml@{}", "b".repeat(16)),
+            ];
+            shape.models = vec![
+                format!("embedding={REVISION}"),
+                format!("reranking accurate={REVISION}"),
             ];
             shape.hardware.accelerators = vec!["coreml".to_string()];
             shape.named(&base)
@@ -1969,8 +2001,8 @@ mod tests {
             shape.progress = in_progress(&record);
             shape.ran_on(|| {
                 vec![
-                    ("embedding".into(), "cpu".into()),
-                    ("reranking accurate".into(), "coreml".into()),
+                    ("embedding".into(), used("cpu", "a", REVISION)),
+                    ("reranking accurate".into(), used("coreml", "b", REVISION)),
                 ]
             });
             shape.write(&shape.progress);
@@ -2008,13 +2040,37 @@ mod tests {
         let kept: serde_json::Value = serde_json::from_slice(&completed).expect("JSON");
         assert_eq!(
             kept["providers"],
-            serde_json::json!(["embedding=cpu", "reranking accurate=coreml"])
+            serde_json::json!([
+                format!("embedding=cpu@{}", "a".repeat(16)),
+                format!("reranking accurate=coreml@{}", "b".repeat(16)),
+            ])
+        );
+        assert_eq!(
+            kept["models"],
+            serde_json::json!([
+                format!("embedding={REVISION}"),
+                format!("reranking accurate={REVISION}"),
+            ])
         );
 
         let (failures, again) = run(&[("t", "g", "q1", 1)]);
         assert!(!failures.is_empty());
         assert_eq!(std::fs::read(&record).expect("the record"), completed);
         assert!(again.exists(), "the failed run left nothing");
+    }
+
+    /// The revision the test plans' model was read at.
+    const REVISION: &str = "someone/model@c0ffee";
+
+    /// A plan on `target`, its key `digit` repeated, of the model at
+    /// `revision`.
+    fn used(target: &str, digit: &str, revision: &str) -> pamin_index::PlanUse {
+        pamin_index::PlanUse {
+            target: target.into(),
+            plan: digit.repeat(64),
+            stable: true,
+            revision: revision.into(),
+        }
     }
 
     fn identity() -> Identity {
@@ -2031,6 +2087,10 @@ mod tests {
             selection: "all".into(),
             seed: None,
             providers: vec!["embedding=cpu".into(), "reranking accurate=coreml".into()],
+            models: vec![
+                format!("embedding={REVISION}"),
+                format!("reranking accurate={REVISION}"),
+            ],
             caches: Vec::new(),
             build: Build {
                 inference: "f".repeat(64),
@@ -2089,6 +2149,9 @@ mod tests {
             ("selection", |id| id.selection.push('x')),
             ("seed", |id| id.seed = Some(1)),
             ("providers", |id| id.providers.reverse()),
+            ("models", |id| {
+                id.models[0] = "embedding=someone/model@decaf".into()
+            }),
             ("caches", |id| {
                 id.caches
                     .push("xquad.f32: 0/10 from 0123456789abcdef".into())
@@ -2204,11 +2267,7 @@ mod tests {
     /// registered makes the run non-canonical, as an engine's does.
     #[test]
     fn a_harness_model_s_later_fallback_is_recorded() {
-        let plan = |target: &str, digit: &str| pamin_index::PlanUse {
-            target: target.into(),
-            plan: digit.repeat(64),
-            stable: true,
-        };
+        let plan = |target: &str, digit: &str| used(target, digit, REVISION);
         let model = owned(vec![plan("cuda:0", "a")]);
         let mut shape = asked();
         shape.ran_on(Vec::new);
@@ -2233,6 +2292,22 @@ mod tests {
             "{:?}",
             shape.source.noncanonical
         );
+    }
+
+    /// The same plans over a model whose cache ref moved are another
+    /// record: a rerun after `refs/main` resolves to a new commit keeps the
+    /// earlier revision's record rather than replacing it.
+    #[test]
+    fn a_moved_model_revision_is_a_different_record() {
+        let named = |revision: &str| {
+            let read = revision.to_string();
+            let mut shape = asked();
+            shape.ran_on(move || vec![("primary/embedding".into(), used("cpu", "a", &read))]);
+            assert!(shape.resolve_providers(false));
+            assert_eq!(shape.models, [format!("primary/embedding={revision}")]);
+            shape.identity().short()
+        };
+        assert_ne!(named("someone/model@c0ffee"), named("someone/model@decaf"));
     }
 
     /// A run whose model fell back names both plans, so it is a different
@@ -2270,9 +2345,8 @@ mod tests {
             ["unstable accelerator identity (directml)"]
         );
         let plan = pamin_index::PlanUse {
-            target: "npu:qnn:0".into(),
-            plan: "d".repeat(64),
             stable: false,
+            ..used("npu:qnn:0", "d", REVISION)
         };
         assert_eq!(
             provider(&plan),
@@ -2281,7 +2355,15 @@ mod tests {
 
         // And the record says so, as it does for an ungated run.
         let mut shape = asked();
-        shape.ran_on(move || unstable.clone());
+        shape.ran_on(|| {
+            vec![(
+                "primary/embedding".to_string(),
+                pamin_index::PlanUse {
+                    stable: false,
+                    ..used("directml", "c", REVISION)
+                },
+            )]
+        });
         assert!(shape.resolve_providers(false));
         assert!(
             shape

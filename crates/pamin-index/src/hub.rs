@@ -58,18 +58,25 @@ impl Repository {
     /// used; a newly resolved snapshot causes one fresh calibration.
     pub(crate) fn identity(&self, cache_dir: &Path) -> String {
         let root = cache_root(cache_dir);
+        format!(
+            "{}:{}",
+            self.revision(),
+            root.canonicalize().unwrap_or(root).display()
+        )
+    }
+
+    /// `name@commit`: the requested revision resolved through the cache's
+    /// ref -- the commit `refs/main` points to -- or the revision itself
+    /// when no ref names it, as for a pinned commit or before a download.
+    pub(crate) fn revision(&self) -> String {
         let resolved = std::fs::read_to_string(
-            root.join(format!("models--{}", self.name.replace('/', "--")))
+            self.cache_dir
+                .join(format!("models--{}", self.name.replace('/', "--")))
                 .join("refs")
                 .join(&self.revision),
         )
         .unwrap_or_else(|_| self.revision.clone());
-        format!(
-            "{}@{}:{}",
-            self.name,
-            resolved.trim(),
-            root.canonicalize().unwrap_or(root).display()
-        )
+        format!("{}@{}", self.name, resolved.trim())
     }
 
     /// The local path of one of the repository's files, downloading it first
@@ -301,6 +308,23 @@ mod tests {
         std::fs::create_dir_all(entry.parent().expect("a parent")).expect("the snapshot");
         std::os::unix::fs::symlink("../../../blobs/0123abcd", &entry).expect("the entry");
         (entry, blob)
+    }
+
+    /// A revision is what the ref resolved to, so a moved `refs/main` is a
+    /// different revision under the same name.
+    #[test]
+    fn the_revision_is_the_commit_the_ref_resolves_to() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repository = Repository::open(dir.path(), NAME).expect("open");
+        assert_eq!(repository.revision(), "someone/model@main");
+        downloaded(dir.path());
+        assert_eq!(repository.revision(), "someone/model@c0ffee");
+        std::fs::write(
+            dir.path().join("models--someone--model/refs/main"),
+            "decaf\n",
+        )
+        .expect("move the ref");
+        assert_eq!(repository.revision(), "someone/model@decaf");
     }
 
     /// Removing takes the entry and the blob both: a blob left behind is the
