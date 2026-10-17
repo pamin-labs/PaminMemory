@@ -28,12 +28,11 @@ pub(crate) struct Repository {
 impl Repository {
     /// Opens `name`, cached under `cache_dir`.
     ///
-    /// Or under `HF_HOME`, and fetched from `HF_ENDPOINT`, when those are set:
-    /// that is what `fastembed` does when it fetches a model itself, which is
-    /// how the embedding model was always fetched. The reranker used to ignore
-    /// both, so under either it was fetched from somewhere the embedder was
-    /// not -- a mirror set for one and not the other, or two copies of the
-    /// cache. Now the two are fetched alike.
+    /// Or under `HF_HOME`'s hub cache, and fetched from `HF_ENDPOINT`, when
+    /// those are set (see [`cache_root`]). The reranker used to ignore both,
+    /// so under either it was fetched from somewhere the embedder was not --
+    /// a mirror set for one and not the other, or two copies of the cache.
+    /// Now the two are fetched alike.
     pub(crate) fn open(cache_dir: &Path, name: &str) -> Result<Self> {
         Self::open_at(cache_dir, name, "main")
     }
@@ -72,8 +71,18 @@ impl Repository {
     /// would read every file from a snapshot that is not there for the rest
     /// of the process: the requested revision is fetched instead, as it is
     /// before anything is cached.
+    ///
+    /// A requested commit is pinned as itself, with or without a ref: its
+    /// snapshot is named by it. A fetch by a moving ref leaves the snapshot
+    /// and removes the ref named by the commit it made ([`get`](Self::get)),
+    /// and the hub client finds a cached file only through a ref, so asking
+    /// it would fetch -- offline, fail -- a file already on disk.
     fn pin(&self) {
         if self.pinned.get().is_some() {
+            return;
+        }
+        if is_commit(&self.revision) {
+            let _ = self.pinned.set(self.revision.clone());
             return;
         }
         let resolved = std::fs::read_to_string(self.root().join("refs").join(&self.revision));
@@ -419,13 +428,25 @@ fn referenced_elsewhere(directory: &Path, own: &Path, blob: &Path) -> std::io::R
     Ok(false)
 }
 
-/// Where the hub's files are cached: `HF_HOME` when it is set, as
-/// [`Repository::open`] reads it, and the workspace's model directory
+/// Where the hub's files are cached: `hub` under `HF_HOME` when it is set,
+/// as [`Repository::open`] reads it, and the workspace's model directory
 /// otherwise.
-fn cache_root(cache_dir: &Path) -> PathBuf {
-    std::env::var_os("HF_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| cache_dir.to_path_buf())
+///
+/// `hub` because that is where the hub client's own `Cache::from_env` and
+/// Hugging Face's other tools keep repositories under `HF_HOME`, so a model
+/// one of them downloaded is found rather than fetched into a second tree
+/// beside it. (`fastembed` 6 fetches into `HF_HOME` itself, but nothing here
+/// fetches through it.)
+pub fn cache_root(cache_dir: &Path) -> PathBuf {
+    cache_root_under(std::env::var_os("HF_HOME"), cache_dir)
+}
+
+/// [`cache_root`], with `HF_HOME` given.
+fn cache_root_under(hf_home: Option<std::ffi::OsString>, cache_dir: &Path) -> PathBuf {
+    hf_home.map_or_else(
+        || cache_dir.to_path_buf(),
+        |home| PathBuf::from(home).join("hub"),
+    )
 }
 
 /// Whether `text` is a full commit id: forty hexadecimal digits.
@@ -543,6 +564,39 @@ mod tests {
         // A requested commit is resolved without a ref.
         let at = Repository::open_at(dir.path(), NAME, OLD).expect("open");
         assert_eq!(at.identity(dir.path()), at.identity(dir.path()));
+    }
+
+    /// Under `HF_HOME` the cache is its `hub` directory, where the hub
+    /// client's `Cache::from_env` keeps it; without, the model directory.
+    #[test]
+    fn hf_home_caches_in_its_hub_directory() {
+        let models = Path::new("/workspace/models");
+        assert_eq!(cache_root_under(None, models), models);
+        assert_eq!(
+            cache_root_under(Some("/shared/hf".into()), models),
+            Path::new("/shared/hf/hub")
+        );
+    }
+
+    /// A commit's snapshot is read without a ref named by the commit: the
+    /// one a fetch by `main` leaves has none, and the hub client cannot find
+    /// a file without one. Offline -- no endpoint answers here -- the file
+    /// on disk is the answer, not a fetch.
+    #[test]
+    fn a_requested_commit_reads_its_snapshot_without_a_ref() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (entry, _) = downloaded(dir.path());
+        let refs = dir.path().join("models--someone--model/refs");
+        assert!(!refs.join(OLD).exists());
+        let at = Repository::open_at(dir.path(), NAME, OLD).expect("open");
+        assert_eq!(at.revision(), format!("someone/model@{OLD}"));
+        assert_eq!(at.file(dir.path(), FILE).on_disk(), Some(entry.clone()));
+        assert_eq!(at.get(FILE).expect("the cached file"), entry);
+
+        // Not a file the snapshot lacks, nor another commit's.
+        assert!(at.file(dir.path(), "tokenizer.json").on_disk().is_none());
+        let other = Repository::open_at(dir.path(), NAME, NEW).expect("open");
+        assert!(other.file(dir.path(), FILE).on_disk().is_none());
     }
 
     /// A ref the hub names anew before a fetch is recorded, so a cache whose
