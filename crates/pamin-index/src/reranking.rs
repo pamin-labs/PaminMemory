@@ -1385,8 +1385,11 @@ type Scored = Result<(Vec<Vec<f32>>, u64)>;
 /// 1.28, Xeon with AMX), 100 calls of 30 uncached pairs, two runs each:
 /// `accurate` from a median of 2,105 and 2,163 ms a call to 1,212 and 1,269,
 /// every score bit-identical (and the since-retired `fast` tier from 491 and
-/// 496 ms to 222 and 250). The cost is the passes' working memory, about
-/// 260 MB more for `accurate`, in proportional set size.
+/// 496 ms to 222 and 250). That run gave each pass a session of its own, and
+/// its cost was their working memory, about 260 MB more for `accurate` in
+/// proportional set size. The passes now share one session per model, which
+/// took a server's peak resident memory over 120 searches from 5,657 to
+/// 3,021 MB at `pamin search`; `docs/measured.md` has the run.
 fn forward(model: &mut Encoder, batches: Vec<Vec<Encoding>>) -> Scored {
     let counts: Vec<usize> = batches.iter().map(Vec::len).collect();
     let start = Instant::now();
