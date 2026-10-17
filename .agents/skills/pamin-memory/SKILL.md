@@ -131,7 +131,10 @@ tells you how much to trust the hit:
   { "kind": "channel", "channel": "lexical_ngram", "rank": 1 },
   { "kind": "channel", "channel": "vector", "rank": 1 },
   { "kind": "channel", "channel": "graph", "rank": 2 },
-  { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "edge": "depends_on", "derivation": "explicit" }
+  { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1,
+    "asserted_from": "oncall_rota", "asserted_to": "deployment_pipeline",
+    "edge": "depends_on", "derivation": "explicit" },
+  { "kind": "reranked" }
 ]
 ```
 
@@ -142,7 +145,12 @@ tells you how much to trust the hit:
   near-miss in meaning — worth a second look before you rely on it.
 - **`graph` alone** means nothing matched at all and it came back because it is
   connected to something that did. Read the `path` entry to see the route, then
-  judge whether that route is relevant to what you asked.
+  judge whether that route is relevant to what you asked. `asserted_from` and
+  `asserted_to` say which way the edge itself runs, which the walk ignores.
+- **`reranked`** means the cross-encoder read the query and this memory
+  together; its place blends that score with fusion's. Every hit in the fused
+  top thirty carries it, lexical matches included. A hit without it sat below
+  that head and was not one of the strongest finds only the graph made.
 
 Ranks travel between channels; scores do not, which is why fusion combines
 ranks. A `path` entry is verifiable in a way a rank is not — anyone can check
