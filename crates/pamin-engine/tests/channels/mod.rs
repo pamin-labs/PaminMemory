@@ -1093,6 +1093,9 @@ pub async fn compare_reranked(
     crate::harness::shape::tables(&tables);
     let mut measured: Vec<BTreeMap<String, crate::scoring::Scores>> =
         vec![BTreeMap::new(); settings.len()];
+    // Each row sets its own depth: a depth the caller set would name the
+    // record while no row ran under it.
+    let _depth = crate::harness::KnobSweep::claim("PAMIN_EVAL_RERANK_DEPTH");
     for (index, (text, group)) in questions.iter().enumerate() {
         for ((setting, into), table) in settings.iter().zip(&mut measured).zip(&tables) {
             // The depth is the search's own, so each pass sets it for itself
@@ -1109,7 +1112,6 @@ pub async fn compare_reranked(
             score(index, into.entry(group.clone()).or_default(), &hits);
         }
     }
-
     println!("\n  {title}: the shipped search path under other settings, paired against it");
     for (group, shipped) in &measured[0] {
         println!(
@@ -1134,7 +1136,6 @@ pub async fn compare_reranked(
 
 #[cfg(test)]
 mod tests {
-
     #[test]
     fn absent_channels_keep_zero_scores_in_paired_order() {
         let mut diagnosis = super::Diagnosis::default();
