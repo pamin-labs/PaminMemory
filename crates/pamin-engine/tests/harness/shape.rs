@@ -993,8 +993,9 @@ impl Identity {
 /// A probe for [`Shape::ran_on`] over every engine a run searched, each
 /// under its label (`primary`, `second`, ...): each one's
 /// [`Engine::providers`](pamin_engine::Engine::providers) as
-/// `label/role`, kept apart, sorted. It neither panics nor waits, as
-/// `Engine::providers` does neither.
+/// `label/role`, kept apart, sorted, once each engine's outstanding
+/// loads have finished ([`Engine::settle_loads`](pamin_engine::Engine::settle_loads)).
+/// It never panics, and waits only for those loads.
 pub fn engines(
     engines: &[(&str, &pamin_engine::Engine)],
 ) -> impl Fn() -> Vec<(String, pamin_index::PlanUse)> + Send + 'static {
@@ -1003,6 +1004,15 @@ pub fn engines(
         .map(|(label, engine)| (label.to_string(), (*engine).clone()))
         .collect();
     move || {
+        // A load a search started and returned before needing -- a reranked
+        // search that found nothing -- may still be running. It is waited
+        // for here, before the plans are read and before the record reads
+        // what the loads fetched, so it is neither missed nor left running
+        // into the next run's turn. Only the harness waits: a search never
+        // does.
+        for (_, engine) in &engines {
+            futures::executor::block_on(engine.settle_loads());
+        }
         let mut providers: Vec<(String, pamin_index::PlanUse)> = engines
             .iter()
             .flat_map(|(label, engine)| {
@@ -1971,9 +1981,10 @@ impl Drop for Shape {
             };
             let (lines, _, recorded) = self.coverage(&tally);
             self.coverage = Some(recorded);
-            // What it ran on, too: the probe neither panics nor waits, and no
-            // hardware is probed here -- only what this process already
-            // read -- so nothing stands between the failure and the file.
+            // What it ran on, too: the probe never panics and waits only for
+            // loads already running, and no hardware is probed here -- only
+            // what this process already read -- so nothing but those loads
+            // stands between the failure and the file.
             self.resolve_providers(false);
             let progress = self.progress.clone();
             let _ = self.persist(&progress, " (failed run)", &lines);
