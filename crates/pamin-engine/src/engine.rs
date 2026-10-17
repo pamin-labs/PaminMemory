@@ -128,10 +128,11 @@ pub(crate) fn off_the_runtime<T>(work: impl FnOnce() -> T) -> T {
 /// written.
 ///
 /// `encoding` is what the model would embed them under now
-/// ([`pamin_index::Embedder::encoding`]), so a vector another execution
-/// provider or plan produced is embedded again, as it was before this check
-/// existed, rather than kept beside queries this plan embeds. With no
-/// encoding to compare, nothing is held.
+/// ([`pamin_index::Embedder::reusable_encoding`]), so a vector another
+/// execution provider or plan produced is embedded again, as it was before
+/// this check existed, rather than kept beside queries this plan embeds. With
+/// no encoding to compare -- including a fallback whose retry deadline has
+/// passed, which the next pass revalidates -- nothing is held.
 ///
 /// Compares the text, while a vector may be embedded from the topic's name as
 /// well ([`pamin_index::Passage`]). That is sound because a topic's name never
@@ -1123,7 +1124,14 @@ impl Engine {
                 .iter()
                 .map(|state| (state.topic_id, state.content.as_str()))
                 .collect();
-            let unheld = unheld(&**self.index(), &wanted, embedder.encoding().as_deref());
+            // The reusable plan, not the resident one: a fallback past
+            // its retry deadline holds nothing, so the pass runs and
+            // revalidates it rather than being skipped with it.
+            let unheld = unheld(
+                &**self.index(),
+                &wanted,
+                embedder.reusable_encoding().as_deref(),
+            );
             let (states, contents): (Vec<&TopicState>, Vec<&str>) = states
                 .iter()
                 .zip(&passages)

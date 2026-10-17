@@ -626,6 +626,29 @@ pub(crate) fn planned_use(model: &impl RuntimeModel, device: Device) -> Option<P
     (!model.runtime_plan().identity.is_empty()).then(|| current_use(model, device))
 }
 
+/// The plan `model` runs on now, as [`planned_use`], but only while that plan
+/// is final: `None` once its retry deadline has passed ([`needs_revalidation`]).
+///
+/// A plan past its deadline is a fallback the next forward pass may replace,
+/// since [`retry_model`] revalidates it before running anything. Something
+/// embedded under it now is therefore not shown to match what the model will
+/// embed next, and a caller deciding whether to skip that pass must not reuse
+/// it -- skipping the pass would also skip the revalidation.
+pub(crate) fn reusable_use(model: &impl RuntimeModel, device: Device) -> Option<PlanUse> {
+    reusable_use_at(model, device, std::time::Instant::now())
+}
+
+fn reusable_use_at(
+    model: &impl RuntimeModel,
+    device: Device,
+    now: std::time::Instant,
+) -> Option<PlanUse> {
+    if needs_revalidation_at(model, now) {
+        return None;
+    }
+    planned_use(model, device)
+}
+
 pub(crate) trait RuntimeModel {
     fn runtime_plan(&self) -> &RuntimePlan;
     fn runtime_plan_mut(&mut self) -> &mut RuntimePlan;
@@ -2212,6 +2235,44 @@ mod tests {
         assert!(replaced);
         assert_eq!(device, Device::Npu);
         assert!(!needs_revalidation_at(&model, now + RUNTIME_RETRY * 2));
+    }
+
+    /// A fallback past its retry deadline names no reusable plan, so a sync
+    /// cannot skip the pass that would revalidate it; before the deadline,
+    /// and once revalidation has run, it names the plan it runs on.
+    #[test]
+    fn an_expired_fallback_is_not_reusable() {
+        let root = tempfile::tempdir().unwrap();
+        let now = std::time::Instant::now();
+        let mut model = RuntimeFixture::new(0, "cpu");
+        model.plan.identity = "cpu-plan".into();
+        model.plan.retry_at = Some(now + RUNTIME_RETRY);
+        let mut device = Device::Cpu;
+        let planned = planned_use(&model, device);
+        assert!(planned.is_some());
+        assert_eq!(reusable_use_at(&model, device, now), planned);
+
+        let expired = now + RUNTIME_RETRY;
+        assert!(needs_revalidation_at(&model, expired));
+        assert_eq!(planned_use(&model, device), planned);
+        assert_eq!(reusable_use_at(&model, device, expired), None);
+
+        retry_model_at(
+            &mut model,
+            &mut device,
+            root.path(),
+            expired,
+            |candidate, _| Ok(candidate.value),
+            || {
+                let mut restored = RuntimeFixture::new(42, "npu:first:1");
+                restored.plan.identity = "npu-plan".into();
+                Ok((restored, Device::Npu))
+            },
+        )
+        .unwrap();
+        let reusable = reusable_use_at(&model, device, expired).expect("revalidated");
+        assert_eq!(reusable.target, "npu:first:1");
+        assert_eq!(Some(reusable), planned_use(&model, device));
     }
 
     /// A model that fell back keeps the plan it failed on in its history,
