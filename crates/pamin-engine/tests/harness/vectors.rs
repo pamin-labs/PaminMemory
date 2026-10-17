@@ -578,6 +578,34 @@ mod tests {
         assert!(with(&digest).ends_with(&format!("harness={digest}")));
     }
 
+    /// Where a load found its plan is not who embeds: a plan read from its
+    /// file and the same plan recalibrated are one producer, so a cache or
+    /// index written across the recalibration keeps its producer.
+    #[test]
+    fn a_recalibrated_plan_is_the_same_producer() {
+        let plan = |origin| PlanUse {
+            target: "cuda".into(),
+            plan: "a".repeat(64),
+            stable: true,
+            revision: "someone/model@c0ffee".into(),
+            origin,
+        };
+        assert_eq!(
+            lines(
+                &[plan(pamin_index::PlanOrigin::PersistedRecord)],
+                &[],
+                &[],
+                ""
+            ),
+            lines(
+                &[plan(pamin_index::PlanOrigin::CalibratedNow)],
+                &[],
+                &[],
+                ""
+            )
+        );
+    }
+
     /// Another thread count for the native kernels is another producer: a
     /// reduction split another way can round differently.
     #[test]
