@@ -26,48 +26,57 @@ use pamin_index::Profile;
 ///
 /// It is also the turn at the process environment: an experimental arm
 /// that sets a variable the product reads (`PAMIN_RERANK_DEPTH`,
-/// `PAMIN_SEARCH_EFFORT`) does so only while holding it ([`turn_taken`]),
-/// so no evaluation's settings snapshot reads another test's transient arm.
+/// `PAMIN_SEARCH_EFFORT`) does so only while its thread holds the turn,
+/// taking it first if it does not ([`environment_turn`]), so no
+/// evaluation's settings snapshot reads another test's transient arm.
 ///
 /// What the loads fetched and prepared is counted process wide
 /// (`pamin_index::LoadActivity`), and libtest runs the tests of one binary
 /// side by side: without turns, another test's download would land in an
-/// evaluation's interval and name a warm run cold. A flag and a condition
-/// variable rather than a held `MutexGuard`, so the turn is `Send` and is
-/// let go of however the test ends, a panic included.
+/// evaluation's interval and name a warm run cold. The holder's thread
+/// behind a condition variable rather than a held `MutexGuard`, so the turn
+/// is `Send`, is let go of however the test ends, a panic included, and a
+/// test can tell that it, not another, holds it.
 pub struct ModelsTurn(());
 
-static TURN: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+static TURN: std::sync::Mutex<Option<std::thread::ThreadId>> = std::sync::Mutex::new(None);
 static TURN_FREED: std::sync::Condvar = std::sync::Condvar::new();
 
-/// Waits for this process's turn at loading models (see [`ModelsTurn`]).
+/// Waits for this process's turn at loading models (see [`ModelsTurn`]),
+/// for this thread.
 pub fn load_models() -> ModelsTurn {
-    let mut taken = TURN
+    let mut holder = TURN
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    while *taken {
-        taken = TURN_FREED
-            .wait(taken)
+    while holder.is_some() {
+        holder = TURN_FREED
+            .wait(holder)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
-    *taken = true;
+    *holder = Some(std::thread::current().id());
     ModelsTurn(())
 }
 
-/// Whether some test holds the turn (see [`ModelsTurn`]): asserted by code
-/// that sets the process environment for an experimental arm, which runs
-/// only inside a test that holds it.
-pub fn turn_taken() -> bool {
+/// Whether this thread holds the turn (see [`ModelsTurn`]).
+pub fn holds_turn() -> bool {
     *TURN
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+        == Some(std::thread::current().id())
+}
+
+/// The turn for code about to set the process environment: none if this
+/// thread holds it already -- an evaluation, or a model-loading test --
+/// and otherwise this thread's own, waited for, to hold while it sets it.
+pub fn environment_turn() -> Option<ModelsTurn> {
+    (!holds_turn()).then(load_models)
 }
 
 impl Drop for ModelsTurn {
     fn drop(&mut self) {
         *TURN
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         TURN_FREED.notify_one();
     }
 }

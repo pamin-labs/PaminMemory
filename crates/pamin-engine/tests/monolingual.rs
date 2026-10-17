@@ -1393,16 +1393,13 @@ async fn compare_efforts(engine: &Engine, corpus: &Corpus, efforts: &str) {
         ("fused", Route::Fused(Fusion::default())),
         ("shipped", Route::Shipped(Rerank::default())),
     ];
-    // Only the test holding the turn sets the environment (see
+    // The environment is set only holding the turn (see
     // `harness::ModelsTurn`).
-    assert!(
-        harness::turn_taken(),
-        "an experimental arm set the environment without the turn"
-    );
+    let _turn = harness::environment_turn();
     for (name, route) in &routes {
         let mut baseline: Option<Scores> = None;
         for effort in &efforts {
-            // SAFETY: this test holds the turn (asserted above), and every
+            // SAFETY: this thread holds the turn (taken above), and every
             // other test that reads the environment for its settings waits
             // for it.
             unsafe { std::env::set_var("PAMIN_SEARCH_EFFORT", effort) };
