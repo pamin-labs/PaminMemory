@@ -168,6 +168,64 @@ evaluation harness. Raising them costs latency for recall you have no way to
 measure from outside. If you want more control over retrieval, use `grep`,
 `read` and `neighbors` — paths whose behaviour you can actually verify.
 
+### When to stop searching
+
+Every `search` at the default tier costs a reranking pass and a page of
+results in your context. On a four-core CPU that is more than a second: the
+1522 ms in the table above was measured when the reranker saw twenty
+candidates, it now sees a head of thirty plus up to thirty more that only the
+graph found, and `docs/measured.md` records slower medians on busier machines.
+On Apple silicon, where the reranker runs on CoreML, `docs/measured.md` records
+a whole-search p50 of 0.48 s and p95 of 0.81 s. A second search pays off only when
+it can find something the first could not. The rules below are a heuristic for
+spending that cost; no agent-task measurement yet shows how often a repeat
+search finds something new.
+
+- **Before searching again, name what is missing.** List the facts the
+  question needs, then check them against the results you already have. Stop
+  when each one is backed by a hit whose `valid_from` and `valid_to` cover the
+  time the question asks about: now, unless it names another time. An absent
+  bound is open. `search` returns a topic's current state without checking
+  that interval, so a hit can state a fact that has lapsed or not yet begun. A
+  fact missing from those results is missing from one page of five, not from
+  memory, so take it to the rules below rather than concluding it is not
+  there. A hit already carries its topic's full current content; do not `read`
+  it again. `read` is for its earlier versions and the source span a claim
+  came from.
+- **Rephrase at most once, and never to the same place.** If the second
+  phrasing brings back mostly the same topics (say, four of the five),
+  the ranking is not the problem and a third phrasing will land there too.
+  Switch to a path that does not rank:
+  - `grep` for an exact string you expect the answer to contain. It searches
+    every version ever written, superseded ones included, so `read` the topic
+    named in a hit's `source` and answer from it only if the current version
+    still says so. A hit whose `filter_decision` is `filtered` was held by the
+    sensory filter: if it was the topic's first write there is no topic to
+    `read`, and if not, the current version never took it in. Such a hit is
+    the only record of what was written, so use it, saying it was recorded
+    but never promoted to a memory;
+  - `neighbors --depth 1` from the best topic you found, with `--kind` to
+    narrow it. The default depth is two and nothing caps how many it returns,
+    which on a well-connected topic can be most of the project. It lists
+    topics and edges, not what they say, so `read` each neighbour that looks
+    relevant before ruling it out.
+
+  `topics` is not one of them: it merges name matches with the same ranked
+  search, unreranked. But it returns twenty by default against `search`'s
+  five, so a content hit you have not already seen is new evidence too, as is
+  any name match. It also shows what the workspace calls things.
+- **After two searches, a `grep` that found nothing usable and a one-hop
+  `neighbors` from the best topic, stop and say what you tried.** A `grep`
+  found nothing usable when it missed, or when the current version of every
+  topic it hit no longer says what matched. Read the neighbours that look
+  relevant before stopping, and skip `neighbors` only when no hit is related
+  to the question. Report that those probes found nothing, not that
+  the memory does not exist: `grep` matches one exact literal, case-sensitive
+  unless you pass `-i`, and `search` returns five results by default, so
+  differently worded or lower-ranked memories can still be there. An answer
+  built from the closest near-miss is worse than an honest "I searched for X
+  and Y and found nothing".
+
 ## Relationships
 
 Writing a memory that names another topic derives an edge automatically — no
