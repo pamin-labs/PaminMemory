@@ -389,7 +389,8 @@ fn environment() -> impl Iterator<Item = (String, String)> {
 
 /// The [`settings`] set now that can change what a model computes: all of
 /// them but the harnesses' own knobs ([`EVAL_SETTINGS`]), which choose what
-/// a run asks, not what a text embeds to. A cache of model output is named
+/// a run asks, not what a text embeds to, and `SIGNIFICANCE_GATE`, which
+/// decides only whether a run's comparison is asserted. A cache of model output is named
 /// by these, so a thread count or a runtime option that changes how a
 /// reduction rounds is the same list a record is named by.
 pub fn runtime_settings() -> Vec<String> {
@@ -401,7 +402,7 @@ fn runtime(settings: Vec<String>) -> Vec<String> {
         .into_iter()
         .filter(|line| {
             let name = line.split_once('=').map_or(line.as_str(), |(name, _)| name);
-            !EVAL_SETTINGS.contains(&name)
+            !EVAL_SETTINGS.contains(&name) && name != "SIGNIFICANCE_GATE"
         })
         .collect()
 }
@@ -3437,6 +3438,7 @@ mod tests {
                 set("PAMIN_EVAL_HOME", "/data"),
                 set("XQUAD_ALL_QUERIES", "1"),
                 set("MUSIQUE_SAMPLE", "60"),
+                set("SIGNIFICANCE_GATE", "off"),
             ])),
             [
                 "MKL_NUM_THREADS=2",
@@ -3446,7 +3448,8 @@ mod tests {
                 "PAMIN_DEVICE=cpu",
             ]
         );
-        // Named by every harness, though no harness lists it.
+        // Named by every harness, though no harness lists it -- the record,
+        // not the model output (above).
         let ungated = named(&[("SIGNIFICANCE_GATE", "off")]);
         assert!(!distinct.contains(&ungated), "{ungated}");
         for threads in [
