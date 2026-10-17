@@ -13,7 +13,7 @@ pub mod repository;
 mod sql;
 pub mod workspace;
 
-pub use database::{Connections, Database};
+pub use database::{Connections, Database, StoreSettings};
 pub use error::{Result, StoreError};
 /// One connection, for a caller that asks several statements in a row and
 /// would otherwise take a connection from the pool and return it for each.

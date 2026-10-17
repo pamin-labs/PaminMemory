@@ -193,9 +193,13 @@ async fn one_write_does_not_pay_for_the_whole_project() {
         (None, Some(dir)) => Workspace::at(dir.path()),
         (None, None) => unreachable!("one of the two is always set"),
     };
-    let database = Database::open(&workspace, Connections::PerCommand)
-        .await
-        .expect("open the database");
+    let database = Database::open(
+        &workspace,
+        Connections::PerCommand,
+        &pamin_store::StoreSettings::from_environment(),
+    )
+    .await
+    .expect("open the database");
 
     println!("\n   topics      write    drain    total   derive p50   fastest   edges");
     println!("  ----------------------------------------------------------------");
@@ -345,9 +349,13 @@ async fn derivation_does_not_pay_for_the_widest_name_in_the_project() {
         (None, Some(dir)) => Workspace::at(dir.path()),
         (None, None) => unreachable!("one of the two is always set"),
     };
-    let database = Database::open(&workspace, Connections::PerCommand)
-        .await
-        .expect("open the database");
+    let database = Database::open(
+        &workspace,
+        Connections::PerCommand,
+        &pamin_store::StoreSettings::from_environment(),
+    )
+    .await
+    .expect("open the database");
 
     let tokens = PROSE.split_whitespace().count();
     println!("\n  widest   runs   derive p50   fastest   per run   edges");

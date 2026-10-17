@@ -59,6 +59,35 @@ fn available_cores() -> u32 {
 /// Cloning shares the pool rather than opening a second one: `PgPool` is a
 /// handle, and a resident server holding one for the machine is the whole
 /// reason the pool replaced a single client.
+/// What the caller decides about the cluster a workspace runs: passed in
+/// rather than read from the environment, so a test or a second caller in one
+/// process decides it for itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StoreSettings {
+    /// Let PostgreSQL compile query expressions with LLVM; see [`jit`]. A
+    /// cluster setting, so it takes effect when the cluster next starts.
+    pub jit: bool,
+    /// A PostgreSQL installation prefix (holding `bin/initdb`) to use instead
+    /// of installing one into the workspace; see [`supplied_installation`].
+    pub postgres_dir: Option<std::path::PathBuf>,
+}
+
+impl StoreSettings {
+    /// The settings the environment variables that configured the cluster
+    /// before settings were passed in still name.
+    ///
+    /// Transitional: what callers use until the binary passes its own.
+    pub fn from_environment() -> Self {
+        Self {
+            jit: matches!(
+                std::env::var("PAMIN_JIT").as_deref(),
+                Ok("on" | "1" | "true")
+            ),
+            postgres_dir: std::env::var_os("PAMIN_POSTGRES_DIR").map(std::path::PathBuf::from),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Database {
     pool: PgPool,
@@ -76,7 +105,11 @@ impl Database {
     /// when nothing was listening -- a record left behind by `pamin stop` or a
     /// reboot -- retried the refused connection for its whole thirty-second
     /// acquire timeout before starting the server.
-    pub async fn open(workspace: &Workspace, connections: Connections) -> Result<Self> {
+    pub async fn open(
+        workspace: &Workspace,
+        connections: Connections,
+        settings: &StoreSettings,
+    ) -> Result<Self> {
         let running = match workspace.read_server()? {
             Some(existing) if listening(existing.port) => {
                 // Refused credentials or anything else that is not this
@@ -87,7 +120,7 @@ impl Database {
         };
         let database = match running {
             Some(database) => database,
-            None => Self::connect(&start_server(workspace).await?, connections).await?,
+            None => Self::connect(&start_server(workspace, settings).await?, connections).await?,
         };
 
         crate::migrate::run(&database.pool).await?;
@@ -158,7 +191,7 @@ async fn pool(url: &str, connections: Connections) -> Result<PgPool> {
 /// machine dedicated to the database, and this one is a laptop doing something
 /// else. Their defaults cost the operating system's page cache doing the work
 /// instead, which is the right trade for a background process.
-fn settings() -> HashMap<String, String> {
+fn settings(store: &StoreSettings) -> HashMap<String, String> {
     HashMap::from([
         // PostgreSQL allows a hundred clients, and every process that opens
         // the workspace without a server has its own pool pointing at this
@@ -178,7 +211,7 @@ fn settings() -> HashMap<String, String> {
         // the same, and the default is what talks the planner out of index
         // scans it should be choosing.
         ("random_page_cost".to_string(), "1.1".to_string()),
-        ("jit".to_string(), jit().to_string()),
+        ("jit".to_string(), jit(store).to_string()),
         // Autovacuum waits for a fifth of a table to be dead rows. On a table
         // of a hundred million states that is twenty million, and until then
         // every scan reads them. Two per cent is still rare enough to be
@@ -231,18 +264,13 @@ fn settings() -> HashMap<String, String> {
 /// So this is a setting with a measured default rather than a constant, the
 /// same shape and the same reasoning as [`crate`]'s sibling knobs: the default
 /// is what is right for every size measured here, and a workspace large enough
-/// to have left that range can say so with `PAMIN_JIT=on` without waiting for
-/// this project to pick a threshold on its behalf. Anything other than `on` is
-/// `off`, because a cluster setting that will not parse is a cluster that will
-/// not start.
+/// to have left that range can say so with [`StoreSettings::jit`] without
+/// waiting for this project to pick a threshold on its behalf.
 ///
 /// Turning it on also keeps `lib/bitcode` in a bundled installation, which
 /// inlining is the only reader of -- see [`UNREAD_WITHOUT_JIT`].
-fn jit() -> &'static str {
-    match std::env::var("PAMIN_JIT").as_deref() {
-        Ok("on" | "1" | "true") => "on",
-        _ => "off",
-    }
+fn jit(store: &StoreSettings) -> &'static str {
+    if store.jit { "on" } else { "off" }
 }
 
 /// A PostgreSQL installation the caller is supplying, if there is one.
@@ -264,15 +292,15 @@ fn jit() -> &'static str {
 /// The path is a prefix holding `bin/initdb` and `bin/pg_ctl`, which is what a
 /// distribution package installs (`/usr/lib/postgresql/17` on Debian and
 /// Ubuntu).
-fn supplied_installation() -> Option<std::path::PathBuf> {
-    let path = std::path::PathBuf::from(std::env::var_os("PAMIN_POSTGRES_DIR")?);
+fn supplied_installation(store: &StoreSettings) -> Option<std::path::PathBuf> {
+    let path = store.postgres_dir.clone()?;
     path.join("bin").join("initdb").exists().then_some(path)
 }
 
 /// Where a supplied installation's cluster should put its socket, if one is
 /// supplied. See the note beside `unix_socket_directories`.
-fn supplied_socket_directory(workspace: &Workspace) -> Option<String> {
-    supplied_installation()?;
+fn supplied_socket_directory(workspace: &Workspace, store: &StoreSettings) -> Option<String> {
+    supplied_installation(store)?;
     Some(
         workspace
             .postgres_data_dir()
@@ -299,7 +327,7 @@ const UNREAD: &[&str] = &["share/man", "share/doc"];
 /// in PostgreSQL 17's Debian build, which is a fifth of what a 13,014-document
 /// workspace's own data comes to.
 ///
-/// Kept when `PAMIN_JIT=on`, because a workspace that asked for JIT asked for
+/// Kept when [`StoreSettings::jit`] is on, because a workspace that asked for JIT asked for
 /// the fast form of it, and inlining with the bitcode missing is a silent
 /// downgrade rather than an error: PostgreSQL logs at `DEBUG1` and compiles
 /// without it. A silent downgrade is the worst of the three outcomes, so the
@@ -314,7 +342,7 @@ const UNREAD_WITHOUT_JIT: &[&str] = &["lib/bitcode"];
 /// Removes what a bundled installation will never read, and says how much.
 ///
 /// `bundled` is the whole of the safety here. A caller who supplies
-/// `PAMIN_POSTGRES_DIR` is pointing at an installation shared with everything
+/// [`StoreSettings::postgres_dir`] is pointing at an installation shared with everything
 /// else on the machine, and a workspace deleting from it would be a workspace
 /// reaching outside itself -- so this does nothing at all in that case, and
 /// the flag is a parameter rather than a read of the environment so that the
@@ -326,17 +354,13 @@ const UNREAD_WITHOUT_JIT: &[&str] = &["lib/bitcode"];
 /// `NotFound` on the second call; `setup` decides whether it has an install by
 /// the directory's name and its existence, never by its contents, so removing
 /// from inside one does not provoke a re-download.
-fn trim_unread(install: &std::path::Path, bundled: bool) -> u64 {
+fn trim_unread(install: &std::path::Path, bundled: bool, store: &StoreSettings) -> u64 {
     if !bundled {
         return 0;
     }
 
     let mut reclaimed = 0;
-    let conditional: &[&str] = if jit() == "off" {
-        UNREAD_WITHOUT_JIT
-    } else {
-        &[]
-    };
+    let conditional: &[&str] = if !store.jit { UNREAD_WITHOUT_JIT } else { &[] };
     let unread = UNREAD.iter().chain(conditional);
     for relative in unread {
         let path = install.join(relative);
@@ -376,10 +400,10 @@ fn tree_bytes(path: &std::path::Path) -> u64 {
 }
 
 /// Installs if needed, starts the server, and leaves it running.
-async fn start_server(workspace: &Workspace) -> Result<LocalServer> {
+async fn start_server(workspace: &Workspace, store: &StoreSettings) -> Result<LocalServer> {
     std::fs::create_dir_all(workspace.root())?;
 
-    let supplied = supplied_installation();
+    let supplied = supplied_installation(store);
     let bundled = supplied.is_none();
 
     // The password file and the data directory share a parent, and until a
@@ -407,7 +431,7 @@ async fn start_server(workspace: &Workspace) -> Result<LocalServer> {
         // Passed to the server as it starts, so an already-initialised
         // workspace keeps whatever it was started with until `pamin stop`.
         configuration: {
-            let mut configuration = settings();
+            let mut configuration = settings(store);
             // A distribution compiles in its own socket directory --
             // `/var/run/postgresql` on Debian and Ubuntu -- which belongs to
             // that distribution's `postgres` user and not to whoever is
@@ -422,7 +446,7 @@ async fn start_server(workspace: &Workspace) -> Result<LocalServer> {
             // compiled-in default is one this project has always relied on,
             // and overriding it everywhere would put a socket path of the
             // workspace's depth under PostgreSQL's 107-character limit.
-            if let Some(directory) = supplied_socket_directory(workspace) {
+            if let Some(directory) = supplied_socket_directory(workspace, store) {
                 configuration.insert("unix_socket_directories".to_string(), directory);
             }
             configuration
@@ -444,7 +468,7 @@ async fn start_server(workspace: &Workspace) -> Result<LocalServer> {
     // After `setup`, because that is what resolves the installation directory
     // and unpacks the archive into it, and before `start`, because a server
     // reading one of these would be a server this deleted something under.
-    let reclaimed = trim_unread(&postgres.settings().installation_dir, bundled);
+    let reclaimed = trim_unread(&postgres.settings().installation_dir, bundled, store);
     if reclaimed > 0 {
         tracing::info!(
             bytes = reclaimed,
@@ -561,7 +585,7 @@ const PROBE: Duration = Duration::from_secs(1);
 mod tests {
     use std::net::TcpListener;
 
-    use super::{UNREAD, UNREAD_WITHOUT_JIT, stale_pid_file, trim_unread};
+    use super::{StoreSettings, UNREAD, UNREAD_WITHOUT_JIT, stale_pid_file, trim_unread};
 
     /// An installation tree shaped the way a PostgreSQL install is shaped.
     ///
@@ -609,12 +633,11 @@ mod tests {
     /// What it removes, and -- the half that matters -- what it does not.
     #[test]
     fn trimming_takes_the_unread_directories_and_leaves_the_server() {
-        let _guard = ENVIRONMENT.lock().expect("the environment lock");
         let root = tempfile::tempdir().expect("temp install dir");
         let unread = installation(root.path());
         let before = bytes_under(root.path());
 
-        let reclaimed = trim_unread(root.path(), true);
+        let reclaimed = trim_unread(root.path(), true, &StoreSettings::default());
 
         assert_eq!(
             reclaimed, unread,
@@ -651,20 +674,17 @@ mod tests {
     ///
     /// The case this guards is not a crash: PostgreSQL logs at `DEBUG1` and
     /// compiles without inlining, so a workspace that asked for JIT would
-    /// quietly get the slow form of it. Serialised with the other environment
-    /// reader in this module rather than run in parallel, because
-    /// `set_var` is process-wide.
+    /// quietly get the slow form of it.
     #[test]
     fn asking_for_jit_keeps_the_bitcode_inlining_reads() {
-        let _guard = ENVIRONMENT.lock().expect("the environment lock");
         let root = tempfile::tempdir().expect("temp install dir");
         installation(root.path());
 
-        // SAFETY: every reader of this variable in this module runs under the
-        // lock this test holds.
-        unsafe { std::env::set_var("PAMIN_JIT", "on") };
-        let reclaimed = trim_unread(root.path(), true);
-        unsafe { std::env::remove_var("PAMIN_JIT") };
+        let jit = StoreSettings {
+            jit: true,
+            ..StoreSettings::default()
+        };
+        let reclaimed = trim_unread(root.path(), true, &jit);
 
         for relative in UNREAD_WITHOUT_JIT {
             assert!(
@@ -684,36 +704,37 @@ mod tests {
         );
     }
 
-    /// Serialises the tests that read or write `PAMIN_JIT`.
-    static ENVIRONMENT: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// A second call has nothing to do and says so rather than failing.
     ///
     /// `setup` runs on every command, so this runs on every command too, and
     /// the first one is the only one with anything to remove.
     #[test]
     fn trimming_twice_reclaims_nothing_the_second_time() {
-        let _guard = ENVIRONMENT.lock().expect("the environment lock");
         let root = tempfile::tempdir().expect("temp install dir");
         let unread = installation(root.path());
 
-        assert_eq!(trim_unread(root.path(), true), unread);
-        assert_eq!(trim_unread(root.path(), true), 0);
+        assert_eq!(
+            trim_unread(root.path(), true, &StoreSettings::default()),
+            unread
+        );
+        assert_eq!(trim_unread(root.path(), true, &StoreSettings::default()), 0);
     }
 
     /// An installation the caller supplied is left exactly as it was found.
     ///
-    /// This is the assertion the whole guard exists for: `PAMIN_POSTGRES_DIR`
+    /// This is the assertion the whole guard exists for: a supplied directory
     /// points at a system installation that other programs share, and a
     /// workspace has no business deleting out of it.
     #[test]
     fn a_supplied_installation_is_not_trimmed() {
-        let _guard = ENVIRONMENT.lock().expect("the environment lock");
         let root = tempfile::tempdir().expect("temp install dir");
         installation(root.path());
         let before = bytes_under(root.path());
 
-        assert_eq!(trim_unread(root.path(), false), 0);
+        assert_eq!(
+            trim_unread(root.path(), false, &StoreSettings::default()),
+            0
+        );
 
         assert_eq!(
             bytes_under(root.path()),
