@@ -188,7 +188,8 @@
 //! between minutes and most of an hour.
 //!
 //! The search refuses to run with any `PAMIN_EVAL_*` setting but the CPU
-//! device (see `require_the_shipped_settings_on_the_cpu`): an inference thread
+//! device and a PostgreSQL prefix, `PAMIN_EVAL_POSTGRES_DIR` (see
+//! `require_the_shipped_settings_on_the_cpu`): an inference thread
 //! count, for one, changes how many pairs a reranker pass takes, and with it
 //! the rankings.
 //!
@@ -1039,24 +1040,21 @@ fn prepare_pinned_model(api: &hf_hub::api::sync::Api, models: &Path, model: &ser
 }
 
 /// The reproducible XQuAD-R baseline is the shipped settings on the CPU:
-/// `PAMIN_EVAL_DEVICE=cpu`, and no other `PAMIN_EVAL_*` setting. Checked
-/// rather than asked of the command line, because a knob left exported in the
-/// shell would otherwise be measured under the baseline's name -- an
-/// inference thread count, for one, changes how many pairs a reranker pass
-/// takes, and with it the rankings.
+/// `PAMIN_EVAL_DEVICE=cpu`, and no other `PAMIN_EVAL_*` setting that can move
+/// a ranking. Checked rather than asked of the command line, because a knob
+/// left exported in the shell would otherwise be measured under the
+/// baseline's name -- an inference thread count, for one, changes how many
+/// pairs a reranker pass takes, and with it the rankings.
+///
+/// `PAMIN_EVAL_POSTGRES_DIR` is allowed: it says where a PostgreSQL
+/// installation is, which a host without a downloadable one needs, and no
+/// ranking reads it (see [`ranking`]).
 fn require_the_shipped_settings_on_the_cpu() {
-    let shipped = pamin_engine::Settings {
-        inference: pamin_index::InferenceSettings {
-            device: pamin_index::DeviceChoice::Cpu,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
     assert_eq!(
-        harness::settings(),
-        shipped,
+        ranking(harness::settings()),
+        shipped_on_the_cpu(),
         "the reproducible XQuAD-R baseline runs the shipped settings on the CPU: set \
-         PAMIN_EVAL_DEVICE=cpu and no other PAMIN_EVAL_ setting"
+         PAMIN_EVAL_DEVICE=cpu and no other PAMIN_EVAL_ setting but PAMIN_EVAL_POSTGRES_DIR"
     );
     assert_eq!(
         harness::depths(),
@@ -1064,6 +1062,41 @@ fn require_the_shipped_settings_on_the_cpu() {
         "the reproducible XQuAD-R baseline searches at the shipped depths: unset \
          PAMIN_EVAL_RERANK_DEPTH and PAMIN_EVAL_SEARCH_EFFORT"
     );
+}
+
+/// The settings the XQuAD-R baseline runs with.
+fn shipped_on_the_cpu() -> pamin_engine::Settings {
+    pamin_engine::Settings {
+        inference: pamin_index::InferenceSettings {
+            device: pamin_index::DeviceChoice::Cpu,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// `settings` without what only says where something is installed: the
+/// PostgreSQL prefix. Everything else stays, ranking or not, so the guard
+/// errs on the side of refusing.
+fn ranking(mut settings: pamin_engine::Settings) -> pamin_engine::Settings {
+    settings.store.postgres_dir = None;
+    settings
+}
+
+/// A supplied PostgreSQL passes the baseline's guard; a setting that can
+/// move a ranking does not.
+#[test]
+fn the_baseline_guard_allows_a_postgres_prefix_and_nothing_that_ranks() {
+    let mut supplied = shipped_on_the_cpu();
+    supplied.store.postgres_dir = Some("/usr/lib/postgresql/17".into());
+    assert_eq!(ranking(supplied), shipped_on_the_cpu());
+
+    let mut threads = shipped_on_the_cpu();
+    threads.inference.threads = std::num::NonZeroUsize::new(2);
+    assert_ne!(ranking(threads), shipped_on_the_cpu());
+    let mut device = shipped_on_the_cpu();
+    device.inference.device = pamin_index::DeviceChoice::Auto;
+    assert_ne!(ranking(device), shipped_on_the_cpu());
 }
 
 /// A cheap real-loader check for the reproduction log and verifier, without
