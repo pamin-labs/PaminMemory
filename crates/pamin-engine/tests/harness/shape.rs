@@ -387,12 +387,69 @@ fn environment() -> impl Iterator<Item = (String, String)> {
     })
 }
 
-/// The [`settings`] set now that can change what a model computes: all of
-/// them but the harnesses' own knobs ([`EVAL_SETTINGS`]), which choose what
-/// a run asks, not what a text embeds to, and `SIGNIFICANCE_GATE`, which
-/// decides only whether a run's comparison is asserted. A cache of model output is named
-/// by these, so a thread count or a runtime option that changes how a
-/// reduction rounds is the same list a record is named by.
+/// The `PAMIN_` variables the product reads on the path from a text to its
+/// vector and from the vectors to an index: those that change how a model
+/// executes ([`pamin_index::EXECUTION_SETTINGS`], which its plan keys are
+/// named by too) and those that change what a drain builds. A vector
+/// cache's producer and an index's stamp are named by these and by
+/// [`NATIVE_SETTINGS`], and by nothing else a run sets.
+///
+/// An allowlist, so a knob added elsewhere -- the reranker's, the search's
+/// -- cannot discard a cache or unvouch an index whose vectors it never
+/// touched. `every_product_pamin_read_is_placed` holds the product to it:
+/// every `PAMIN_` variable the product reads is here or in
+/// [`NOT_PRODUCER`] with why.
+fn producer_pamin(name: &str) -> bool {
+    pamin_index::EXECUTION_SETTINGS.contains(&name) || INDEX_SETTINGS.contains(&name)
+}
+
+/// The `PAMIN_` variables that change what an index build makes of the
+/// vectors: when a drain builds the vector graph.
+const INDEX_SETTINGS: [&str; 1] = ["PAMIN_UNINDEXED_BUDGET"];
+
+/// The `PAMIN_` variables the product reads off that path, with why: they
+/// name a run's record (see [`settings`]), not its vectors.
+const NOT_PRODUCER: [(&str, &str); 11] = [
+    ("PAMIN_HOME", "where a workspace is"),
+    (
+        "PAMIN_INFERENCE_BUILD",
+        "compiled in, and named by the producer's build line",
+    ),
+    (
+        "PAMIN_INFERENCE_CARGO",
+        "compiled in, and named by the producer's build line",
+    ),
+    ("PAMIN_JIT", "how Postgres plans the store's queries"),
+    ("PAMIN_MODEL_IDLE", "when an idle model is released"),
+    ("PAMIN_POSTGRES_DIR", "where the Postgres binaries are"),
+    ("PAMIN_RERANK_BATCH", "the reranker's batches"),
+    ("PAMIN_RERANK_BATCH_TOKENS", "the reranker's batches"),
+    (
+        "PAMIN_RERANK_DEPTH",
+        "how many candidates the reranker sees",
+    ),
+    ("PAMIN_RERANK_MAX_TOKENS", "the reranker's input length"),
+    (
+        "PAMIN_SEARCH_EFFORT",
+        "how hard a query searches the vector graph",
+    ),
+];
+
+/// The variables outside `PAMIN_` that change what a model computes: the
+/// native libraries' families ([`ALWAYS_PREFIXES`]), the CUDA device
+/// selection, and the thread counts of the tokenizer and the kernels, as a
+/// reduction split another way can round another way.
+const NATIVE_SETTINGS: [&str; 3] = [
+    "OMP_NUM_THREADS",
+    "RAYON_NUM_THREADS",
+    "TOKENIZERS_PARALLELISM",
+];
+
+/// The [`settings`] set now that can change what a text embeds to or what
+/// an index of the vectors holds: only those [`producer_setting`] allows.
+/// A cache of model output, and an index's stamp, are named by these;
+/// every other setting -- the harnesses' knobs, the significance gate, the
+/// reranker's and the search's -- names the record only.
 pub fn runtime_settings() -> Vec<String> {
     runtime(settings(environment()))
 }
@@ -401,10 +458,19 @@ fn runtime(settings: Vec<String>) -> Vec<String> {
     settings
         .into_iter()
         .filter(|line| {
-            let name = line.split_once('=').map_or(line.as_str(), |(name, _)| name);
-            !EVAL_SETTINGS.contains(&name) && name != "SIGNIFICANCE_GATE"
+            producer_setting(line.split_once('=').map_or(line.as_str(), |(name, _)| name))
         })
         .collect()
+}
+
+/// Whether the variable `name` can change what an embedding producer makes.
+fn producer_setting(name: &str) -> bool {
+    producer_pamin(name)
+        || NATIVE_SETTINGS.contains(&name)
+        || pamin_index::CUDA_SELECTION.contains(&name)
+        || ALWAYS_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
 }
 
 /// The arm's name in a record's file name: `shipped` when nothing is set,
@@ -3281,6 +3347,99 @@ mod tests {
         assert_eq!(visible_cuda(None, Some("0"), None), ["cuda: unknown"]);
     }
 
+    /// The reranker's knobs and the search's effort name the record but not
+    /// the producer: a tuned arm reuses the shipped run's vector cache and
+    /// index, whose vectors no such knob touched.
+    #[test]
+    fn reranker_and_search_knobs_name_the_record_not_the_producer() {
+        for knob in [
+            "PAMIN_RERANK_DEPTH",
+            "PAMIN_RERANK_BATCH",
+            "PAMIN_RERANK_BATCH_TOKENS",
+            "PAMIN_RERANK_MAX_TOKENS",
+            "PAMIN_SEARCH_EFFORT",
+        ] {
+            let set = settings([(knob.to_string(), "7".to_string())]);
+            assert_eq!(set, [format!("{knob}=7")], "{knob} names the record");
+            assert!(runtime(set).is_empty(), "{knob} names the producer");
+        }
+    }
+
+    /// Every `PAMIN_` variable the product reads is placed: on the embedding
+    /// and index-build path ([`producer_pamin`]), naming vector caches and
+    /// index stamps, or off it ([`NOT_PRODUCER`]) with why. A new read
+    /// fails here until it is placed, so a knob on that path cannot be left
+    /// out of the producer, nor one off it put in by default. Names are the
+    /// quoted `PAMIN_` literals of the product crates' sources, outside
+    /// comments and test modules, which is how every read is written.
+    #[test]
+    fn every_product_pamin_read_is_placed() {
+        let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crates directory");
+        let mut found = BTreeSet::new();
+        for name in ["pamin-index", "pamin-engine", "pamin-store", "pamin-core"] {
+            pamin_literals(&crates.join(name).join("src"), &mut found);
+        }
+        assert!(
+            found.contains("PAMIN_DEVICE") && found.contains("PAMIN_RERANK_DEPTH"),
+            "this test is not reading the source: {found:?}"
+        );
+        let placed =
+            |name: &str| producer_pamin(name) || NOT_PRODUCER.iter().any(|(off, _)| *off == name);
+        let unplaced: Vec<&String> = found.iter().filter(|name| !placed(name)).collect();
+        assert!(
+            unplaced.is_empty(),
+            "read by the product, and in neither producer_pamin nor NOT_PRODUCER: \
+             {unplaced:?}"
+        );
+        let gone: Vec<&str> = pamin_index::EXECUTION_SETTINGS
+            .iter()
+            .chain(&INDEX_SETTINGS)
+            .copied()
+            .chain(NOT_PRODUCER.iter().map(|(name, _)| *name))
+            .filter(|name| !found.contains(*name))
+            .collect();
+        assert!(gone.is_empty(), "placed but no longer read: {gone:?}");
+    }
+
+    /// The quoted `PAMIN_` literals in every `.rs` file under `dir`, outside
+    /// comment lines and the file's test module.
+    fn pamin_literals(dir: &Path, into: &mut BTreeSet<String>) {
+        for entry in std::fs::read_dir(dir).expect("read a source directory") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                pamin_literals(&path, into);
+                continue;
+            }
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("read a source file");
+            let product = source
+                .find("#[cfg(test)]\nmod tests")
+                .map_or(source.as_str(), |at| &source[..at]);
+            for line in product.lines() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                for (at, _) in line.match_indices("\"PAMIN_") {
+                    let rest = &line[at + 1..];
+                    let Some(end) = rest.find('"') else { continue };
+                    let literal = &rest[..end];
+                    // A bare prefix -- a `starts_with("PAMIN_")` -- names none.
+                    if literal.len() > "PAMIN_".len()
+                        && literal
+                            .chars()
+                            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                    {
+                        into.insert(literal.to_string());
+                    }
+                }
+            }
+        }
+    }
+
     /// Every environment variable the product reads outside `PAMIN_` either
     /// names the record or is listed in [`NOT_IDENTITY`] with why it
     /// changes nothing measured: reading a new one without deciding fails
@@ -3528,7 +3687,9 @@ mod tests {
             ["PAMIN_DEVICE=cpu"]
         );
         // What a model computes is named by the native libraries' settings
-        // and the product's, not by the harness's own knobs.
+        // and the product's embedding path, not by the harness's own knobs,
+        // the gate, the reranker's or the search's, nor a variable nothing
+        // on that path reads.
         let set = |name: &str, value: &str| (name.to_string(), value.to_string());
         assert_eq!(
             runtime(settings([
@@ -3541,6 +3702,13 @@ mod tests {
                 set("XQUAD_ALL_QUERIES", "1"),
                 set("MUSIQUE_SAMPLE", "60"),
                 set("SIGNIFICANCE_GATE", "off"),
+                set("PAMIN_RERANK_DEPTH", "20"),
+                set("PAMIN_RERANK_BATCH", "8"),
+                set("PAMIN_RERANK_BATCH_TOKENS", "4096"),
+                set("PAMIN_RERANK_MAX_TOKENS", "256"),
+                set("PAMIN_SEARCH_EFFORT", "100"),
+                set("PAMIN_SOMETHING_NEW", "1"),
+                set("TOKIO_WORKER_THREADS", "2"),
             ])),
             [
                 "MKL_NUM_THREADS=2",
