@@ -10,7 +10,7 @@
 //! list, weighting its members twice, and the per-channel ranks every result has
 //! to report would already be gone.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Once};
@@ -293,9 +293,10 @@ pub struct Stored {
     /// The complementary vector, absent in a single-vector index.
     pub secondary: Option<Vec<f32>>,
     /// What produced the vectors, as [`crate::Embedder::encoding`] names it:
-    /// the execution plan of each model. `None` when nothing recorded it -- a
-    /// vector a rebuild lent, one written before this was recorded, or any in
-    /// an index created before then.
+    /// the execution plan of each model. `None` when nothing recorded it --
+    /// one written before this was recorded, one lent by a rebuild from a
+    /// document that had none, or any in an index created before then -- or
+    /// when the plan was not one a record can name.
     pub encoding: Option<String>,
 }
 
@@ -1608,8 +1609,13 @@ impl Previous {
     }
 
     /// Hands `take` every document this index can lend, `batch` at a time,
-    /// as the topic, the text wanted for it and its stored vector; returns
-    /// the topics it lent.
+    /// as the topic, the text wanted for it and its stored vector, with what
+    /// produced those vectors ([`Stored::encoding`]); returns the topics it
+    /// lent.
+    ///
+    /// Each batch shares one encoding, so the caller can record it as this
+    /// index did: a rebuild that dropped it would leave every lent document
+    /// one the next sync of it has to embed again.
     ///
     /// A topic is lent when this index holds it with exactly the text in
     /// `wanted`; everything else is the caller's to embed. In the order this
@@ -1622,21 +1628,22 @@ impl Previous {
         &self,
         wanted: &HashMap<TopicId, &str>,
         batch: usize,
-        mut take: impl FnMut(&[VectorDocument<'_>]) -> Result<()>,
+        mut take: impl FnMut(&[VectorDocument<'_>], Option<&str>) -> Result<()>,
     ) -> Result<HashSet<TopicId>> {
         let mut lent = HashSet::new();
-        let mut pending: Vec<PendingVectorDocument<'_>> = Vec::with_capacity(batch);
-        let mut hand_over = |pending: &mut Vec<PendingVectorDocument<'_>>| {
-            let documents: Vec<VectorDocument<'_>> = pending
-                .iter()
-                .map(|(topic, content, vector, secondary)| {
-                    (*topic, *content, vector.as_slice(), secondary.as_deref())
-                })
-                .collect();
-            take(&documents)?;
-            pending.clear();
-            Ok::<_, IndexError>(())
-        };
+        let mut pending: BTreeMap<Option<String>, Vec<PendingVectorDocument<'_>>> = BTreeMap::new();
+        let mut hand_over =
+            |encoding: &Option<String>, pending: &mut Vec<PendingVectorDocument<'_>>| {
+                let documents: Vec<VectorDocument<'_>> = pending
+                    .iter()
+                    .map(|(topic, content, vector, secondary)| {
+                        (*topic, *content, vector.as_slice(), secondary.as_deref())
+                    })
+                    .collect();
+                take(&documents, encoding.as_deref())?;
+                pending.clear();
+                Ok::<_, IndexError>(())
+            };
         self.each(wanted, true, |topic, doc| {
             // The vector field is not nullable and every write here carries
             // one, so a document without it is an engine fault -- and the
@@ -1658,15 +1665,19 @@ impl Previous {
             } else {
                 None
             };
+            let encoding = self.index.encoding_of(&doc)?;
             lent.insert(topic);
-            pending.push((topic, wanted[&topic], vector, secondary));
-            if pending.len() == batch {
-                hand_over(&mut pending)?;
+            let group = pending.entry(encoding.clone()).or_default();
+            group.push((topic, wanted[&topic], vector, secondary));
+            if group.len() == batch {
+                hand_over(&encoding, group)?;
             }
             Ok(())
         })?;
-        if !pending.is_empty() {
-            hand_over(&mut pending)?;
+        for (encoding, group) in &mut pending {
+            if !group.is_empty() {
+                hand_over(encoding, group)?;
+            }
         }
         Ok(lent)
     }
@@ -1690,7 +1701,7 @@ impl Previous {
         let index = &self.index;
         for doc in index
             .collection
-            .iter_with_options(Some(&[FIELD_NGRAM]), vectors)?
+            .iter_with_options(Some(index.stored_fields()), vectors)?
         {
             let doc = doc?;
             let Some(topic) = doc.get_pk().and_then(|key| index.keys.topic(key)) else {
@@ -2351,7 +2362,7 @@ mod secondary_vectors {
         let wanted = HashMap::from([(topic, "same text")]);
         let mut seen = 0;
         let lent = previous
-            .lend(&wanted, 10, |docs| {
+            .lend(&wanted, 10, |docs, _| {
                 for (actual, _, a, b) in docs {
                     assert_eq!(*actual, topic);
                     assert_eq!(*a, primary);
