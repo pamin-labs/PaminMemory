@@ -301,15 +301,38 @@ fn jit(store: &StoreSettings) -> &'static str {
 /// The path is a prefix holding `bin/initdb` and `bin/pg_ctl`, which is what a
 /// distribution package installs (`/usr/lib/postgresql/17` on Debian and
 /// Ubuntu).
-fn supplied_installation(store: &StoreSettings) -> Option<std::path::PathBuf> {
-    let path = store.postgres_dir.clone()?;
-    path.join("bin").join("initdb").exists().then_some(path)
+///
+/// A prefix that is not one is refused rather than ignored: falling back to
+/// the bundled installation would download it -- on the network this exists
+/// to avoid -- and run a server other than the one the caller named.
+fn supplied_installation(store: &StoreSettings) -> Result<Option<std::path::PathBuf>> {
+    let Some(path) = store.postgres_dir.clone() else {
+        return Ok(None);
+    };
+    match installation_missing(&path) {
+        Some(missing) => Err(crate::StoreError::Installation(format!(
+            "the PostgreSQL installation {} has no {missing}",
+            path.display()
+        ))),
+        None => Ok(Some(path)),
+    }
+}
+
+/// What a PostgreSQL installation prefix lacks of what the store runs from
+/// it, `bin/initdb` and `bin/pg_ctl`, or `None` if it has both. The one
+/// check, for the store and for a caller validating a prefix before it is
+/// recorded.
+pub fn installation_missing(prefix: &std::path::Path) -> Option<String> {
+    ["initdb", "pg_ctl"]
+        .into_iter()
+        .map(|program| format!("bin/{program}{}", std::env::consts::EXE_SUFFIX))
+        .find(|relative| !prefix.join(relative).is_file())
 }
 
 /// Where a supplied installation's cluster should put its socket, if one is
 /// supplied. See the note beside `unix_socket_directories`.
 fn supplied_socket_directory(workspace: &Workspace, store: &StoreSettings) -> Option<String> {
-    supplied_installation(store)?;
+    store.postgres_dir.as_ref()?;
     Some(
         workspace
             .postgres_data_dir()
@@ -412,7 +435,7 @@ fn tree_bytes(path: &std::path::Path) -> u64 {
 async fn start_server(workspace: &Workspace, store: &StoreSettings) -> Result<LocalServer> {
     std::fs::create_dir_all(workspace.root())?;
 
-    let supplied = supplied_installation(store);
+    let supplied = supplied_installation(store)?;
     let bundled = supplied.is_none();
 
     // The password file and the data directory share a parent, and until a
@@ -792,6 +815,38 @@ mod tests {
             unread
         );
         assert_eq!(trim_unread(root.path(), true, &StoreSettings::default()), 0);
+    }
+
+    /// A supplied prefix that is not an installation is refused, naming what
+    /// it lacks, rather than replaced by the bundled one.
+    #[test]
+    fn a_supplied_prefix_without_an_installation_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let store = |path: &std::path::Path| StoreSettings {
+            postgres_dir: Some(path.to_path_buf()),
+            ..StoreSettings::default()
+        };
+        assert!(matches!(
+            super::supplied_installation(&StoreSettings::default()),
+            Ok(None)
+        ));
+
+        let missing = root.path().join("absent");
+        let error = super::supplied_installation(&store(&missing)).unwrap_err();
+        assert!(error.to_string().contains("bin/initdb"), "{error}");
+
+        installation(root.path());
+        std::fs::write(root.path().join("bin/pg_ctl"), b"").unwrap();
+        assert_eq!(super::installation_missing(root.path()), None);
+        assert_eq!(
+            super::supplied_installation(&store(root.path())).unwrap(),
+            Some(root.path().to_path_buf())
+        );
+        std::fs::remove_file(root.path().join("bin/pg_ctl")).unwrap();
+        assert_eq!(
+            super::installation_missing(root.path()).as_deref(),
+            Some("bin/pg_ctl")
+        );
     }
 
     /// An installation the caller supplied is left exactly as it was found.

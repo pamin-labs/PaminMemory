@@ -83,9 +83,11 @@ with as a flag, so `pamin serve --model-idle 60` answers commands that name no
 idle window; one it took from `config.toml` does, so edit the file and stop
 the server together.
 
-`--postgres-dir` points at an installation prefix holding `bin/initdb` --
-`/usr/lib/postgresql/17` on Debian and Ubuntu, `$(brew --prefix
-postgresql@17)` on macOS. Unset, a workspace installs its own copy, which is
+`--postgres-dir` points at an installation prefix holding `bin/initdb` and
+`bin/pg_ctl` -- `/usr/lib/postgresql/17` on Debian and Ubuntu, `$(brew --prefix
+postgresql@17)` on macOS. A prefix without them is refused, naming the flag or
+the file and what is missing, rather than replaced by a downloaded copy.
+Unset, a workspace installs its own copy, which is
 the default because it is what makes `pamin` work with nothing else installed;
 set, that copy is not downloaded and not stored, which is several hundred
 megabytes a workspace does not spend. Two things to know before setting it.
