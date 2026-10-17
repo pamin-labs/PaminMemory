@@ -1014,15 +1014,17 @@ pub async fn compare_reranked(
     crate::harness::shape::tables(&tables);
     let mut measured: Vec<BTreeMap<String, crate::scoring::Scores>> =
         vec![BTreeMap::new(); settings.len()];
+    // The environment is the process's: it is set only holding the turn --
+    // the caller's, or one taken here -- or another evaluation could read
+    // this arm's depth as its own settings (see `harness::ModelsTurn`).
+    let _turn = crate::harness::environment_turn();
+    // Dropped before the turn, panicking or not.
+    let depth = crate::harness::KnobSweep::claim("PAMIN_RERANK_DEPTH");
     for (index, (text, group)) in questions.iter().enumerate() {
         for ((setting, into), table) in settings.iter().zip(&mut measured).zip(&tables) {
-            // SAFETY: the harness runs one test on one thread, and nothing
-            // else reads the environment while this is written.
             match setting.depth {
-                Some(depth) => unsafe {
-                    std::env::set_var("PAMIN_RERANK_DEPTH", depth.to_string())
-                },
-                None => unsafe { std::env::remove_var("PAMIN_RERANK_DEPTH") },
+                Some(value) => depth.set(&value.to_string()),
+                None => depth.unset(),
             }
             let hits = engine
                 .search_reranked_with(text, limit, depths, rerank, setting.fusion.clone())
@@ -1032,8 +1034,6 @@ pub async fn compare_reranked(
             score(index, into.entry(group.clone()).or_default(), &hits);
         }
     }
-    unsafe { std::env::remove_var("PAMIN_RERANK_DEPTH") };
-
     println!("\n  {title}: the shipped search path under other settings, paired against it");
     for (group, shipped) in &measured[0] {
         println!(
@@ -1058,7 +1058,6 @@ pub async fn compare_reranked(
 
 #[cfg(test)]
 mod tests {
-
     #[test]
     fn dual_replay_uses_the_products_split_semantic_vote() {
         let topic = pamin_core::TopicId::new();

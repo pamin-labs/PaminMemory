@@ -325,10 +325,14 @@ const EVAL_NOT_IDENTITY: [(&str, &str); 6] = [
 
 /// Environment reads in the evaluation tests whose name is not a literal at
 /// the read, with where the names come from.
-const EVAL_INDIRECT: [(&str, &str); 8] = [
+const EVAL_INDIRECT: [(&str, &str); 9] = [
     (
         "pamin-engine/tests/harness/mod.rs: std::env::var(var)",
         "dataset_dir's variable, a literal at every dataset_dir call",
+    ),
+    (
+        "pamin-engine/tests/harness/mod.rs: std::env::var_os(name)",
+        "KnobSweep's knob, a literal at every KnobSweep::claim call, checked unset",
     ),
     (
         "pamin-engine/tests/locomo.rs: std::env::var_os(name)",
@@ -391,6 +395,102 @@ fn settings(set: impl IntoIterator<Item = (String, String)>) -> Vec<String> {
         .collect();
     settings.sort();
     settings
+}
+
+/// This process's environment, lossily as text, for [`settings`].
+fn environment() -> impl Iterator<Item = (String, String)> {
+    std::env::vars_os().map(|(name, value)| {
+        (
+            name.to_string_lossy().into_owned(),
+            value.to_string_lossy().into_owned(),
+        )
+    })
+}
+
+/// The `PAMIN_` variables the product reads on the path from a text to its
+/// vector and from the vectors to an index: those that change how a model
+/// executes ([`pamin_index::EXECUTION_SETTINGS`], which its plan keys are
+/// named by too) and those that change what a drain builds. A vector
+/// cache's producer and an index's stamp are named by these and by
+/// [`NATIVE_SETTINGS`], and by nothing else a run sets.
+///
+/// An allowlist, so a knob added elsewhere -- the reranker's, the search's
+/// -- cannot discard a cache or unvouch an index whose vectors it never
+/// touched. `every_product_pamin_read_is_placed` holds the product to it:
+/// every `PAMIN_` variable the product reads is here or in
+/// [`NOT_PRODUCER`] with why.
+fn producer_pamin(name: &str) -> bool {
+    pamin_index::EXECUTION_SETTINGS.contains(&name) || INDEX_SETTINGS.contains(&name)
+}
+
+/// The `PAMIN_` variables that change what an index build makes of the
+/// vectors: when a drain builds the vector graph.
+const INDEX_SETTINGS: [&str; 1] = ["PAMIN_UNINDEXED_BUDGET"];
+
+/// The `PAMIN_` variables the product reads off that path, with why: they
+/// name a run's record (see [`settings`]), not its vectors.
+const NOT_PRODUCER: [(&str, &str); 11] = [
+    ("PAMIN_HOME", "where a workspace is"),
+    (
+        "PAMIN_INFERENCE_BUILD",
+        "compiled in, and named by the producer's build line",
+    ),
+    (
+        "PAMIN_INFERENCE_CARGO",
+        "compiled in, and named by the producer's build line",
+    ),
+    ("PAMIN_JIT", "how Postgres plans the store's queries"),
+    ("PAMIN_MODEL_IDLE", "when an idle model is released"),
+    ("PAMIN_POSTGRES_DIR", "where the Postgres binaries are"),
+    ("PAMIN_RERANK_BATCH", "the reranker's batches"),
+    ("PAMIN_RERANK_BATCH_TOKENS", "the reranker's batches"),
+    (
+        "PAMIN_RERANK_DEPTH",
+        "how many candidates the reranker sees",
+    ),
+    ("PAMIN_RERANK_MAX_TOKENS", "the reranker's input length"),
+    (
+        "PAMIN_SEARCH_EFFORT",
+        "how hard a query searches the vector graph",
+    ),
+];
+
+/// The variables outside `PAMIN_` that change what a model computes: the
+/// native libraries' families ([`ALWAYS_PREFIXES`]), the CUDA device
+/// selection, and the thread counts of the tokenizer and the kernels, as a
+/// reduction split another way can round another way.
+const NATIVE_SETTINGS: [&str; 3] = [
+    "OMP_NUM_THREADS",
+    "RAYON_NUM_THREADS",
+    "TOKENIZERS_PARALLELISM",
+];
+
+/// The [`settings`] set now that can change what a text embeds to or what
+/// an index of the vectors holds: only those [`producer_setting`] allows.
+/// A cache of model output, and an index's stamp, are named by these;
+/// every other setting -- the harnesses' knobs, the significance gate, the
+/// reranker's and the search's -- names the record only.
+pub fn runtime_settings() -> Vec<String> {
+    runtime(settings(environment()))
+}
+
+fn runtime(settings: Vec<String>) -> Vec<String> {
+    settings
+        .into_iter()
+        .filter(|line| {
+            producer_setting(line.split_once('=').map_or(line.as_str(), |(name, _)| name))
+        })
+        .collect()
+}
+
+/// Whether the variable `name` can change what an embedding producer makes.
+fn producer_setting(name: &str) -> bool {
+    producer_pamin(name)
+        || NATIVE_SETTINGS.contains(&name)
+        || pamin_index::CUDA_SELECTION.contains(&name)
+        || ALWAYS_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
 }
 
 /// The arm's name in a record's file name: `shipped` when nothing is set,
@@ -649,8 +749,84 @@ pub struct Shape {
     /// Vectors the run read from a cache rather than embedding, from
     /// [`cached`](Self::cached).
     caches: Vec<String>,
+    /// What model loads in this process had fetched and prepared when
+    /// [`observe_models`](Self::observe_models) first looked, before the
+    /// models loaded.
+    activity_before: Option<pamin_index::LoadActivity>,
+    /// Reads those counts: `LoadActivity::now`, or a test's own.
+    activity: fn() -> pamin_index::LoadActivity,
+    /// This process's turn at loading models, from that first look until
+    /// the record is written, so no other test's loads fall in between
+    /// (see `harness::ModelsTurn`).
+    turn: Option<super::ModelsTurn>,
+    /// Per role, where the load found its plan -- calibrated by the run,
+    /// before it, or none to calibrate -- read with the providers.
+    calibration: Vec<String>,
+    /// The search indexes the run scored, from [`indexed`](Self::indexed),
+    /// each checked against who embedded it once the providers are known.
+    indexes: Vec<Indexed>,
+    /// What those checks found, `label: state by producer`.
+    indexed: Vec<String>,
     /// The machine, read at `publish`; accelerators once `providers` are.
     hardware: Hardware,
+}
+
+/// The stamp of a build begun by `producer` and not yet finished.
+fn pending(producer: &str) -> String {
+    format!("pending\n{producer}")
+}
+
+/// Replaces the stamp at `path` with `stamp` whole, or says why it could
+/// not, leaving what was there.
+fn write_stamp(path: &Path, stamp: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(path.parent().expect("a parent"))?;
+    let partial = path.with_extension("partial");
+    let written = std::fs::write(&partial, stamp).and_then(|()| std::fs::rename(&partial, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
+    written
+}
+
+/// Where the load of `role` found `plan`, as the selection says
+/// (`pamin_index::PlanOrigin`): whether the run paid for a calibration.
+fn calibration(role: &str, plan: &pamin_index::PlanUse) -> String {
+    use pamin_index::PlanOrigin;
+    let provider = provider(plan);
+    match plan.origin {
+        PlanOrigin::CalibratedNow => format!("calibrated {role}={provider}: by the run"),
+        PlanOrigin::PersistedRecord => {
+            format!("calibrated {role}={provider}: before the run, from its plan file")
+        }
+        PlanOrigin::ProcessCache => {
+            format!("calibrated {role}={provider}: before the run, in this process")
+        }
+        PlanOrigin::CpuOnly => format!("cpu-only {role}={provider}: no calibration"),
+        PlanOrigin::Deferred => format!("deferred {role}={provider}: calibration deferred"),
+        PlanOrigin::Unplanned => format!("unplanned {role}={provider}: no calibration"),
+    }
+}
+
+/// A search index a run scored, as [`Shape::indexed`] registered it.
+struct Indexed {
+    label: String,
+    /// The run's embedding producer now (see `harness::vectors`), or `None`
+    /// while its embedder has not loaded.
+    producer: Box<dyn Fn() -> Option<String> + Send>,
+    /// Where the producer that built the index is kept.
+    stamp: PathBuf,
+    /// Documents the index held before this run wrote any.
+    found: usize,
+    total: usize,
+    /// The stamp this run's producer writes, as it was before the run wrote
+    /// anything; set by [`Shape::begin_index`].
+    start: Option<String>,
+    /// This index's build lock, held from counting what it holds until the
+    /// run is over (see [`Shape::claim_index`]).
+    building: Option<std::fs::File>,
+    /// Counts the documents the index holds now: asked again before a
+    /// build's stamp is promoted.
+    count: Box<dyn Fn() -> usize + Send>,
 }
 
 /// Everything that tells one run's record from another's, serialised
@@ -691,6 +867,16 @@ struct Identity {
     /// `harness::vectors`). A run that embedded everything itself says so
     /// too, with nothing reused.
     caches: Vec<String>,
+    /// Whether the model loads fetched or prepared anything, and how much,
+    /// and per role whether its plan was calibrated before the run: a run
+    /// that downloads, prepares or calibrates times that too, and a rerun
+    /// over a warm home is another condition.
+    warmth: Vec<String>,
+    /// `label: built|resumed|reused by producer`: each search index the run
+    /// scored, and the digest of the embedding producer it was built by --
+    /// a reused index's document vectors are not the current plan's merely
+    /// because its queries are.
+    indexes: Vec<String>,
     build: Build,
     hardware: Hardware,
 }
@@ -905,8 +1091,9 @@ impl Identity {
 /// A probe for [`Shape::ran_on`] over every engine a run searched, each
 /// under its label (`primary`, `second`, ...): each one's
 /// [`Engine::providers`](pamin_engine::Engine::providers) as
-/// `label/role`, kept apart, sorted. It neither panics nor waits, as
-/// `Engine::providers` does neither.
+/// `label/role`, kept apart, sorted, once each engine's outstanding
+/// loads have finished ([`Engine::settle_loads`](pamin_engine::Engine::settle_loads)).
+/// It never panics, and waits only for those loads.
 pub fn engines(
     engines: &[(&str, &pamin_engine::Engine)],
 ) -> impl Fn() -> Vec<(String, pamin_index::PlanUse)> + Send + 'static {
@@ -915,6 +1102,15 @@ pub fn engines(
         .map(|(label, engine)| (label.to_string(), (*engine).clone()))
         .collect();
     move || {
+        // A load a search started and returned before needing -- a reranked
+        // search that found nothing -- may still be running. It is waited
+        // for here, before the plans are read and before the record reads
+        // what the loads fetched, so it is neither missed nor left running
+        // into the next run's turn. Only the harness waits: a search never
+        // does.
+        for (_, engine) in &engines {
+            futures::executor::block_on(engine.settle_loads());
+        }
         let mut providers: Vec<(String, pamin_index::PlanUse)> = engines
             .iter()
             .flat_map(|(label, engine)| {
@@ -1006,6 +1202,15 @@ fn record(kind: &str, fields: &[&str]) -> [u8; 32] {
     hash.finalize().into()
 }
 
+/// The groups a query is asked in, sorted and joined, as a record field:
+/// a query moved to another group is scored and counted there, so it is
+/// another question set.
+fn assigned(groups: &[&str]) -> String {
+    let mut sorted = groups.to_vec();
+    sorted.sort_unstable();
+    sorted.join("\u{1f}")
+}
+
 /// At most this many ids are named in a coverage failure; the count says how
 /// many there were.
 const NAMED: usize = 5;
@@ -1046,6 +1251,12 @@ impl Shape {
             providers: Vec::new(),
             models: Vec::new(),
             caches: Vec::new(),
+            activity_before: None,
+            activity: pamin_index::LoadActivity::now,
+            turn: None,
+            calibration: Vec::new(),
+            indexes: Vec::new(),
+            indexed: Vec::new(),
             hardware: Hardware::default(),
         }
     }
@@ -1108,6 +1319,317 @@ impl Shape {
             .push(format!("{file}: {reused}/{total} from {producer}"));
     }
 
+    /// Observes, before any model loads, what loads in this process have
+    /// fetched and prepared so far. At the end, what the loads fetched and
+    /// prepared since -- tokenizer files, accelerator exports, mapped
+    /// copies, rewritten graphs and all -- says whether the run paid for
+    /// them in its timings, and each plan says where its load found it:
+    /// the outcome of the loads, not a prediction of it.
+    pub fn observe_models(&mut self) {
+        if self.activity_before.is_none() {
+            self.take_turn();
+            self.activity_before = Some((self.activity)());
+        }
+    }
+
+    /// Takes this process's turn at loading models, if this run does not
+    /// hold it already (see `harness::ModelsTurn`).
+    fn take_turn(&mut self) {
+        if self.turn.is_none() {
+            self.turn = Some(super::load_models());
+        }
+    }
+
+    /// Reads the settings the run is under, holding the turn first: another
+    /// test's experimental arm sets the environment only while it holds the
+    /// turn, so the settings read are this run's own, not that arm's.
+    fn read_settings(&mut self) {
+        self.take_turn();
+        self.settings = settings(environment());
+    }
+
+    /// What the model loads fetched and prepared since
+    /// [`observe_models`](Self::observe_models) looked, and per role whether
+    /// its execution plan was calibrated before the run or by it: a run
+    /// that downloads, prepares or calibrates times that too.
+    fn observed_warmth(&self) -> Vec<String> {
+        let mut warmth: Vec<String> = self
+            .activity_before
+            .map(|before| {
+                let done = (self.activity)().since(before);
+                if done == pamin_index::LoadActivity::default() {
+                    "models: warm: nothing fetched or prepared".to_string()
+                } else {
+                    format!(
+                        "models: cold: fetched {} / prepared {}",
+                        done.fetched, done.prepared
+                    )
+                }
+            })
+            .into_iter()
+            .collect();
+        warmth.extend(self.calibration.iter().cloned());
+        warmth
+    }
+
+    /// The search index `engine` scores, under `label`, before this run
+    /// writes to it, and how many of the corpus's `total` documents it
+    /// holds, counted once this run holds its build lock.
+    /// `engine`'s embedder must be loaded (`Engine::load_embedder`), so the
+    /// producer that will embed what the run writes is known.
+    ///
+    /// The index is bound to the embedding producer that built it -- plans,
+    /// model revisions, runtime settings and build, as a vector cache is
+    /// named (`harness::vectors`) -- and the commit, in a stamp kept beside
+    /// it under `workspace`. An empty index is stamped now, before anything
+    /// is written, so a build that is interrupted resumes under its stamp.
+    /// One that holds documents must carry the run's stamp, or the run is
+    /// not canonical: its document vectors may come from another plan than
+    /// its query vectors. Deleting the project rebuilds it. A run that is not
+    /// canonical removes the stamp and writes none.
+    pub fn indexed(
+        &mut self,
+        label: &str,
+        engine: &pamin_engine::Engine,
+        workspace: &Path,
+        total: usize,
+    ) {
+        let stamp = workspace
+            .join("index")
+            .join(format!("{}.eval-producer", engine.project));
+        let counting = engine.clone();
+        let engine = engine.clone();
+        self.claim_index(
+            label,
+            stamp,
+            Box::new(move || super::vectors::index_producer(&engine)),
+            Box::new(move || counting.indexed_documents().expect("count documents") as usize),
+            total,
+        );
+    }
+
+    /// Takes the index's build lock, counts what it holds, and begins it
+    /// (see [`begin_index`](Self::begin_index)), holding the lock until this
+    /// run is over.
+    ///
+    /// One build at a time, across processes sharing an evaluation home:
+    /// two runs over one empty project each counted nothing, each stamped
+    /// it pending as theirs and wrote into it together, and the one whose
+    /// stamp was left vouched for documents the other embedded. Held from
+    /// the count through the stamp's promotion, a second run waits and then
+    /// counts what the first built.
+    fn claim_index(
+        &mut self,
+        label: &str,
+        stamp: PathBuf,
+        producer: Box<dyn Fn() -> Option<String> + Send>,
+        count: Box<dyn Fn() -> usize + Send>,
+        total: usize,
+    ) {
+        // An index this run has already claimed is locked by it: a second
+        // lock on another descriptor would wait on this run itself.
+        let held = self
+            .indexes
+            .iter_mut()
+            .find(|kept| kept.stamp == stamp)
+            .and_then(|kept| kept.building.take());
+        let building = held.unwrap_or_else(|| super::vectors::lock(&stamp));
+        let found = count();
+        self.begin_index(Indexed {
+            label: label.to_string(),
+            producer,
+            stamp,
+            found,
+            total,
+            start: None,
+            building: Some(building),
+            count,
+        });
+    }
+
+    /// What a stamp holds for `producer`: it, and the commit -- what an
+    /// index holds beyond its vectors, the mention graph and the passages,
+    /// is derived by code outside the inference build the producer names.
+    fn stamp_for(&self, producer: &str) -> String {
+        format!("{producer}\ncommit={}", self.source.commit)
+    }
+
+    /// Marks an empty index pending before it is written; removes the stamp
+    /// before a run that is not canonical writes into the index, or before
+    /// writing into an index that is not this run's own pending build; and
+    /// keeps the index to check.
+    ///
+    /// A pending stamp vouches for nothing: the embedder can fall back to
+    /// another plan between the start and the end of a build, and a build
+    /// interrupted after that holds vectors from both. Only
+    /// [`check_indexes`](Self::check_indexes), at the end of a build that
+    /// began empty under one producer and kept it, makes the stamp vouch.
+    fn begin_index(&mut self, mut index: Indexed) {
+        index.start = (index.producer)().map(|producer| self.stamp_for(&producer));
+        if self.source.noncanonical.is_some() {
+            // Only a run that writes invalidates: a complete index it just
+            // reads keeps what a canonical run vouched for.
+            if index.found < index.total {
+                let _ = std::fs::remove_file(&index.stamp);
+            }
+        } else if index.found == 0
+            && let Some(start) = &index.start
+        {
+            // Unwritten, the index is not this run's pending build, and the
+            // check at its end says so; nothing more is needed here.
+            if write_stamp(&index.stamp, &pending(start)).is_err() {
+                let _ = std::fs::remove_file(&index.stamp);
+            }
+        } else if index.found < index.total
+            && std::fs::read_to_string(&index.stamp).ok() != index.start.as_deref().map(pending)
+        {
+            // About to write into an index stamped otherwise: the stamp
+            // goes first, so an interruption cannot leave this run's
+            // documents vouched for by it.
+            let _ = std::fs::remove_file(&index.stamp);
+        }
+        self.indexes.retain(|kept| kept.label != index.label);
+        self.indexes.push(index);
+    }
+
+    /// Checks each index against its stamp (see [`indexed`](Self::indexed)),
+    /// making a pending stamp vouch at the end of the build that wrote it,
+    /// returning a line each and why the run cannot be canonical, if any
+    /// cannot be vouched for.
+    fn check_indexes(&self) -> (Vec<String>, Vec<String>) {
+        let short = |producer: &str| -> String {
+            Sha256::digest(producer.as_bytes())[..8]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect()
+        };
+        let mut lines = Vec::new();
+        let mut reasons = Vec::new();
+        for index in &self.indexes {
+            let state = match index.found {
+                0 => "built",
+                found if found >= index.total => "reused",
+                _ => "resumed",
+            };
+            let Some(producer) = (index.producer)() else {
+                lines.push(format!("{}: {state}, no embedder loaded", index.label));
+                continue;
+            };
+            let now = self.stamp_for(&producer);
+            if self.source.noncanonical.is_some() {
+                // A run that cannot vouch for its source -- a dirty build
+                // names its clean HEAD -- vouches for no index either. One
+                // that wrote into it, or finds it stamped for another
+                // producer, invalidates the stamp; one that only read a
+                // matching, vouched index leaves it to the canonical runs.
+                let read_only = index.found >= index.total
+                    && std::fs::read_to_string(&index.stamp).ok().as_deref() == Some(now.as_str());
+                if !read_only {
+                    let _ = std::fs::remove_file(&index.stamp);
+                }
+                lines.push(format!(
+                    "{}: {state} by {}, not {}: the run is not canonical",
+                    index.label,
+                    short(&now),
+                    if read_only { "vouched" } else { "stamped" }
+                ));
+                continue;
+            }
+            if index.start.as_deref() != Some(now.as_str()) {
+                // What it wrote was embedded by more than one producer.
+                let _ = std::fs::remove_file(&index.stamp);
+                lines.push(format!(
+                    "{}: {state}, producer changed during the run to {}",
+                    index.label,
+                    short(&now)
+                ));
+                reasons.push(format!(
+                    "{} index written by more than one embedding producer",
+                    index.label
+                ));
+                continue;
+            }
+            let stamped = std::fs::read_to_string(&index.stamp).ok();
+            if index.found == 0 && std::thread::panicking() {
+                // A run that failed may have failed before its build was
+                // done -- after the documents, before the edges derived from
+                // them -- so a pending stamp stays pending.
+                lines.push(format!(
+                    "{}: {state} by {}, not stamped: the run failed",
+                    index.label,
+                    short(&now)
+                ));
+            } else if index.found == 0 && stamped.as_deref() == Some(pending(&now).as_str()) {
+                let held = (index.count)();
+                if held < index.total {
+                    // Begun empty, but not holding the corpus now: a ledger
+                    // that already held every memory -- the index directory
+                    // deleted without it -- writes nothing again, and the
+                    // index stays as empty as it began. The stamp stays
+                    // pending.
+                    lines.push(format!(
+                        "{}: {state} by {}, not stamped: it holds {held} of {}",
+                        index.label,
+                        short(&now),
+                        index.total
+                    ));
+                    reasons.push(format!(
+                        "{} index incomplete: {held} of {}",
+                        index.label, index.total
+                    ));
+                    continue;
+                }
+                // Built whole from empty by one producer, and holding the
+                // corpus: now it vouches -- once the stamp that says so is
+                // on disk. Unpublished, the stamp stays pending, and the run
+                // vouches for nothing.
+                match write_stamp(&index.stamp, &now) {
+                    Ok(()) => lines.push(format!("{}: {state} by {}", index.label, short(&now))),
+                    Err(error) => {
+                        lines.push(format!(
+                            "{}: {state} by {}, not stamped: {error}",
+                            index.label,
+                            short(&now)
+                        ));
+                        reasons.push(format!(
+                            "{} index stamp could not be published",
+                            index.label
+                        ));
+                    }
+                }
+            } else if index.found >= index.total && stamped.as_deref() == Some(now.as_str()) {
+                lines.push(format!("{}: {state} by {}", index.label, short(&now)));
+            } else if index.found > 0 && index.found < index.total {
+                // What the interrupted session wrote is not recorded by
+                // producer, so a fallback during it cannot be ruled out.
+                lines.push(format!(
+                    "{}: {state} by {}, its earlier documents unverified",
+                    index.label,
+                    short(&now)
+                ));
+                reasons.push(format!(
+                    "{} index resumed from an interrupted build",
+                    index.label
+                ));
+            } else {
+                lines.push(format!(
+                    "{}: {state} by {}, run by {}",
+                    index.label,
+                    stamped.as_deref().map_or("unknown".into(), short),
+                    short(&now)
+                ));
+                reasons.push(
+                    if stamped.is_some_and(|stamp| stamp.starts_with("pending\n")) {
+                        format!("{} index left pending by an unfinished build", index.label)
+                    } else {
+                        format!("{} index built by another embedding producer", index.label)
+                    },
+                );
+            }
+        }
+        (lines, reasons)
+    }
+
     /// Asks the probe, if there is one, and keeps its answer with `loaded`
     /// as `engine/role=provider` lines and `engine/role=repository@commit`
     /// model lines; whether there was a probe to ask.
@@ -1124,6 +1646,15 @@ impl Shape {
         for loaded in &self.loaded {
             plans.extend(loaded());
         }
+        if self.activity_before.is_some() {
+            let mut calibration: Vec<String> = plans
+                .iter()
+                .map(|(role, plan)| calibration(role, plan))
+                .collect();
+            calibration.sort();
+            calibration.dedup();
+            self.calibration = calibration;
+        }
         let mut models: Vec<String> = plans
             .iter()
             .map(|(role, plan)| format!("{role}={}", plan.revision))
@@ -1137,7 +1668,9 @@ impl Shape {
             .collect();
         providers.sort();
         providers.dedup();
-        for reason in plan_reasons(&providers) {
+        let (indexed, unvouched) = self.check_indexes();
+        self.indexed = indexed;
+        for reason in plan_reasons(&providers).into_iter().chain(unvouched) {
             let noncanonical = self.source.noncanonical.get_or_insert_with(String::new);
             if !noncanonical.split("; ").any(|known| known == reason) {
                 if !noncanonical.is_empty() {
@@ -1163,7 +1696,8 @@ impl Shape {
     /// harness passes to [`tally`] -- by every other field that decides how it
     /// is scored: its text and its answer key.
     pub fn query(&mut self, groups: &[&str], id: &str, fields: &[&str]) {
-        let mut all = vec![id];
+        let assigned = assigned(groups);
+        let mut all = vec![id, assigned.as_str()];
         all.extend(fields);
         self.queries.push(record("query", &all));
         for group in groups {
@@ -1179,7 +1713,8 @@ impl Shape {
     /// A question the selection drew and the harness will not score. It
     /// counts as asked, so the gap shows in every coverage line.
     pub fn exclude(&mut self, groups: &[&str], id: &str, reason: &str) {
-        self.queries.push(record("excluded", &[id, reason]));
+        self.queries
+            .push(record("excluded", &[id, &assigned(groups), reason]));
         for group in groups {
             let fresh = self
                 .asked
@@ -1215,19 +1750,24 @@ impl Shape {
     }
 
     /// SHA-256 over the questions in the order they were given, which is the
-    /// order every arm asks them in.
+    /// order every arm asks them in, and the documents in the order they
+    /// were given, which is the order they are written in.
     ///
     /// The [`digest`](Self::digest) names a set, so two runs over the same
-    /// questions in a different order share it -- and the questions are asked
-    /// one after another, so order is a condition of every latency and cache
-    /// figure a run reports. This names the sequence, and is part of the
-    /// record's name beside the digest, so the two runs are kept apart.
+    /// questions or documents in a different order share it -- and the
+    /// questions are asked one after another, so order is a condition of
+    /// every latency and cache figure a run reports, while the order the
+    /// documents are inserted in shapes the graph and the vector index a
+    /// search walks. This names both sequences, and is part of the record's
+    /// name beside the digest, so the runs are kept apart.
     pub fn sequence(&self) -> String {
         let mut hash = Sha256::new();
         hash.update(b"sequence");
-        hash.update((self.queries.len() as u64).to_be_bytes());
-        for one in &self.queries {
-            hash.update(one);
+        for records in [&self.queries, &self.documents] {
+            hash.update((records.len() as u64).to_be_bytes());
+            for one in records {
+                hash.update(one);
+            }
         }
         format!("{:x}", hash.finalize())
     }
@@ -1246,13 +1786,7 @@ impl Shape {
     /// replacing this one's.
     pub fn publish(&mut self, test: &str, profile: &str) {
         let digest = self.digest();
-        let set = std::env::vars_os().map(|(name, value)| {
-            (
-                name.to_string_lossy().into_owned(),
-                value.to_string_lossy().into_owned(),
-            )
-        });
-        self.settings = settings(set);
+        self.read_settings();
         let arm = arm(&self.settings);
         self.run = [test.to_string(), profile.to_string(), arm.clone()];
         let name = self.name.clone();
@@ -1532,6 +2066,8 @@ impl Shape {
             providers: self.providers.clone(),
             models: self.models.clone(),
             caches: self.caches.clone(),
+            warmth: self.observed_warmth(),
+            indexes: self.indexed.clone(),
             build: Build::compiled(),
             hardware: self.hardware.clone(),
         }
@@ -1580,6 +2116,8 @@ impl Shape {
             "settings": self.settings,
             "providers": self.providers,
             "models": self.models,
+            "warmth": self.observed_warmth(),
+            "indexes": self.indexed,
             "identity": self.identity(),
             "identity_sha256_12": self.identity().short(),
             "corpus_sha256": self.digest(),
@@ -1630,9 +2168,10 @@ impl Drop for Shape {
             };
             let (lines, _, recorded) = self.coverage(&tally);
             self.coverage = Some(recorded);
-            // What it ran on, too: the probe neither panics nor waits, and no
-            // hardware is probed here -- only what this process already
-            // read -- so nothing stands between the failure and the file.
+            // What it ran on, too: the probe never panics and waits only for
+            // loads already running, and no hardware is probed here -- only
+            // what this process already read -- so nothing but those loads
+            // stands between the failure and the file.
             self.resolve_providers(false);
             let progress = self.progress.clone();
             let _ = self.persist(&progress, " (failed run)", &lines);
@@ -1758,6 +2297,580 @@ mod tests {
         assert_eq!(forward.0, backward.0);
         assert_ne!(forward.1, backward.1);
         assert_eq!(forward, build(&["q1", "q2"]));
+    }
+
+    /// The same documents written in another order are the same set and a
+    /// different sequence: insertion order shapes the index searched.
+    #[test]
+    fn the_sequence_sees_the_document_order() {
+        let build = |documents: &[&str]| {
+            let mut shape = Shape::new("test", String::new(), None);
+            for document in documents {
+                shape.document(&[document, "text"]);
+            }
+            shape.query(&["group"], "q1", &["a question"]);
+            (shape.digest(), shape.sequence())
+        };
+        let (forward, backward) = (build(&["d1", "d2"]), build(&["d2", "d1"]));
+        assert_eq!(forward.0, backward.0);
+        assert_ne!(forward.1, backward.1);
+    }
+
+    /// A query moved to another group, its text and answer key unchanged,
+    /// is another question set; the order groups are listed in is not.
+    #[test]
+    fn the_digest_sees_which_groups_a_query_is_asked_in() {
+        let build = |groups: &[&str]| {
+            let mut shape = Shape::new("test", String::new(), None);
+            shape.query(groups, "q1", &["a question", "answer"]);
+            shape.exclude(groups, "q2", "unanswerable");
+            shape.digest()
+        };
+        assert_ne!(build(&["2hop"]), build(&["3hop"]));
+        assert_ne!(build(&["a"]), build(&["a", "b"]));
+        assert_eq!(build(&["a", "b"]), build(&["b", "a"]));
+    }
+
+    /// An index is stamped pending before it is first written and vouched
+    /// for only once the build that began it empty finishes under one
+    /// producer; an interrupted build -- which may have fallen back to
+    /// another plan before it stopped -- is never vouched for, resumed or
+    /// reused; and a run that is not canonical, or whose producer changed
+    /// while it wrote, leaves no stamp.
+    #[test]
+    fn an_index_is_vouched_for_only_by_its_own_stamp() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let stamp = dir.path().join("index").join("p.eval-producer");
+        let index = |producer: &'static str, found: usize| Indexed {
+            label: "primary".into(),
+            producer: Box::new(move || Some(producer.to_string())),
+            stamp: stamp.clone(),
+            found,
+            total: 4,
+            start: None,
+            building: None,
+            // The build wrote the whole corpus.
+            count: Box::new(|| 4),
+        };
+        // One run: published at `commit`, canonical or not, its index begun
+        // before writing; and, unless interrupted, checked at the end.
+        let run = |commit: &str, dirty: bool, indexed: Indexed, finished: bool| {
+            let mut shape = Shape::new("test", String::new(), None);
+            shape.source.commit = commit.into();
+            shape.source.noncanonical = dirty.then(|| "dirty build".to_string());
+            shape.begin_index(indexed);
+            finished.then(|| shape.check_indexes())
+        };
+        let stamped = || std::fs::read_to_string(&stamp).ok();
+
+        // Unstamped documents from before: not vouched for.
+        let (lines, reasons) = run("a", false, index("plan=cpu@a", 2), true).unwrap();
+        assert_eq!(
+            reasons,
+            ["primary index resumed from an interrupted build"],
+            "{lines:?}"
+        );
+
+        // A build interrupted before it finished is stamped pending, which
+        // vouches for nothing: it may have fallen back to another plan
+        // before it stopped -- from A to B here -- and its documents do not
+        // say which.
+        let fallen = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&fallen);
+        let falling = Indexed {
+            producer: Box::new(move || {
+                Some(
+                    if flag.load(Ordering::SeqCst) {
+                        "plan=cuda@b"
+                    } else {
+                        "plan=cpu@a"
+                    }
+                    .into(),
+                )
+            }),
+            ..index("", 0)
+        };
+        assert!(run("a", false, falling, false).is_none());
+        fallen.store(true, Ordering::SeqCst);
+        assert_eq!(stamped().as_deref(), Some("pending\nplan=cpu@a\ncommit=a"));
+        let (lines, reasons) = run("a", false, index("plan=cpu@a", 2), true).unwrap();
+        assert_eq!(
+            reasons,
+            ["primary index resumed from an interrupted build"],
+            "{lines:?}"
+        );
+        let (_, reasons) = run("a", false, index("plan=cpu@a", 4), true).unwrap();
+        assert_eq!(
+            reasons,
+            ["primary index left pending by an unfinished build"]
+        );
+
+        // Built whole from empty by one producer: vouched for, and so is
+        // every reuse after it.
+        let (lines, reasons) = run("a", false, index("plan=cpu@a", 0), true).unwrap();
+        assert!(reasons.is_empty(), "{lines:?}");
+        assert_eq!(stamped().as_deref(), Some("plan=cpu@a\ncommit=a"));
+        let (lines, reasons) = run("a", false, index("plan=cpu@a", 4), true).unwrap();
+        assert!(reasons.is_empty(), "{lines:?}");
+        assert!(lines[0].starts_with("primary: reused by "), "{lines:?}");
+
+        // Another commit reusing it whole writes nothing: not vouched for,
+        // and the stamp still names who built it.
+        let (_, reasons) = run("b", false, index("plan=cpu@a", 4), true).unwrap();
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(stamped().as_deref(), Some("plan=cpu@a\ncommit=a"));
+
+        // Another plan resuming it, interrupted before the end: the stamp
+        // went before anything was written, so nothing it wrote is vouched
+        // for by the first producer, then or after.
+        assert!(run("a", false, index("plan=cuda@b", 2), false).is_none());
+        assert_eq!(stamped(), None, "a mixed index kept the first stamp");
+        let (_, reasons) = run("a", false, index("plan=cpu@a", 4), true).unwrap();
+        assert_eq!(
+            reasons,
+            ["primary index built by another embedding producer"],
+            "a mixed index was vouched for"
+        );
+
+        // A producer that changed while the run wrote: stamp removed.
+        let moved = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&moved);
+        let changing = Indexed {
+            producer: Box::new(move || {
+                Some(
+                    if flag.load(Ordering::SeqCst) {
+                        "plan=cpu@a"
+                    } else {
+                        "plan=cuda@b"
+                    }
+                    .into(),
+                )
+            }),
+            ..index("", 0)
+        };
+        let mut shape = Shape::new("test", String::new(), None);
+        shape.source.commit = "a".into();
+        shape.begin_index(changing);
+        moved.store(true, Ordering::SeqCst);
+        let (_, reasons) = shape.check_indexes();
+        assert_eq!(
+            reasons,
+            ["primary index written by more than one embedding producer"]
+        );
+        assert_eq!(stamped(), None);
+
+        // Built by a dirty build, which names the same clean commit: no
+        // stamp, so a canonical run over it is not vouched for.
+        assert!(run("a", false, index("plan=cpu@a", 0), true).is_some());
+        let (lines, reasons) = run("a", true, index("plan=cpu@a", 0), true).unwrap();
+        assert!(reasons.is_empty(), "{lines:?}");
+        assert!(lines[0].contains("not stamped"), "{lines:?}");
+        assert_eq!(stamped(), None, "a dirty build's index was stamped");
+        let (_, reasons) = run("a", false, index("plan=cpu@a", 4), true).unwrap();
+        assert_eq!(reasons.len(), 1, "a dirty build's index was vouched for");
+    }
+
+    /// A run that is not canonical -- a gate-only run, say -- and only reads
+    /// a complete index vouched for its producer leaves the stamp to the
+    /// canonical runs; one that finds it stamped for another producer does
+    /// not.
+    #[test]
+    fn a_noncanonical_read_keeps_a_matching_stamp() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let stamp = dir.path().join("index").join("p.eval-producer");
+        let index = |producer: &'static str| Indexed {
+            label: "primary".into(),
+            producer: Box::new(move || Some(producer.to_string())),
+            stamp: stamp.clone(),
+            found: 4,
+            total: 4,
+            start: None,
+            building: None,
+            count: Box::new(|| 4),
+        };
+        let read = |noncanonical: Option<&str>, indexed: Indexed| {
+            let mut shape = Shape::new("test", String::new(), None);
+            shape.source.commit = "a".into();
+            shape.source.noncanonical = noncanonical.map(str::to_string);
+            shape.begin_index(indexed);
+            shape.check_indexes()
+        };
+        write_stamp(&stamp, "plan=cpu@a\ncommit=a").expect("stamp");
+
+        let (lines, reasons) = read(Some("significance gate only"), index("plan=cpu@a"));
+        assert!(reasons.is_empty(), "{lines:?}");
+        assert!(lines[0].contains("not vouched"), "{lines:?}");
+        let (lines, reasons) = read(None, index("plan=cpu@a"));
+        assert!(
+            reasons.is_empty(),
+            "the gate-only run invalidated it: {lines:?}"
+        );
+
+        let (_, _) = read(Some("significance gate only"), index("plan=cuda@b"));
+        assert_eq!(std::fs::read_to_string(&stamp).ok(), None);
+    }
+
+    /// A run that fails after building an index -- its documents written,
+    /// what is derived from them perhaps not -- leaves the stamp pending,
+    /// so no later run vouches for what it left.
+    #[test]
+    fn a_failed_run_leaves_its_index_pending() {
+        struct Failing(Shape);
+        impl Drop for Failing {
+            fn drop(&mut self) {
+                self.0.check_indexes();
+            }
+        }
+        let dir = tempfile::tempdir().expect("temp dir");
+        let stamp = dir.path().join("index").join("p.eval-producer");
+        let index = |found: usize| Indexed {
+            label: "primary".into(),
+            producer: Box::new(|| Some("plan=cpu@a".into())),
+            stamp: stamp.clone(),
+            found,
+            total: 4,
+            start: None,
+            building: None,
+            // The build wrote the whole corpus.
+            count: Box::new(|| 4),
+        };
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut shape = Shape::new("test", String::new(), None);
+            shape.source.commit = "a".into();
+            shape.begin_index(index(0));
+            let _failing = Failing(shape);
+            panic!("deriving the edges failed after every document was indexed");
+        }));
+        assert!(failed.is_err());
+        let pending = std::fs::read_to_string(&stamp).ok();
+        assert_eq!(pending.as_deref(), Some("pending\nplan=cpu@a\ncommit=a"));
+
+        let mut shape = Shape::new("test", String::new(), None);
+        shape.source.commit = "a".into();
+        shape.begin_index(index(4));
+        let (_, reasons) = shape.check_indexes();
+        assert_eq!(
+            reasons,
+            ["primary index left pending by an unfinished build"]
+        );
+    }
+
+    /// An index begun empty that does not hold the corpus at the end is not
+    /// vouched for: the ledger held every memory already -- the index
+    /// directory deleted without it -- so every write was skipped and the
+    /// projection stayed empty. Its stamp stays pending.
+    #[test]
+    fn an_index_still_empty_at_the_end_is_not_vouched_for() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let stamp = dir.path().join("index").join("p.eval-producer");
+        let mut shape = Shape::new("test", String::new(), None);
+        shape.source.commit = "a".into();
+        // Counted empty at the start, and nothing written since.
+        shape.claim_index(
+            "primary",
+            stamp.clone(),
+            Box::new(|| Some("plan=cpu@a".into())),
+            Box::new(|| 0),
+            4,
+        );
+        let (lines, reasons) = shape.check_indexes();
+        assert_eq!(reasons, ["primary index incomplete: 0 of 4"], "{lines:?}");
+        assert!(lines[0].contains("not stamped"), "{lines:?}");
+        assert_eq!(
+            std::fs::read_to_string(&stamp).ok().as_deref(),
+            Some("pending\nplan=cpu@a\ncommit=a")
+        );
+    }
+
+    /// A build whose final stamp cannot be published vouches for nothing:
+    /// the run is not canonical and the stamp on disk stays pending.
+    #[test]
+    fn an_unpublished_stamp_vouches_for_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let stamp = dir.path().join("index").join("p.eval-producer");
+        let mut shape = Shape::new("test", String::new(), None);
+        shape.source.commit = "a".into();
+        shape.begin_index(Indexed {
+            label: "primary".into(),
+            producer: Box::new(|| Some("plan=cpu@a".into())),
+            stamp: stamp.clone(),
+            found: 0,
+            total: 4,
+            start: None,
+            building: None,
+            // The build wrote the whole corpus.
+            count: Box::new(|| 4),
+        });
+        // The publication's partial file cannot be written, root or not.
+        std::fs::create_dir(stamp.with_extension("partial")).expect("block the write");
+        let (lines, reasons) = shape.check_indexes();
+        assert_eq!(
+            reasons,
+            ["primary index stamp could not be published"],
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("not stamped"), "{lines:?}");
+        assert_eq!(
+            std::fs::read_to_string(&stamp).ok().as_deref(),
+            Some("pending\nplan=cpu@a\ncommit=a")
+        );
+    }
+
+    /// Two runs building one index take turns: the second waits for the
+    /// first's build lock, then counts what the first built, and the stamp
+    /// is the promoting build's, not overwritten by a pending claim.
+    #[test]
+    fn index_builds_take_turns_and_the_stamp_is_the_promoter_s() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let stamp = dir.path().join("index").join("p.eval-producer");
+        let documents = Arc::new(AtomicUsize::new(0));
+        let claim = |shape: &mut Shape, documents: Arc<AtomicUsize>, stamp: PathBuf| {
+            shape.source.commit = "a".into();
+            shape.claim_index(
+                "primary",
+                stamp,
+                Box::new(|| Some("plan=cpu@a".into())),
+                Box::new(move || documents.load(Ordering::SeqCst)),
+                4,
+            );
+        };
+
+        let mut first = Shape::new("test", String::new(), None);
+        claim(&mut first, Arc::clone(&documents), stamp.clone());
+        assert_eq!(
+            std::fs::read_to_string(&stamp).ok().as_deref(),
+            Some("pending\nplan=cpu@a\ncommit=a")
+        );
+        let (claimed, waiting) = std::sync::mpsc::channel();
+        let second = std::thread::spawn({
+            let documents = Arc::clone(&documents);
+            let stamp = stamp.clone();
+            move || {
+                let mut second = Shape::new("test", String::new(), None);
+                claim(&mut second, documents, stamp);
+                claimed.send(()).expect("say it claimed");
+                second.check_indexes()
+            }
+        });
+        assert!(
+            waiting
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "a second build claimed the index while the first held it"
+        );
+        // The first build writes every document and promotes its stamp.
+        documents.store(4, Ordering::SeqCst);
+        let (_, reasons) = first.check_indexes();
+        assert!(reasons.is_empty(), "{reasons:?}");
+        drop(first);
+
+        let (lines, reasons) = second.join().expect("the second run");
+        assert!(reasons.is_empty(), "{reasons:?}");
+        assert!(lines[0].starts_with("primary: reused by "), "{lines:?}");
+        assert_eq!(
+            std::fs::read_to_string(&stamp).ok().as_deref(),
+            Some("plan=cpu@a\ncommit=a")
+        );
+    }
+
+    /// Two evaluations in one process take turns at loading models: one
+    /// that fetches while the other waits does not fall in the other's
+    /// interval, so the other is not named cold by it -- nor is its record
+    /// written over an interval holding another run's loads.
+    #[test]
+    fn evaluations_take_turns_at_loading_models() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static FETCHED: AtomicU64 = AtomicU64::new(0);
+        fn activity() -> pamin_index::LoadActivity {
+            pamin_index::LoadActivity {
+                fetched: FETCHED.load(Ordering::SeqCst),
+                prepared: 0,
+            }
+        }
+        let observe = || {
+            let mut shape = Shape::new("test", String::new(), None);
+            shape.activity = activity;
+            shape.observe_models();
+            shape
+        };
+        let fetching = observe();
+        let (looked, waiting) = std::sync::mpsc::channel();
+        let other = std::thread::spawn({
+            move || {
+                let shape = observe();
+                looked.send(()).expect("say it looked");
+                shape.observed_warmth()
+            }
+        });
+        // The other evaluation cannot look while this one loads.
+        assert!(
+            waiting
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "two evaluations loaded models at once"
+        );
+        FETCHED.fetch_add(3, Ordering::SeqCst);
+        assert_eq!(
+            fetching.observed_warmth(),
+            ["models: cold: fetched 3 / prepared 0"]
+        );
+        drop(fetching);
+        assert_eq!(
+            other.join().expect("the other evaluation"),
+            ["models: warm: nothing fetched or prepared"]
+        );
+    }
+
+    /// A run reads its settings only once it holds the turn, so it waits
+    /// out another test's experimental arm -- which sets the environment
+    /// only while it holds the turn -- rather than recording that arm's
+    /// transient settings as its own.
+    #[test]
+    fn settings_are_read_holding_the_turn() {
+        let arm = super::super::load_models();
+        let (read, waiting) = std::sync::mpsc::channel();
+        let other = std::thread::spawn(move || {
+            let mut shape = Shape::new("test", String::new(), None);
+            shape.read_settings();
+            read.send(()).expect("say it read");
+            shape.turn.is_some()
+        });
+        assert!(
+            waiting
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "settings were read while another test held the turn"
+        );
+        drop(arm);
+        assert!(
+            other.join().expect("the other run"),
+            "read without the turn"
+        );
+    }
+
+    /// Code that sets the environment for an experimental arm takes the
+    /// turn itself when its test holds none -- a comparison run from a test
+    /// with no evaluation and no model-loading turn -- and reuses its
+    /// thread's turn when it does, rather than waiting on itself; and it
+    /// waits while another thread holds it.
+    #[test]
+    fn an_environment_arm_takes_the_turn_it_needs() {
+        use super::super::{environment_turn, holds_turn, load_models};
+        let (taken, waiting) = std::sync::mpsc::channel();
+        let held = load_models();
+        let unheld = std::thread::spawn(move || {
+            // No turn of its own: it waits for one, then holds it.
+            let turn = environment_turn();
+            taken.send(()).expect("say it took the turn");
+            let holding = turn.is_some() && holds_turn();
+            // Holding it, it takes no second one.
+            let nested = environment_turn().is_none();
+            drop(turn);
+            (holding, nested, holds_turn())
+        });
+        assert!(
+            waiting
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "the environment was set while another thread held the turn"
+        );
+        assert!(environment_turn().is_none(), "the holder waited on itself");
+        drop(held);
+        assert_eq!(
+            unheld.join().expect("the other thread"),
+            (true, true, false)
+        );
+    }
+
+    /// A run whose model loads fetched or prepared anything is cold, one
+    /// whose loads found everything in place is warm, and each plan is
+    /// recorded as its load found it: calibrated by the run, before it (from
+    /// its file or in this process), or with nothing to calibrate.
+    #[test]
+    fn warmth_is_observed_from_the_loads() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static FETCHED: AtomicU64 = AtomicU64::new(0);
+        fn activity() -> pamin_index::LoadActivity {
+            pamin_index::LoadActivity {
+                fetched: FETCHED.load(Ordering::SeqCst),
+                prepared: 0,
+            }
+        }
+        let observe = || {
+            let mut shape = Shape::new("test", String::new(), None);
+            shape.activity = activity;
+            shape.observe_models();
+            shape
+        };
+        // A load that fetches: cold.
+        let first = observe();
+        FETCHED.fetch_add(2, Ordering::SeqCst);
+        assert_eq!(
+            first.observed_warmth(),
+            ["models: cold: fetched 2 / prepared 0"]
+        );
+        drop(first);
+        // A second load, finding what the first fetched: warm.
+        assert_eq!(
+            observe().observed_warmth(),
+            ["models: warm: nothing fetched or prepared"]
+        );
+        // Loads are counted from the first look, not a later one.
+        let mut shape = observe();
+        FETCHED.fetch_add(1, Ordering::SeqCst);
+        shape.observe_models();
+        assert_eq!(
+            shape.observed_warmth(),
+            ["models: cold: fetched 1 / prepared 0"]
+        );
+        drop(shape);
+
+        // Each plan as its load found it: a process-cached reuse is not a
+        // calibration by the run, nor is a plan read from its file.
+        use pamin_index::PlanOrigin;
+        let from = |role: &str, digit: &str, origin| {
+            (
+                role.to_string(),
+                pamin_index::PlanUse {
+                    origin,
+                    ..used("cpu", digit, REVISION)
+                },
+            )
+        };
+        let mut shape = observe();
+        shape.ran_on(move || {
+            vec![
+                from("a", "1", PlanOrigin::CalibratedNow),
+                from("b", "2", PlanOrigin::PersistedRecord),
+                from("c", "3", PlanOrigin::ProcessCache),
+                from("d", "4", PlanOrigin::CpuOnly),
+                from("e", "5", PlanOrigin::Deferred),
+                from("f", "6", PlanOrigin::Unplanned),
+            ]
+        });
+        assert!(shape.resolve_providers(false));
+        let at = |digit: &str| digit.repeat(16);
+        assert_eq!(
+            shape.observed_warmth()[1..],
+            [
+                format!("calibrated a=cpu@{}: by the run", at("1")),
+                format!(
+                    "calibrated b=cpu@{}: before the run, from its plan file",
+                    at("2")
+                ),
+                format!(
+                    "calibrated c=cpu@{}: before the run, in this process",
+                    at("3")
+                ),
+                format!("cpu-only d=cpu@{}: no calibration", at("4")),
+                format!("deferred e=cpu@{}: calibration deferred", at("5")),
+                format!("unplanned f=cpu@{}: no calibration", at("6")),
+            ]
+        );
     }
 
     /// A git object id: 40 lowercase hex digits under SHA-1, 64 under
@@ -2081,6 +3194,7 @@ mod tests {
             plan: digit.repeat(64),
             stable: true,
             revision: revision.into(),
+            origin: pamin_index::PlanOrigin::CalibratedNow,
         }
     }
 
@@ -2103,6 +3217,8 @@ mod tests {
                 format!("reranking accurate={REVISION}"),
             ],
             caches: Vec::new(),
+            warmth: vec!["models: cold: fetched 1 / prepared 0".into()],
+            indexes: Vec::new(),
             build: Build {
                 inference: "f".repeat(64),
                 cargo: vec!["CARGO_CFG_TARGET_FEATURE=fxsr,sse,sse2".into()],
@@ -2166,6 +3282,12 @@ mod tests {
             ("caches", |id| {
                 id.caches
                     .push("xquad.f32: 0/10 from 0123456789abcdef".into())
+            }),
+            ("warmth", |id| {
+                id.warmth[0] = "models: warm: nothing fetched or prepared".into()
+            }),
+            ("indexes", |id| {
+                id.indexes.push("primary: reused by 01234567".into())
             }),
             ("hardware.cpu", |id| id.hardware.cpu.push('x')),
             ("hardware.logical_cores", |id| {
@@ -2407,6 +3529,99 @@ mod tests {
         assert_eq!(unresolved.len(), 2);
         assert!(unresolved.iter().all(|line| line.contains("unresolved")));
         assert_eq!(visible_cuda(None, Some("0"), None), ["cuda: unknown"]);
+    }
+
+    /// The reranker's knobs and the search's effort name the record but not
+    /// the producer: a tuned arm reuses the shipped run's vector cache and
+    /// index, whose vectors no such knob touched.
+    #[test]
+    fn reranker_and_search_knobs_name_the_record_not_the_producer() {
+        for knob in [
+            "PAMIN_RERANK_DEPTH",
+            "PAMIN_RERANK_BATCH",
+            "PAMIN_RERANK_BATCH_TOKENS",
+            "PAMIN_RERANK_MAX_TOKENS",
+            "PAMIN_SEARCH_EFFORT",
+        ] {
+            let set = settings([(knob.to_string(), "7".to_string())]);
+            assert_eq!(set, [format!("{knob}=7")], "{knob} names the record");
+            assert!(runtime(set).is_empty(), "{knob} names the producer");
+        }
+    }
+
+    /// Every `PAMIN_` variable the product reads is placed: on the embedding
+    /// and index-build path ([`producer_pamin`]), naming vector caches and
+    /// index stamps, or off it ([`NOT_PRODUCER`]) with why. A new read
+    /// fails here until it is placed, so a knob on that path cannot be left
+    /// out of the producer, nor one off it put in by default. Names are the
+    /// quoted `PAMIN_` literals of the product crates' sources, outside
+    /// comments and test modules, which is how every read is written.
+    #[test]
+    fn every_product_pamin_read_is_placed() {
+        let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crates directory");
+        let mut found = BTreeSet::new();
+        for name in ["pamin-index", "pamin-engine", "pamin-store", "pamin-core"] {
+            pamin_literals(&crates.join(name).join("src"), &mut found);
+        }
+        assert!(
+            found.contains("PAMIN_DEVICE") && found.contains("PAMIN_RERANK_DEPTH"),
+            "this test is not reading the source: {found:?}"
+        );
+        let placed =
+            |name: &str| producer_pamin(name) || NOT_PRODUCER.iter().any(|(off, _)| *off == name);
+        let unplaced: Vec<&String> = found.iter().filter(|name| !placed(name)).collect();
+        assert!(
+            unplaced.is_empty(),
+            "read by the product, and in neither producer_pamin nor NOT_PRODUCER: \
+             {unplaced:?}"
+        );
+        let gone: Vec<&str> = pamin_index::EXECUTION_SETTINGS
+            .iter()
+            .chain(&INDEX_SETTINGS)
+            .copied()
+            .chain(NOT_PRODUCER.iter().map(|(name, _)| *name))
+            .filter(|name| !found.contains(*name))
+            .collect();
+        assert!(gone.is_empty(), "placed but no longer read: {gone:?}");
+    }
+
+    /// The quoted `PAMIN_` literals in every `.rs` file under `dir`, outside
+    /// comment lines and the file's test module.
+    fn pamin_literals(dir: &Path, into: &mut BTreeSet<String>) {
+        for entry in std::fs::read_dir(dir).expect("read a source directory") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                pamin_literals(&path, into);
+                continue;
+            }
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("read a source file");
+            let product = source
+                .find("#[cfg(test)]\nmod tests")
+                .map_or(source.as_str(), |at| &source[..at]);
+            for line in product.lines() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                for (at, _) in line.match_indices("\"PAMIN_") {
+                    let rest = &line[at + 1..];
+                    let Some(end) = rest.find('"') else { continue };
+                    let literal = &rest[..end];
+                    // A bare prefix -- a `starts_with("PAMIN_")` -- names none.
+                    if literal.len() > "PAMIN_".len()
+                        && literal
+                            .chars()
+                            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                    {
+                        into.insert(literal.to_string());
+                    }
+                }
+            }
+        }
     }
 
     /// Every environment variable the product reads outside `PAMIN_` either
@@ -2666,7 +3881,40 @@ mod tests {
             settings([("PAMIN_DEVICE".to_string(), "cpu".to_string())]),
             ["PAMIN_DEVICE=cpu"]
         );
-        // Named by every harness, though no harness lists it.
+        // What a model computes is named by the native libraries' settings
+        // and the product's embedding path, not by the harness's own knobs,
+        // the gate, the reranker's or the search's, nor a variable nothing
+        // on that path reads.
+        let set = |name: &str, value: &str| (name.to_string(), value.to_string());
+        assert_eq!(
+            runtime(settings([
+                set("OMP_NUM_THREADS", "1"),
+                set("MKL_NUM_THREADS", "2"),
+                set("OPENBLAS_NUM_THREADS", "3"),
+                set("ORT_LOGGING", "x"),
+                set("PAMIN_DEVICE", "cpu"),
+                set("PAMIN_EVAL_HOME", "/data"),
+                set("XQUAD_ALL_QUERIES", "1"),
+                set("MUSIQUE_SAMPLE", "60"),
+                set("SIGNIFICANCE_GATE", "off"),
+                set("PAMIN_RERANK_DEPTH", "20"),
+                set("PAMIN_RERANK_BATCH", "8"),
+                set("PAMIN_RERANK_BATCH_TOKENS", "4096"),
+                set("PAMIN_RERANK_MAX_TOKENS", "256"),
+                set("PAMIN_SEARCH_EFFORT", "100"),
+                set("PAMIN_SOMETHING_NEW", "1"),
+                set("TOKIO_WORKER_THREADS", "2"),
+            ])),
+            [
+                "MKL_NUM_THREADS=2",
+                "OMP_NUM_THREADS=1",
+                "OPENBLAS_NUM_THREADS=3",
+                "ORT_LOGGING=x",
+                "PAMIN_DEVICE=cpu",
+            ]
+        );
+        // Named by every harness, though no harness lists it -- the record,
+        // not the model output (above).
         let ungated = named(&[("SIGNIFICANCE_GATE", "off")]);
         assert!(!distinct.contains(&ungated), "{ungated}");
         for threads in [
