@@ -874,6 +874,25 @@ pass, so these milliseconds are the predecessor's and describe no search that
 ships; the paired ratio between the two batchings still stands. They have not
 been re-measured with batches side by side.
 
+**On the CPU, one pair a pass.** Once the passes of one rerank ran side by
+side, one thread each, on one shared session, grouping pairs into a pass only
+padded them. Against four pairs on the same build, `pamin search` through a
+resident server (4 vCPU Xeon, three rotated runs of 120 warm queries an arm)
+took a p50 of 0.834 [0.757, 0.931] and a p95 of 0.850 [0.715, 0.997] as long,
+and through `Engine::search_reranked` over copies of one index no group's
+nDCG@10 moved significantly: XQuAD-R cross-lingual −0.0001, same-language
+−0.0012, single-target −0.0013 (1,190 queries each), MuSiQue 2-hop +0.0040
+(its first 200 questions). The table is at `CPU_BATCH` in
+`crates/pamin-index/src/reranking.rs`. Accelerators, and a CPU with an
+inference budget of one thread, where passes cannot overlap, still group up to
+four pairs within 512 padded tokens. The write-ups, raw rows, per-query dumps
+and harnesses are retained for maintainers in the private submodule (see
+[internal-docs.md](internal-docs.md)): the timing at
+`internal-docs/pamin-memory/research/2026-10-16/q42-shared-session-b1-and-review-status.md`
+and `internal-docs/pamin-memory/research/2026-10-16/raw/q42/`, the accuracy at
+`internal-docs/pamin-memory/research/2026-10-16/q44-b1-entry-point-accuracy.md`
+and `internal-docs/pamin-memory/research/2026-10-16/raw/q44/`.
+
 **Truncating at 192 or 384 tokens rather than 256 was measured, and neither
 ships.** In the same runs, each limit paired against 256 with the new batching:
 192 made a search 0.80 of what it was on MuSiQue, where half the pairs reach
