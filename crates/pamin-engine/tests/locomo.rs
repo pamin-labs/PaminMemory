@@ -75,9 +75,9 @@
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
 //!
 //! Projects are named after a digest of the records and links they hold, and
-//! of the execution provider and model revision that embedded them, so a
-//! reused `PAMIN_EVAL_HOME` never scores a corpus built by older code or data,
-//! or embedded on another provider or by other weights. Each conversation's
+//! of the execution plan and model revision that embedded them, so a reused
+//! `PAMIN_EVAL_HOME` never scores a corpus built by older code or data, or
+//! embedded on another provider, plan or by other weights. Each conversation's
 //! index is also claimed through `harness::index` before it is written, so a
 //! reused index built under other settings is reported rather than trusted.
 
@@ -479,8 +479,9 @@ fn fetch(path: &Path, url: &str) {
 }
 
 /// What embeds this run's documents, as a project name carries it: the first
-/// twelve hex digits of a SHA-256 over each embedding plan's role, execution
-/// provider and model revision (`repository@commit`).
+/// twelve hex digits of a SHA-256 over each embedding plan's role, its full
+/// execution plan as the shape records it (`harness::shape::provider`) and
+/// its model revision (`repository@commit`).
 ///
 /// A reused `PAMIN_EVAL_HOME` keeps the vectors an earlier run wrote, and
 /// `write_absent` skips every topic it finds. Without this, a run on another
@@ -515,7 +516,13 @@ async fn embedded_by(
         .providers()
         .into_iter()
         .filter(|(role, _)| role.starts_with("embedding"))
-        .map(|(role, plan)| format!("{role}={}@{}", plan.target, plan.revision))
+        .map(|(role, plan)| {
+            format!(
+                "{role}={}@{}",
+                harness::shape::provider(&plan),
+                plan.revision
+            )
+        })
         .collect();
     plans.sort();
     plans.dedup();
