@@ -981,6 +981,31 @@ pub fn requested_variants() -> Option<Vec<(String, Setting)>> {
     std::env::var("DEPTH_VARIANTS").is_ok().then(depth_variants)
 }
 
+/// `PAMIN_RERANK_DEPTH` while a depth sweep sets it, claimed holding the
+/// turn. A depth the caller set is refused: it would name the record while
+/// no row ran under it. Dropped, panicking or not, it unsets the depth, so
+/// no later evaluation reads a variant's depth as its own setting.
+struct DepthSweep;
+
+impl DepthSweep {
+    fn claim() -> Self {
+        assert!(
+            std::env::var_os("PAMIN_RERANK_DEPTH").is_none(),
+            "DEPTH_VARIANTS sets PAMIN_RERANK_DEPTH itself: unset it for this arm"
+        );
+        Self
+    }
+}
+
+impl Drop for DepthSweep {
+    fn drop(&mut self) {
+        // SAFETY: claimed holding the turn, which is released only after
+        // this is dropped; every test that reads the environment for its
+        // settings waits for it.
+        unsafe { std::env::remove_var("PAMIN_RERANK_DEPTH") };
+    }
+}
+
 /// Every question through `search_reranked_with` under the shipped setting and
 /// under each variant, scored by group and paired against the shipped one.
 ///
@@ -1018,6 +1043,8 @@ pub async fn compare_reranked(
     // the caller's, or one taken here -- or another evaluation could read
     // this arm's depth as its own settings (see `harness::ModelsTurn`).
     let _turn = crate::harness::environment_turn();
+    // Dropped before the turn, panicking or not.
+    let _depth = DepthSweep::claim();
     for (index, (text, group)) in questions.iter().enumerate() {
         for ((setting, into), table) in settings.iter().zip(&mut measured).zip(&tables) {
             // SAFETY: this thread holds the turn (taken above), and every
@@ -1037,8 +1064,6 @@ pub async fn compare_reranked(
             score(index, into.entry(group.clone()).or_default(), &hits);
         }
     }
-    unsafe { std::env::remove_var("PAMIN_RERANK_DEPTH") };
-
     println!("\n  {title}: the shipped search path under other settings, paired against it");
     for (group, shipped) in &measured[0] {
         println!(
@@ -1063,6 +1088,30 @@ pub async fn compare_reranked(
 
 #[cfg(test)]
 mod tests {
+    /// A sweep refuses a depth the caller set, and a sweep that panics
+    /// mid-variant leaves no depth behind.
+    #[test]
+    fn a_depth_sweep_refuses_a_set_depth_and_unsets_its_own() {
+        let _turn = crate::harness::environment_turn();
+        let before = std::env::var_os("PAMIN_RERANK_DEPTH");
+        // SAFETY: this thread holds the turn.
+        unsafe { std::env::set_var("PAMIN_RERANK_DEPTH", "30") };
+        assert!(std::panic::catch_unwind(super::DepthSweep::claim).is_err());
+        unsafe { std::env::remove_var("PAMIN_RERANK_DEPTH") };
+
+        let swept = std::panic::catch_unwind(|| {
+            let _depth = super::DepthSweep::claim();
+            // SAFETY: as above.
+            unsafe { std::env::set_var("PAMIN_RERANK_DEPTH", "15") };
+            panic!("a search failed mid-variant");
+        });
+        assert!(swept.is_err());
+        assert_eq!(std::env::var_os("PAMIN_RERANK_DEPTH"), None);
+        if let Some(before) = before {
+            // SAFETY: as above.
+            unsafe { std::env::set_var("PAMIN_RERANK_DEPTH", before) };
+        }
+    }
 
     #[test]
     fn dual_replay_uses_the_products_split_semantic_vote() {
