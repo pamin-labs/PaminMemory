@@ -672,12 +672,8 @@ pub struct Shape {
     /// the record is written, so no other test's loads fall in between
     /// (see `harness::ModelsTurn`).
     turn: Option<super::ModelsTurn>,
-    /// The execution plans calibrated and kept on disk before the models
-    /// loaded, by plan hash, if [`observe_models`](Self::observe_models)
-    /// looked.
-    plans_before: Option<BTreeSet<String>>,
-    /// Per role, whether its plan was calibrated before the run or by it,
-    /// read with the providers.
+    /// Per role, where the load found its plan -- calibrated by the run,
+    /// before it, or none to calibrate -- read with the providers.
     calibration: Vec<String>,
     /// The search indexes the run scored, from [`indexed`](Self::indexed),
     /// each checked against who embedded it once the providers are known.
@@ -698,6 +694,25 @@ fn write_stamp(path: &Path, stamp: &str) {
     let _ = std::fs::create_dir_all(path.parent().expect("a parent"));
     let partial = path.with_extension("partial");
     let _ = std::fs::write(&partial, stamp).and_then(|()| std::fs::rename(&partial, path));
+}
+
+/// Where the load of `role` found `plan`, as the selection says
+/// (`pamin_index::PlanOrigin`): whether the run paid for a calibration.
+fn calibration(role: &str, plan: &pamin_index::PlanUse) -> String {
+    use pamin_index::PlanOrigin;
+    let provider = provider(plan);
+    match plan.origin {
+        PlanOrigin::CalibratedNow => format!("calibrated {role}={provider}: by the run"),
+        PlanOrigin::PersistedRecord => {
+            format!("calibrated {role}={provider}: before the run, from its plan file")
+        }
+        PlanOrigin::ProcessCache => {
+            format!("calibrated {role}={provider}: before the run, in this process")
+        }
+        PlanOrigin::CpuOnly => format!("cpu-only {role}={provider}: no calibration"),
+        PlanOrigin::Deferred => format!("deferred {role}={provider}: calibration deferred"),
+        PlanOrigin::Unplanned => format!("unplanned {role}={provider}: no calibration"),
+    }
 }
 
 /// A search index a run scored, as [`Shape::indexed`] registered it.
@@ -1131,7 +1146,6 @@ impl Shape {
             activity_before: None,
             activity: pamin_index::LoadActivity::now,
             turn: None,
-            plans_before: None,
             calibration: Vec::new(),
             indexes: Vec::new(),
             indexed: Vec::new(),
@@ -1197,31 +1211,17 @@ impl Shape {
             .push(format!("{file}: {reused}/{total} from {producer}"));
     }
 
-    /// Observes, before any model loads from `models`, what loads in this
-    /// process have fetched and prepared so far, and which calibrated plans
-    /// a load would accept. At the end, what the loads fetched and prepared
-    /// since -- tokenizer files, accelerator exports, mapped copies,
-    /// rewritten graphs and all -- says whether the run paid for them in
-    /// its timings: the outcome of the loads, not a prediction of it.
-    pub fn observe_models(&mut self, models: &Path) {
+    /// Observes, before any model loads, what loads in this process have
+    /// fetched and prepared so far. At the end, what the loads fetched and
+    /// prepared since -- tokenizer files, accelerator exports, mapped
+    /// copies, rewritten graphs and all -- says whether the run paid for
+    /// them in its timings, and each plan says where its load found it:
+    /// the outcome of the loads, not a prediction of it.
+    pub fn observe_models(&mut self) {
         if self.activity_before.is_none() {
             self.take_turn();
             self.activity_before = Some((self.activity)());
         }
-        // Only plans a load would accept (`pamin_index::plan_is_usable`): an
-        // expired or broken one is calibrated again, as if it were absent.
-        let directory = models.join("compute-plans-v1");
-        let plans: Vec<String> = std::fs::read_dir(&directory)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .filter(|name| pamin_index::plan_is_usable(&directory.join(name)))
-            .filter_map(|name| name.strip_suffix(".json").map(str::to_string))
-            .collect();
-        self.plans_before
-            .get_or_insert_with(BTreeSet::new)
-            .extend(plans);
     }
 
     /// Takes this process's turn at loading models, if this run does not
@@ -1449,22 +1449,10 @@ impl Shape {
         for loaded in &self.loaded {
             plans.extend(loaded());
         }
-        if let Some(before) = &self.plans_before {
+        if self.activity_before.is_some() {
             let mut calibration: Vec<String> = plans
                 .iter()
-                .map(|(role, plan)| {
-                    // As the load says: a plan chosen with nothing to
-                    // measure -- the CPU alone -- was not calibrated at all.
-                    if !plan.calibrated {
-                        return format!("cpu-only {role}={}: no calibration", provider(plan));
-                    }
-                    let when = if before.contains(&plan.plan) {
-                        "before the run"
-                    } else {
-                        "by the run"
-                    };
-                    format!("calibrated {role}={}: {when}", provider(plan))
-                })
+                .map(|(role, plan)| calibration(role, plan))
                 .collect();
             calibration.sort();
             calibration.dedup();
@@ -2339,18 +2327,15 @@ mod tests {
                 prepared: 0,
             }
         }
-        let dir = tempfile::tempdir().expect("temp dir");
-        let models = dir.path().to_path_buf();
-        let observe = move || {
+        let observe = || {
             let mut shape = Shape::new("test", String::new(), None);
             shape.activity = activity;
-            shape.observe_models(&models);
+            shape.observe_models();
             shape
         };
         let fetching = observe();
         let (looked, waiting) = std::sync::mpsc::channel();
         let other = std::thread::spawn({
-            let observe = observe.clone();
             move || {
                 let shape = observe();
                 looked.send(()).expect("say it looked");
@@ -2438,9 +2423,9 @@ mod tests {
     }
 
     /// A run whose model loads fetched or prepared anything is cold, one
-    /// whose loads found everything in place is warm, and a plan
-    /// calibrated before the run is told from one the run calibrated -- an
-    /// expired plan file counting as none, as the load treats it.
+    /// whose loads found everything in place is warm, and each plan is
+    /// recorded as its load found it: calibrated by the run, before it (from
+    /// its file or in this process), or with nothing to calibrate.
     #[test]
     fn warmth_is_observed_from_the_loads() {
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -2451,12 +2436,10 @@ mod tests {
                 prepared: 0,
             }
         }
-        let dir = tempfile::tempdir().expect("temp dir");
-        let models = dir.path();
         let observe = || {
             let mut shape = Shape::new("test", String::new(), None);
             shape.activity = activity;
-            shape.observe_models(models);
+            shape.observe_models();
             shape
         };
         // A load that fetches: cold.
@@ -2475,55 +2458,53 @@ mod tests {
         // Loads are counted from the first look, not a later one.
         let mut shape = observe();
         FETCHED.fetch_add(1, Ordering::SeqCst);
-        shape.observe_models(models);
+        shape.observe_models();
         assert_eq!(
             shape.observed_warmth(),
             ["models: cold: fetched 1 / prepared 0"]
         );
         drop(shape);
 
-        // A plan a load would use, and one it would not: expired.
-        let plans = models.join("compute-plans-v1");
-        std::fs::create_dir_all(&plans).unwrap();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        for (digit, expires) in [("1", now + 3600), ("2", now - 1)] {
-            let fingerprint = digit.repeat(64);
-            let plan = serde_json::json!({
-                "fingerprint": fingerprint,
-                "target": "cpu",
-                "expires": expires,
-                "references": {"vectors": null, "queries": null, "scores": null},
-            });
-            std::fs::write(plans.join(format!("{fingerprint}.json")), plan.to_string()).unwrap();
-        }
+        // Each plan as its load found it: a process-cached reuse is not a
+        // calibration by the run, nor is a plan read from its file.
+        use pamin_index::PlanOrigin;
+        let from = |role: &str, digit: &str, origin| {
+            (
+                role.to_string(),
+                pamin_index::PlanUse {
+                    origin,
+                    ..used("cpu", digit, REVISION)
+                },
+            )
+        };
         let mut shape = observe();
-        shape.ran_on(|| {
+        shape.ran_on(move || {
             vec![
-                ("embedding".to_string(), used("cpu", "1", REVISION)),
-                ("reranking".to_string(), used("cpu", "2", REVISION)),
-                // Selected with nothing to measure, as under PAMIN_DEVICE=cpu.
-                (
-                    "secondary".to_string(),
-                    pamin_index::PlanUse {
-                        calibrated: false,
-                        ..used("cpu", "3", REVISION)
-                    },
-                ),
+                from("a", "1", PlanOrigin::CalibratedNow),
+                from("b", "2", PlanOrigin::PersistedRecord),
+                from("c", "3", PlanOrigin::ProcessCache),
+                from("d", "4", PlanOrigin::CpuOnly),
+                from("e", "5", PlanOrigin::Deferred),
+                from("f", "6", PlanOrigin::Unplanned),
             ]
         });
         assert!(shape.resolve_providers(false));
+        let at = |digit: &str| digit.repeat(16);
         assert_eq!(
             shape.observed_warmth()[1..],
             [
+                format!("calibrated a=cpu@{}: by the run", at("1")),
                 format!(
-                    "calibrated embedding=cpu@{}: before the run",
-                    "1".repeat(16)
+                    "calibrated b=cpu@{}: before the run, from its plan file",
+                    at("2")
                 ),
-                format!("calibrated reranking=cpu@{}: by the run", "2".repeat(16)),
-                format!("cpu-only secondary=cpu@{}: no calibration", "3".repeat(16)),
+                format!(
+                    "calibrated c=cpu@{}: before the run, in this process",
+                    at("3")
+                ),
+                format!("cpu-only d=cpu@{}: no calibration", at("4")),
+                format!("deferred e=cpu@{}: calibration deferred", at("5")),
+                format!("unplanned f=cpu@{}: no calibration", at("6")),
             ]
         );
     }
@@ -2849,7 +2830,7 @@ mod tests {
             plan: digit.repeat(64),
             stable: true,
             revision: revision.into(),
-            calibrated: true,
+            origin: pamin_index::PlanOrigin::CalibratedNow,
         }
     }
 

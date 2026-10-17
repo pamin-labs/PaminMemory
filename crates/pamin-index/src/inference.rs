@@ -580,9 +580,31 @@ pub(crate) struct RuntimePlan {
     /// Every plan this model's place has run on, oldest first: a model a
     /// failure or a revalidation replaced hands its history on.
     history: Vec<PlanUse>,
-    /// Whether this plan was chosen among measured candidates (see
-    /// [`PlanUse::calibrated`]); false for a CPU-only selection.
-    calibrated: bool,
+    /// Where the load found this plan (see [`PlanUse::origin`]).
+    origin: PlanOrigin,
+}
+
+/// Where a load found the execution plan it runs on, as the selection
+/// itself decided it -- so a record can say whether a run paid for a
+/// calibration, rather than guess from which plan files were on disk.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PlanOrigin {
+    /// Calibrated by this load: the candidates were measured.
+    CalibratedNow,
+    /// Read from a plan file a calibration before this process wrote.
+    PersistedRecord,
+    /// Found in this process's cache of plans, calibrated or read by an
+    /// earlier load in the same process.
+    ProcessCache,
+    /// Nothing to calibrate: the CPU was the only candidate, as under
+    /// `PAMIN_DEVICE=cpu` or with no accelerator found.
+    CpuOnly,
+    /// Calibration deferred: the host's calibration lock could not be
+    /// taken, so the CPU runs until it is retried.
+    Deferred,
+    /// Loaded without a plan.
+    #[default]
+    Unplanned,
 }
 
 /// One execution plan a model ran on: its target as plans are keyed
@@ -599,12 +621,9 @@ pub struct PlanUse {
     pub plan: String,
     pub stable: bool,
     pub revision: String,
-    /// Whether the plan was chosen among accelerator candidates by
-    /// calibration, in this process or by a persisted record of one. False
-    /// when there was nothing to calibrate -- the CPU alone was selectable,
-    /// as with `PAMIN_DEVICE=cpu` or no accelerator found -- and for a model
-    /// loaded without a plan.
-    pub calibrated: bool,
+    /// Where the load found the plan: calibrated by it, read from a plan
+    /// file, reused from this process, or none to calibrate.
+    pub origin: PlanOrigin,
 }
 
 /// The plans `model` has run on, each once, in the order first seen except
@@ -639,7 +658,11 @@ fn current_use(model: &impl RuntimeModel, device: Device) -> PlanUse {
         },
         stable: plan.identity.is_empty() || plan.stable,
         revision: model.revision().to_string(),
-        calibrated: !plan.identity.is_empty() && plan.calibrated,
+        origin: if plan.identity.is_empty() {
+            PlanOrigin::Unplanned
+        } else {
+            plan.origin
+        },
     }
 }
 
@@ -1090,7 +1113,6 @@ fn measured_among<T: RuntimeModel>(
             target: target_id,
             retry_at: blocked.as_ref().map(|(at, _)| *at),
             restore_target: blocked.as_ref().map(|(_, target)| target.clone()),
-            calibrated: true,
             ..RuntimePlan::default()
         };
         Ok(model)
@@ -1115,7 +1137,7 @@ fn measured_among<T: RuntimeModel>(
             plan.identity = fingerprint(&format!("cpu-only|{}|{}", plan.namespace, machine()));
             plan.stable = true;
             // Nothing was measured: the CPU was the only candidate.
-            plan.calibrated = false;
+            plan.origin = PlanOrigin::CpuOnly;
             (model, Device::Cpu)
         });
     }
@@ -1165,6 +1187,9 @@ fn measured_among<T: RuntimeModel>(
         && persistence_supported(&plans, cuda_inventory.is_some()))
     .then(|| location.clone())
     .flatten();
+    // A plan found in the cache was put there earlier in this process; one
+    // read here comes from a file a calibration before it wrote.
+    let origin = std::cell::Cell::new(PlanOrigin::ProcessCache);
     if !cache
         .lock()
         .expect("compute-plan cache poisoned")
@@ -1178,6 +1203,7 @@ fn measured_among<T: RuntimeModel>(
             .lock()
             .expect("compute-plan cache poisoned")
             .insert(key.clone(), plan);
+        origin.set(PlanOrigin::PersistedRecord);
     }
     let (mut model, device, deadline) = calibrated_with_references(
         &key,
@@ -1189,6 +1215,7 @@ fn measured_among<T: RuntimeModel>(
             directory: coordination.as_deref(),
             shape: Some(shape),
             require_coordination: true,
+            origin: Some(&origin),
         },
         load,
         evaluate,
@@ -1197,6 +1224,7 @@ fn measured_among<T: RuntimeModel>(
     let plan = model.runtime_plan_mut();
     plan.identity = fingerprint(&key);
     plan.stable = device_persists(device, cuda_inventory.is_some());
+    plan.origin = origin.get();
     Ok((model, device))
 }
 
@@ -1391,20 +1419,6 @@ fn unix_seconds() -> u64 {
 #[cfg(test)]
 fn read_plan(path: &Path, key: &str, plans: &[(Device, Target)]) -> Option<CachedPlan> {
     read_plan_shaped(path, key, plans, None)
-}
-
-/// Whether the plan file at `path` would be read back by a load whose key
-/// it is named by -- `<fingerprint of the key>.json`, as plans are kept --
-/// as far as a reader without that load's candidate targets can tell: it
-/// parses, names the fingerprint its name does, has not expired and holds
-/// usable references. For an evaluation to say whether a run found its plan
-/// calibrated or calibrated it, by the rules the load itself applies.
-pub fn plan_is_usable(path: &Path) -> bool {
-    let Some(named) = path.file_stem().and_then(|stem| stem.to_str()) else {
-        return false;
-    };
-    read_disk_plan(path)
-        .is_some_and(|saved| saved.fingerprint == named && usable(&saved, unix_seconds()))
 }
 
 /// The plan record at `path`, if it is one: not oversized, and whole.
@@ -1744,6 +1758,9 @@ struct PlanFiles<'a> {
     directory: Option<&'a Path>,
     shape: Option<ReferenceShape>,
     require_coordination: bool,
+    /// Where the selection found its plan, set as it decides: holding
+    /// where a plan already in the cache came from on the way in.
+    origin: Option<&'a std::cell::Cell<PlanOrigin>>,
 }
 
 impl<'a> PlanFiles<'a> {
@@ -1766,7 +1783,13 @@ fn calibrated_with_references<T>(
     mut load: impl FnMut(Device, Target, bool) -> Result<T>,
     mut evaluate: impl FnMut(&mut T, Device) -> Result<std::time::Duration>,
 ) -> Result<(T, Device, Option<std::time::Instant>)> {
+    let found = |origin| {
+        if let Some(cell) = files.origin {
+            cell.set(origin);
+        }
+    };
     if plans.is_empty() {
+        found(PlanOrigin::CpuOnly);
         return load(Device::Cpu, vec![cpu()].into(), false)
             .map(|model| (model, Device::Cpu, None));
     }
@@ -1830,6 +1853,7 @@ fn calibrated_with_references<T>(
             disk = None;
             if files.require_coordination {
                 // No timing decision may outlive uncoordinated contention.
+                found(PlanOrigin::Deferred);
                 let model = load(Device::Cpu, vec![cpu()].into(), false)?;
                 return Ok((
                     model,
@@ -1850,6 +1874,8 @@ fn calibrated_with_references<T>(
                         .is_none_or(|shape| shape.accepts(&plan.references))
             })
         {
+            // Another load in this process put it there while this waited.
+            found(PlanOrigin::ProcessCache);
             continue;
         }
         if let Some(plan) = disk.and_then(|path| {
@@ -1860,10 +1886,12 @@ fn calibrated_with_references<T>(
                 .lock()
                 .expect("compute-plan cache poisoned")
                 .insert(key.into(), plan);
+            found(PlanOrigin::PersistedRecord);
             continue;
         }
         break (calibration, host_lock);
     };
+    found(PlanOrigin::CalibratedNow);
     references.replace(References::default());
     let mut reference = load(Device::Cpu, vec![cpu()].into(), false)?;
     let mut transient_failure = false;
@@ -2480,8 +2508,8 @@ mod tests {
     }
 
     /// With no accelerator to try -- `PAMIN_DEVICE=cpu`, or none found --
-    /// the CPU is selected without measuring anything, and its plan says it
-    /// was not calibrated; nor is a model loaded without a plan.
+    /// the CPU is selected without measuring anything, and its plan says
+    /// so; a model loaded without a plan says it has none.
     #[test]
     fn a_cpu_only_selection_is_not_calibrated() {
         let root = tempfile::tempdir().unwrap();
@@ -2505,10 +2533,10 @@ mod tests {
         assert_eq!(device, Device::Cpu);
         let used = current_use(&model, device);
         assert_ne!(used.plan, "unplanned");
-        assert!(!used.calibrated, "{used:?}");
+        assert_eq!(used.origin, PlanOrigin::CpuOnly, "{used:?}");
 
         let unplanned = current_use(&RuntimeFixture::new(1, "cpu"), Device::Cpu);
-        assert!(!unplanned.calibrated);
+        assert_eq!(unplanned.origin, PlanOrigin::Unplanned);
     }
 
     /// A fallback that fails its revalidation again and again keeps one
@@ -2708,34 +2736,6 @@ mod tests {
                 .saturating_duration_since(std::time::Instant::now())
                 <= RUNTIME_RETRY
         );
-    }
-
-    /// A plan file is usable as a load would read it: named by its own
-    /// fingerprint, whole and unexpired.
-    #[test]
-    fn a_plan_file_is_usable_only_as_a_load_would_read_it() {
-        let root = tempfile::tempdir().unwrap();
-        let key = "usable-plan";
-        let path = root.path().join(format!("{}.json", fingerprint(key)));
-        let mut plan = CachedPlan::fresh(Device::Cpu, vec![cpu()].into(), false);
-        plan.references.scores = Some(vec![0.0; 4]);
-        write_plan(&path, key, &plan).unwrap();
-        assert!(plan_is_usable(&path));
-        assert!(read_plan(&path, key, &[]).is_some());
-
-        let renamed = root.path().join(format!("{}.json", fingerprint("another")));
-        std::fs::copy(&path, &renamed).unwrap();
-        assert!(!plan_is_usable(&renamed), "named by another key");
-
-        let whole = std::fs::read(&path).unwrap();
-        std::fs::write(&path, &whole[..whole.len() / 2]).unwrap();
-        assert!(!plan_is_usable(&path), "truncated");
-
-        let mut expired: DiskPlan = serde_json::from_slice(&whole).unwrap();
-        expired.expires = unix_seconds() - 1;
-        std::fs::write(&path, serde_json::to_vec(&expired).unwrap()).unwrap();
-        assert!(!plan_is_usable(&path), "expired");
-        assert!(read_plan(&path, key, &[]).is_none());
     }
 
     #[test]
@@ -3455,6 +3455,55 @@ mod tests {
         drop(held);
         worker.join().unwrap();
         assert_eq!(result.unwrap().unwrap(), Device::Cuda);
+    }
+
+    /// A selection says where it found its plan, as it decided: measured
+    /// now, reused from this process, read from a plan file written before,
+    /// or nothing to measure -- so a record does not count reusing a plan
+    /// as paying for its calibration.
+    #[test]
+    fn a_plan_says_where_the_load_found_it() {
+        use std::time::Duration;
+        let root = tempfile::tempdir().unwrap();
+        let path = plan_file(root.path(), "origins").unwrap();
+        let select = |cache: &std::sync::Mutex<std::collections::HashMap<String, CachedPlan>>,
+                      plans: Vec<(Device, Target)>| {
+            let origin = std::cell::Cell::new(PlanOrigin::ProcessCache);
+            calibrated_with_references(
+                "origins",
+                plans,
+                cache,
+                &std::cell::RefCell::default(),
+                PlanFiles {
+                    origin: Some(&origin),
+                    ..PlanFiles::for_record(&path)
+                },
+                |device, _, _| Ok(device),
+                |_, device| {
+                    Ok(Duration::from_millis(if device == Device::Cpu {
+                        1
+                    } else {
+                        5
+                    }))
+                },
+            )
+            .unwrap();
+            origin.get()
+        };
+        let cuda = || vec![(Device::Cuda, vec![cpu()].into())];
+        let cache = std::sync::Mutex::default();
+        assert_eq!(select(&cache, cuda()), PlanOrigin::CalibratedNow);
+        assert_eq!(select(&cache, cuda()), PlanOrigin::ProcessCache);
+        assert!(path.exists(), "the calibration wrote no plan file");
+        let another_process = std::sync::Mutex::default();
+        assert_eq!(
+            select(&another_process, cuda()),
+            PlanOrigin::PersistedRecord
+        );
+        assert_eq!(
+            select(&std::sync::Mutex::default(), Vec::new()),
+            PlanOrigin::CpuOnly
+        );
     }
 
     #[test]
