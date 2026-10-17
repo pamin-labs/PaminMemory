@@ -11,9 +11,10 @@
 //! member, its ids and attention mask fed as `i64` in the batch's shape, and
 //! token type ids only to a graph that declares an input of that name.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 
-use ort::session::{Session, SessionOutputs};
+use ort::session::{Session, SessionInputValue, SessionOutputs};
 use ort::value::Tensor;
 use tokenizers::{EncodeInput, Encoding};
 
@@ -30,6 +31,10 @@ pub(crate) struct Encoder {
     /// Whether the graph takes token type ids. XLM-R's family ignores them and
     /// most of its exports do not declare the input.
     token_type_ids: bool,
+    /// The graph [`run_each`](Self::run_each) loads its single-threaded
+    /// sessions from, and the sessions loaded so far; `None` runs every text
+    /// on [`session`](Self::session).
+    side_by_side: Option<(PathBuf, Vec<Session>)>,
     /// The repository and commit the model was read from, as
     /// [`Repository::revision`] resolves it once its files are fetched.
     revision: String,
@@ -71,18 +76,41 @@ impl Encoder {
         max_length: usize,
     ) -> Result<Self> {
         let tokenizer = crate::tokenizer::load(repository, max_length)?;
+        Ok(Self::from_parts(session, tokenizer, repository.revision()))
+    }
+
+    fn from_parts(session: Session, tokenizer: Tokenizer, revision: String) -> Self {
         let token_type_ids = session
             .inputs()
             .iter()
             .any(|input| input.name() == "token_type_ids");
-        Ok(Self {
+        Self {
             runtime_plan: crate::inference::RuntimePlan::default(),
             tokenizer,
             session,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             fixed: None,
             token_type_ids,
-            revision: repository.revision(),
+            side_by_side: None,
+            revision,
+        }
+    }
+
+    /// The model on the CPU over a session of `threads` intra-op threads, with
+    /// [`run_each`](Self::run_each) running several texts at once on
+    /// single-threaded sessions over the same `model` -- a mapped copy (see
+    /// `crate::prepared`), so that they share its weights. `revision` is the
+    /// [`Repository::revision`] `model` and `tokenizer` were read from.
+    pub(crate) fn side_by_side(
+        model: PathBuf,
+        threads: usize,
+        tokenizer: Tokenizer,
+        revision: String,
+    ) -> Result<Self> {
+        let session = crate::inference::cpu_session(&model, threads)?;
+        Ok(Self {
+            side_by_side: Some((model, Vec::new())),
+            ..Self::from_parts(session, tokenizer, revision)
         })
     }
 
@@ -111,6 +139,7 @@ impl Encoder {
             session,
             fixed: Some((short, long)),
             token_type_ids: false,
+            side_by_side: None,
             revision: repository.revision(),
         })
     }
@@ -181,6 +210,109 @@ impl Encoder {
         self.forward(&encodings)
     }
 
+    /// Each of `batches`, from [`encode`](Self::encode), in a forward pass of
+    /// its own as [`run_encoded`](Self::run_encoded) runs it, its outputs
+    /// taken by `read`, in `batches`' order.
+    ///
+    /// On [`session`](Self::session) one after another, unless the model was
+    /// loaded [`side_by_side`](Self::side_by_side) and there is more than one
+    /// batch and more than one thread in the inference budget: then as many
+    /// passes at once as the budget allows, each
+    /// on a session of one intra-op thread taking the next batch when it
+    /// finishes one. A pass hands each of the graph's nodes to its threads and
+    /// waits for them, and on a short input that hand-off is most of the pass;
+    /// passes side by side pay none of it. Measured through `Embedder` on four
+    /// cores (ONNX Runtime 1.28, Xeon with AMX), 500 texts stored 64 at a time,
+    /// two runs each: BGE-M3 from 38.3 and 40.3 s to 18.7 and 17.3 s, every
+    /// vector bit-identical to one thread's. The cost is the passes' working
+    /// memory: anonymous memory 60 to 100 MB higher. One session run from
+    /// several threads would not save it, and `ort` runs a session only
+    /// through `&mut`.
+    ///
+    /// The sessions are loaded the first time they are wanted, as many as the
+    /// batches can use, so a model that only ever answers queries loads none.
+    pub(crate) fn run_each<T: Send>(
+        &mut self,
+        batches: Vec<Vec<Encoding>>,
+        read: impl Fn(SessionOutputs<'_>) -> Result<T> + Sync,
+    ) -> Result<Vec<T>> {
+        let mut wanted = match &self.side_by_side {
+            Some(_) => crate::inference::budget()?.min(batches.len()),
+            None => 1,
+        };
+        if let Some((model, sessions)) = &mut self.side_by_side
+            && wanted > 1
+        {
+            while sessions.len() < wanted {
+                // A side session only saves time, and `session` still runs
+                // every batch: one that will not load leaves the passes to
+                // those that did.
+                match crate::inference::cpu_session(model, 1) {
+                    Ok(session) => sessions.push(session),
+                    Err(error) => {
+                        tracing::warn!(%error, loaded = sessions.len(), "could not load a side-by-side session");
+                        wanted = sessions.len();
+                        break;
+                    }
+                }
+            }
+        }
+        let sessions = match &mut self.side_by_side {
+            // One pass at a time gains nothing on a session of its own.
+            Some((_, sessions)) if wanted > 1 => sessions,
+            _ => {
+                return batches
+                    .into_iter()
+                    .map(|batch| read(self.run_encoded(batch)?))
+                    .collect();
+            }
+        };
+        let (tokenizer, token_type_ids) = (&self.tokenizer, self.token_type_ids);
+        let pending = &std::sync::Mutex::new(batches.into_iter().enumerate());
+        let read = &read;
+        let mut done: Vec<(usize, Result<T>)> = std::thread::scope(|scope| {
+            let workers: Vec<_> = sessions[..wanted]
+                .iter_mut()
+                .map(|session| {
+                    scope.spawn(move || {
+                        let mut done = Vec::new();
+                        loop {
+                            let next = pending.lock().expect("a pass panicked").next();
+                            let Some((at, mut batch)) = next else {
+                                return done;
+                            };
+                            let outputs = pad(tokenizer, &mut batch).and_then(|()| {
+                                let shape = [batch.len(), batch[0].len()];
+                                let feed = feed(&batch, shape, token_type_ids)?;
+                                session.run(feed).map_err(|error| failed(&error))
+                            });
+                            done.push((at, outputs.and_then(read)));
+                        }
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .flat_map(|worker| {
+                    worker
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                })
+                .collect()
+        });
+        done.sort_unstable_by_key(|(at, _)| *at);
+        done.into_iter().map(|(_, result)| result).collect()
+    }
+
+    /// How many single-threaded sessions [`run_each`](Self::run_each) has
+    /// loaded.
+    #[cfg(test)]
+    pub(crate) fn side_by_side_sessions(&self) -> usize {
+        self.side_by_side
+            .as_ref()
+            .map_or(0, |(_, sessions)| sessions.len())
+    }
+
     /// Each of `inputs` tokenized on its own: truncated and given its special
     /// tokens, but not padded, so its length is its own.
     ///
@@ -230,22 +362,7 @@ impl Encoder {
         if logical_rows > rows || length > tokens {
             return Err(failed(&"batch exceeds the static execution shape"));
         }
-        let shape = [rows, tokens];
-        let column = |field: fn(&Encoding) -> &[u32], padding| {
-            let values = input_values(encodings, shape, field, padding);
-            Tensor::from_array((shape, values)).map_err(|error| failed(&error))
-        };
-
-        let mut feed = ort::inputs![
-            "input_ids" => column(Encoding::get_ids, 1)?,
-            "attention_mask" => column(Encoding::get_attention_mask, 0)?,
-        ];
-        if self.token_type_ids {
-            feed.push((
-                "token_type_ids".into(),
-                column(Encoding::get_type_ids, 0)?.into(),
-            ));
-        }
+        let feed = feed(encodings, [rows, tokens], self.token_type_ids)?;
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let session = if let Some((short, long)) = &mut self.fixed {
             match tokens {
@@ -278,6 +395,30 @@ impl Encoder {
         }
         Ok(outputs)
     }
+}
+
+/// What a session is fed for `encodings` in the execution shape `shape`.
+fn feed(
+    encodings: &[Encoding],
+    shape: [usize; 2],
+    token_type_ids: bool,
+) -> Result<Vec<(Cow<'static, str>, SessionInputValue<'static>)>> {
+    let column = |field: fn(&Encoding) -> &[u32], padding| {
+        let values = input_values(encodings, shape, field, padding);
+        Tensor::from_array((shape, values)).map_err(|error| failed(&error))
+    };
+
+    let mut feed = ort::inputs![
+        "input_ids" => column(Encoding::get_ids, 1)?,
+        "attention_mask" => column(Encoding::get_attention_mask, 0)?,
+    ];
+    if token_type_ids {
+        feed.push((
+            "token_type_ids".into(),
+            column(Encoding::get_type_ids, 0)?.into(),
+        ));
+    }
+    Ok(feed)
 }
 
 /// Fill only the model inputs. Static CoreML rows duplicate the last logical
