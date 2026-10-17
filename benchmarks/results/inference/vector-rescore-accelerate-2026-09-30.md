@@ -21,9 +21,11 @@ Accelerate matched 6/10 (max error 2.80e-7). That one constructed near-tie
 set is a numerical stress check, not a retrieval-accuracy estimate. The
 kernel result supports trying Accelerate on macOS, while the complete product
 quality/latency impact of changing only this primitive remains unmeasured.
-The product code uses the system Accelerate framework on macOS and preserves
-the old Rust reduction elsewhere. (Superseded on 2026-10-12: a rotated M4 screen found a
-four-accumulator NEON kernel faster than `cblas_sdot`, and macOS now uses it;
+At the time of this screen (2026-09-30), the product code was changed to use
+the system Accelerate framework on macOS and kept the old Rust reduction
+elsewhere. (On 2026-10-12 a provisional M4 screen, taken under
+background load, found a four-accumulator NEON kernel faster than `cblas_sdot`.
+Apple silicon still uses Accelerate until a clean measurement confirms that;
 see [the rescore SIMD evidence](rescore-simd-2026-10-12/README.md#apple-m4).) No model, index encoding, or public
 configuration changes here.
 
