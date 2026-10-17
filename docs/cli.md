@@ -830,7 +830,7 @@ the walk started from. For `depends_on`, `supersedes`, `contradicts`,
 rather than left to be inferred.
 
 **`reranked`** — the cross-encoder scored this result. Its position comes
-from its model score blended with fusion. A result without this entry was not
+from its model score blended with fusion's. A result without this entry was not
 shown to the model. The entry carries no score on the wire: a cross-encoder's
 score is calibrated against nothing, so it
 separates the candidates of one shortlist and means nothing between two
@@ -839,9 +839,11 @@ support.
 
 The entry distinguishes scored from unscored results; it does not claim that
 the model alone set the final order or that the position changed. A line
-reading `vector#12 reranked` says the model scored that candidate. A line
-without `reranked` was not scored, whether it came from a lexical channel or
-fell below the selected depth.
+reading `vector#12 reranked` says the model scored that candidate. Every
+result in the fused top thirty is scored, whichever channel found it, so a line
+without `reranked` sat below that head and was not among the strongest
+candidates only the graph found. A search with a single fused result has
+nothing to reorder, and its hit carries no `reranked`.
 
 There is no fourth kind. There used to be a `modifier`, a post-fusion
 adjustment that lifted a result by its recorded `importance` and by the balance
