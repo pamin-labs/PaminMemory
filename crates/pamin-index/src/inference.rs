@@ -2314,6 +2314,47 @@ mod tests {
         assert!(!device_persists(Device::Cuda, false));
     }
 
+    /// A recovery that fails on a second accelerator before the CPU runs
+    /// the input keeps every plan it ran on, the dropped one too.
+    #[test]
+    fn a_fallback_through_two_accelerators_keeps_each() {
+        let root = tempfile::tempdir().unwrap();
+        let now = std::time::Instant::now();
+        let mut model = RuntimeFixture::new(1, "cuda");
+        let mut device = Device::Cuda;
+        let mut loads = 0;
+        let (answer, replaced) = retry_model_at(
+            &mut model,
+            &mut device,
+            root.path(),
+            now,
+            |candidate, selected| {
+                if selected == Device::Cpu {
+                    Ok(candidate.value)
+                } else {
+                    Err(IndexError::Engine("the accelerator failed".into()))
+                }
+            },
+            || {
+                loads += 1;
+                Ok(if loads == 1 {
+                    (RuntimeFixture::new(2, "npu"), Device::Npu)
+                } else {
+                    (RuntimeFixture::new(3, "cpu"), Device::Cpu)
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!((answer, replaced, device), (3, true, Device::Cpu));
+        let mut targets: Vec<String> = plans_of(&model, device)
+            .into_iter()
+            .map(|plan| plan.target)
+            .collect();
+        assert_eq!(targets.pop().as_deref(), Some("cpu"));
+        targets.sort();
+        assert_eq!(targets, ["cuda", "npu"]);
+    }
+
     #[test]
     fn revalidation_real_input_failure_retains_the_healthy_fallback() {
         let root = tempfile::tempdir().unwrap();
