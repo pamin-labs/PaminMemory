@@ -19,10 +19,15 @@ use std::path::PathBuf;
 use pamin_engine::{Drained, Engine, Owed, Write};
 use pamin_index::Profile;
 
-/// This process's turn at loading models: held by an evaluation from its
-/// first look at the model directory until its record is written
-/// ([`shape::Shape::observe_models`]), and by every other test here that
-/// loads a model ([`load_models`]), so no two of them load at once.
+/// This process's turn at loading models: held by an evaluation from
+/// before it reads its settings ([`shape::Shape::publish`]) until its record
+/// is written, and by every other test here that loads a model
+/// ([`load_models`]), so no two of them load at once.
+///
+/// It is also the turn at the process environment: an experimental arm
+/// that sets a variable the product reads (`PAMIN_RERANK_DEPTH`,
+/// `PAMIN_SEARCH_EFFORT`) does so only while holding it ([`turn_taken`]),
+/// so no evaluation's settings snapshot reads another test's transient arm.
 ///
 /// What the loads fetched and prepared is counted process wide
 /// (`pamin_index::LoadActivity`), and libtest runs the tests of one binary
@@ -47,6 +52,15 @@ pub fn load_models() -> ModelsTurn {
     }
     *taken = true;
     ModelsTurn(())
+}
+
+/// Whether some test holds the turn (see [`ModelsTurn`]): asserted by code
+/// that sets the process environment for an experimental arm, which runs
+/// only inside a test that holds it.
+pub fn turn_taken() -> bool {
+    *TURN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl Drop for ModelsTurn {

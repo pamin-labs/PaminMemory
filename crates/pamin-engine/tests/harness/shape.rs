@@ -1205,7 +1205,7 @@ impl Shape {
     /// its timings: the outcome of the loads, not a prediction of it.
     pub fn observe_models(&mut self, models: &Path) {
         if self.activity_before.is_none() {
-            self.turn = Some(super::load_models());
+            self.take_turn();
             self.activity_before = Some((self.activity)());
         }
         // Only plans a load would accept (`pamin_index::plan_is_usable`): an
@@ -1222,6 +1222,22 @@ impl Shape {
         self.plans_before
             .get_or_insert_with(BTreeSet::new)
             .extend(plans);
+    }
+
+    /// Takes this process's turn at loading models, if this run does not
+    /// hold it already (see `harness::ModelsTurn`).
+    fn take_turn(&mut self) {
+        if self.turn.is_none() {
+            self.turn = Some(super::load_models());
+        }
+    }
+
+    /// Reads the settings the run is under, holding the turn first: another
+    /// test's experimental arm sets the environment only while it holds the
+    /// turn, so the settings read are this run's own, not that arm's.
+    fn read_settings(&mut self) {
+        self.take_turn();
+        self.settings = settings(environment());
     }
 
     /// What the model loads fetched and prepared since
@@ -1580,7 +1596,7 @@ impl Shape {
     /// replacing this one's.
     pub fn publish(&mut self, test: &str, profile: &str) {
         let digest = self.digest();
-        self.settings = settings(environment());
+        self.read_settings();
         let arm = arm(&self.settings);
         self.run = [test.to_string(), profile.to_string(), arm.clone()];
         let name = self.name.clone();
@@ -2352,6 +2368,33 @@ mod tests {
         assert_eq!(
             other.join().expect("the other evaluation"),
             ["models: warm: nothing fetched or prepared"]
+        );
+    }
+
+    /// A run reads its settings only once it holds the turn, so it waits
+    /// out another test's experimental arm -- which sets the environment
+    /// only while it holds the turn -- rather than recording that arm's
+    /// transient settings as its own.
+    #[test]
+    fn settings_are_read_holding_the_turn() {
+        let arm = super::super::load_models();
+        let (read, waiting) = std::sync::mpsc::channel();
+        let other = std::thread::spawn(move || {
+            let mut shape = Shape::new("test", String::new(), None);
+            shape.read_settings();
+            read.send(()).expect("say it read");
+            shape.turn.is_some()
+        });
+        assert!(
+            waiting
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "settings were read while another test held the turn"
+        );
+        drop(arm);
+        assert!(
+            other.join().expect("the other run"),
+            "read without the turn"
         );
     }
 
