@@ -3377,3 +3377,55 @@ evaluations' comparison for what reranking is worth.
 
 Both defaults above -- refusing the removed settings, and removing the MiniLM
 evaluation arms -- were taken by the implementer and are open to the owner.
+
+## 2026-10-16: side-by-side passes, one shared session, one pair a CPU pass
+
+**Decision.** On the CPU, the passes of one rerank (`df70704`) and the stored
+texts BGE-M3 embeds (`d23acf9`) run side by side, one intra-op thread a pass,
+as many at once as the inference budget allows; a query still gets one pass of
+the whole budget. Those passes run on one shared single-threaded session per
+model, loaded the first time passes overlap (`710ceec`), rather than one
+session a pass. A CPU rerank pass holds one pair (`b972ead`). Accelerators keep
+up to four pairs within 512 padded tokens, under the
+[mixed accelerator policy](#mixed-accelerator-policy-2026-09-29), because one
+pair a pass has not been measured on any of them; so does a CPU with an
+inference budget of one thread, where passes cannot overlap (`4ca4c6f`). The
+reranker's plan key moved to `reranker-v4`, so each host measures its reranker
+plan once more.
+
+**Evidence.** Side by side was measured as a component: through
+`Reranker::rank`, 100 calls of 30 uncached pairs on four cores, the median
+call went from 2,105 and 2,163 ms to 1,212 and 1,269 ms in two runs, every
+score bit-identical; through `Embedder`, 500 texts stored 64 at a time went
+from 38.3 and 40.3 s to 18.7 and 17.3 s, every vector bit-identical. The
+shared session and one pair a pass were then measured at `pamin search`,
+each against its immediate predecessor, in three rotated runs an arm on a
+4 vCPU 2.8 GHz Xeon over 3,230 texts and 120 warm queries;
+[measured.md](../measured.md) has the conditions and every row:
+
+| step | metric | before | after | absolute difference | % change |
+| --- | --- | ---: | ---: | ---: | ---: |
+| shared session (`ddf0800` → `710ceec`) | search p50 ms | 3,072.7 | 3,206.7 | +134.1 | +4.4%, ratio 1.044 [0.937, 1.157] |
+| | search server peak RSS MB | 5,656 | 3,021 | −2,636 | −46.6% |
+| | ingest server peak RSS MB | 3,795 | 2,158 | −1,637 | −43.1% |
+| | top-5 results, 120 queries | reference | identical order on 120 | N/A: identity | N/A |
+| one pair a pass (`710ceec`, four pairs → one) | search p50 ms | 3,206.7 | 2,675.3 | −531.4 | −16.6%, ratio 0.834 [0.757, 0.931] |
+| | search p95 ms | 5,128.4 | 4,359.3 | −769.1 | −15.0%, ratio 0.850 [0.715, 0.997] |
+| | search server peak RSS MB | 3,021 | 2,671 | −350 | −11.6% |
+| | XQuAD-R cross-lingual nDCG@10 | 0.7231 | 0.7229 | −0.0001 | −0.01%, Holm p = 1.00 |
+| | MuSiQue 2-hop nDCG@10, first 200 | 0.7669 | 0.7709 | +0.0040 | +0.52%, Holm p = 1.00 |
+
+The one-pair arm set the rerank batch to one pair on `710ceec`, which is what
+`b972ead` made the default; the nDCG@10 rows were taken through
+`Engine::search_reranked` over copies of one index, and no group of the four
+measured moved significantly.
+
+**What it costs.** The shared session bought memory and no speed: a component
+result of 0.81 for it did not carry over to `pamin search`, where every latency
+CI includes 1.0. One pair a pass moves rankings without moving accuracy: the
+top-five set was the same on 82 of 120 timed queries and in the same order on
+38. Nothing here was measured with an inference budget of one thread or on an
+accelerator, and neither path changed. The host in these runs had a CUDA
+provider built in that could not register, so every arm saw one five-minute
+model reload in its search phase; excluding the queries that overlapped it
+moved no ratio by more than 0.004.
