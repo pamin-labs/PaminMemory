@@ -222,7 +222,9 @@ fn child(model: &str, cache: &Path) {
     // last of them would measure a process that no longer holds a model.
     let mut score: Box<dyn FnMut() -> Vec<f32>> = match model {
         "accurate" => {
-            let mut reranker = Reranker::load(cache).expect("load the reranker");
+            let mut reranker =
+                Reranker::load(cache, &pamin_index::InferenceSettings::from_environment())
+                    .expect("load the reranker");
             assert_eq!(reranker.device(), Device::Cpu, "the copy is for the CPU");
             Box::new(move || {
                 let mut scores = vec![f32::NAN; TEXTS.len()];
@@ -233,7 +235,9 @@ fn child(model: &str, cache: &Path) {
             })
         }
         "embedder" => {
-            let mut embedder = Embedder::load(cache).expect("load the embedder");
+            let mut embedder =
+                Embedder::load(cache, &pamin_index::InferenceSettings::from_environment())
+                    .expect("load the embedder");
             Box::new(move || {
                 let vectors = embedder.embed_passages(TEXTS).expect("embed");
                 vectors.into_iter().flatten().collect()

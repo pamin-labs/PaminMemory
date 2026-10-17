@@ -37,8 +37,9 @@ pub(crate) struct Encoder {
     token_type_ids: bool,
     /// The graph [`run_each`](Self::run_each) loads its single-threaded
     /// session from, and that session once it has been loaded; `None` runs
-    /// every text on [`session`](Self::session).
-    side_by_side: Option<(PathBuf, Option<Session>)>,
+    /// every text on [`session`](Self::session); and how many passes it runs
+    /// at once.
+    side_by_side: Option<(PathBuf, Option<Session>, usize)>,
     /// The most passes [`run_each`](Self::run_each) has had running at once.
     #[cfg(test)]
     most_at_once: usize,
@@ -65,12 +66,13 @@ impl Encoder {
     /// read for nothing -- and, since `model` is asked for only once the
     /// device has registered, before its export is fetched for nothing.
     pub(crate) fn load(
+        threads: usize,
         model: impl FnOnce() -> Result<PathBuf>,
         repository: &Repository,
         max_length: usize,
         providers: impl Into<crate::inference::Target>,
     ) -> Result<Self> {
-        let session = crate::inference::session(providers, model)?;
+        let session = crate::inference::session(threads, providers, model)?;
         Self::from_session(session, repository, max_length)
     }
 
@@ -112,13 +114,14 @@ impl Encoder {
     ) -> Result<Self> {
         let session = crate::inference::cpu_session(&model, threads)?;
         Ok(Self {
-            side_by_side: Some((model, None)),
+            side_by_side: Some((model, None, threads)),
             ..Self::from_parts(session, tokenizer)
         })
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(crate) fn load_fixed_coreml(
+        threads: usize,
         model: impl FnOnce() -> Result<PathBuf>,
         repository: &Repository,
         max_length: usize,
@@ -128,12 +131,13 @@ impl Encoder {
                 &"static CoreML reranker currently requires at most 256 tokens",
             ));
         }
-        let path = crate::inference::coreml_source(model)?;
+        let path = crate::inference::coreml_source(threads, model)?;
         // Validate every independently compiled shape inside `preferred`'s
         // fallback window. A lazy shape failure otherwise breaks later searches
         // after the model has already been accepted as CoreML.
         let (session, short, long) = coreml_buckets(|rows, tokens| {
-            crate::inference::fixed_coreml(|| Ok(path.clone()), rows, tokens).map(|loaded| loaded.0)
+            crate::inference::fixed_coreml(threads, || Ok(path.clone()), rows, tokens)
+                .map(|loaded| loaded.0)
         })?;
         let tokenizer = crate::tokenizer::load(repository, max_length)?;
         Ok(Self {
@@ -232,8 +236,8 @@ impl Encoder {
         batches: Vec<Vec<Encoding>>,
         read: impl Fn(Outputs) -> Result<T> + Sync,
     ) -> Result<Vec<T>> {
-        let (model, shared) = match &mut self.side_by_side {
-            Some((model, shared)) if batches.len() > 1 => (model, shared),
+        let (model, shared, budget) = match &mut self.side_by_side {
+            Some((model, shared, budget)) if batches.len() > 1 => (model, shared, *budget),
             _ => {
                 return batches
                     .into_iter()
@@ -245,7 +249,7 @@ impl Encoder {
             *shared = Some(crate::inference::cpu_session(model, 1)?);
         }
         let session = shared.as_ref().expect("loaded above");
-        let workers = crate::inference::budget()?.min(batches.len());
+        let workers = budget.min(batches.len());
         let (tokenizer, token_type_ids) = (&self.tokenizer, self.token_type_ids);
         let pending = &std::sync::Mutex::new(batches.into_iter().enumerate());
         let read = &read;
@@ -301,7 +305,7 @@ impl Encoder {
         let loaded = self
             .side_by_side
             .as_ref()
-            .map_or(0, |(_, shared)| usize::from(shared.is_some()));
+            .map_or(0, |(_, shared, _)| usize::from(shared.is_some()));
         (loaded, self.most_at_once)
     }
 

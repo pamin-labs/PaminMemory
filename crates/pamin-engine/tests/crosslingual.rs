@@ -1031,8 +1031,12 @@ fn pinned_model_loads_report_actual_graph_paths() {
     pinned_embedding_id(&models);
     pinned_model_id(&models, "reranker");
     report_loaded_graphs();
-    let _embedder = pamin_index::Embedder::load(&models).expect("load pinned embedding model");
-    let reranker = pamin_index::Reranker::load(&models).expect("load pinned reranking model");
+    let _embedder =
+        pamin_index::Embedder::load(&models, &pamin_index::InferenceSettings::from_environment())
+            .expect("load pinned embedding model");
+    let reranker =
+        pamin_index::Reranker::load(&models, &pamin_index::InferenceSettings::from_environment())
+            .expect("load pinned reranking model");
     assert_eq!(reranker.device(), pamin_index::Device::Cpu);
 }
 
@@ -1506,7 +1510,11 @@ fn the_model_reaches_across_languages() {
 
     let home = eval_home();
     let embedder = harness::shape::owned(
-        Embedder::load(&home.join("models")).expect("load the embedding model"),
+        Embedder::load(
+            &home.join("models"),
+            &pamin_index::InferenceSettings::from_environment(),
+        )
+        .expect("load the embedding model"),
     );
     // No engine: the record's providers are the harness's own models,
     // read once the run is over.
@@ -3193,7 +3201,11 @@ async fn context(
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
     let model = harness::shape::owned(
-        pamin_index::Reranker::load(&workspace.root().join("models")).expect("load the reranker"),
+        pamin_index::Reranker::load(
+            &workspace.root().join("models"),
+            &pamin_index::InferenceSettings::from_environment(),
+        )
+        .expect("load the reranker"),
     );
     shape.also_ran("context reranker", &model, pamin_index::Reranker::plans);
     let labels = reranking::context_labels();

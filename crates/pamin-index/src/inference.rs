@@ -58,6 +58,7 @@ impl From<Vec<ExecutionProviderDispatch>> for Target {
 /// CUDA would not register -- which it does in about a millisecond -- and
 /// then kept the file, never loading it, beside the int8 export it runs.
 pub(crate) fn session(
+    threads: usize,
     target: impl Into<Target>,
     model: impl FnOnce() -> Result<PathBuf>,
 ) -> Result<Session> {
@@ -66,7 +67,7 @@ pub(crate) fn session(
         Target::Npu { provider, .. } => Some(provider.clone()),
         _ => None,
     };
-    let mut builder = options(target)?;
+    let mut builder = options(threads, target)?;
     let model = model()?;
     let session = commit(&mut builder, &model)?;
     if let Some(provider) = expected {
@@ -82,8 +83,8 @@ pub(crate) fn session(
 }
 
 /// Preparation probes use the product options, but are not scoring sessions.
-pub(crate) fn probe(model: &Path) -> Result<Session> {
-    commit(&mut options(vec![cpu()])?, model)
+pub(crate) fn probe(threads: usize, model: &Path) -> Result<Session> {
+    commit(&mut options(threads, vec![cpu()])?, model)
 }
 
 fn commit(builder: &mut SessionBuilder, model: &Path) -> Result<Session> {
@@ -185,7 +186,7 @@ pub(crate) fn assigned_providers(
 /// callers getting 1.17 times the throughput. Rankings, query and passage
 /// embeddings and `accurate` scores were bit-identical. The rule, written
 /// before the run, is in `docs/adr/0001-tech-selection.md`.
-pub(crate) fn options(target: impl Into<Target>) -> Result<SessionBuilder> {
+pub(crate) fn options(threads: usize, target: impl Into<Target>) -> Result<SessionBuilder> {
     let target = target.into();
     let providers = match &target {
         Target::Providers(providers) => providers.clone(),
@@ -197,7 +198,6 @@ pub(crate) fn options(target: impl Into<Target>) -> Result<SessionBuilder> {
     };
     let unready =
         |error: &dyn std::fmt::Display| IndexError::Engine(format!("preparing a session: {error}"));
-    let threads = budget()?;
     let builder = Session::builder().map_err(|error| unready(&error))?;
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     let builder = if providers
@@ -265,19 +265,23 @@ pub(crate) fn options(target: impl Into<Target>) -> Result<SessionBuilder> {
 /// Refuse an unavailable CoreML provider before fetching its export. The
 /// cache-aware session registers again once the content-derived path is known.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(crate) fn coreml_source(model: impl FnOnce() -> Result<PathBuf>) -> Result<PathBuf> {
-    drop(options(vec![coreml().build().error_on_failure()])?);
+pub(crate) fn coreml_source(
+    threads: usize,
+    model: impl FnOnce() -> Result<PathBuf>,
+) -> Result<PathBuf> {
+    drop(options(threads, vec![coreml().build().error_on_failure()])?);
     model()
 }
 
 /// Static shapes prevent CoreML from silently rejecting unbounded ANE regions.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) fn fixed_coreml(
+    threads: usize,
     model: impl FnOnce() -> Result<PathBuf>,
     rows: usize,
     tokens: usize,
 ) -> Result<(Session, PathBuf)> {
-    let path = coreml_source(model)?;
+    let path = coreml_source(threads, model)?;
     let cache = coreml_cache(&path, rows, tokens)?;
     std::fs::create_dir_all(cache.parent().expect("cache has a parent"))?;
     // Keep the lock outside the directory being rebuilt. Unlinking a held
@@ -301,7 +305,7 @@ pub(crate) fn fixed_coreml(
             .error_on_failure();
         let error =
             |e: &dyn std::fmt::Display| IndexError::Engine(format!("static CoreML session: {e}"));
-        let mut builder = options(vec![provider])?
+        let mut builder = options(threads, vec![provider])?
             .with_dimension_override("batch_size", rows as i64)
             .map_err(|e| error(&e))?
             .with_dimension_override("sequence_length", tokens as i64)
@@ -397,34 +401,10 @@ fn coreml_cache(model: &std::path::Path, rows: usize, tokens: usize) -> Result<P
         .join(format!("{graph}-{rows}-{tokens}")))
 }
 
-/// Intra-op threads per inference session, or `None` for one per core.
-///
-/// Read from `PAMIN_INFERENCE_THREADS`. Unset -- the default -- means
-/// `available_parallelism()`, which is what this crate did before the setting
-/// existed, so an unconfigured workspace behaves exactly as it used to.
-///
-/// A value that is not a positive number is ignored rather than refused: this
-/// is a performance knob, and a typo in it should not stop a search from
-/// working.
-pub(crate) fn threads() -> Option<usize> {
-    pamin_core::env::positive("PAMIN_INFERENCE_THREADS")
-}
-
-/// How many threads inference may keep busy: [`threads`], or one per core.
-///
-/// The intra-op threads of one pass, or the number of single-threaded passes
-/// a model that runs them side by side runs at once (`Encoder::run_each`).
-pub(crate) fn budget() -> Result<usize> {
-    Ok(match threads() {
-        Some(threads) => threads,
-        None => std::thread::available_parallelism()?.get(),
-    })
-}
-
-/// A CPU session over `model` with `threads` intra-op threads in place of the
-/// [`budget`], otherwise built as [`session`] builds one.
+/// A CPU session over `model` with `threads` intra-op threads, otherwise
+/// built as [`session`] builds one.
 pub(crate) fn cpu_session(model: &Path, threads: usize) -> Result<Session> {
-    let mut builder = options(vec![cpu()])?
+    let mut builder = options(threads, vec![cpu()])?
         .with_intra_threads(threads)
         .map_err(|error| IndexError::Engine(format!("preparing a session: {error}")))?;
     let session = commit(&mut builder, model)?;
@@ -492,7 +472,7 @@ pub(crate) fn cpu() -> ExecutionProviderDispatch {
 pub(crate) fn preferred<T>(
     mut load: impl FnMut(Device, Target) -> Result<T>,
 ) -> Result<(T, Device)> {
-    for (device, provider) in accelerators() {
+    for (device, provider) in accelerators(&crate::InferenceSettings::default()) {
         match load(device, provider) {
             Ok(model) => return Ok((model, device)),
             Err(error) => tracing::warn!(
@@ -986,7 +966,23 @@ fn executable_hash(path: &Path) -> Option<String> {
     Some(format!("{:x}", hash.finalize()))
 }
 
+/// The settings an execution plan is keyed by, as its namespace and key spell
+/// them: every setting that differs from the default, then the thread count.
+///
+/// The plans were keyed by every `PAMIN_` variable in the environment before
+/// settings were passed in, and by `threads:None` where none was set, so a
+/// default configuration spells this exactly as a clean environment did and
+/// the plans it measured are reused.
+fn dispatch_identity(settings: &crate::InferenceSettings) -> String {
+    format!(
+        "{:?}|threads:{:?}",
+        settings.overrides(),
+        settings.threads.map(std::num::NonZeroUsize::get)
+    )
+}
+
 pub(crate) fn measured<T: RuntimeModel>(
+    settings: &crate::InferenceSettings,
     identity: &str,
     cache_dir: &Path,
     references: &std::cell::RefCell<References>,
@@ -999,18 +995,14 @@ pub(crate) fn measured<T: RuntimeModel>(
     static PLANS: OnceLock<Mutex<HashMap<String, CachedPlan>>> = OnceLock::new();
     // Model revision/export and supported shape policy live in identity.
     // Runtime/build and dispatch settings distinguish execution plans.
-    let mut settings: Vec<_> = std::env::vars_os()
-        .filter(|(key, _)| key.to_string_lossy().starts_with("PAMIN_"))
-        .collect();
-    settings.sort();
+    let dispatch = dispatch_identity(settings);
     let executable = executable_identity();
     let namespace = format!(
-        "{identity}|executable:{executable:?}|{}|{}|{settings:?}|threads:{:?}",
+        "{identity}|executable:{executable:?}|{}|{}|{dispatch}",
         env!("PAMIN_INFERENCE_BUILD"),
         ort::info(),
-        threads()
     );
-    let discovered = accelerators();
+    let discovered = accelerators(settings);
     let target_ids: Vec<_> = discovered
         .iter()
         .map(|(device, target)| target_identity(*device, target))
@@ -1063,14 +1055,10 @@ pub(crate) fn measured<T: RuntimeModel>(
             _ => device.name().to_string(),
         })
         .collect();
-    let settings: Vec<_> = std::env::vars_os()
-        .filter(|(key, _)| key.to_string_lossy().starts_with("PAMIN_"))
-        .collect();
-    let mut settings = settings;
-    settings.sort();
-    let libraries: Vec<_> = std::env::var_os("PAMIN_EP_LIBRARIES")
-        .into_iter()
-        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+    let libraries: Vec<_> = settings
+        .ep_libraries
+        .iter()
+        .cloned()
         .map(|path| {
             let metadata = std::fs::metadata(&path).ok();
             (
@@ -1084,9 +1072,8 @@ pub(crate) fn measured<T: RuntimeModel>(
     let cuda_inventory = cuda.then(cuda_identity).flatten();
     let cuda_settings = CUDA_SELECTION.map(|name| (name, std::env::var_os(name)));
     let key = format!(
-        "persistent-plan-v6|executable:{executable:?}|build:{}|{identity}|{signature:?}|{settings:?}|threads:{:?}|cores:{:?}|runtime:{}|host:{}|features:{:?}|libraries:{libraries:?}|cuda:{cuda_inventory:?}|cuda-settings:{cuda_settings:?}",
+        "persistent-plan-v6|executable:{executable:?}|build:{}|{identity}|{signature:?}|{dispatch}|cores:{:?}|runtime:{}|host:{}|features:{:?}|libraries:{libraries:?}|cuda:{cuda_inventory:?}|cuda-settings:{cuda_settings:?}",
         env!("PAMIN_INFERENCE_BUILD"),
-        threads(),
         std::thread::available_parallelism(),
         ort::info(),
         host_identity(),
@@ -1947,7 +1934,7 @@ fn coreml() -> ort::ep::CoreML {
 /// driver, CUDA 13 and cuDNN 9 -- fails to register it and runs on the CPU,
 /// so the available provider is tried before the CPU. Successful registration
 /// does not establish how much of the graph that provider accelerates.
-/// `PAMIN_DEVICE=cpu` empties this, for a measurement that must be comparable
+/// [`crate::DeviceChoice::Cpu`] empties this, for a measurement that must be comparable
 /// with a CPU one or a machine whose GPU belongs to something else.
 ///
 /// Each is set to fail loudly on registration rather than fall through to the
@@ -1955,13 +1942,13 @@ fn coreml() -> ort::ep::CoreML {
 /// the GPU's fp16 export onto the CPU -- slower than the int8 one it was
 /// chosen over -- and report nothing; failing here lets the caller load the
 /// CPU's own export instead and record that it did.
-pub(crate) fn accelerators() -> Vec<(Device, Target)> {
-    if pamin_core::env::is("PAMIN_DEVICE", "cpu") {
+pub(crate) fn accelerators(settings: &crate::InferenceSettings) -> Vec<(Device, Target)> {
+    if settings.device == crate::DeviceChoice::Cpu {
         return Vec::new();
     }
     let mut result = Vec::new();
     if let Ok(environment) = ort::environment::Environment::current() {
-        register_plugins(&environment);
+        register_plugins(&environment, &settings.ep_libraries);
         #[cfg(target_os = "windows")]
         crate::winml::register(&environment);
         for device in environment.devices() {
@@ -1988,18 +1975,24 @@ pub(crate) fn accelerators() -> Vec<(Device, Target)> {
 
 /// Retain registered libraries for the environment/session lifetime. Paths
 /// are explicit because vendor plugin installation differs by platform.
-fn register_plugins(environment: &std::sync::Arc<ort::environment::Environment>) {
+///
+/// Registered once a process, from the libraries the first caller names: a
+/// process runs with one set of settings, so every later caller names the
+/// same ones.
+fn register_plugins(
+    environment: &std::sync::Arc<ort::environment::Environment>,
+    libraries: &[PathBuf],
+) {
     static LIBRARIES: std::sync::OnceLock<Vec<ort::ep::ExecutionProviderLibrary>> =
         std::sync::OnceLock::new();
     LIBRARIES.get_or_init(|| {
-        std::env::var_os("PAMIN_EP_LIBRARIES").into_iter()
-            .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        libraries.iter()
             .enumerate().filter_map(|(index, path)| {
                 if !path.is_absolute() {
                     tracing::warn!(path = %path.display(), "execution-provider library must be absolute");
                     return None;
                 }
-                match environment.register_ep_library(format!("pamin-plugin-{index}"), &path) {
+                match environment.register_ep_library(format!("pamin-plugin-{index}"), path) {
                     Ok(library) => Some(library),
                     Err(error) => { tracing::warn!(path = %path.display(), %error, "execution-provider library unavailable"); None }
                 }
@@ -2020,6 +2013,37 @@ fn gpu_providers() -> Vec<(Device, ExecutionProviderDispatch)> {
 
 #[cfg(test)]
 mod tests {
+    /// The thread budget a default configuration gives a session.
+    fn threads() -> usize {
+        crate::InferenceSettings::default()
+            .budget()
+            .expect("the default budget")
+    }
+
+    /// Plans measured before settings were passed in are reused: a default
+    /// configuration spells the settings part of a plan's namespace and key
+    /// exactly as a process with no `PAMIN_` variable set did, an empty list
+    /// of variables and no thread count.
+    #[test]
+    fn a_default_configuration_keys_plans_as_a_clean_environment_did() {
+        let clean: Vec<(std::ffi::OsString, std::ffi::OsString)> = Vec::new();
+        assert_eq!(
+            dispatch_identity(&crate::InferenceSettings::default()),
+            format!("{clean:?}|threads:{:?}", None::<usize>)
+        );
+        assert_eq!(
+            dispatch_identity(&crate::InferenceSettings::default()),
+            "[]|threads:None"
+        );
+        let cpu = crate::InferenceSettings {
+            device: crate::DeviceChoice::Cpu,
+            ..crate::InferenceSettings::default()
+        };
+        assert_ne!(
+            dispatch_identity(&cpu),
+            dispatch_identity(&crate::InferenceSettings::default())
+        );
+    }
 
     struct RuntimeFixture<T> {
         value: T,
@@ -3642,6 +3666,7 @@ mod tests {
     fn absent_plugin_npu_fails_before_model_fetch() {
         let fetched = std::cell::Cell::new(false);
         let result = session(
+            threads(),
             Target::Npu {
                 provider: "absent-test-provider".into(),
                 id: u32::MAX,
@@ -3735,12 +3760,12 @@ mod tests {
         )
         .unwrap();
         tracing::subscriber::with_default(subscriber, || {
-            let _probe = probe(&model).unwrap();
+            let _probe = probe(threads(), &model).unwrap();
             assert!(
                 capture.0.lock().unwrap().is_empty(),
                 "probe logged a product load"
             );
-            let _product = session(vec![cpu()], || Ok(model.clone())).unwrap();
+            let _product = session(threads(), vec![cpu()], || Ok(model.clone())).unwrap();
         });
         let bytes = capture.0.lock().unwrap();
         let log = std::str::from_utf8(&bytes).unwrap();
@@ -3758,7 +3783,7 @@ mod tests {
             &path,
             include_bytes!("../tests/fixtures/coreml-normalization.onnx"),
         )?;
-        let mut modern = session(vec![coreml().build().error_on_failure()], || {
+        let mut modern = session(threads(), vec![coreml().build().error_on_failure()], || {
             Ok(path.clone())
         })?;
         let assigned = assigned_providers(&modern)?;
@@ -3768,6 +3793,7 @@ mod tests {
                 .is_some_and(|nodes| *nodes > 0)
         );
         let legacy = session(
+            threads(),
             vec![
                 ort::ep::CoreML::default()
                     .with_model_format(ort::ep::coreml::ModelFormat::NeuralNetwork)
@@ -3810,7 +3836,7 @@ mod tests {
             include_bytes!("../tests/fixtures/coreml-cache-2.onnx"),
         )
         .unwrap();
-        let session = session(vec![cpu()], || Ok(path.clone())).unwrap();
+        let session = session(threads(), vec![cpu()], || Ok(path.clone())).unwrap();
         let assigned = assigned_providers(&session).unwrap();
         assert!(
             assigned
@@ -3847,7 +3873,7 @@ mod tests {
         })
         .expect("CPU fallback");
         assert_eq!((model, device), (42, Device::Cpu));
-        let expected: Vec<_> = accelerators()
+        let expected: Vec<_> = accelerators(&crate::InferenceSettings::default())
             .into_iter()
             .map(|(device, _)| device)
             .chain([Device::Cpu])
@@ -3863,7 +3889,7 @@ mod tests {
     fn idle_inference_threads_block_rather_than_spin() {
         use ort::AsPointer;
 
-        let builder = options(vec![cpu()]).expect("session options");
+        let builder = options(threads(), vec![cpu()]).expect("session options");
         let mut value = [0 as std::ffi::c_char; 8];
         let mut size = value.len();
         // SAFETY: the options pointer is live for the borrow of `builder`, the
@@ -3896,13 +3922,13 @@ mod tests {
     /// this suite has run on -- that is each of them.
     #[test]
     fn a_device_that_will_not_register_is_never_asked_for_its_model() {
-        for (device, provider) in accelerators() {
-            let registers = options(provider.clone()).is_ok();
+        for (device, provider) in accelerators(&crate::InferenceSettings::default()) {
+            let registers = options(threads(), provider.clone()).is_ok();
             if registers {
                 continue;
             }
             let asked = std::cell::Cell::new(false);
-            let loaded = session(provider, || {
+            let loaded = session(threads(), provider, || {
                 asked.set(true);
                 Err(IndexError::Engine("no model here".into()))
             });
@@ -3949,7 +3975,7 @@ mod tests {
         for (bytes, scale) in models {
             std::fs::write(&model, bytes)?;
             for tokens in [64, 128, 64] {
-                let (mut session, _) = fixed_coreml(|| Ok(model.clone()), 4, tokens)?;
+                let (mut session, _) = fixed_coreml(threads(), || Ok(model.clone()), 4, tokens)?;
                 let input = ort::value::Tensor::from_array((
                     [4, tokens, 8],
                     vec![0.25f32; 4 * tokens * 8],
@@ -3980,7 +4006,7 @@ mod tests {
             include_bytes!("../tests/fixtures/coreml-cache-2.onnx"),
         )?;
         for published in [false, true] {
-            let (session, _) = fixed_coreml(|| Ok(model.clone()), 4, 64)?;
+            let (session, _) = fixed_coreml(threads(), || Ok(model.clone()), 4, 64)?;
             drop(session);
             let cache = coreml_cache(&model, 4, 64)?;
             assert!(cache.join("ready").is_file());
@@ -4003,7 +4029,7 @@ mod tests {
             if !published {
                 std::fs::remove_file(cache.join("ready"))?;
             }
-            let (mut session, _) = fixed_coreml(|| Ok(model.clone()), 4, 64)?;
+            let (mut session, _) = fixed_coreml(threads(), || Ok(model.clone()), 4, 64)?;
             let output = session.run(ort::inputs!["x" => ort::value::Tensor::from_array((
                 [4, 64, 8], vec![0.25f32; 4 * 64 * 8],
             ))?])?;
@@ -4105,7 +4131,7 @@ mod tests {
             .with_model_cache_dir(cache.path().display())
             .build()
             .error_on_failure();
-        let mut session = options(vec![provider])?.commit_from_memory(&model)?;
+        let mut session = options(threads(), vec![provider])?.commit_from_memory(&model)?;
         let output = session.run(ort::inputs!["x" => ort::value::Tensor::from_array(([1,32,1024],vec![0.25f32;32*1024]))?])?;
         let (_, values) = output["y"].try_extract_tensor::<f32>()?;
         assert_eq!(values.len(), 32 * 4096);

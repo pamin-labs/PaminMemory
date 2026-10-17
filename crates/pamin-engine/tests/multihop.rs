@@ -803,8 +803,11 @@ async fn search_answers_questions_that_take_several_steps() {
 
     if std::env::var("CONTEXT").is_ok() {
         let model = harness::shape::owned(
-            pamin_index::Reranker::load(&workspace.root().join("models"))
-                .expect("load the reranker"),
+            pamin_index::Reranker::load(
+                &workspace.root().join("models"),
+                &pamin_index::InferenceSettings::from_environment(),
+            )
+            .expect("load the reranker"),
         );
         shape.also_ran("context reranker", &model, pamin_index::Reranker::plans);
         let labels = reranking::context_labels();

@@ -21,6 +21,7 @@ pub mod projection;
 pub mod reranking;
 mod reshape;
 pub mod segmentation;
+pub mod settings;
 mod tokenizer;
 mod vector_math;
 #[cfg(target_os = "windows")]
@@ -50,3 +51,4 @@ pub use projection::{
 pub use reranking::{Ranked, Reranked, Reranker};
 pub use reshape::{Held, Reshape, Reshaped};
 pub use segmentation::{Segmenter, detect_language};
+pub use settings::{DeviceChoice, InferenceSettings, RerankSettings};
