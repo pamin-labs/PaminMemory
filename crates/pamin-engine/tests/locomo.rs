@@ -81,7 +81,9 @@
 //! index is also claimed through `harness::index` before it is written, so a
 //! reused index built under other settings is reported rather than trusted.
 
+mod channels;
 mod harness;
+mod reranking;
 mod scoring;
 mod statistics;
 
@@ -624,10 +626,18 @@ async fn locomo_evidence_with_and_without_links() {
     // [without the graph, with it], by category: each conversation's mean
     // nDCG, the unit the paired test is run over.
     let mut by_conversation: [BTreeMap<String, Vec<f64>>; 2] = Default::default();
+    // `RERANK_RULES`: the shipped searches, with the graph, replayed under
+    // every rule for using the reranker's scores. See `reranking`.
+    let mut rules = std::env::var("RERANK_RULES")
+        .is_ok()
+        .then(reranking::Priced::default);
     let mut questions = 0usize;
     let mut linked_edges = 0usize;
     const TABLES: [&str; 2] = ["without the graph", "with the graph"];
-    harness::shape::tables(TABLES);
+    // A rules run scores only the tables `reranking::Priced` declares.
+    if rules.is_none() {
+        harness::shape::tables(TABLES);
+    }
     for conversation in conversations {
         let digest = corpus_digest(conversation);
         let engine = Engine::attached(
@@ -675,6 +685,35 @@ async fn locomo_evidence_with_and_without_links() {
         });
         for question in &conversation.questions {
             questions += 1;
+            if let Some(rules) = &mut rules {
+                const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+                let tier = Rerank::default();
+                let hits = engine
+                    .search_reranked(&question.text, WIDE, DEPTHS, tier)
+                    .await
+                    .expect("search");
+                channels::enough_room(&hits, WIDE);
+                let replayed = reranking::replay(&hits, tier);
+                rules.observe(
+                    &engine,
+                    &question.category,
+                    &question.text,
+                    &hits,
+                    &replayed,
+                    // The conversation's questions share its corpus, index
+                    // and graph: one unit for the folds and the paired test.
+                    Some(conversation.id.as_str()),
+                    |into, ranking| {
+                        harness::shape::tally(&question.category, &question.id);
+                        into.entry(question.category.clone()).or_default().add(
+                            ranking,
+                            question.evidence.len(),
+                            |topic| question.evidence.contains(topic),
+                        );
+                    },
+                );
+                continue;
+            }
             // Without the graph, nothing walks it: a zero fusion weight alone
             // still recalls the graph and shows the reranker each reached
             // candidate's seed, so the links would still move the ranking.
@@ -733,7 +772,14 @@ async fn locomo_evidence_with_and_without_links() {
         );
     }
     assert!(questions > 0, "no question could be graded");
+    // Before either report: without edges the graph rules price a no-graph run.
     assert!(linked_edges > 0, "the projects have no edges to walk");
+    if let Some(rules) = &mut rules {
+        rules.report(&format!(
+            "rules for the reranker's scores, LOCOMO with the graph, {named}"
+        ));
+        return;
+    }
 
     println!(
         "\n  LOCOMO evidence retrieval, {named}, the shipped search path at limit {RECALL_AT} \

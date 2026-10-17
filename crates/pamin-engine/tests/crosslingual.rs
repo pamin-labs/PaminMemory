@@ -1455,7 +1455,7 @@ async fn report_channels(
         &variants,
         channels::shipped_row(&variants),
         &offline,
-        true,
+        channels::Units::AnswerKeys,
     );
     channels::lexical_cross_validated(
         &format!("XQuAD-R lexical weights only, {named}"),
@@ -1464,7 +1464,7 @@ async fn report_channels(
         &variants,
         channels::shipped_row(&variants),
         &offline,
-        true,
+        channels::Units::AnswerKeys,
     );
 
     // Per language, against the vector channel alone rather than against
@@ -3368,9 +3368,7 @@ async fn run<'a>(engine: &Engine, queries: &[Query<'a>], route: Route) -> BTreeM
 async fn rerank_rules(engine: &Engine, queries: &[Query<'_>], named: &str) {
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
-    let rules = reranking::rules();
-    let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); rules.len()];
-    harness::shape::tables(rules.iter().map(|(label, _)| label));
+    let mut priced = reranking::Priced::default();
     for query in queries {
         let hits = engine
             .search_reranked(query.text(), WIDE, DEPTHS, tier)
@@ -3378,21 +3376,21 @@ async fn rerank_rules(engine: &Engine, queries: &[Query<'_>], named: &str) {
             .expect("search");
         channels::enough_room(&hits, WIDE);
         let replayed = reranking::replay(&hits, tier);
-        for ((label, rule), into) in rules.iter().zip(&mut measured) {
-            harness::shape::table(label);
-            score(into, query, &replayed.order(*rule));
-        }
+        priced.observe(
+            engine,
+            query.language,
+            query.text(),
+            &hits,
+            &replayed,
+            // One search, scored under both answer keys: one unit.
+            None,
+            |into, ranking| score(into, query, ranking),
+        );
     }
-    reranking::report(
-        &format!(
-            "rules for the {} reranker's scores, XQuAD-R, {named}",
-            tier.name()
-        ),
-        &rules,
-        reranking::shipped(&rules),
-        &measured,
-        true,
-    );
+    priced.report(&format!(
+        "rules for the {} reranker's scores, XQuAD-R, {named}",
+        tier.name()
+    ));
 }
 
 /// What the shipped tier is worth when it is shown each candidate's topic
@@ -3444,7 +3442,7 @@ async fn context(
         &labels,
         reranking::shipped_context(),
         &measured,
-        true,
+        channels::Units::AnswerKeys,
     );
 }
 

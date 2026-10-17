@@ -266,7 +266,7 @@ const NOT_IDENTITY: [(&str, &str); 6] = [
 /// that is set names the record, whichever harness reads it, so no harness
 /// keeps a list of its own that can miss one.
 /// `every_evaluation_read_is_classified` holds the tests to this.
-const EVAL_SETTINGS: [&str; 28] = [
+const EVAL_SETTINGS: [&str; 30] = [
     "AT_LIMIT",
     "CALIBRATE",
     "CHANNELS",
@@ -289,8 +289,10 @@ const EVAL_SETTINGS: [&str; 28] = [
     "PASSAGES",
     "REACH",
     "RERANK_RULES",
+    "RESCORE_IN",
     "RESHAPE",
     "ROUTES",
+    "SUFFICIENCY_OUT",
     "SWEEP",
     "SWEEP_AGAINST",
     "TIERS",
@@ -299,8 +301,12 @@ const EVAL_SETTINGS: [&str; 28] = [
 
 /// Variables the evaluation tests read that change nothing a record is
 /// named by, with why.
-const EVAL_NOT_IDENTITY: [(&str, &str); 6] = [
+const EVAL_NOT_IDENTITY: [(&str, &str); 7] = [
     ("CHANNELS_OUT", "where a table is written"),
+    (
+        "SHORTLIST_OUT",
+        "where the shortlists a reranker saw are written",
+    ),
     (
         "ESCI_DIR",
         "where a dataset is; what it holds is the corpus digest",

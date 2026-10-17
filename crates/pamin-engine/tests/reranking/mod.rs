@@ -52,6 +52,37 @@ pub enum Rule {
     /// `fusion * fused + (1 - fusion) * model`, both on `scale`. `fusion` of
     /// one is fusion alone, which is the `off` tier.
     Blend { fusion: f64, scale: Scale },
+    /// The shipped blend, plus `graph` times the candidate's graph-channel
+    /// score for candidates the graph reached. The graph score is calibrated,
+    /// so it is added as it stands: a cross-encoder reads one candidate at a
+    /// time and cannot see that it is relevant because another memory names
+    /// it, which is what this keeps after the pass.
+    GraphBlend { graph: f64 },
+    /// The shipped blend over only the first `n` movable candidates in fused
+    /// order; the rest keep the place fusion gave them. What a shallower depth
+    /// would have cost, priced without rescoring, so two approximations:
+    /// - the INT8 model's score for a pair depends slightly on its batch
+    ///   neighbours, and the shipped pass's scores are reused;
+    /// - a real depth of `n` would still insert strong graph-only candidates
+    ///   from below `n`, which this drops, so on graph-bearing corpora it
+    ///   understates a shallow pass.
+    ///
+    /// Neither applies to the full pass, and the second not to a corpus
+    /// without edges.
+    Prefix { n: usize },
+    /// [`Rule::Prefix`] with `n` only when the fused list looks settled -- its
+    /// first candidate leads the second by at least `lead` of its score, and
+    /// both a lexical channel and the vector channel rank it in their top
+    /// three -- and the shipped pass otherwise. `n` of zero skips the model.
+    Confident { lead: f64, n: usize },
+    /// Score the shortlist in the passes the reranker runs -- its own
+    /// planner, shortest pairs first -- and stop after the first pass past
+    /// the second that put nothing into the model's top `top` so far: the
+    /// last pass says the pairs still to come are behind in the model too.
+    /// An anytime stop, not a safe one -- a cross-encoder's score has no bound
+    /// to stop against -- and an order by length, not by fusion, since that is
+    /// the order the passes run in.
+    Patience { top: usize },
 }
 
 /// Every rule measured, labelled. The shipped rule is found by value, not by
@@ -73,6 +104,29 @@ pub fn rules() -> Vec<(String, Rule)> {
                 Rule::Blend { fusion, scale },
             ));
         }
+    }
+    for graph in [0.05, 0.1, 0.2, 0.3, 0.5] {
+        rules.push((
+            format!("shipped blend + graph {graph:.2}"),
+            Rule::GraphBlend { graph },
+        ));
+    }
+    for n in [4, 8, 12, 16, 20] {
+        rules.push((format!("shipped blend, first {n} only"), Rule::Prefix { n }));
+    }
+    for lead in [0.05, 0.1, 0.2] {
+        for n in [0, 8] {
+            rules.push((
+                format!("settled (lead {lead:.2}): first {n}, else shipped"),
+                Rule::Confident { lead, n },
+            ));
+        }
+    }
+    for top in [3, 5, 10] {
+        rules.push((
+            format!("patience: stop when a pass misses the top {top}"),
+            Rule::Patience { top },
+        ));
     }
     rules
 }
@@ -280,7 +334,13 @@ impl Routes {
     }
 
     pub fn report(&self, title: &str) {
-        report(title, &self.labels, Some(1), &self.measured, false);
+        report(
+            title,
+            &self.labels,
+            Some(1),
+            &self.measured,
+            crate::channels::Units::Questions,
+        );
         println!("  pairs a search, small model / large model");
         for ((label, _), (cheap, dear)) in self.labels.iter().zip(&self.pairs) {
             println!(
@@ -294,6 +354,288 @@ impl Routes {
     }
 }
 
+/// Every rule in [`rules`], measured over shipped searches one at a time, with
+/// what each costs in model pairs.
+///
+/// With `SUFFICIENCY_OUT` set, also writes one row a query and answer key --
+/// the search's group, the group it was scored under (an XQuAD-R search is
+/// scored under three answer keys, other corpora's under one), whether the
+/// shipped first result is relevant under that key, the model's best score
+/// and its lead over the second -- to that file, for asking whether those two numbers
+/// predict a right first answer before anything exposes them. The scores are
+/// the ones the product computed in its own batches, which is the condition
+/// the withdrawn abstention experiment did not hold.
+pub struct Priced {
+    rules: Vec<(String, Rule)>,
+    measured: Vec<BTreeMap<String, crate::scoring::Scores>>,
+    pairs: Vec<u64>,
+    queries: u64,
+    /// How many of `rules` price the shipped model's own scores; the rest
+    /// price `rescore`'s.
+    firsts: usize,
+    sufficiency: Option<std::io::BufWriter<std::fs::File>>,
+    /// `SHORTLIST_OUT`: one JSON line a search with what the model was shown,
+    /// for scoring the same shortlists with another model offline.
+    shortlist: Option<std::io::BufWriter<std::fs::File>>,
+    /// `RESCORE_IN`: another model's scores for those shortlists, one line a
+    /// search in the order they were written, priced as extra rows.
+    rescore: Option<Vec<Rescored>>,
+    /// Per group, the unit each scored query belongs to, in `per_query`
+    /// order, for the cross-validated choice and its paired test.
+    clusters: BTreeMap<String, Vec<String>>,
+}
+
+/// One `SUFFICIENCY_OUT` row for each answer key the shipped first result was
+/// scored under (`first`, scored from a one-result list), each labelled with
+/// that key: one search scored under several keys can have its first result
+/// relevant under one and not another.
+fn sufficiency_rows(
+    group: &str,
+    first: &BTreeMap<String, crate::scoring::Scores>,
+    model: &[f64],
+) -> Vec<String> {
+    let mut model = model.to_vec();
+    model.sort_by(|left, right| right.total_cmp(left));
+    let (best, gap) = match model.as_slice() {
+        [best, second, ..] => (*best, best - second),
+        [best] => (*best, 0.0),
+        [] => (f64::NAN, f64::NAN),
+    };
+    first
+        .iter()
+        .map(|(key, scores)| {
+            format!(
+                "{group}\t{key}\t{}\t{best}\t{gap}\t{}",
+                u8::from(scores.ndcg > 0.0),
+                u8::from(!model.is_empty())
+            )
+        })
+        .collect()
+}
+
+/// The shape table `SUFFICIENCY_OUT`'s first-result check is scored into.
+const SUFFICIENCY_TABLE: &str = "sufficiency: shipped first result";
+
+/// Another model's scores for one dumped shortlist.
+#[derive(serde::Deserialize)]
+pub struct Rescored {
+    /// Which model scored it, with revision and precision; one per file.
+    model: String,
+    query: String,
+    names: Vec<String>,
+    /// The texts the other model scored, as dumped, so a stale file whose
+    /// names still match cannot be priced against changed documents.
+    documents: Vec<String>,
+    scores: Vec<f64>,
+}
+
+/// The rows priced over `model`'s scores when `RESCORE_IN` is set.
+fn rescored_rules(model: &str) -> Vec<(String, Rule)> {
+    vec![
+        (
+            format!("rescored by {model}: shipped blend"),
+            shipped_rule(Rerank::default()),
+        ),
+        (format!("rescored by {model}: substitute"), Rule::Substitute),
+    ]
+}
+
+impl Default for Priced {
+    fn default() -> Self {
+        let mut rules = rules();
+        let shortlist = std::env::var("SHORTLIST_OUT").ok().map(|path| {
+            std::io::BufWriter::new(
+                std::fs::File::create(path).expect("create the shortlist output"),
+            )
+        });
+        let rescore = std::env::var("RESCORE_IN").ok().map(|path| {
+            let text = std::fs::read_to_string(path).expect("read the rescored shortlists");
+            text.lines()
+                .map(|line| serde_json::from_str(line).expect("parse a rescored shortlist"))
+                .collect::<Vec<Rescored>>()
+        });
+        let firsts = rules.len();
+        if let Some(rescore) = &rescore {
+            let model = &rescore.first().expect("rescored shortlists").model;
+            assert!(
+                rescore.iter().all(|line| &line.model == model),
+                "one RESCORE_IN file holds one model's scores"
+            );
+            rules.extend(rescored_rules(model));
+        }
+        let sufficiency = std::env::var("SUFFICIENCY_OUT").ok().map(|path| {
+            let mut file = std::io::BufWriter::new(
+                std::fs::File::create(path).expect("create the sufficiency output"),
+            );
+            use std::io::Write;
+            writeln!(file, "group\tkey\tfirst_relevant\tbest\tgap\tscored")
+                .expect("write the header");
+            file
+        });
+        crate::harness::shape::tables(rules.iter().map(|(label, _)| label));
+        if sufficiency.is_some() {
+            crate::harness::shape::tables([SUFFICIENCY_TABLE]);
+        }
+        Self {
+            measured: vec![BTreeMap::new(); rules.len()],
+            pairs: vec![0; rules.len()],
+            queries: 0,
+            rules,
+            firsts,
+            sufficiency,
+            shortlist,
+            rescore,
+            clusters: BTreeMap::new(),
+        }
+    }
+}
+
+impl Priced {
+    /// One shipped search, which `engine` ran at the shipped tier. `score`
+    /// scores one ranking into its group or groups; `group` only labels the
+    /// sufficiency row.
+    ///
+    /// [`Rule::Patience`] replays the passes `engine`'s own reranker plans
+    /// for the shortlist ([`pamin_engine::Engine::rerank_passes`]), at the
+    /// execution target it is on now: the one that scored this search, since
+    /// a reranker that falls back mid-search rescores the whole list on its
+    /// new target. So the replay plans as the engine did without loading a
+    /// second copy of the model for its planner.
+    ///
+    /// `cluster` names the unit the search belongs to: searches that share
+    /// one share a fold, and the paired test runs over each unit's mean. A
+    /// LOCOMO conversation is one, since its questions share a corpus, index
+    /// and graph. `None` makes the search its own unit, which also keeps the
+    /// answer keys one search is scored under together.
+    #[allow(clippy::too_many_arguments)]
+    pub fn observe(
+        &mut self,
+        engine: &pamin_engine::Engine,
+        group: &str,
+        query: &str,
+        hits: &[SearchHit],
+        replayed: &Replayed,
+        cluster: Option<&str>,
+        score: impl Fn(&mut BTreeMap<String, crate::scoring::Scores>, &[String]),
+    ) {
+        let at = self.queries as usize;
+        let cluster = cluster.map_or_else(|| format!("search {at}"), str::to_string);
+        let before: BTreeMap<String, usize> = self.measured[0]
+            .iter()
+            .map(|(group, scores)| (group.clone(), scores.per_query.len()))
+            .collect();
+        self.queries += 1;
+        if let Some(file) = &mut self.shortlist {
+            use std::io::Write;
+            let names = replayed.movable();
+            let documents = shown(hits, &names);
+            let line = serde_json::json!({
+                "group": group,
+                "query": query,
+                "names": names,
+                "documents": documents,
+                "model": replayed.model(),
+            });
+            writeln!(file, "{line}").expect("write a shortlist");
+        }
+        let rescored = self.rescore.as_ref().map(|rescore| {
+            let other = rescore
+                .get(at)
+                .expect("a rescored shortlist for every search");
+            assert_eq!(other.query, query, "rescored shortlists are out of step");
+            assert_eq!(
+                other.names,
+                replayed.movable(),
+                "the rescored shortlist is not the one this search showed the model"
+            );
+            assert_eq!(
+                other.documents,
+                shown(hits, &replayed.movable()),
+                "the rescored documents are not the ones this search showed the model"
+            );
+            replayed.rescored(other.scores.clone())
+        });
+        let names = replayed.movable();
+        let documents = shown(hits, &names);
+        let documents: Vec<&str> = documents.iter().map(String::as_str).collect();
+        // A search the engine declined to rerank ran no pass, and its
+        // reranker may still be loading: there is nothing to plan.
+        let passes = if documents.is_empty() {
+            Vec::new()
+        } else {
+            engine
+                .rerank_passes(Rerank::default(), query, &documents)
+                .expect("the engine's reranker scored this search, so it is loaded")
+                .expect("plan the shortlist")
+        };
+        let planned = replayed.rescored(replayed.model.clone()).planned(passes);
+        for (row, (((label, rule), into), pairs)) in self
+            .rules
+            .iter()
+            .zip(&mut self.measured)
+            .zip(&mut self.pairs)
+            .enumerate()
+        {
+            let replayed = if row < self.firsts {
+                &planned
+            } else {
+                rescored
+                    .as_ref()
+                    .expect("rescored rows only with RESCORE_IN")
+            };
+            crate::harness::shape::table(label);
+            score(into, &replayed.order(*rule));
+            *pairs += replayed.pairs(*rule) as u64;
+        }
+        // Every row scores the same groups, so the first says which grew.
+        for (group, scores) in &self.measured[0] {
+            let grown = scores.per_query.len() - before.get(group).copied().unwrap_or(0);
+            self.clusters
+                .entry(group.clone())
+                .or_default()
+                .extend(std::iter::repeat_n(cluster.clone(), grown));
+        }
+        if let Some(file) = &mut self.sufficiency {
+            use std::io::Write;
+            let shipped = replayed.order(shipped_rule(Rerank::default()));
+            // A one-result list scores above zero exactly when that result is
+            // relevant, whatever the corpus's own judgements are.
+            let mut first = BTreeMap::new();
+            crate::harness::shape::table(SUFFICIENCY_TABLE);
+            score(&mut first, &shipped[..shipped.len().min(1)]);
+            for row in sufficiency_rows(group, &first, replayed.model()) {
+                writeln!(file, "{row}").expect("write a sufficiency row");
+            }
+        }
+    }
+
+    pub fn report(&mut self, title: &str) {
+        // Flushed with errors checked, so a truncated artifact fails the run
+        // instead of being dropped silently with its writer.
+        for file in [&mut self.sufficiency, &mut self.shortlist]
+            .into_iter()
+            .flatten()
+        {
+            use std::io::Write;
+            file.flush().expect("flush a raw artifact");
+        }
+        report(
+            title,
+            &self.rules,
+            shipped(&self.rules),
+            &self.measured,
+            crate::channels::Units::Clusters(&self.clusters),
+        );
+        println!("  model pairs a search");
+        for ((label, _), pairs) in self.rules.iter().zip(&self.pairs) {
+            println!(
+                "  {label:<52}  {:>6.2}",
+                *pairs as f64 / self.queries.max(1) as f64
+            );
+        }
+    }
+}
+
 /// Every row against the one that ships, group by group and as one
 /// cross-validated choice. `measured` is indexed like `labels`.
 pub fn report<T>(
@@ -301,12 +643,12 @@ pub fn report<T>(
     labels: &[(String, T)],
     ship: Option<usize>,
     measured: &[BTreeMap<String, crate::scoring::Scores>],
-    linked: bool,
+    units: crate::channels::Units,
 ) {
     let shipped = &measured[ship.expect("the shipped row is measured")];
     println!("\n  {title}");
     for (group, scores) in shipped {
-        crate::channels::sweep_table(
+        crate::channels::clustered_sweep_table(
             group,
             scores,
             labels,
@@ -314,6 +656,7 @@ pub fn report<T>(
                 .iter()
                 .map(|row| row.get(group))
                 .collect::<Vec<_>>(),
+            &units.group_keys(group, scores),
         );
     }
     crate::channels::cross_validated(
@@ -323,7 +666,7 @@ pub fn report<T>(
         labels,
         ship,
         measured,
-        linked,
+        units,
     );
     println!();
 }
@@ -342,6 +685,21 @@ fn render(name: &str, content: &str, seed: Option<&str>, named: bool) -> String 
         text.push_str(seed);
     }
     text
+}
+
+/// What the shipped rendering shows the model for each of `names`.
+fn shown(hits: &[SearchHit], names: &[&str]) -> Vec<String> {
+    let found: HashMap<&str, &SearchHit> =
+        hits.iter().map(|hit| (hit.topic.as_str(), hit)).collect();
+    let (named, with_seed) = (SHIPPED % 2 == 1, SHIPPED >= 2);
+    names
+        .iter()
+        .map(|name| {
+            let hit = found[name];
+            let seed = hit.seed.as_deref().filter(|_| with_seed);
+            render(name, &hit.state.content, seed, named)
+        })
+        .collect()
 }
 
 /// What the model is shown for each candidate, in the order [`in_context`]
@@ -462,8 +820,21 @@ pub struct Replayed {
     fusion: Vec<f64>,
     /// Per movable position, the model's score.
     model: Vec<f64>,
+    /// Per movable position, its graph-channel score, zero when the graph did
+    /// not reach it.
+    graph: Vec<f64>,
     /// How deep the tier reads, which is where a graph find is inserted.
     head: usize,
+    /// How far the fused first leads the fused second, as a share of the
+    /// first's score; zero with fewer than two.
+    lead: f64,
+    /// Whether a lexical channel and the vector channel both rank the fused
+    /// first in their top three.
+    agree: bool,
+    /// The reranker's passes over the movable candidates, as indices into
+    /// them in the order it runs them, once [`Replayed::planned`] has asked
+    /// it; what [`Rule::Patience`] replays.
+    passes: Option<Vec<Vec<usize>>>,
 }
 
 /// Rebuilds one shipped search at `tier` and checks the rebuild.
@@ -485,7 +856,10 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
         })
         .collect();
 
-    let results = Fusion::default().fuse(&crate::channels::replay(hits));
+    // The fusion this search ran, a profile's secondary vector channel
+    // included, rather than the default.
+    let fusion = crate::channels::effective_fusion(hits, &Fusion::default());
+    let results = fusion.fuse(&crate::channels::replay(hits));
     // The engine's own rule for what the model is shown, not a copy of it.
     let traces: Vec<&[Why]> = results.iter().map(|result| result.why.as_slice()).collect();
     let movable = pamin_engine::rerankable(&traces, tier);
@@ -493,6 +867,22 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
         .iter()
         .map(|result| named[&result.topic].to_string())
         .collect();
+
+    let lead = match results.as_slice() {
+        [first, second, ..] if first.score > 0.0 => {
+            f64::from((first.score - second.score) / first.score)
+        }
+        _ => 0.0,
+    };
+    let agree = results.first().is_some_and(|first| {
+        let near = |wanted: &dyn Fn(Channel) -> bool| {
+            first.why.iter().any(|why| {
+                matches!(why, Why::Channel { channel, rank, .. } if wanted(*channel) && *rank <= 3)
+            })
+        };
+        near(&|channel| matches!(channel, Channel::LexicalSegmented | Channel::LexicalNgram))
+            && near(&|channel| channel == Channel::Vector)
+    });
 
     // The engine declines to rerank fewer than two, and then no candidate
     // carries a model score and every rule is fusion alone.
@@ -506,7 +896,11 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
             movable: Vec::new(),
             fusion: Vec::new(),
             model: Vec::new(),
+            graph: Vec::new(),
             head: tier.depth(),
+            lead,
+            agree,
+            passes: None,
         }
     } else {
         assert_eq!(
@@ -525,7 +919,27 @@ pub fn replay(hits: &[SearchHit], tier: Rerank) -> Replayed {
                 .iter()
                 .map(|at| model[fused[*at].as_str()])
                 .collect(),
+            graph: movable
+                .iter()
+                .map(|at| {
+                    results[*at]
+                        .why
+                        .iter()
+                        .find_map(|why| match why {
+                            Why::Channel {
+                                channel: Channel::Graph,
+                                score,
+                                ..
+                            } => Some(f64::from(score.unwrap_or(0.0))),
+                            _ => None,
+                        })
+                        .unwrap_or(0.0)
+                })
+                .collect(),
             head: tier.depth(),
+            lead,
+            agree,
+            passes: None,
             fused,
             movable,
         }
@@ -570,13 +984,33 @@ impl Replayed {
             movable: self.movable.clone(),
             fusion: self.fusion.clone(),
             model,
+            graph: self.graph.clone(),
             head: self.head,
+            lead: self.lead,
+            agree: self.agree,
+            passes: self.passes.clone(),
         }
+    }
+
+    /// The same query with the reranker's passes over the movable
+    /// candidates, as indices into them in the order it runs them (see
+    /// [`pamin_engine::Engine::rerank_passes`]); none for a search it
+    /// declined to rerank.
+    pub fn planned(mut self, passes: Vec<Vec<usize>>) -> Replayed {
+        assert!(
+            passes.iter().flatten().all(|at| *at < self.movable.len()),
+            "a pass over a candidate the model was not shown"
+        );
+        self.passes = Some(passes);
+        self
     }
 
     /// The whole list under `rule`: unmovable positions stay, movable ones are
     /// refilled in the rule's order, ties to the earlier position.
     pub fn order(&self, rule: Rule) -> Vec<String> {
+        if let Some(keep) = self.scored(rule) {
+            return cascade_order(self, &keep);
+        }
         if let Rule::Blend {
             fusion,
             scale: Scale::Score,
@@ -587,6 +1021,29 @@ impl Replayed {
         }
         let keys: Vec<f64> = match rule {
             Rule::Substitute => self.model.clone(),
+            Rule::GraphBlend { graph } => {
+                let scaled = |values: &[f64]| {
+                    let low = values.iter().copied().fold(f64::INFINITY, f64::min);
+                    let high = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                    values
+                        .iter()
+                        .map(|value| {
+                            if high > low {
+                                (value - low) / (high - low)
+                            } else {
+                                0.0
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let (fused, model) = (scaled(&self.fusion), scaled(&self.model));
+                let fusion = pamin_engine::RERANK_FUSION;
+                (0..fused.len())
+                    .map(|at| {
+                        fusion * fused[at] + (1.0 - fusion) * model[at] + graph * self.graph[at]
+                    })
+                    .collect()
+            }
             Rule::Blend {
                 fusion,
                 scale: Scale::Rank,
@@ -601,7 +1058,10 @@ impl Replayed {
             Rule::Blend {
                 scale: Scale::Score,
                 ..
-            } => unreachable!("handled above"),
+            }
+            | Rule::Prefix { .. }
+            | Rule::Confident { .. }
+            | Rule::Patience { .. } => unreachable!("handled above"),
         };
         let mut picks: Vec<usize> = (0..self.movable.len()).collect();
         picks.sort_by(|left, right| {
@@ -610,6 +1070,58 @@ impl Replayed {
                 .then_with(|| left.cmp(right))
         });
         pamin_engine::place(self.fused.clone(), &self.movable, self.head, &picks)
+    }
+}
+
+impl Replayed {
+    /// Which movable candidates a rule that scores only some of them has the
+    /// model score, as indices into the movable ones; `None` for a rule that
+    /// reads every score.
+    fn scored(&self, rule: Rule) -> Option<Vec<usize>> {
+        let count = self.movable.len();
+        match rule {
+            Rule::Prefix { n } => Some((0..n.min(count)).collect()),
+            Rule::Confident { lead, n } => (self.lead >= lead && self.agree)
+                .then(|| (0..n.min(count)).collect())
+                .or_else(|| Some((0..count).collect())),
+            Rule::Patience { top } => {
+                let passes = self
+                    .passes
+                    .as_ref()
+                    .expect("Patience replays the reranker's passes: plan them first");
+                let mut scored: Vec<usize> = Vec::new();
+                for (pass, positions) in passes.iter().enumerate() {
+                    scored.extend(positions);
+                    if pass < 2 {
+                        continue;
+                    }
+                    let mut best = scored.clone();
+                    best.sort_by(|left, right| {
+                        self.model[*right]
+                            .total_cmp(&self.model[*left])
+                            .then(left.cmp(right))
+                    });
+                    best.truncate(top);
+                    if !best.iter().any(|at| positions.contains(at)) {
+                        break;
+                    }
+                }
+                scored.sort_unstable();
+                Some(scored)
+            }
+            Rule::Substitute | Rule::Blend { .. } | Rule::GraphBlend { .. } => None,
+        }
+    }
+
+    /// How many pairs the model scores under `rule` -- what the reranker's
+    /// time is proportional to, up to batching and length.
+    pub fn pairs(&self, rule: Rule) -> usize {
+        match self.scored(rule) {
+            // The engine declines to rerank fewer than two.
+            Some(keep) if keep.len() < 2 => 0,
+            Some(keep) => keep.len(),
+            None => self.movable.len(),
+        }
     }
 }
 
@@ -643,7 +1155,11 @@ mod tests {
             movable: vec![1, 2, 3],
             fusion: fusion.to_vec(),
             model: model.to_vec(),
+            graph: vec![0.0; fusion.len()],
             head: 4,
+            lead: 0.0,
+            agree: false,
+            passes: None,
         }
     }
 
@@ -691,6 +1207,111 @@ mod tests {
         assert_eq!(
             cascade_order(&scores, &[0, 1, 2]),
             scores.order(shipped_rule(Rerank::Accurate))
+        );
+    }
+
+    #[test]
+    fn scoring_every_candidate_first_is_the_shipped_pass() {
+        let scores = replayed(&[1.0, 0.5, 0.0], &[0.0, 1.0, 2.0]);
+        let shipped = scores.order(shipped_rule(Rerank::Accurate));
+        assert_eq!(scores.order(Rule::Prefix { n: 3 }), shipped);
+        assert_eq!(scores.pairs(Rule::Prefix { n: 3 }), 3);
+        // Unsettled: the fused first leads by nothing and nothing agrees.
+        assert_eq!(scores.order(Rule::Confident { lead: 0.1, n: 0 }), shipped);
+        assert_eq!(scores.pairs(Rule::Confident { lead: 0.1, n: 0 }), 3);
+    }
+
+    #[test]
+    fn a_prefix_too_short_to_rerank_is_fusion_alone() {
+        let scores = replayed(&[1.0, 0.5, 0.0], &[0.0, 1.0, 2.0]);
+        assert_eq!(scores.order(Rule::Prefix { n: 1 }), scores.fused);
+        assert_eq!(scores.pairs(Rule::Prefix { n: 1 }), 0);
+        let settled = Replayed {
+            lead: 0.5,
+            agree: true,
+            ..scores.rescored(scores.model.clone())
+        };
+        assert_eq!(
+            settled.order(Rule::Confident { lead: 0.1, n: 0 }),
+            settled.fused
+        );
+        assert_eq!(settled.pairs(Rule::Confident { lead: 0.1, n: 0 }), 0);
+    }
+
+    /// A search the engine declined to rerank ran no pass and is planned
+    /// with none: every rule, Patience included, is fusion alone at no pairs,
+    /// with nothing asked of a reranker that may not have loaded yet.
+    #[test]
+    fn a_search_with_no_model_pass_is_priced_without_a_plan() {
+        let scores = Replayed {
+            movable: Vec::new(),
+            fusion: Vec::new(),
+            model: Vec::new(),
+            graph: Vec::new(),
+            ..replayed(&[], &[])
+        }
+        .planned(Vec::new());
+        for (_, rule) in rules() {
+            assert_eq!(scores.order(rule), scores.fused, "{rule:?}");
+            assert_eq!(scores.pairs(rule), 0, "{rule:?}");
+        }
+    }
+
+    /// A search scored under several answer keys gets a row for each, so
+    /// a first result relevant under one key and not another is not merged
+    /// into one row for the search.
+    #[test]
+    fn sufficiency_has_a_row_for_each_answer_key() {
+        let mut first: BTreeMap<String, crate::scoring::Scores> = BTreeMap::new();
+        let shown = ["a".to_string()];
+        for (key, relevant) in [("cross_lingual", false), ("same_language", true)] {
+            first
+                .entry(key.to_string())
+                .or_default()
+                .add(&shown, 1, |_| relevant);
+        }
+        assert_eq!(
+            sufficiency_rows("de", &first, &[0.5, 2.0]),
+            [
+                "de\tcross_lingual\t0\t2\t1.5\t1",
+                "de\tsame_language\t1\t2\t1.5\t1"
+            ]
+        );
+    }
+
+    #[test]
+    fn patience_stops_after_a_pass_that_reaches_nothing() {
+        let count = 12;
+        let fusion: Vec<f64> = (0..count)
+            .map(|at| 1.0 - at as f64 / count as f64)
+            .collect();
+        let mut scores = replayed(&fusion, &fusion);
+        scores.fused = (0..=count).map(|at| at.to_string()).collect();
+        scores.movable = (1..=count).collect();
+        scores.graph = vec![0.0; count];
+        scores.head = count + 1;
+        // Passes in the order the reranker runs them, by length, not by
+        // fusion.
+        scores.passes = Some(vec![
+            vec![11, 7, 3],
+            vec![10, 6, 2],
+            vec![9, 5, 1],
+            vec![8, 4, 0],
+        ]);
+        // The model agrees with fusion, so the third pass puts candidate 1
+        // into the top three and the fourth, holding 0, does too: all read.
+        assert_eq!(scores.pairs(Rule::Patience { top: 3 }), count);
+        // A model that prefers what the first two passes held stops after
+        // the third, which reaches nothing, and never scores the fourth.
+        let mut model = fusion.clone();
+        for (at, score) in [(11, 9.0), (10, 8.0), (7, 7.0)] {
+            model[at] = score;
+        }
+        let rescored = scores.rescored(model);
+        assert_eq!(rescored.pairs(Rule::Patience { top: 3 }), 9);
+        assert_eq!(
+            rescored.scored(Rule::Patience { top: 3 }),
+            Some(vec![1, 2, 3, 5, 6, 7, 9, 10, 11])
         );
     }
 }

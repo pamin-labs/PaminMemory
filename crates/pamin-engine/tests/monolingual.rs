@@ -1074,13 +1074,9 @@ async fn run(engine: &Engine, corpus: &Corpus, route: Route) -> Scores {
 
 /// Every rule in `reranking::rules` over the shipped tier's own scores.
 async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
-    use std::collections::BTreeMap;
-
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
-    let rules = reranking::rules();
-    let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); rules.len()];
-    harness::shape::tables(rules.iter().map(|(label, _)| label));
+    let mut priced = reranking::Priced::default();
     for query in &corpus.queries {
         let hits = engine
             .search_reranked(&query.text, WIDE, DEPTHS, tier)
@@ -1088,24 +1084,20 @@ async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
             .expect("search");
         channels::enough_room(&hits, WIDE);
         let replayed = reranking::replay(&hits, tier);
-        for ((label, rule), into) in rules.iter().zip(&mut measured) {
-            harness::shape::table(label);
-            query.score(
-                into.entry(GROUP.to_string()).or_default(),
-                &replayed.order(*rule),
-            );
-        }
+        priced.observe(
+            engine,
+            GROUP,
+            &query.text,
+            &hits,
+            &replayed,
+            None,
+            |into, ranking| query.score(into.entry(GROUP.to_string()).or_default(), ranking),
+        );
     }
-    reranking::report(
-        &format!(
-            "rules for the {} reranker's scores, MIRACL, {named}",
-            tier.name()
-        ),
-        &rules,
-        reranking::shipped(&rules),
-        &measured,
-        false,
-    );
+    priced.report(&format!(
+        "rules for the {} reranker's scores, MIRACL, {named}",
+        tier.name()
+    ));
 }
 
 /// What the shipped tier is worth when it is shown each candidate's topic
@@ -1159,7 +1151,7 @@ async fn context(
         &labels,
         reranking::shipped_context(),
         &measured,
-        false,
+        channels::Units::Questions,
     );
 }
 
@@ -1305,7 +1297,7 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
         &variants,
         channels::shipped_row(&variants),
         &offline.iter().map(keyed).collect::<Vec<_>>(),
-        false,
+        channels::Units::Questions,
     );
 
     println!(
