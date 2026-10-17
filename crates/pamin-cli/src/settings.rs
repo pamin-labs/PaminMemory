@@ -346,9 +346,9 @@ impl Server {
         let postgres_dir = flag_postgres.clone().or(file_postgres.clone());
         pick(
             "postgres_dir",
-            flag_postgres.as_ref().map(|p| p.display().to_string()),
+            flag_postgres.as_deref().map(spelled),
             given("postgres_dir"),
-            file_postgres.as_ref().map(|p| p.display().to_string()),
+            file_postgres.as_deref().map(spelled),
             "none (installs its own)".to_string(),
         );
 
@@ -537,11 +537,48 @@ fn libraries(paths: &[PathBuf]) -> String {
     if paths.is_empty() {
         return "none".to_string();
     }
-    let paths: Vec<String> = paths
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect();
+    let paths: Vec<String> = paths.iter().map(|path| spelled(path)).collect();
     serde_json::to_string(&paths).expect("a list of strings serializes")
+}
+
+/// `path` as a setting's value: as written when it is UTF-8, and losslessly
+/// when it is not, since the value is what a running server is compared by
+/// and `display` would spell every byte it cannot decode as the same U+FFFD.
+///
+/// On Unix a byte that is not UTF-8 is `\xNN`, and so that no UTF-8 path can
+/// spell the same, a backslash is `\\` -- a backslash being the one change
+/// to how a UTF-8 path is spelled. On Windows a path is UTF-16, and a unit
+/// that does not decode is `<NNNN>`: `<` cannot be in a Windows path, so a
+/// path that decodes cannot spell the same and nothing needs escaping.
+fn spelled(path: &Path) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let mut out = String::new();
+        for chunk in path.as_os_str().as_bytes().utf8_chunks() {
+            out.push_str(&chunk.valid().replace('\\', "\\\\"));
+            for byte in chunk.invalid() {
+                out.push_str(&format!("\\x{byte:02x}"));
+            }
+        }
+        out
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let units: Vec<u16> = path.as_os_str().encode_wide().collect();
+        char::decode_utf16(units.iter().copied())
+            .zip(units.iter())
+            .map(|(decoded, unit)| match decoded {
+                Ok(character) => character.to_string(),
+                Err(_) => format!("<{unit:04x}>"),
+            })
+            .collect()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        path.display().to_string()
+    }
 }
 
 fn read(path: &Path) -> Result<File> {
@@ -709,6 +746,44 @@ mod tests {
         assert_eq!(two.asked()["ep_libraries"].value, r#"["/tmp/a","/tmp/b"]"#);
         assert!(one.mismatch(&two.asked()).is_some());
         assert!(two.mismatch(&one.asked()).is_some());
+    }
+
+    /// Paths that differ only in bytes that are not UTF-8 are different
+    /// settings, and a UTF-8 path is spelled as written.
+    #[cfg(unix)]
+    #[test]
+    fn a_path_that_is_not_utf8_is_compared_byte_for_byte() {
+        use std::os::unix::ffi::OsStrExt;
+        let path = |bytes: &[u8]| PathBuf::from(std::ffi::OsStr::from_bytes(bytes));
+        let x80 = path(b"/opt/ep-\x80.so");
+        let x81 = path(b"/opt/ep-\x81.so");
+        assert_eq!(spelled(&x80), "/opt/ep-\\x80.so");
+        assert_ne!(spelled(&x80), spelled(&x81));
+        assert_ne!(libraries(std::slice::from_ref(&x80)), libraries(&[x81]));
+        // Spelled as written, but for a backslash, which is escaped so that
+        // no UTF-8 path spells what a byte that is not UTF-8 does.
+        assert_eq!(spelled(Path::new("/opt/ép.so")), "/opt/ép.so");
+        assert_ne!(spelled(&path(br"/opt/ep-\x80.so")), spelled(&x80));
+
+        let root = tempfile::tempdir().unwrap();
+        let resolve_with = |library: &PathBuf, prefix: &PathBuf| {
+            let matches = Test::command()
+                .try_get_matches_from([
+                    std::ffi::OsStr::new("pamin"),
+                    "--ep-library".as_ref(),
+                    library.as_os_str(),
+                    "--postgres-dir".as_ref(),
+                    prefix.as_os_str(),
+                ])
+                .unwrap();
+            let parsed = Test::from_arg_matches(&matches).unwrap();
+            Server::resolve(root.path(), &parsed.server, &matches).unwrap()
+        };
+        let one = resolve_with(&x80, &x80);
+        let other = resolve_with(&path(b"/opt/ep-\x81.so"), &path(b"/opt/ep-\x81.so"));
+        let message = one.mismatch(&other.asked()).expect("a mismatch");
+        assert!(message.contains("ep_libraries"), "{message}");
+        assert!(message.contains("postgres_dir"), "{message}");
     }
 
     /// `ep_libraries = []` is the same setting as none at all, so a server
