@@ -846,16 +846,16 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
                 // succeeded, so a run that tried it says so.
                 let attempted = trying.then(|| current_use(&*active, selected));
                 if selected == Device::Cpu {
+                    remember_attempt(model, *device, attempted);
                     if revalidating && replacement.is_some() {
-                        remember_attempt(model, *device, attempted);
                         return retain_fallback(model, *device, &mut clock, &mut operation);
                     }
                     return Err(error);
                 }
                 let target = active.runtime_plan().target.clone();
                 if failed_devices.contains(&target) {
+                    remember_attempt(model, *device, attempted);
                     if revalidating {
-                        remember_attempt(model, *device, attempted);
                         return retain_fallback(model, *device, &mut clock, &mut operation);
                     }
                     return Err(error);
@@ -2355,6 +2355,33 @@ mod tests {
         assert_eq!(targets.pop().as_deref(), Some("cpu"));
         targets.sort();
         assert_eq!(targets, ["cuda", "npu"]);
+    }
+
+    /// A recovery whose CPU replacement fails on the real input too fails
+    /// the call, and the model's history still names both plans it ran.
+    #[test]
+    fn a_failed_recovery_keeps_the_plans_it_ran() {
+        let root = tempfile::tempdir().unwrap();
+        let now = std::time::Instant::now();
+        let mut model = RuntimeFixture::new(1, "cuda");
+        let mut device = Device::Cuda;
+        let failed = retry_model_at(
+            &mut model,
+            &mut device,
+            root.path(),
+            now,
+            |_: &mut RuntimeFixture<i32>, _| -> Result<i32> {
+                Err(IndexError::Engine("the real input fails".into()))
+            },
+            || Ok((RuntimeFixture::new(2, "cpu"), Device::Cpu)),
+        );
+        assert!(failed.is_err());
+        let mut targets: Vec<String> = plans_of(&model, device)
+            .into_iter()
+            .map(|plan| plan.target)
+            .collect();
+        targets.sort();
+        assert_eq!(targets, ["cpu", "cuda"]);
     }
 
     #[test]
