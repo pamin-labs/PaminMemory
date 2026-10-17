@@ -2328,6 +2328,13 @@ or a last-position logit and generates nothing — so the whole table follows:
 | `Qwen3-Reranker-0.6B` | ~440M | ~2.05 s | |
 | `openjev/openjev` | **27.4B** | **~128 s** | |
 
+The anchor's 1423 ms ran a call's passes one after another, each with every
+core and up to four pairs, as the reranker did when it was measured. On a
+multi-core CPU the passes of one call now run side by side, one thread and one
+pair each, so 1423 ms is not what a search spends reranking today, and the
+330 GFLOPS it gives is the sequential path's. Neither has been re-measured
+that way, and the predicted rows above are predictions of that sequential path.
+
 The last row is why "just read a yes/no token" does not rescue a large decoder.
 Reading one position's logits still costs one full prefill over every weight, so
 27.4 billion of them is two orders of magnitude outside an interactive budget
