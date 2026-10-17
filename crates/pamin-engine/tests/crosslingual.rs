@@ -1738,8 +1738,20 @@ fn embed_corpus(
 /// same-language key: 0.7268 / 0.9032 cross-lingual and 0.8682 / 0.9647
 /// same-language. The floors leave roughly 0.04-0.07 on nDCG and 0.04-0.05 on
 /// recall, enough for ordinary variation but tighter than the old-key guards.
-const SEARCH_FLOORS: &[(&str, f64, f64)] =
-    &[("cross_lingual", 0.66, 0.85), ("same_language", 0.82, 0.92)];
+///
+/// Re-measured with `single_target` on all 1,190 queries, CPU execution
+/// provider, at commits 8a6f052 and ddf0800 (identical to four decimals),
+/// 2026-10-15, on a shared 4-vCPU Xeon: 0.7231 / 0.9005 cross-lingual,
+/// 0.8679 / 0.9613 same-language and 0.6662 / 0.9017 single-target. The
+/// single-target floors leave 0.0662 and 0.0517, about what cross-lingual's
+/// leave.
+/// Fusion alone scores 0.5640 single-target nDCG@10 (0.6662 less the
+/// reranker's paired +0.1022), under its floor, as cross-lingual's 0.6334 is.
+const SEARCH_FLOORS: &[(&str, f64, f64)] = &[
+    ("cross_lingual", 0.66, 0.85),
+    ("same_language", 0.82, 0.92),
+    ("single_target", 0.60, 0.85),
+];
 
 /// The least the reranker must be worth, in cross-lingual nDCG@10.
 ///
