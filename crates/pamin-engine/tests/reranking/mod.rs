@@ -357,9 +357,11 @@ impl Routes {
 /// Every rule in [`rules`], measured over shipped searches one at a time, with
 /// what each costs in model pairs.
 ///
-/// With `SUFFICIENCY_OUT` set, also writes one row a query -- group, whether
-/// the shipped first result is relevant, the model's best score and its lead
-/// over the second -- to that file, for asking whether those two numbers
+/// With `SUFFICIENCY_OUT` set, also writes one row a query and answer key --
+/// the search's group, the group it was scored under (an XQuAD-R search is
+/// scored under three answer keys, other corpora's under one), whether the
+/// shipped first result is relevant under that key, the model's best score
+/// and its lead over the second -- to that file, for asking whether those two numbers
 /// predict a right first answer before anything exposes them. The scores are
 /// the ones the product computed in its own batches, which is the condition
 /// the withdrawn abstention experiment did not hold.
@@ -381,6 +383,34 @@ pub struct Priced {
     /// Per group, the unit each scored query belongs to, in `per_query`
     /// order, for the cross-validated choice and its paired test.
     clusters: BTreeMap<String, Vec<String>>,
+}
+
+/// One `SUFFICIENCY_OUT` row for each answer key the shipped first result was
+/// scored under (`first`, scored from a one-result list), each labelled with
+/// that key: one search scored under several keys can have its first result
+/// relevant under one and not another.
+fn sufficiency_rows(
+    group: &str,
+    first: &BTreeMap<String, crate::scoring::Scores>,
+    model: &[f64],
+) -> Vec<String> {
+    let mut model = model.to_vec();
+    model.sort_by(|left, right| right.total_cmp(left));
+    let (best, gap) = match model.as_slice() {
+        [best, second, ..] => (*best, best - second),
+        [best] => (*best, 0.0),
+        [] => (f64::NAN, f64::NAN),
+    };
+    first
+        .iter()
+        .map(|(key, scores)| {
+            format!(
+                "{group}\t{key}\t{}\t{best}\t{gap}\t{}",
+                u8::from(scores.ndcg > 0.0),
+                u8::from(!model.is_empty())
+            )
+        })
+        .collect()
 }
 
 /// The shape table `SUFFICIENCY_OUT`'s first-result check is scored into.
@@ -438,7 +468,8 @@ impl Default for Priced {
                 std::fs::File::create(path).expect("create the sufficiency output"),
             );
             use std::io::Write;
-            writeln!(file, "group\tfirst_relevant\tbest\tgap\tscored").expect("write the header");
+            writeln!(file, "group\tkey\tfirst_relevant\tbest\tgap\tscored")
+                .expect("write the header");
             file
         });
         crate::harness::shape::tables(rules.iter().map(|(label, _)| label));
@@ -572,21 +603,9 @@ impl Priced {
             let mut first = BTreeMap::new();
             crate::harness::shape::table(SUFFICIENCY_TABLE);
             score(&mut first, &shipped[..shipped.len().min(1)]);
-            let first = first.values().any(|scores| scores.ndcg > 0.0);
-            let mut model = replayed.model.clone();
-            model.sort_by(|left, right| right.total_cmp(left));
-            let (best, gap) = match model.as_slice() {
-                [best, second, ..] => (*best, best - second),
-                [best] => (*best, 0.0),
-                [] => (f64::NAN, f64::NAN),
-            };
-            writeln!(
-                file,
-                "{group}\t{}\t{best}\t{gap}\t{}",
-                u8::from(first),
-                u8::from(!model.is_empty())
-            )
-            .expect("write a sufficiency row");
+            for row in sufficiency_rows(group, &first, replayed.model()) {
+                writeln!(file, "{row}").expect("write a sufficiency row");
+            }
         }
     }
 
@@ -1236,6 +1255,28 @@ mod tests {
             assert_eq!(scores.order(rule), scores.fused, "{rule:?}");
             assert_eq!(scores.pairs(rule), 0, "{rule:?}");
         }
+    }
+
+    /// A search scored under several answer keys gets a row for each, so
+    /// a first result relevant under one key and not another is not merged
+    /// into one row for the search.
+    #[test]
+    fn sufficiency_has_a_row_for_each_answer_key() {
+        let mut first: BTreeMap<String, crate::scoring::Scores> = BTreeMap::new();
+        let shown = ["a".to_string()];
+        for (key, relevant) in [("cross_lingual", false), ("same_language", true)] {
+            first
+                .entry(key.to_string())
+                .or_default()
+                .add(&shown, 1, |_| relevant);
+        }
+        assert_eq!(
+            sufficiency_rows("de", &first, &[0.5, 2.0]),
+            [
+                "de\tcross_lingual\t0\t2\t1.5\t1",
+                "de\tsame_language\t1\t2\t1.5\t1"
+            ]
+        );
     }
 
     #[test]
