@@ -62,15 +62,18 @@ the rank each held in each channel. Fusing once, above both, is what makes the
 result explainable:
 
 ```bash
-$ pamin search "deployment pipeline" --json | jq '.hits[0].why'
-[ { "kind": "channel", "channel": "lexical_ngram", "rank": 1 },
-  { "kind": "channel", "channel": "vector",        "rank": 2 },
-  { "kind": "channel", "channel": "graph",         "rank": 1 },
-  { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, ... } ]
+$ pamin search "deployment pipeline" --json | jq -c '.hits[0].why[]'
+{"kind":"channel","channel":"lexical_segmented","rank":1}
+{"kind":"channel","channel":"lexical_ngram","rank":1}
+{"kind":"channel","channel":"vector","rank":1}
+{"kind":"channel","channel":"graph","rank":2}
+{"kind":"path","from":"oncall_rota","via":"oncall_rota","hops":1,"asserted_from":"oncall_rota","asserted_to":"deployment_pipeline","edge":"depends_on","derivation":"explicit"}
+{"kind":"reranked"}
 ```
 
 Every hit reports the rank it held in each channel and the graph path that
-reached it. There is no step at which a score becomes unattributable.
+reached it, and `reranked` when the cross-encoder scored it. There is no step
+at which a score becomes unattributable.
 
 **A cross-encoder pass.** Every search reranks the fused shortlist with one
 cross-encoder, bge-reranker-v2-m3. It was chosen over no reranking and a
