@@ -760,6 +760,11 @@ fn runtime_failures() -> &'static std::sync::Mutex<RuntimeFailures> {
 const RUNTIME_RETRY: std::time::Duration = std::time::Duration::from_secs(300);
 
 fn quarantine_runtime(cache_dir: &Path, plan: &RuntimePlan, now: std::time::Instant) {
+    quarantine_target(cache_dir, &plan.namespace, &plan.target, now);
+}
+
+/// Quarantines `target` for the plans of `namespace` under `cache_dir`.
+fn quarantine_target(cache_dir: &Path, namespace: &str, target: &str, now: std::time::Instant) {
     let root = cache_dir
         .canonicalize()
         .unwrap_or_else(|_| cache_dir.to_path_buf());
@@ -777,7 +782,7 @@ fn quarantine_runtime(cache_dir: &Path, plan: &RuntimePlan, now: std::time::Inst
         }
     }
     failures.insert(
-        (root, plan.namespace.clone(), plan.target.clone()),
+        (root, namespace.to_string(), target.to_string()),
         now + RUNTIME_RETRY,
     );
 }
@@ -962,13 +967,39 @@ fn retry_model_with_clock<T: RuntimeModel, R>(
                 failed_devices.push(target);
                 let now = clock();
                 quarantine_runtime(cache_dir, active.runtime_plan(), now);
+                let namespace = active.runtime_plan().namespace.clone();
                 if model.runtime_plan().restore_target.is_none() {
                     model.runtime_plan_mut().restore_target = Some(failed_devices[0].clone());
                 }
                 model.runtime_plan_mut().retry_at = Some(now + RUNTIME_RETRY);
                 remember_attempt(model, *device, attempted);
                 drop(replacement.take());
-                let (mut active, selected) = match reload() {
+                let mut reloaded = reload();
+                // A model first loaded before its revision's ref existed was
+                // planned under a namespace of that load's own (see
+                // `hub::Repository::identity`), and the reload, opening it at
+                // the commit the ref now names, plans under the commit's: a
+                // namespace the quarantine above is not in. Carry the failed
+                // targets there, and plan once more if the reload chose one.
+                let moved = reloaded.as_ref().ok().and_then(|(fresh, _)| {
+                    let plan = fresh.runtime_plan();
+                    (plan.namespace != namespace).then(|| {
+                        (
+                            plan.namespace.clone(),
+                            failed_devices.contains(&plan.target),
+                        )
+                    })
+                });
+                if let Some((moved, chose_failed)) = moved {
+                    for failed in &failed_devices {
+                        quarantine_target(cache_dir, &moved, failed, now);
+                    }
+                    if chose_failed {
+                        drop(reloaded);
+                        reloaded = reload();
+                    }
+                }
+                let (mut active, selected) = match reloaded {
                     Ok(plan) => plan,
                     Err(_) if revalidating => {
                         model.runtime_plan_mut().retry_at = Some(clock() + RUNTIME_RETRY);
@@ -2355,6 +2386,52 @@ mod tests {
         assert!(replaced);
         assert_eq!(device, Device::Cpu);
         assert_eq!(model.value, 41);
+    }
+
+    /// A model first loaded before its ref existed is planned under that
+    /// load's own namespace, and its reload under the commit's. The failed
+    /// accelerator is quarantined in the reload's namespace too, so the
+    /// reload falls back rather than choosing it again -- and only it: the
+    /// other accelerator stays available.
+    #[test]
+    fn recovery_quarantines_across_a_resolved_revision() {
+        let root = tempfile::tempdir().unwrap();
+        let resolved = "model@commit|runtime";
+        let mut model = RuntimeFixture::new(0, "cuda");
+        model.plan.namespace = "model@main:unresolved:0001|runtime".into();
+        let mut device = Device::Cuda;
+        let mut loads = 0;
+        let (result, replaced) = retry_model(
+            &mut model,
+            &mut device,
+            root.path(),
+            |_, selected| {
+                if selected == Device::Cuda {
+                    Err(IndexError::Engine("device fault on real input".into()))
+                } else {
+                    Ok(selected)
+                }
+            },
+            || {
+                loads += 1;
+                // What a plan selection over the commit's namespace sees.
+                let (target, selected) = if runtime_available(root.path(), resolved, "cuda") {
+                    ("cuda", Device::Cuda)
+                } else {
+                    ("cpu", Device::Cpu)
+                };
+                let mut fresh = RuntimeFixture::new(1, target);
+                fresh.plan.namespace = resolved.into();
+                Ok((fresh, selected))
+            },
+        )
+        .unwrap();
+        assert_eq!(result, Device::Cpu);
+        assert!(replaced);
+        assert_eq!(device, Device::Cpu);
+        assert_eq!(loads, 2, "the reload was not planned again");
+        assert!(!runtime_available(root.path(), resolved, "cuda"));
+        assert!(runtime_available(root.path(), resolved, "npu:first:1"));
     }
 
     #[test]
