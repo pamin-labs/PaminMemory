@@ -274,6 +274,13 @@ found no significant quality loss for ARM INT8 CPU versus CoreML FP32, and
 CPU was faster on all 1,190 paired searches. The reranker above still uses its
 measured CoreML route.
 
+On the CPU, `pamin search` through a resident server over 3,230 memories, on a
+four-core 2.8 GHz Xeon with no other measurement running, had a p50 of
+2,675 ms and a p95 of 4,359 ms with the reranker's passes side by side, one
+pair each, as ships on a multi-core CPU. Three rotated runs of 120 warm
+queries; [the measurement page](docs/measured.md) has the conditions and the
+before/after figures.
+
 The existing MIRACL full-head run is described in [docs/cli.md](docs/cli.md).
 It is outside this headline table until its code, device and raw-run evidence
 are archived with the same provenance as XQuAD-R.
