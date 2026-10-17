@@ -860,6 +860,12 @@ The rule the batching was chosen by, written down before anything was timed,
 and the pilot of seven candidates are at `BATCH_TOKENS` in
 `crates/pamin-index/src/reranking.rs`.
 
+Both columns run a call's batches one after another, each pass with every
+core. On the CPU the batches of one call now run side by side, one thread a
+pass, so these milliseconds are the predecessor's and describe no search that
+ships; the paired ratio between the two batchings still stands. They have not
+been re-measured with batches side by side.
+
 **Truncating at 192 or 384 tokens rather than 256 was measured, and neither
 ships.** In the same runs, each limit paired against 256 with the new batching:
 192 made a search 0.80 of what it was on MuSiQue, where half the pairs reach

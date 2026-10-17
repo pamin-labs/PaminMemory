@@ -35,6 +35,9 @@ pub(crate) struct Encoder {
     /// sessions from, and the sessions loaded so far; `None` runs every text
     /// on [`session`](Self::session).
     side_by_side: Option<(PathBuf, Vec<Session>)>,
+    /// The repository and commit the model was read from, as
+    /// [`Repository::revision`] resolves it once its files are fetched.
+    revision: String,
 }
 
 impl crate::inference::RuntimeModel for Encoder {
@@ -43,6 +46,9 @@ impl crate::inference::RuntimeModel for Encoder {
     }
     fn runtime_plan_mut(&mut self) -> &mut crate::inference::RuntimePlan {
         &mut self.runtime_plan
+    }
+    fn revision(&self) -> &str {
+        &self.revision
     }
 }
 
@@ -70,10 +76,10 @@ impl Encoder {
         max_length: usize,
     ) -> Result<Self> {
         let tokenizer = crate::tokenizer::load(repository, max_length)?;
-        Ok(Self::from_parts(session, tokenizer))
+        Ok(Self::from_parts(session, tokenizer, repository.revision()))
     }
 
-    fn from_parts(session: Session, tokenizer: Tokenizer) -> Self {
+    fn from_parts(session: Session, tokenizer: Tokenizer, revision: String) -> Self {
         let token_type_ids = session
             .inputs()
             .iter()
@@ -86,22 +92,25 @@ impl Encoder {
             fixed: None,
             token_type_ids,
             side_by_side: None,
+            revision,
         }
     }
 
     /// The model on the CPU over a session of `threads` intra-op threads, with
     /// [`run_each`](Self::run_each) running several texts at once on
     /// single-threaded sessions over the same `model` -- a mapped copy (see
-    /// `crate::prepared`), so that they share its weights.
+    /// `crate::prepared`), so that they share its weights. `revision` is the
+    /// [`Repository::revision`] `model` and `tokenizer` were read from.
     pub(crate) fn side_by_side(
         model: PathBuf,
         threads: usize,
         tokenizer: Tokenizer,
+        revision: String,
     ) -> Result<Self> {
         let session = crate::inference::cpu_session(&model, threads)?;
         Ok(Self {
             side_by_side: Some((model, Vec::new())),
-            ..Self::from_parts(session, tokenizer)
+            ..Self::from_parts(session, tokenizer, revision)
         })
     }
 
@@ -131,6 +140,7 @@ impl Encoder {
             fixed: Some((short, long)),
             token_type_ids: false,
             side_by_side: None,
+            revision: repository.revision(),
         })
     }
 
@@ -200,13 +210,35 @@ impl Encoder {
         self.forward(&encodings)
     }
 
+    /// How many passes [`run_each`](Self::run_each) runs at once for
+    /// `batches` batches, with the sessions it runs them on loaded: 1 when it
+    /// runs them one after another on [`session`](Self::session).
+    ///
+    /// `run_each` calls this itself; a caller that times its passes calls it
+    /// first, so that loading the sessions is not counted as running them.
+    pub(crate) fn ready(&mut self, batches: usize) -> Result<usize> {
+        let Some((model, sessions)) = &mut self.side_by_side else {
+            return Ok(1);
+        };
+        let wanted = crate::inference::budget()?.min(batches);
+        // One pass at a time gains nothing on a session of its own.
+        if wanted < 2 {
+            return Ok(1);
+        }
+        while sessions.len() < wanted {
+            sessions.push(crate::inference::cpu_session(model, 1)?);
+        }
+        Ok(wanted)
+    }
+
     /// Each of `batches`, from [`encode`](Self::encode), in a forward pass of
     /// its own as [`run_encoded`](Self::run_encoded) runs it, its outputs
     /// taken by `read`, in `batches`' order.
     ///
     /// On [`session`](Self::session) one after another, unless the model was
     /// loaded [`side_by_side`](Self::side_by_side) and there is more than one
-    /// batch: then as many passes at once as the inference budget allows, each
+    /// batch and more than one thread in the inference budget: then as many
+    /// passes at once as the budget allows, each
     /// on a session of one intra-op thread taking the next batch when it
     /// finishes one. A pass hands each of the graph's nodes to its threads and
     /// waits for them, and on a short input that hand-off is most of the pass;
@@ -225,8 +257,9 @@ impl Encoder {
         batches: Vec<Vec<Encoding>>,
         read: impl Fn(SessionOutputs<'_>) -> Result<T> + Sync,
     ) -> Result<Vec<T>> {
-        let (model, sessions) = match &mut self.side_by_side {
-            Some((model, sessions)) if batches.len() > 1 => (model, sessions),
+        let wanted = self.ready(batches.len())?;
+        let sessions = match &mut self.side_by_side {
+            Some((_, sessions)) if wanted > 1 => sessions,
             _ => {
                 return batches
                     .into_iter()
@@ -234,10 +267,6 @@ impl Encoder {
                     .collect();
             }
         };
-        let wanted = crate::inference::budget()?.min(batches.len());
-        while sessions.len() < wanted {
-            sessions.push(crate::inference::cpu_session(model, 1)?);
-        }
         let (tokenizer, token_type_ids) = (&self.tokenizer, self.token_type_ids);
         let pending = &std::sync::Mutex::new(batches.into_iter().enumerate());
         let read = &read;
