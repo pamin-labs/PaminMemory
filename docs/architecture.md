@@ -22,7 +22,7 @@ flowchart TD
 
     P -- "three channels" --> F["banded rank fusion, in our layer"]
     A -- "graph channel" --> F
-    F --> R["optional cross-encoder rerank"]
+    F --> R["cross-encoder rerank of the fused head"]
     R --> O([results, each carrying why it is here])
 ```
 
