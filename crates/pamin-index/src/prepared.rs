@@ -59,9 +59,9 @@
 //! runtime upgrade, a model directory moved to another CPU -- is written from
 //! a fresh download, so that load needs the network, and fails saying so when
 //! there is none ([`load_path`]). A small record of what the download was
-//! (`<repository>--<file>.source`, beside the copies) is what finds the copy
-//! without the file it was keyed by, and what lets a re-download key exactly
-//! as the removed one did.
+//! (`<repository>--<file>.<revision>.source`, beside the copies, one per
+//! revision) is what finds the copy without the file it was keyed by, and
+//! what lets a re-download key exactly as the removed one did.
 //!
 //! A copy's key changes with the runtime and the CPU, so every upgrade of ONNX
 //! Runtime writes new copies and leaves the old ones -- 0.8 to 1.2 GB a model
@@ -171,6 +171,11 @@ const USED: &str = "used";
 /// module's documentation).
 const UNUSED_FOR: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 
+/// How long a record's partial file is left before a collection removes it:
+/// a release writes and renames one within moments, so one this old was
+/// left by a release that stopped between the two.
+const RECORD_PARTIAL_FOR: Duration = Duration::from_secs(60 * 60);
+
 /// The lock of every copy this process has loaded, held shared until it exits
 /// so that no other process removes the copy (see the module's documentation).
 ///
@@ -243,9 +248,9 @@ pub(crate) fn load_path(download: &impl Download, cache_dir: &Path) -> Result<Pa
                 )),
                 None => error,
             })?;
-            // Of any revision: a fetch whose bytes are the record's keys as
-            // the removed file did.
-            if let Some(recorded) = record(download, &root) {
+            // This revision's, or else the model's latest of any revision: a
+            // fetch whose bytes are the record's keys as the removed file did.
+            if let Some(recorded) = record(download, &root).or_else(|| latest(download, &root)) {
                 recorded
                     .source
                     .restore(&fetched, recorded.digest.as_deref());
@@ -320,14 +325,16 @@ pub(crate) fn release(download: &impl Download, cache_dir: &Path) {
             return Ok(None);
         }
         let record = root.join(record_name(download));
-        // The copy the record named until now: another revision's, once the
-        // ref has moved, which nothing loads for this model again.
-        let replaced = std::fs::read_to_string(&record)
-            .ok()
-            .and_then(|old| Source::parse(&old))
-            .map(|old| old.key().0)
-            .filter(|old| *old != key);
-        let partial = record.with_extension("source.partial");
+        // Written beside the record under a name of this writer's own, so
+        // neither another revision's release nor another release of this
+        // one can write into it before it is renamed into place.
+        static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let partial = root.join(format!(
+            "{}.{key}.{}-{}.partial",
+            record_name(download),
+            std::process::id(),
+            WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         std::fs::write(
             &partial,
             format!(
@@ -336,19 +343,37 @@ pub(crate) fn release(download: &impl Download, cache_dir: &Path) {
                 download.revision()
             ),
         )?;
-        std::fs::rename(&partial, &record)?;
-        // Removed now unless a process holds it, rather than after
-        // [`UNUSED_FOR`]: two weeks of a second copy per moved model.
-        if let Some(old) = replaced
-            && let Err(error) = collect_one(
-                &root,
-                &root.join(&old),
-                &current(&root),
-                SystemTime::now(),
-                true,
-            )
-        {
-            tracing::warn!(copy = old, %error, "could not remove a replaced revision's mapped copy");
+        if let Err(error) = std::fs::rename(&partial, &record) {
+            let _ = std::fs::remove_file(&partial);
+            return Err(error.into());
+        }
+        // The model's other records -- other revisions', and one written
+        // before records were per revision -- name copies nothing loads for
+        // the latest revision. Each is removed now unless a process holds
+        // it, rather than after [`UNUSED_FOR`] (two weeks of a second copy
+        // per moved model), and its record with it; a held copy keeps its
+        // record, so the revision holding it still finds it.
+        for other in records(download, &root) {
+            if other == record {
+                continue;
+            }
+            let Some(old) = std::fs::read_to_string(&other)
+                .ok()
+                .and_then(|old| Source::parse(&old))
+                .map(|old| old.key().0)
+            else {
+                continue;
+            };
+            let copy = root.join(&old);
+            if old != key
+                && let Err(error) =
+                    collect_one(&root, &copy, &current(&root), SystemTime::now(), true)
+            {
+                tracing::warn!(copy = old, %error, "could not remove a replaced revision's mapped copy");
+            }
+            if old == key || !copy.exists() {
+                let _ = std::fs::remove_file(&other);
+            }
         }
         Ok(download.remove()?.then_some(identity.length))
     })();
@@ -403,11 +428,11 @@ fn found(source: &Source, root: &Path) -> Option<PathBuf> {
 /// What a removed download was, as [`release`] recorded it, if the record
 /// names the revision the repository's ref resolves to now.
 ///
-/// The record is named by the file, not the revision, so once `refs/main`
-/// moves, the copy it finds holds the old weights while everything else the
-/// model reads -- its tokenizer -- follows the new ref. A record of another
-/// revision is therefore not this load's, and neither is one written before
-/// records named a revision, which cannot say which it was: the download is
+/// Once `refs/main` moves, the copy of the old revision holds the old
+/// weights while everything else the model reads -- its tokenizer --
+/// follows the new ref. A record of another revision is therefore not this
+/// load's, and neither is one written before records named a revision,
+/// which cannot say which it was: the download is
 /// fetched again, and [`load_path`] keys it as the record's own source when
 /// the two are the same file, so an unchanged model finds its copy without
 /// writing it again. Otherwise a new copy is written, and its record
@@ -426,9 +451,26 @@ struct Record {
     digest: Option<String>,
 }
 
-/// The record [`release`] wrote for `download`, of whichever revision.
+/// The record [`release`] wrote for `download`'s revision, or, read in its
+/// place, the one an older build wrote for the model under a name of no
+/// revision, which [`recorded`] checks the revision of.
 fn record(download: &impl Download, root: &Path) -> Option<Record> {
-    let record = std::fs::read_to_string(root.join(record_name(download))).ok()?;
+    read_record(&root.join(record_name(download)))
+        .or_else(|| read_record(&root.join(legacy_record_name(download))))
+}
+
+/// The record of `download`'s model written last, of any revision.
+fn latest(download: &impl Download, root: &Path) -> Option<Record> {
+    records(download, root)
+        .into_iter()
+        .filter_map(|path| Some((std::fs::metadata(&path).ok()?.modified().ok()?, path)))
+        .max()
+        .and_then(|(_, path)| read_record(&path))
+}
+
+/// What the record at `path` says, if it is one.
+fn read_record(path: &Path) -> Option<Record> {
+    let record = std::fs::read_to_string(path).ok()?;
     let line = |prefix: &str| {
         record
             .lines()
@@ -450,9 +492,62 @@ const REVISION: &str = "revision ";
 const DIGEST: &str = "sha256 ";
 
 /// The record's file name: the label, readable, with nothing a path would
-/// split on.
+/// split on, and a short hash of the revision, so each revision of a model
+/// has its own record.
 fn record_name(download: &impl Download) -> String {
-    format!("{}.source", download.label().replace(['/', '\\'], "--"))
+    let revision = Sha256::digest(download.revision().as_bytes());
+    let tag: String = revision[..REVISION_TAG / 2]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("{}.{tag}.source", model_name(download))
+}
+
+/// How many hex digits of the revision's hash a record's name carries.
+const REVISION_TAG: usize = 16;
+
+/// The model's records' common name: its label, with nothing a path would
+/// split on.
+fn model_name(download: &impl Download) -> String {
+    download.label().replace(['/', '\\'], "--")
+}
+
+/// The name an older build gave the model's one record, of whichever
+/// revision.
+fn legacy_record_name(download: &impl Download) -> String {
+    format!("{}.source", model_name(download))
+}
+
+/// The model a record's file name is of: its name without the revision,
+/// which a record an older build wrote does not carry.
+fn record_model(file: &str) -> Option<&str> {
+    let name = file.strip_suffix(".source")?;
+    Some(match name.rsplit_once('.') {
+        Some((model, tag))
+            if tag.len() == REVISION_TAG && tag.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
+        {
+            model
+        }
+        _ => name,
+    })
+}
+
+/// Every record of `download`'s model, of any revision.
+fn records(download: &impl Download, root: &Path) -> Vec<PathBuf> {
+    let model = model_name(download);
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .and_then(record_model)
+                == Some(model.as_str())
+        })
+        .collect()
 }
 
 /// Finds or writes the copy of `source` under `root`, stamps it as used, and
@@ -607,8 +702,9 @@ fn unused(done: &Path, now: SystemTime) -> bool {
 
 /// Removes, from `root`, every copy that is not the one this runtime and CPU
 /// load for a model recorded there, that has gone [`UNUSED_FOR`] without a
-/// load and that no process holds, and every partial directory no writer
-/// holds. See the module's documentation for the rule and why it is safe.
+/// load and that no process holds, every partial directory no writer
+/// holds, and every record partial file [`RECORD_PARTIAL_FOR`] old. See the
+/// module's documentation for the rule and why it is safe.
 ///
 /// Best effort, entry by entry: what cannot be removed now -- a copy Windows
 /// will not let go of, say -- is warned about and tried again on the next
@@ -631,15 +727,36 @@ fn collect(root: &Path, now: SystemTime) {
 }
 
 /// The keys of the copies this runtime and CPU load for the models recorded
-/// in `root`: the ones a collection never removes.
+/// in `root`, each model's by the record written last -- its latest
+/// revision: the ones a collection never removes. Another revision's copy
+/// is kept by the rest of the rule, while it is held or used.
 fn current(root: &Path) -> BTreeSet<String> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return BTreeSet::new();
     };
-    entries
-        .flatten()
-        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "source"))
-        .filter_map(|entry| Source::parse(&std::fs::read_to_string(entry.path()).ok()?))
+    let mut latest: BTreeMap<String, (SystemTime, PathBuf)> = BTreeMap::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(model) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(record_model)
+        else {
+            continue;
+        };
+        let Some(written) = entry.metadata().ok().and_then(|meta| meta.modified().ok()) else {
+            continue;
+        };
+        if latest
+            .get(model)
+            .is_none_or(|(newest, _)| written > *newest)
+        {
+            latest.insert(model.to_string(), (written, path));
+        }
+    }
+    latest
+        .into_values()
+        .filter_map(|(_, path)| Source::parse(&std::fs::read_to_string(path).ok()?))
         .map(|source| source.key().0)
         .collect()
 }
@@ -656,6 +773,23 @@ fn collect_one(
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return Ok(());
     };
+    // A record's partial file (`<record>.<key>.<writer>.partial`), not a
+    // copy's: each writer's own, so it is never resumed, only left behind.
+    if name
+        .strip_suffix(".partial")
+        .is_some_and(|stem| stem.contains(".source."))
+    {
+        let stale = std::fs::metadata(path)
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|written| now.duration_since(written).ok())
+            .is_some_and(|age| age >= RECORD_PARTIAL_FOR);
+        return if stale && path.is_file() {
+            std::fs::remove_file(path)
+        } else {
+            Ok(())
+        };
+    }
     let (key, partial) = match name.strip_suffix(".partial") {
         Some(key) => (key, true),
         None => (name, false),
@@ -1427,7 +1561,11 @@ mod tests {
             .filter(|line| !line.starts_with(REVISION))
             .map(|line| format!("{line}\n"))
             .collect();
-        std::fs::write(&path, legacy).expect("an old record");
+        // As an older build wrote it: one record of no revision, under the
+        // model's name alone.
+        let old = cache.join("prepared").join(legacy_record_name(&hub));
+        std::fs::write(&old, legacy).expect("an old record");
+        std::fs::remove_file(&path).expect("no record of this revision");
 
         hub.online.set(false);
         assert!(!is_ready(&hub, &cache), "an unverified copy is ready");
@@ -1441,6 +1579,43 @@ mod tests {
         load(&copy);
         release(&hub, &cache);
         assert_eq!(std::fs::read_to_string(&path).expect("the record"), record);
+        assert!(
+            !old.exists(),
+            "the old record outlived the one replacing it"
+        );
+    }
+
+    /// Two revisions of one model released in turn -- as two processes on
+    /// either side of a ref move would -- each keep a record of their own:
+    /// neither is written over by the other, and each finds its own copy
+    /// offline while that copy is held.
+    #[test]
+    fn each_revision_keeps_its_own_record() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let hub = Hub::new(dir.path(), &tiny_model());
+        let cache = dir.path().join("models");
+        let first = load_path(&hub, &cache).expect("the first revision");
+        load(&first);
+        hub.moved("someone/model@decaf", "4567cdef");
+        let second = load_path(&hub, &cache).expect("the second revision");
+        load(&second);
+        // Both downloads are on disk and both copies are held, as in two
+        // processes loading at once; the second revision releases first.
+        release(&hub, &cache);
+        hub.moved("someone/model@c0ffee", "0123abcd");
+        release(&hub, &cache);
+        let records = records(&hub, &cache.join("prepared"));
+        assert_eq!(records.len(), 2, "{records:?}");
+
+        hub.online.set(false);
+        let fetches = hub.fetches.get();
+        assert_eq!(load_path(&hub, &cache).expect("the first, offline"), first);
+        hub.moved("someone/model@decaf", "4567cdef");
+        assert_eq!(
+            load_path(&hub, &cache).expect("the second, offline"),
+            second
+        );
+        assert_eq!(hub.fetches.get(), fetches);
     }
 
     /// The download's whole life: written into a copy and removed, the copy
@@ -1848,6 +2023,36 @@ mod tests {
             "a copy under a key this build does not load was kept"
         );
         assert!(record.exists(), "the record was removed");
+    }
+
+    /// A record's partial file a release left behind goes once it is an hour
+    /// old; a fresh one, which a release may be about to rename, stays.
+    #[test]
+    fn a_left_record_partial_goes_after_an_hour() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path().join("prepared");
+        std::fs::create_dir_all(&root).expect("the copies' directory");
+        let name = |n: u8| {
+            format!(
+                "someone--model--onnx--model.onnx.0123456789abcdef.source.{}.42-{n}.partial",
+                key_of(n)
+            )
+        };
+        let (old, fresh) = (root.join(name(1)), root.join(name(2)));
+        let now = SystemTime::now();
+        for (path, at) in [(&old, now - 2 * RECORD_PARTIAL_FOR), (&fresh, now)] {
+            std::fs::write(path, "half a record").expect("a partial record");
+            File::options()
+                .write(true)
+                .open(path)
+                .and_then(|file| file.set_modified(at))
+                .expect("its time");
+        }
+
+        collect(&root, now);
+
+        assert!(!old.exists(), "an hour-old record partial was kept");
+        assert!(fresh.exists(), "a fresh record partial was removed");
     }
 
     /// A load stamps the copy it hands out and holds it, so a collection in
