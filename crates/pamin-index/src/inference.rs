@@ -1106,10 +1106,7 @@ fn measured_among<T: RuntimeModel>(
     static PLANS: OnceLock<Mutex<HashMap<String, CachedPlan>>> = OnceLock::new();
     // Model revision/export and supported shape policy live in identity.
     // Runtime/build and dispatch settings distinguish execution plans.
-    let mut settings: Vec<_> = std::env::vars_os()
-        .filter(|(key, _)| key.to_string_lossy().starts_with("PAMIN_"))
-        .collect();
-    settings.sort();
+    let settings = execution_settings(std::env::vars_os());
     let executable = executable_identity();
     let namespace = format!(
         "{identity}|executable:{executable:?}|{}|{}|{settings:?}|threads:{:?}",
@@ -1171,11 +1168,7 @@ fn measured_among<T: RuntimeModel>(
             _ => device.name().to_string(),
         })
         .collect();
-    let settings: Vec<_> = std::env::vars_os()
-        .filter(|(key, _)| key.to_string_lossy().starts_with("PAMIN_"))
-        .collect();
-    let mut settings = settings;
-    settings.sort();
+    let settings = execution_settings(std::env::vars_os());
     let libraries: Vec<_> = std::env::var_os("PAMIN_EP_LIBRARIES")
         .into_iter()
         .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
@@ -1583,6 +1576,38 @@ fn device_persists(device: Device, cuda_identified: bool) -> bool {
         Device::Cuda => cuda_identified,
         Device::DirectMl | Device::Npu => false,
     }
+}
+
+/// The `PAMIN_` variables that change how a model executes: the device it
+/// may run on, the provider libraries and the threads it runs with, and
+/// which copy of its weights -- the download, or a prepared copy with or
+/// without fused attention -- it loads. A plan's key is named by these.
+///
+/// Only these: a plan's key named every `PAMIN_` variable set, so a knob
+/// that never reaches a model -- the reranker's depth, the search's effort,
+/// where the workspace is -- recalibrated every model and renamed every
+/// plan. What a model's own settings change, such as the reranker's batch
+/// and token limits, its identity names (see `reranking`).
+pub const EXECUTION_SETTINGS: [&str; 5] = [
+    "PAMIN_DEVICE",
+    "PAMIN_EP_LIBRARIES",
+    "PAMIN_FUSED_ATTENTION",
+    "PAMIN_INFERENCE_THREADS",
+    "PAMIN_PREPARED",
+];
+
+/// The [`EXECUTION_SETTINGS`] among `vars` that are set, sorted.
+fn execution_settings(
+    vars: impl Iterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let mut settings: Vec<_> = vars
+        .filter(|(key, _)| {
+            key.to_str()
+                .is_some_and(|key| EXECUTION_SETTINGS.contains(&key))
+        })
+        .collect();
+    settings.sort();
+    settings
 }
 
 /// The variables that choose which CUDA devices a session sees, and in
@@ -2400,6 +2425,37 @@ mod tests {
         assert!(!device_persists(Device::DirectMl, true));
         assert!(!device_persists(Device::Npu, true));
         assert!(!device_persists(Device::Cuda, false));
+    }
+
+    /// A plan's key names the variables that change how a model executes,
+    /// and no other `PAMIN_` variable: a reranker's depth or a search's
+    /// effort calibrates nothing again.
+    #[test]
+    fn a_plan_key_names_only_execution_settings() {
+        let vars = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(name, value)| (name.into(), value.into()))
+                .collect::<Vec<(std::ffi::OsString, std::ffi::OsString)>>()
+                .into_iter()
+        };
+        let shipped = execution_settings(vars(&[("PAMIN_DEVICE", "cpu")]));
+        assert_eq!(
+            execution_settings(vars(&[
+                ("PAMIN_RERANK_DEPTH", "20"),
+                ("PAMIN_SEARCH_EFFORT", "100"),
+                ("PAMIN_HOME", "/somewhere"),
+                ("PAMIN_DEVICE", "cpu"),
+            ])),
+            shipped
+        );
+        for name in EXECUTION_SETTINGS {
+            assert_ne!(
+                execution_settings(vars(&[("PAMIN_DEVICE", "cpu"), (name, "x")])),
+                shipped,
+                "{name}"
+            );
+        }
     }
 
     /// A recovery that fails on a second accelerator before the CPU runs
