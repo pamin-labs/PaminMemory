@@ -299,7 +299,8 @@ fn tuned(name: &str, fallback: usize) -> usize {
     pamin_core::env::positive(name).unwrap_or(fallback)
 }
 
-/// How many padded tokens go through the model at once.
+/// How many padded tokens go through the model at once, on an accelerator; on
+/// the CPU a pass takes one pair (see [`CPU_BATCH`]), which this never limits.
 ///
 /// Five hundred and twelve, with at most [`BATCH`] pairs, and the control is
 /// the tokens rather than the count. A batch is padded to its longest member,
@@ -352,16 +353,55 @@ fn tuned(name: &str, fallback: usize) -> usize {
 /// tier.
 const BATCH_TOKENS: usize = 512;
 
-/// How many pairs go through the model at once, at most. See [`BATCH_TOKENS`].
+/// How many pairs go through the model at once, at most, on an accelerator.
+/// See [`BATCH_TOKENS`].
 const BATCH: usize = 4;
+
+/// How many pairs go through the model at once on the CPU: one.
+///
+/// On the CPU the passes of one rerank run side by side, one thread each, on
+/// one shared session (see `forward`), so the cores are already divided
+/// between passes, and grouping pairs into a pass adds padding without adding
+/// cores. One pair a pass also makes a pair's score its own: the int8
+/// export quantizes a pass's activations together, so in a pass of four a
+/// pair's score depended on its neighbours. [`BATCH_TOKENS`] does not bind
+/// here, since no pair is longer than [`MAX_TOKENS`].
+///
+/// Measured against four pairs on the same build, at the entry point. Timing,
+/// `pamin search` through a resident server, 4 vCPU Xeon (AVX-512 VNNI),
+/// three rotated runs of 120 warm queries an arm: p50 0.834 of four pairs'
+/// [0.757, 0.931], p95 0.850 [0.715, 0.997], peak resident memory of the
+/// search server 0.884. Accuracy, `Engine::search_reranked` over copies of one
+/// index, paired by query (sign-flip, Holm over every group):
+///
+/// | group | queries | nDCG@10, four pairs | one pair | difference | p |
+/// |---|---|---|---|---|---|
+/// | XQuAD-R cross-lingual | 1,190 | 0.7231 | 0.7229 | -0.0001 | 0.87 |
+/// | XQuAD-R same-language | 1,190 | 0.8679 | 0.8667 | -0.0012 | 0.33 |
+/// | XQuAD-R single target | 1,190 | 0.6662 | 0.6649 | -0.0013 | 0.51 |
+/// | MuSiQue 2-hop, first 200 | 200 | 0.7669 | 0.7709 | +0.0040 | 0.28 |
+///
+/// Rankings move -- about a third of top-fives -- but no group significantly,
+/// and recall@50 is unchanged. On an accelerator nothing has measured one
+/// pair a pass, so [`BATCH`] stays there.
+const CPU_BATCH: usize = 1;
 
 /// How much the model reads at once, and how long a candidate. See [`tuned`].
 fn batch_tokens() -> usize {
     tuned("PAMIN_RERANK_BATCH_TOKENS", BATCH_TOKENS)
 }
 
-fn batch() -> usize {
-    tuned("PAMIN_RERANK_BATCH", BATCH)
+/// The most pairs a pass of `model` takes: [`CPU_BATCH`] on the CPU, where
+/// the passes of one rerank run side by side, and [`BATCH`] on an accelerator.
+fn batch(model: &Encoder) -> usize {
+    batch_on(model.runs_side_by_side())
+}
+
+fn batch_on(side_by_side: bool) -> usize {
+    tuned(
+        "PAMIN_RERANK_BATCH",
+        if side_by_side { CPU_BATCH } else { BATCH },
+    )
 }
 
 fn max_tokens() -> usize {
@@ -440,8 +480,9 @@ fn onnx(device: Device) -> &'static str {
 }
 
 /// The key the reranker's execution plans are measured and cached under.
-fn plan_key(repository: &str, maximum_tokens: usize, batch: usize, batch_tokens: usize) -> String {
-    format!("reranker-v3:{TIER}:{repository}:{maximum_tokens}:{batch}:{batch_tokens}")
+fn plan_key(repository: &str, maximum_tokens: usize, batch_tokens: usize) -> String {
+    let (cpu, accelerator) = (batch_on(true), batch_on(false));
+    format!("reranker-v4:{TIER}:{repository}:{maximum_tokens}:{cpu}/{accelerator}:{batch_tokens}")
 }
 
 /// How many logical pair scores are remembered across complete batches.
@@ -911,7 +952,7 @@ impl Reranker {
     /// pairs already in the score cache are still planned, as `rank` plans
     /// them before it looks them up.
     pub fn plan(&self, lengths: &[usize]) -> Vec<Vec<usize>> {
-        let (budget, most) = self.model.batch_limits(batch_tokens(), batch());
+        let (budget, most) = self.model.batch_limits(batch_tokens(), batch(&self.model));
         plan_positions(lengths, budget, most, |length| {
             self.model.batching_length(length)
         })
@@ -936,7 +977,7 @@ impl Reranker {
             if crate::inference::needs_revalidation(&self.model) {
                 self.scores.invalidate();
             }
-            let limits = self.model.batch_limits(batch_tokens(), batch());
+            let limits = self.model.batch_limits(batch_tokens(), batch(&self.model));
             let list = ListKey::of(&keys, limits);
             if let Some(attempt) = self.scores.replay(list, documents.len()) {
                 break attempt.commit(&mut self.scores, &mut self.work, &mut self.lengths, 0);
@@ -958,7 +999,7 @@ impl Reranker {
                             .collect::<Vec<_>>(),
                     )?;
                     let encode_us = start.elapsed().as_micros() as u64;
-                    let limits = model.batch_limits(batch_tokens(), batch());
+                    let limits = model.batch_limits(batch_tokens(), batch(model));
                     let list = ListKey::of(&keys, limits);
                     let planned = model_batches_at(model, encodings, limits);
                     let attempt = cached.score(
@@ -1086,7 +1127,6 @@ fn load_model(cache_dir: &Path) -> Result<(Encoder, Device)> {
             &plan_key(
                 &repository.identity(cache_dir),
                 max_tokens(),
-                batch(),
                 batch_tokens(),
             ),
             cache_dir,
@@ -1106,7 +1146,7 @@ fn load_model(cache_dir: &Path) -> Result<(Encoder, Device)> {
                         "maximum-token fixture did not reach the configured limit".into(),
                     ));
                 }
-                let values = score(model, encoded, batch_tokens(), batch())?.0;
+                let values = score(model, encoded, batch_tokens(), batch(model))?.0;
                 if values.len() != 1 || !values[0].is_finite() {
                     return Err(IndexError::Numerical(
                         "maximum-token reranker fixture returned invalid output".into(),
@@ -1116,7 +1156,7 @@ fn load_model(cache_dir: &Path) -> Result<(Encoder, Device)> {
                     let pairs = calibration_pairs(&long);
                     let count = pairs.len();
                     let encoded = model.encode(pairs)?;
-                    let values = score(model, encoded, batch_tokens(), batch())?.0;
+                    let values = score(model, encoded, batch_tokens(), batch(model))?.0;
                     if values.len() != count || !values.iter().all(|v| v.is_finite()) {
                         return Err(IndexError::Numerical(
                             "reranker calibration returned invalid scores".into(),
@@ -2541,10 +2581,11 @@ mod tests {
                     .collect::<Vec<_>>(),
             )
             .unwrap();
-        let batches: Vec<Vec<Encoding>> = model_batches(&model, encodings, batch_tokens(), batch())
-            .into_iter()
-            .map(|batch| batch.encodings)
-            .collect();
+        let batches: Vec<Vec<Encoding>> =
+            model_batches(&model, encodings, batch_tokens(), batch(&model))
+                .into_iter()
+                .map(|batch| batch.encodings)
+                .collect();
         assert!(batches.len() > 4, "{} batches", batches.len());
         let alone: Vec<Vec<u32>> = batches
             .iter()
@@ -2565,15 +2606,25 @@ mod tests {
         assert!(alone == together, "logits changed side by side");
     }
 
-    /// The reranker keeps the key it had as the `accurate` tier.
+    /// The plan key names both batch caps.
     ///
     /// Execution plans are measured once and cached under this key, so a new
-    /// spelling would throw every host's measured plan away and measure again.
+    /// spelling throws every host's measured plan away and measures again.
+    /// v4 did so on purpose: the CPU plan v3 measured ran four pairs a pass,
+    /// and a plan measured with one cap is not a measurement of the other.
     #[test]
-    fn the_plan_key_is_the_one_the_accurate_tier_had() {
+    fn the_plan_key_names_both_batch_caps() {
         assert_eq!(
-            plan_key("onnx-community/bge-reranker-v2-m3-ONNX@abc", 256, 8, 512),
-            "reranker-v3:accurate:onnx-community/bge-reranker-v2-m3-ONNX@abc:256:8:512"
+            plan_key("onnx-community/bge-reranker-v2-m3-ONNX@abc", 256, 512),
+            format!(
+                "reranker-v4:accurate:onnx-community/bge-reranker-v2-m3-ONNX@abc:256:{}/{}:512",
+                batch_on(true),
+                batch_on(false)
+            )
+        );
+        assert_ne!(
+            plan_key("r@abc", 256, 512),
+            "reranker-v3:accurate:r@abc:256:4:512"
         );
     }
 
