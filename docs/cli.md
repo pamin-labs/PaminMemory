@@ -990,6 +990,8 @@ both      deployment_pipeline
 content   oncall_rota
 content   secret_rotation
 content   rollback_plan
+
+Showing 4 of 12 topics
 ```
 
 **`name`** — the topic is called that. Exact on the segmenter's whole tokens, so
