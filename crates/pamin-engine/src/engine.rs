@@ -619,7 +619,12 @@ impl Engine {
         vector_index: VectorIndex,
         access: Access,
     ) -> Result<Self> {
-        let database = Database::open(workspace, Connections::PerCommand).await?;
+        let database = Database::open(
+            workspace,
+            Connections::PerCommand,
+            &pamin_store::StoreSettings::from_environment(),
+        )
+        .await?;
         let models = Models::in_workspace(workspace);
         Self::assemble(
             database,

@@ -115,7 +115,12 @@ impl Session {
     pub async fn open(workspace: &Workspace) -> Result<Self> {
         Ok(Self {
             workspace: workspace.clone(),
-            database: Database::open(workspace, Connections::Resident).await?,
+            database: Database::open(
+                workspace,
+                Connections::Resident,
+                &pamin_store::StoreSettings::from_environment(),
+            )
+            .await?,
             models: Models::in_workspace(workspace),
             projects: Mutex::default(),
             engines: Registry::with_capacity(open_indexes()),

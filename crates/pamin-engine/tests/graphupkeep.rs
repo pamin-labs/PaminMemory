@@ -73,9 +73,13 @@ async fn a_drain_leaves_a_graph_over_what_it_wrote() {
         (None, Some(dir)) => Workspace::at(dir.path()),
         (None, None) => unreachable!("one of the two is always set"),
     };
-    let database = Database::open(&workspace, Connections::PerCommand)
-        .await
-        .expect("open the database");
+    let database = Database::open(
+        &workspace,
+        Connections::PerCommand,
+        &pamin_store::StoreSettings::from_environment(),
+    )
+    .await
+    .expect("open the database");
 
     // A name nothing else uses, so a rerun builds a fresh projection rather
     // than reopening one a previous run already optimized.

@@ -41,9 +41,13 @@ async fn finished_work_leaves_no_row_and_live_work_stays() {
         (None, Some(dir)) => Workspace::at(dir.path()),
         (None, None) => unreachable!("one of the two is always set"),
     };
-    let database = Database::open(&workspace, Connections::PerCommand)
-        .await
-        .expect("open the database");
+    let database = Database::open(
+        &workspace,
+        Connections::PerCommand,
+        &pamin_store::StoreSettings::from_environment(),
+    )
+    .await
+    .expect("open the database");
 
     let project = pamin_store::repository::ensure_project(
         database.pool(),
