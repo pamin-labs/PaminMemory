@@ -1144,7 +1144,12 @@ fn cpu_model(
     let path = crate::prepared::load_path(&weights, cache_dir)?;
     let encoder = if crate::prepared::is_copy(&path, cache_dir) {
         let tokenizer = crate::tokenizer::load(repository, max_tokens())?;
-        Encoder::side_by_side(path, crate::inference::budget()?, tokenizer)
+        Encoder::side_by_side(
+            path,
+            crate::inference::budget()?,
+            tokenizer,
+            repository.revision(),
+        )
     } else {
         Encoder::load(|| Ok(path), repository, max_tokens(), providers)
     }

@@ -35,6 +35,9 @@ pub(crate) struct Encoder {
     /// sessions from, and the sessions loaded so far; `None` runs every text
     /// on [`session`](Self::session).
     side_by_side: Option<(PathBuf, Vec<Session>)>,
+    /// The repository and commit the model was read from, as
+    /// [`Repository::revision`] resolves it once its files are fetched.
+    revision: String,
 }
 
 impl crate::inference::RuntimeModel for Encoder {
@@ -43,6 +46,9 @@ impl crate::inference::RuntimeModel for Encoder {
     }
     fn runtime_plan_mut(&mut self) -> &mut crate::inference::RuntimePlan {
         &mut self.runtime_plan
+    }
+    fn revision(&self) -> &str {
+        &self.revision
     }
 }
 
@@ -70,10 +76,10 @@ impl Encoder {
         max_length: usize,
     ) -> Result<Self> {
         let tokenizer = crate::tokenizer::load(repository, max_length)?;
-        Ok(Self::from_parts(session, tokenizer))
+        Ok(Self::from_parts(session, tokenizer, repository.revision()))
     }
 
-    fn from_parts(session: Session, tokenizer: Tokenizer) -> Self {
+    fn from_parts(session: Session, tokenizer: Tokenizer, revision: String) -> Self {
         let token_type_ids = session
             .inputs()
             .iter()
@@ -86,22 +92,25 @@ impl Encoder {
             fixed: None,
             token_type_ids,
             side_by_side: None,
+            revision,
         }
     }
 
     /// The model on the CPU over a session of `threads` intra-op threads, with
     /// [`run_each`](Self::run_each) running several texts at once on
     /// single-threaded sessions over the same `model` -- a mapped copy (see
-    /// `crate::prepared`), so that they share its weights.
+    /// `crate::prepared`), so that they share its weights. `revision` is the
+    /// [`Repository::revision`] `model` and `tokenizer` were read from.
     pub(crate) fn side_by_side(
         model: PathBuf,
         threads: usize,
         tokenizer: Tokenizer,
+        revision: String,
     ) -> Result<Self> {
         let session = crate::inference::cpu_session(&model, threads)?;
         Ok(Self {
             side_by_side: Some((model, Vec::new())),
-            ..Self::from_parts(session, tokenizer)
+            ..Self::from_parts(session, tokenizer, revision)
         })
     }
 
@@ -131,6 +140,7 @@ impl Encoder {
             fixed: Some((short, long)),
             token_type_ids: false,
             side_by_side: None,
+            revision: repository.revision(),
         })
     }
 

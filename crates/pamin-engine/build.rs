@@ -57,7 +57,20 @@ const SOURCES: [&str; 4] = [
 /// toolchain and its flags, which are recorded as rustc's version and the
 /// flags it was given. Named one by one, because Cargo reruns this script on
 /// a change to a variable only when it was named.
-const BUILD_ENVIRONMENT: [&str; 20] = [
+///
+/// The `ort-sys` and `zvec` names are every variable their build scripts
+/// declare with `rerun-if-env-changed` at the pinned versions (`ort-sys`
+/// 2.0.0-rc.13: its `build/vars.rs`, `CUDA_HOME` and `NV_CUDA_CUDART_VERSION`
+/// when choosing a download, and `DEVELOPER_DIR` for an Apple static link;
+/// `zvec-rust-sys` 0.7.2: its `ZVEC_*`), so the list is complete for them;
+/// `ort-sys`'s `pkg-config` feature, whose crate declares more, is off.
+/// Recheck it when either version moves.
+const BUILD_ENVIRONMENT: [&str; 25] = [
+    "CARGO_NET_OFFLINE",
+    "CUDA_HOME",
+    "CXXSTDLIB",
+    "DEVELOPER_DIR",
+    "NV_CUDA_CUDART_VERSION",
     "ORT_CUDA_VERSION",
     "ORT_CXX_STDLIB",
     "ORT_EXT_IOS_XCFWK_LOCATION",
