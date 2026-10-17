@@ -211,16 +211,19 @@ fn text(name: &str) -> Option<String> {
 }
 
 /// `cargo test` sets this package's build-script variables on the test
-/// itself, and the check lets them through. Asserted present first, so the
-/// test fails rather than passes if Cargo stops setting them.
+/// itself, and the check lets them through. In a package whose build script
+/// sets them, they are asserted present first, so the test fails rather than
+/// passes if Cargo stops setting them; a package with none of them (the
+/// store's tests include this file too) only runs the check.
 #[test]
 fn the_check_lets_build_variables_through() {
+    let emits = matches!(env!("CARGO_PKG_NAME"), "pamin-index" | "pamin-engine");
     let set: Vec<&str> = BUILD
         .into_iter()
         .filter(|name| std::env::var_os(name).is_some())
         .collect();
     assert!(
-        !set.is_empty(),
+        !emits || !set.is_empty(),
         "cargo test set none of {BUILD:?}, so this checks nothing"
     );
     check();
