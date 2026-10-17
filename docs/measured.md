@@ -976,9 +976,9 @@ with an inference budget of one thread keeps four pairs a pass (`4ca4c6f`),
 and that path was not measured in either step. The nDCG@10 rows were taken
 through `Engine::search_reranked` over byte-identical copies of one index, as
 the paragraph above describes, not at `pamin search`; recall@50 was identical
-in every group. CPU time counts the server's
-worker threads, so it exceeds wall time; no accelerator ran. The raw rows,
-per-run premises and harness are in the same private q42 folder as above.
+in every group. CPU time counts the server's worker threads, so it exceeds
+wall time; no accelerator ran. The raw rows, per-run premises and harnesses
+are in the private q42 and q44 folders named above.
 
 **Truncating at 192 or 384 tokens rather than 256 was measured, and neither
 ships.** In the same runs, each limit paired against 256 with the new batching:
