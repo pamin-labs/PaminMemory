@@ -237,11 +237,13 @@ impl Encoder {
         }
         if shared.is_none() {
             // The shared session only saves time, and `session` still runs
-            // every batch: one that will not load leaves the passes to it.
+            // every batch: one that will not load leaves the passes to it,
+            // and stops passes being planned for running side by side.
             match SharedCpuSession::load(model) {
                 Ok(session) => *shared = Some(session),
                 Err(error) => {
                     tracing::warn!(%error, "could not load the side-by-side session");
+                    self.side_by_side = None;
                     return Ok(1);
                 }
             }
@@ -681,6 +683,24 @@ mod tests {
         let model = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/coreml-normalization.onnx");
         SharedCpuSession::load(&model).expect("a CPU graph is admitted");
+    }
+
+    /// A shared session that will not load leaves every pass to `session`,
+    /// and stops the reranker planning passes to run side by side.
+    #[test]
+    fn a_shared_session_that_will_not_load_stops_side_by_side_passes() {
+        let model = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/coreml-normalization.onnx");
+        let mut encoder = Encoder::side_by_side(
+            model.clone(),
+            4,
+            crate::tokenizer::tests::fixture(),
+            String::from("fixture"),
+        )
+        .expect("a CPU graph loads");
+        encoder.side_by_side = Some((model.with_file_name("missing.onnx"), None, 4));
+        assert_eq!(encoder.ready(4).expect("falls back"), 1);
+        assert!(!encoder.runs_side_by_side());
     }
 
     #[test]
