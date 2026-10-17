@@ -565,11 +565,25 @@ fn producer_setting(name: &str, index: bool) -> bool {
 /// The arm's name in a record's file name: `shipped` when nothing is set,
 /// else a short hash of [`settings`], which can hold paths and run long. The
 /// settings themselves are printed and recorded in full.
+///
+/// A `PAMIN_EVAL_*` knob is hashed under the `PAMIN_*` name it replaced, so an
+/// arm keeps the name its records were written under before the knobs moved:
+/// `PAMIN_EVAL_DEVICE=cpu` is still `arm-ed2cc2fa76ba`, the XQuAD-R CPU
+/// baseline's `PAMIN_DEVICE=cpu`. Nothing is lost: `eval::check` refuses the
+/// old names, so none is set beside the knob that replaced it, and the
+/// `PAMIN_EVAL_HOME` that would meet `PAMIN_HOME` is in neither's arm.
 fn arm(settings: &[String]) -> String {
     if settings.is_empty() {
         return "shipped".to_string();
     }
-    let hash = Sha256::digest(settings.join("\n").as_bytes());
+    let spelled: Vec<String> = settings
+        .iter()
+        .map(|line| match line.strip_prefix("PAMIN_EVAL_") {
+            Some(rest) => format!("PAMIN_{rest}"),
+            None => line.clone(),
+        })
+        .collect();
+    let hash = Sha256::digest(spelled.join("\n").as_bytes());
     let short: String = hash[..6].iter().map(|byte| format!("{byte:02x}")).collect();
     format!("arm-{short}")
 }
@@ -3941,6 +3955,9 @@ mod tests {
             ),
         ]);
         assert_eq!(built, "shipped");
+        // The XQuAD-R CPU baseline keeps the arm it was recorded under as
+        // `PAMIN_DEVICE=cpu`.
+        assert_eq!(named(&[("PAMIN_EVAL_DEVICE", "cpu")]), "arm-ed2cc2fa76ba");
         let depth = named(&[("PAMIN_EVAL_RERANK_DEPTH", "20")]);
         let effort = named(&[("PAMIN_EVAL_SEARCH_EFFORT", "200")]);
         let both = named(&[
