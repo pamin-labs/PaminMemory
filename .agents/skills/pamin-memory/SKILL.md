@@ -162,8 +162,11 @@ that two topics really are related the way it claims.
 
 Every search reranks with one cross-encoder, and there is no flag for it:
 `--rerank` and `PAMIN_RERANK` were removed, and setting `PAMIN_RERANK` is an
-error. A search against a warm server on four cores costs two to three
-seconds, most of it the reranker; `docs/measured.md` has the current figures.
+error. An uncached search against a warm server costs two to three seconds,
+most of it the reranker -- measured on four cores over 3,230 memories and 120
+queries; `docs/measured.md` has the figures. A repeated identical candidate set
+is answered from the reranker's score cache, and fewer than two candidates skip
+reranking.
 
 **Leave `--channel-depth` and `--graph-depth` alone.** They exist for the
 evaluation harness. Raising them costs latency for recall you have no way to
@@ -172,7 +175,7 @@ measure from outside. If you want more control over retrieval, use `grep`,
 
 ### When to stop searching
 
-Every `search` costs two to three seconds on four cores and a page of results
+Every uncached `search` costs two to three seconds on four cores and a page of results
 in your context. The reranker reads the top thirty fused results, and up to
 thirty more that only the graph found; `docs/measured.md` records a median of
 about 2.7 s at `pamin search` over 3,230 memories on a four-core machine. On
