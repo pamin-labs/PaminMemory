@@ -255,8 +255,10 @@ than that the claim was wrong.
   makes the rest fast.
 - **Projects are namespaces, not tags.** `--project` (or `PAMIN_PROJECT`) picks
   one; nothing crosses between them.
-- **Results are stable for stable inputs**, ties broken on identifier, so an
-  assembled context can be cached rather than rebuilt.
+- **Results are stable for stable inputs** on one machine and execution plan,
+  ties broken on identifier, so an assembled context can be cached rather than
+  rebuilt. A requalified or different accelerator plan can reorder close
+  results.
 - **`cascade` in a write's JSON** says whether the index caught up before the
   command returned. `applied` means yes; `queued` means the index still owes
   work, which the server runs within seconds and `pamin cascade drain` runs at
