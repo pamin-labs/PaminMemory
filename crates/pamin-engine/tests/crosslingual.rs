@@ -178,7 +178,7 @@
 //!
 //! ```text
 //! env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p pamin-engine --test crosslingual prepare_pinned_xquad_models -- --exact --ignored
-//! env -u HF_HOME -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_SEARCH_EFFORT -u PAMIN_PREPARED -u PAMIN_FUSED_ATTENTION PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_DEVICE=cpu cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
+//! env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_EVAL_DEVICE=cpu cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
 //! ```
 //!
 //! The dataset is fetched with `curl` into `$PAMIN_EVAL_HOME/xquad-r`, or into
@@ -186,6 +186,11 @@
 //! this repository is Apache-2.0. Setting `PAMIN_EVAL_HOME` also keeps the
 //! embeddings and the indexed workspace between runs, which is the difference
 //! between minutes and most of an hour.
+//!
+//! The search refuses to run with any `PAMIN_EVAL_*` setting but the CPU
+//! device (see `require_the_shipped_settings_on_the_cpu`): an inference thread
+//! count, for one, changes how many pairs a reranker pass takes, and with it
+//! the rankings.
 //!
 //! `XQUAD_ALL_QUERIES=1` asks every question in all eleven languages, 13,090
 //! queries. The default asks each question in one language, rotating through
@@ -1014,26 +1019,52 @@ fn prepare_pinned_model(api: &hf_hub::api::sync::Api, models: &Path, model: &ser
     println!("  prepared {name} at {revision}");
 }
 
+/// The reproducible XQuAD-R baseline is the shipped settings on the CPU:
+/// `PAMIN_EVAL_DEVICE=cpu`, and no other `PAMIN_EVAL_*` setting. Checked
+/// rather than asked of the command line, because a knob left exported in the
+/// shell would otherwise be measured under the baseline's name -- an
+/// inference thread count, for one, changes how many pairs a reranker pass
+/// takes, and with it the rankings.
+fn require_the_shipped_settings_on_the_cpu() {
+    let shipped = pamin_engine::Settings {
+        inference: pamin_index::InferenceSettings {
+            device: pamin_index::DeviceChoice::Cpu,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    assert_eq!(
+        harness::settings(),
+        shipped,
+        "the reproducible XQuAD-R baseline runs the shipped settings on the CPU: set \
+         PAMIN_EVAL_DEVICE=cpu and no other PAMIN_EVAL_ setting"
+    );
+    assert_eq!(
+        harness::depths(),
+        Depths::DEFAULT,
+        "the reproducible XQuAD-R baseline searches at the shipped depths: unset \
+         PAMIN_EVAL_RERANK_DEPTH and PAMIN_EVAL_SEARCH_EFFORT"
+    );
+}
+
 /// A cheap real-loader check for the reproduction log and verifier, without
 /// indexing or scoring a corpus. The Python verifier consumes its stdout.
 #[test]
-#[ignore = "loads cached pinned CPU models; set PAMIN_EVAL_HOME and PAMIN_DEVICE=cpu"]
+#[ignore = "loads cached pinned CPU models; set PAMIN_EVAL_HOME and PAMIN_EVAL_DEVICE=cpu"]
 fn pinned_model_loads_report_actual_graph_paths() {
     let Some(home) = pinned_benchmark_home("pinned_model_loads_report_actual_graph_paths") else {
         return;
     };
-    assert_eq!(std::env::var("PAMIN_DEVICE").as_deref(), Ok("cpu"));
+    require_the_shipped_settings_on_the_cpu();
     assert!(std::env::var_os("HF_HOME").is_none());
     let models = Path::new(&home).join("models");
     pinned_embedding_id(&models);
     pinned_model_id(&models, "reranker");
     report_loaded_graphs();
-    let _embedder =
-        pamin_index::Embedder::load(&models, &pamin_index::InferenceSettings::from_environment())
-            .expect("load pinned embedding model");
-    let reranker =
-        pamin_index::Reranker::load(&models, &pamin_index::InferenceSettings::from_environment())
-            .expect("load pinned reranking model");
+    let _embedder = pamin_index::Embedder::load(&models, &crate::harness::support::inference())
+        .expect("load pinned embedding model");
+    let reranker = pamin_index::Reranker::load(&models, &crate::harness::support::inference())
+        .expect("load pinned reranking model");
     assert_eq!(reranker.device(), pamin_index::Device::Cpu);
 }
 
@@ -1507,11 +1538,8 @@ fn the_model_reaches_across_languages() {
 
     let home = eval_home();
     let embedder = harness::shape::owned(
-        Embedder::load(
-            &home.join("models"),
-            &pamin_index::InferenceSettings::from_environment(),
-        )
-        .expect("load the embedding model"),
+        Embedder::load(&home.join("models"), &crate::harness::support::inference())
+            .expect("load the embedding model"),
     );
     // No engine: the record's providers are the harness's own models,
     // read once the run is over.
@@ -1621,11 +1649,7 @@ async fn search_reaches_across_languages() {
         std::env::var_os("HF_HOME").is_none(),
         "unset HF_HOME for this pinned benchmark"
     );
-    assert_eq!(
-        std::env::var("PAMIN_DEVICE").as_deref(),
-        Ok("cpu"),
-        "set PAMIN_DEVICE=cpu for the reproducible XQuAD-R baseline"
-    );
+    require_the_shipped_settings_on_the_cpu();
     report_loaded_graphs();
     let git = Command::new("git")
         .args(["-C", env!("CARGO_MANIFEST_DIR"), "rev-parse", "HEAD"])
@@ -3208,7 +3232,7 @@ async fn context(
     let model = harness::shape::owned(
         pamin_index::Reranker::load(
             &workspace.root().join("models"),
-            &pamin_index::InferenceSettings::from_environment(),
+            &crate::harness::support::inference(),
         )
         .expect("load the reranker"),
     );

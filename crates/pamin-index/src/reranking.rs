@@ -460,11 +460,6 @@ fn side_by_side_budget(settings: &crate::InferenceSettings) -> usize {
 /// significantly on exactly the corpus where it truncates.
 pub(crate) const MAX_TOKENS: usize = 256;
 
-/// How deep into the fused list the reranker reaches.
-pub fn depth() -> usize {
-    pamin_core::env::positive("PAMIN_RERANK_DEPTH").unwrap_or(DEPTH)
-}
-
 /// Which export of the model to fetch, for the device it will run on.
 ///
 /// On an accelerator, the half-precision export: an int8 graph of
@@ -2569,12 +2564,12 @@ mod tests {
     /// time; side by side is as many one-threaded passes at once as there are
     /// cores, all on one shared session, longest first. A fixed list of pairs from a few tokens to the
     /// truncation limit, in more batches than cores. The models are read
-    /// from, or downloaded into, `PAMIN_TEST_MODEL_CACHE`.
+    /// from, or downloaded into, `PAMIN_EVAL_MODEL_CACHE`.
     #[test]
-    #[ignore = "downloads reranker model weights; set PAMIN_TEST_MODEL_CACHE"]
+    #[ignore = "downloads reranker model weights; set PAMIN_EVAL_MODEL_CACHE"]
     fn side_by_side_batches_are_each_batch_alone() {
         let cache = PathBuf::from(
-            std::env::var_os("PAMIN_TEST_MODEL_CACHE").expect("set PAMIN_TEST_MODEL_CACHE"),
+            std::env::var_os("PAMIN_EVAL_MODEL_CACHE").expect("set PAMIN_EVAL_MODEL_CACHE"),
         );
         let settings = crate::InferenceSettings::default();
         let long = "harbour migration rollback policy ".repeat(settings.rerank.max_tokens);

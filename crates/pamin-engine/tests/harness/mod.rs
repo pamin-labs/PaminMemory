@@ -14,6 +14,13 @@ pub mod compiled;
 pub mod shape;
 pub mod vectors;
 
+/// The `PAMIN_EVAL_*` knobs and the inference settings they build, shared
+/// with the index's own tests.
+#[path = "../../../pamin-index/tests/support/mod.rs"]
+pub mod support;
+
+pub use support::eval;
+
 use std::path::PathBuf;
 
 use pamin_core::Fusion;
@@ -44,7 +51,7 @@ pub fn dataset_dir(var: &str, name: &str) -> PathBuf {
 }
 
 /// The settings a run measures: the product's defaults, and whatever the
-/// environment running the harness changes about them.
+/// `PAMIN_EVAL_*` knobs change about them (see [`eval::KNOBS`]).
 ///
 /// Read once per call into a value the harness hands to [`Engine::open`],
 /// rather than read by the libraries on every load: the libraries read no
@@ -53,23 +60,39 @@ pub fn dataset_dir(var: &str, name: &str) -> PathBuf {
 pub fn settings() -> pamin_engine::Settings {
     let default = pamin_engine::Settings::default();
     pamin_engine::Settings {
-        inference: pamin_index::InferenceSettings::from_environment(),
-        store: pamin_store::StoreSettings::from_environment(),
-        model_idle: pamin_core::env::positive("PAMIN_MODEL_IDLE")
-            .map(std::time::Duration::from_secs)
-            .unwrap_or(default.model_idle),
-        unindexed_budget: pamin_core::env::positive("PAMIN_UNINDEXED_BUDGET")
-            .unwrap_or(default.unindexed_budget),
+        inference: support::inference(),
+        store: store(),
+        model_idle: eval::parsed::<std::num::NonZeroU64>("PAMIN_EVAL_MODEL_IDLE")
+            .map_or(default.model_idle, |seconds| {
+                std::time::Duration::from_secs(seconds.get())
+            }),
+        unindexed_budget: eval::parsed::<std::num::NonZeroU64>("PAMIN_EVAL_UNINDEXED_BUDGET")
+            .map_or(default.unindexed_budget, std::num::NonZeroU64::get),
+    }
+}
+
+/// The store settings a run measures: the defaults, and `PAMIN_EVAL_JIT` and
+/// `PAMIN_EVAL_POSTGRES_DIR`.
+pub fn store() -> pamin_store::StoreSettings {
+    eval::check();
+    let default = pamin_store::StoreSettings::default();
+    pamin_store::StoreSettings {
+        jit: eval::switch("PAMIN_EVAL_JIT").unwrap_or(default.jit),
+        postgres_dir: eval::path("PAMIN_EVAL_POSTGRES_DIR").or(default.postgres_dir),
     }
 }
 
 /// The depths a run searches with: the product's, and the reranker's depth
-/// and the vector graph's width as the environment running the harness says.
-/// A search's own value, so an arm that varies one passes another [`Depths`].
+/// and the vector graph's width as `PAMIN_EVAL_RERANK_DEPTH` and
+/// `PAMIN_EVAL_SEARCH_EFFORT` say. A search's own value, so an arm that varies
+/// one passes another [`Depths`].
 pub fn depths() -> Depths {
+    eval::check();
     Depths {
-        rerank: pamin_core::env::positive("PAMIN_RERANK_DEPTH").unwrap_or(Depths::DEFAULT.rerank),
-        effort: pamin_core::env::positive("PAMIN_SEARCH_EFFORT").unwrap_or(Depths::DEFAULT.effort),
+        rerank: eval::parsed::<std::num::NonZeroUsize>("PAMIN_EVAL_RERANK_DEPTH")
+            .map_or(Depths::DEFAULT.rerank, std::num::NonZeroUsize::get),
+        effort: eval::parsed::<std::num::NonZeroU32>("PAMIN_EVAL_SEARCH_EFFORT")
+            .map_or(Depths::DEFAULT.effort, std::num::NonZeroU32::get),
         ..Depths::DEFAULT
     }
 }

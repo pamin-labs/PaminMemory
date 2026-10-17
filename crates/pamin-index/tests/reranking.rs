@@ -2,7 +2,7 @@
 //!
 //! Ignored by default: the first run downloads weights. Run with
 //! `cargo test -p pamin-index --test reranking -- --ignored --nocapture`.
-//! On a host expected to accelerate, set `PAMIN_EXPECT_DEVICE=directml`,
+//! On a host expected to accelerate, set `PAMIN_EVAL_EXPECT_DEVICE=directml`,
 //! `cuda` or `coreml` when running `every_device_orders_like_the_cpu` so a
 //! failed accelerator load cannot pass unnoticed as a CPU-only comparison.
 //!
@@ -21,6 +21,8 @@
 //! misconfigured rather than weak -- and it is the premise every figure the
 //! corpora report is standing on.
 
+mod support;
+
 use pamin_index::Reranker;
 
 #[test]
@@ -34,11 +36,8 @@ fn the_reranker_puts_the_relevant_document_first() {
     let unrelated = "The office coffee machine is descaled on the first Monday \
                      of each month.";
 
-    let mut reranker = Reranker::load(
-        &dir.path().join("models"),
-        &pamin_index::InferenceSettings::from_environment(),
-    )
-    .expect("load the reranker");
+    let mut reranker = Reranker::load(&dir.path().join("models"), &support::inference())
+        .expect("load the reranker");
 
     // Both orders, because a model whose output is being read off the
     // wrong axis would pass one of them by luck. Passing both means the
@@ -90,20 +89,18 @@ fn the_reranker_puts_the_relevant_document_first() {
 /// user of the accelerator is relying on.
 ///
 /// Each arm starts in its own process, before native inference threads exist.
-/// `PAMIN_TEST_MODEL_CACHE` reuses an existing cache for both arms.
+/// `PAMIN_EVAL_MODEL_CACHE` reuses an existing cache for both arms.
 #[test]
 #[ignore = "downloads reranker model weights"]
 fn every_device_orders_like_the_cpu() {
     let temporary = tempfile::tempdir().expect("temp dir");
-    let models = std::env::var_os("PAMIN_TEST_MODEL_CACHE")
+    let models = std::env::var_os("PAMIN_EVAL_MODEL_CACHE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| temporary.path().join("models"));
 
-    if let Some(output) = std::env::var_os("PAMIN_RERANK_TEST_OUTPUT") {
-        let mut model =
-            Reranker::load(&models, &pamin_index::InferenceSettings::from_environment())
-                .expect("load reranker");
-        if let Ok(expected) = std::env::var("PAMIN_EXPECT_DEVICE") {
+    if let Some(output) = std::env::var_os("PAMIN_EVAL_RERANK_OUTPUT") {
+        let mut model = Reranker::load(&models, &support::inference()).expect("load reranker");
+        if let Ok(expected) = std::env::var("PAMIN_EVAL_EXPECT_DEVICE") {
             assert_eq!(
                 model.device().name(),
                 expected,
@@ -150,12 +147,12 @@ fn every_device_orders_like_the_cpu() {
                 "--ignored",
                 "--nocapture",
             ])
-            .env("PAMIN_RERANK_TEST_OUTPUT", &output)
-            .env("PAMIN_TEST_MODEL_CACHE", &models);
+            .env("PAMIN_EVAL_RERANK_OUTPUT", &output)
+            .env("PAMIN_EVAL_MODEL_CACHE", &models);
         if cpu {
             command
-                .env("PAMIN_DEVICE", "cpu")
-                .env("PAMIN_EXPECT_DEVICE", "cpu");
+                .env("PAMIN_EVAL_DEVICE", "cpu")
+                .env("PAMIN_EVAL_EXPECT_DEVICE", "cpu");
         }
         assert!(
             command.status().expect("start arm").success(),
@@ -180,14 +177,13 @@ fn every_device_orders_like_the_cpu() {
 /// The short/long buckets must keep logical rows and physical work distinct.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
-#[ignore = "loads the accurate CoreML model; reuses PAMIN_TEST_MODEL_CACHE"]
+#[ignore = "loads the accurate CoreML model; reuses PAMIN_EVAL_MODEL_CACHE"]
 fn coreml_buckets_preserve_partial_batches_and_work() {
     let temporary = tempfile::tempdir().unwrap();
-    let cache = std::env::var_os("PAMIN_TEST_MODEL_CACHE")
+    let cache = std::env::var_os("PAMIN_EVAL_MODEL_CACHE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| temporary.path().join("models"));
-    let mut model = Reranker::load(&cache, &pamin_index::InferenceSettings::from_environment())
-        .expect("load accurate model");
+    let mut model = Reranker::load(&cache, &support::inference()).expect("load accurate model");
     assert_eq!(
         model.device(),
         pamin_index::Device::CoreMl,

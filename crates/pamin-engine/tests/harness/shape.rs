@@ -192,19 +192,20 @@ fn open_tally() {
 }
 
 /// `PAMIN_` variables that say only where something is, or what to log, and
-/// change no result. Every other `PAMIN_` variable is taken to change what is measured.
-const NOT_SETTINGS: [&str; 11] = [
-    "PAMIN_EMBEDDING_TEST_OUTPUT",
+/// change no result. Every other `PAMIN_` variable is taken to change what is
+/// measured: the `PAMIN_EVAL_*` knobs a harness reads into its settings (see
+/// `support/eval.rs`), and any product variable a harness would refuse.
+const NOT_SETTINGS: [&str; 10] = [
+    "PAMIN_EVAL_EMBEDDING_OUTPUT",
     "PAMIN_EVAL_HOME",
+    "PAMIN_EVAL_MODEL_CACHE",
+    "PAMIN_EVAL_NATIVE_CACHE",
+    "PAMIN_EVAL_POSTGRES_DIR",
+    "PAMIN_EVAL_PREPARED_CACHE",
+    "PAMIN_EVAL_RERANK_OUTPUT",
+    "PAMIN_EVAL_SHARED_CACHE",
     "PAMIN_HOME",
     "PAMIN_LOG",
-    "PAMIN_MATRIX_OUTPUT",
-    "PAMIN_NATIVE_TEST_CACHE",
-    "PAMIN_POSTGRES_DIR",
-    "PAMIN_PREPARED_CACHE",
-    "PAMIN_RERANK_TEST_OUTPUT",
-    "PAMIN_SHARED_CACHE",
-    "PAMIN_TEST_MODEL_CACHE",
 ];
 
 /// Variables outside `PAMIN_` that every harness's record is named by,
@@ -322,34 +323,38 @@ const EVAL_NOT_IDENTITY: [(&str, &str); 7] = [
 
 /// Environment reads in the evaluation tests whose name is not a literal at
 /// the read, with where the names come from.
-const EVAL_INDIRECT: [(&str, &str); 7] = [
+const EVAL_INDIRECT: [(&str, &str); 8] = [
     (
         "pamin-engine/tests/harness/mod.rs: std::env::var(var)",
         "dataset_dir's variable, a literal at every dataset_dir call",
     ),
     (
         "pamin-index/tests/prepared.rs: std::env::var(ARM)",
-        "PAMIN_PREPARED_ARM, a measuring child's arm",
+        "PAMIN_EVAL_PREPARED_ARM, a measuring child's arm",
     ),
     (
         "pamin-index/tests/prepared.rs: std::env::var(CACHE)",
-        "PAMIN_PREPARED_CACHE, a measuring child's cache",
+        "PAMIN_EVAL_PREPARED_CACHE, a measuring child's cache",
     ),
     (
         "pamin-index/tests/shared_vocabulary.rs: std::env::var(ARM)",
-        "PAMIN_SHARED_ARM, a measuring child's arm",
+        "PAMIN_EVAL_SHARED_ARM, a measuring child's arm",
     ),
     (
         "pamin-index/tests/shared_vocabulary.rs: std::env::var(CACHE)",
-        "PAMIN_SHARED_CACHE, a measuring child's cache",
+        "PAMIN_EVAL_SHARED_CACHE, a measuring child's cache",
     ),
     (
         "pamin-index/tests/shared_vocabulary.rs: std::env::var(name)",
-        "PAMIN_SHARED_*_COPY, the prepared copies a child loads",
+        "PAMIN_EVAL_SHARED_*_COPY, the prepared copies a child loads",
     ),
     (
-        "pamin-index/tests/shared_vocabulary.rs: std::env::var_os(tuned)",
-        "PAMIN_RERANK_* batch limits, asserted unset",
+        "pamin-index/tests/support/eval.rs: std::env::var(name)",
+        "a PAMIN_EVAL_* knob, each listed in its KNOBS",
+    ),
+    (
+        "pamin-index/tests/support/eval.rs: std::env::var_os(name)",
+        "a PAMIN_EVAL_* path knob, each listed in its KNOBS",
     ),
 ];
 
@@ -368,8 +373,9 @@ fn identity_variable(name: &str) -> bool {
 /// [`NOT_SETTINGS`].
 ///
 /// The `PAMIN_` variables are found rather than listed. A list was kept per
-/// harness, and the product's runtime knobs -- `PAMIN_RERANK_DEPTH`,
-/// `PAMIN_SEARCH_EFFORT` -- were never on it, so a run with one set was
+/// harness, and the product's runtime knobs -- the reranker's depth, the
+/// search effort, now `PAMIN_EVAL_RERANK_DEPTH` and `PAMIN_EVAL_SEARCH_EFFORT`
+/// -- were never on it, so a run with one set was
 /// recorded as the shipped run, over the shipped run's record. The
 /// harnesses' own knobs were listed per harness as well, and MuSiQue's list
 /// left out `RERANK_RULES`, so they are one shared list now.
@@ -2547,20 +2553,26 @@ mod tests {
         };
         let shipped = named(&[("PAMIN_EVAL_HOME", "/data"), ("HOME", "/root")]);
         assert_eq!(shipped, "shipped");
-        let depth = named(&[("PAMIN_RERANK_DEPTH", "20")]);
-        let effort = named(&[("PAMIN_SEARCH_EFFORT", "low")]);
-        let both = named(&[("PAMIN_SEARCH_EFFORT", "low"), ("PAMIN_RERANK_DEPTH", "20")]);
+        let depth = named(&[("PAMIN_EVAL_RERANK_DEPTH", "20")]);
+        let effort = named(&[("PAMIN_EVAL_SEARCH_EFFORT", "200")]);
+        let both = named(&[
+            ("PAMIN_EVAL_SEARCH_EFFORT", "200"),
+            ("PAMIN_EVAL_RERANK_DEPTH", "20"),
+        ]);
         let swept = named(&[("SWEEP", "1"), ("PAMIN_EVAL_HOME", "/data")]);
         let distinct: BTreeSet<&String> = [&shipped, &depth, &effort, &both, &swept].into();
         assert_eq!(distinct.len(), 5, "{distinct:?}");
         // Found in any order, named the same.
         assert_eq!(
             both,
-            named(&[("PAMIN_RERANK_DEPTH", "20"), ("PAMIN_SEARCH_EFFORT", "low")])
+            named(&[
+                ("PAMIN_EVAL_RERANK_DEPTH", "20"),
+                ("PAMIN_EVAL_SEARCH_EFFORT", "200"),
+            ])
         );
         assert_eq!(
-            settings([("PAMIN_DEVICE".to_string(), "cpu".to_string())]),
-            ["PAMIN_DEVICE=cpu"]
+            settings([("PAMIN_EVAL_DEVICE".to_string(), "cpu".to_string())]),
+            ["PAMIN_EVAL_DEVICE=cpu"]
         );
         // Named by every harness, though no harness lists it.
         let ungated = named(&[("SIGNIFICANCE_GATE", "off")]);

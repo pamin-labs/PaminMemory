@@ -27,7 +27,7 @@ use crate::Settings;
 /// evaluation harness exists to settle them, and it cannot sweep a value that
 /// is compiled in. The defaults are the ones the architecture specifies, so
 /// nothing changes for a caller that does not ask.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Depths {
     /// Candidates each channel contributes.
     ///
@@ -1525,8 +1525,8 @@ impl Engine {
     /// across processes ([`pamin_index::PlanUse`]). A model not loaded is not
     /// listed.
     ///
-    /// For an evaluation to say which execution path produced it: under
-    /// `PAMIN_DEVICE=auto` the same build runs on whatever the machine has.
+    /// For an evaluation to say which execution path produced it: on the
+    /// `auto` device the same build runs on whatever the machine has.
     ///
     /// Never panics or waits, so a run that is already failing can still ask:
     /// a poisoned lock is read through, since the device it guards is set at

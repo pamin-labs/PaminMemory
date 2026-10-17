@@ -805,7 +805,7 @@ async fn search_answers_questions_that_take_several_steps() {
         let model = harness::shape::owned(
             pamin_index::Reranker::load(
                 &workspace.root().join("models"),
-                &pamin_index::InferenceSettings::from_environment(),
+                &crate::harness::support::inference(),
             )
             .expect("load the reranker"),
         );

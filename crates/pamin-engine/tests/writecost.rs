@@ -41,6 +41,9 @@
 //!   cargo test -p pamin-engine --test writecost -- --ignored --nocapture
 //! ```
 
+#[path = "../../pamin-index/tests/support/mod.rs"]
+mod support;
+
 use std::time::Instant;
 
 use pamin_core::{FilterDecision, Validity};
@@ -181,12 +184,22 @@ fn request<'a>(topic: &'a str, content: &'a str, hash: &'a str) -> Write<'a> {
     }
 }
 
-/// The product's settings, as the environment running the test changes them.
+/// The product's settings, as the `PAMIN_EVAL_*` knobs change them.
 fn settings() -> pamin_engine::Settings {
     pamin_engine::Settings {
-        inference: pamin_index::InferenceSettings::from_environment(),
-        store: pamin_store::StoreSettings::from_environment(),
+        inference: support::inference(),
+        store: store(),
         ..pamin_engine::Settings::default()
+    }
+}
+
+/// The store settings: the defaults, and `PAMIN_EVAL_JIT` and
+/// `PAMIN_EVAL_POSTGRES_DIR`.
+fn store() -> pamin_store::StoreSettings {
+    support::eval::check();
+    pamin_store::StoreSettings {
+        jit: support::eval::switch("PAMIN_EVAL_JIT").unwrap_or_default(),
+        postgres_dir: support::eval::path("PAMIN_EVAL_POSTGRES_DIR"),
     }
 }
 
@@ -202,13 +215,9 @@ async fn one_write_does_not_pay_for_the_whole_project() {
         (None, Some(dir)) => Workspace::at(dir.path()),
         (None, None) => unreachable!("one of the two is always set"),
     };
-    let database = Database::open(
-        &workspace,
-        Connections::PerCommand,
-        &pamin_store::StoreSettings::from_environment(),
-    )
-    .await
-    .expect("open the database");
+    let database = Database::open(&workspace, Connections::PerCommand, &store())
+        .await
+        .expect("open the database");
 
     println!("\n   topics      write    drain    total   derive p50   fastest   edges");
     println!("  ----------------------------------------------------------------");
@@ -364,13 +373,9 @@ async fn derivation_does_not_pay_for_the_widest_name_in_the_project() {
         (None, Some(dir)) => Workspace::at(dir.path()),
         (None, None) => unreachable!("one of the two is always set"),
     };
-    let database = Database::open(
-        &workspace,
-        Connections::PerCommand,
-        &pamin_store::StoreSettings::from_environment(),
-    )
-    .await
-    .expect("open the database");
+    let database = Database::open(&workspace, Connections::PerCommand, &store())
+        .await
+        .expect("open the database");
 
     let tokens = PROSE.split_whitespace().count();
     println!("\n  widest   runs   derive p50   fastest   per run   edges");

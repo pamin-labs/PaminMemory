@@ -634,7 +634,7 @@ async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query]) {
     let tier = Rerank::default();
     let mut model = pamin_index::Reranker::load(
         &workspace.root().join("models"),
-        &pamin_index::InferenceSettings::from_environment(),
+        &crate::harness::support::inference(),
     )
     .expect("load the reranker");
 

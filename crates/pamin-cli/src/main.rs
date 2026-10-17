@@ -367,18 +367,14 @@ mod tests {
         "PAMIN_INFERENCE_BUILD",
         "PAMIN_INFERENCE_CARGO",
         // Cached-export inputs used only by the native preparation regression.
-        "PAMIN_NATIVE_MODEL_SOURCE",
-        "PAMIN_NATIVE_TEST_CACHE",
+        "PAMIN_EVAL_NATIVE_MODEL_SOURCE",
+        "PAMIN_EVAL_NATIVE_CACHE",
         // Embedding conformance controls compiled only under cfg(test).
-        "PAMIN_TEST_MODEL_CACHE",
-        "PAMIN_TEST_JOINT_GRAPH",
+        "PAMIN_EVAL_MODEL_CACHE",
+        "PAMIN_EVAL_JOINT_GRAPH",
         // Tokenizer parity controls compiled only under cfg(test).
-        "PAMIN_TEST_MODELS",
-        "PAMIN_PARITY_CORPORA",
-        "PAMIN_RERANK_BATCH",
-        "PAMIN_RERANK_BATCH_TOKENS",
-        "PAMIN_RERANK_DEPTH",
-        "PAMIN_RERANK_MAX_TOKENS",
+        "PAMIN_EVAL_MODELS",
+        "PAMIN_EVAL_PARITY_CORPORA",
     ];
 
     /// Every setting the product reads is documented, or listed as not.
