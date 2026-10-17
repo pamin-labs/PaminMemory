@@ -566,19 +566,26 @@ fn spelled(path: &Path) -> String {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
-        let units: Vec<u16> = path.as_os_str().encode_wide().collect();
-        char::decode_utf16(units.iter().copied())
-            .zip(units.iter())
-            .map(|(decoded, unit)| match decoded {
-                Ok(character) => character.to_string(),
-                Err(_) => format!("<{unit:04x}>"),
-            })
-            .collect()
+        spelled_wide(path.as_os_str().encode_wide())
     }
     #[cfg(not(any(unix, windows)))]
     {
         path.display().to_string()
     }
+}
+
+/// A Windows path's UTF-16 `units` as [`spelled`] spells them: decoded, and
+/// each unpaired surrogate as `<NNNN>`. The unit named is the one the decoder
+/// refused, not the one at the same position: a surrogate pair is two units
+/// and one character, so counting positions goes out of step after one.
+#[cfg(any(windows, test))]
+fn spelled_wide(units: impl IntoIterator<Item = u16>) -> String {
+    char::decode_utf16(units)
+        .map(|decoded| match decoded {
+            Ok(character) => character.to_string(),
+            Err(error) => format!("<{:04x}>", error.unpaired_surrogate()),
+        })
+        .collect()
 }
 
 fn read(path: &Path) -> Result<File> {
@@ -784,6 +791,20 @@ mod tests {
         let message = one.mismatch(&other.asked()).expect("a mismatch");
         assert!(message.contains("ep_libraries"), "{message}");
         assert!(message.contains("postgres_dir"), "{message}");
+    }
+
+    /// Each unpaired surrogate is spelled as itself, after a surrogate pair
+    /// as anywhere else.
+    #[test]
+    fn a_windows_path_spells_the_surrogate_it_could_not_decode() {
+        let grin = [0xD83D, 0xDE00];
+        let after = |unit: u16| spelled_wide(grin.into_iter().chain([unit]));
+        assert_eq!(after(0xD800), "😀<d800>");
+        assert_eq!(after(0xDE00), "😀<de00>");
+        assert_ne!(after(0xD800), after(0xDE00));
+        assert_eq!(spelled_wide([0xDC00, 0x61]), "<dc00>a");
+        assert_eq!(spelled_wide([0x61, 0xD83D]), "a<d83d>");
+        assert_eq!(spelled_wide("C:\\ep.dll".encode_utf16()), "C:\\ep.dll");
     }
 
     /// `ep_libraries = []` is the same setting as none at all, so a server
