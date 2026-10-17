@@ -37,14 +37,31 @@ use pamin_index::Profile;
 /// behind a condition variable rather than a held `MutexGuard`, so the turn
 /// is `Send`, is let go of however the test ends, a panic included, and a
 /// test can tell that it, not another, holds it.
-pub struct ModelsTurn(());
+///
+/// And across processes: evaluations sharing an evaluation home share its
+/// model cache, plan records and caches, so another process's download or
+/// calibration would land in this one's interval just the same -- waited
+/// for here, read back as warm or as calibrated before the run. The turn
+/// therefore also holds an exclusive lock on `eval.lock` under
+/// [`eval_home`], taken once the process's own turn is, so one process's
+/// threads never wait on each other for it, and given up when the turn is.
+/// Two evaluations sharing a home take turns whole: their loads,
+/// calibrations and fetches never overlap.
+pub struct ModelsTurn {
+    across: Option<std::fs::File>,
+}
 
 static TURN: std::sync::Mutex<Option<std::thread::ThreadId>> = std::sync::Mutex::new(None);
 static TURN_FREED: std::sync::Condvar = std::sync::Condvar::new();
 
-/// Waits for this process's turn at loading models (see [`ModelsTurn`]),
-/// for this thread.
+/// Waits for this process's turn at loading models, and then for the
+/// evaluation home's (see [`ModelsTurn`]), for this thread.
 pub fn load_models() -> ModelsTurn {
+    load_models_at(&eval_home().join("eval"))
+}
+
+/// [`load_models`], with the turn across processes taken on `<lock>.lock`.
+fn load_models_at(lock: &std::path::Path) -> ModelsTurn {
     let mut holder = TURN
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -54,7 +71,12 @@ pub fn load_models() -> ModelsTurn {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
     *holder = Some(std::thread::current().id());
-    ModelsTurn(())
+    drop(holder);
+    // Built before the lock is waited for, so a lock that cannot be taken
+    // gives the process's turn back as it unwinds.
+    let mut turn = ModelsTurn { across: None };
+    turn.across = Some(vectors::lock(lock));
+    turn
 }
 
 /// Whether this thread holds the turn (see [`ModelsTurn`]).
@@ -74,6 +96,9 @@ pub fn environment_turn() -> Option<ModelsTurn> {
 
 impl Drop for ModelsTurn {
     fn drop(&mut self) {
+        // The home's turn first: a thread of this process waiting for the
+        // process's turn would otherwise wait for this one's lock as well.
+        drop(self.across.take());
         *TURN
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
@@ -175,4 +200,37 @@ pub async fn drain(engine: &Engine) -> Drained {
         drained.pending
     );
     drained
+}
+
+#[cfg(test)]
+mod tests {
+    /// The turn waits for another process holding the evaluation home's --
+    /// simulated by a second lock on the same file, which conflicts just as
+    /// another process's would -- and is taken once that one lets go.
+    #[test]
+    fn the_turn_waits_for_another_process_s() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let lock = dir.path().join("eval");
+        let other = super::vectors::lock(&lock);
+        let (taken, waiting) = std::sync::mpsc::channel();
+        let ours = std::thread::spawn({
+            let lock = lock.clone();
+            move || {
+                let turn = super::load_models_at(&lock);
+                taken.send(()).expect("say it took the turn");
+                drop(turn);
+            }
+        });
+        assert!(
+            waiting
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "the turn was taken while another process held it"
+        );
+        drop(other);
+        waiting
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the turn once the other process let go");
+        ours.join().expect("the thread that took the turn");
+    }
 }
