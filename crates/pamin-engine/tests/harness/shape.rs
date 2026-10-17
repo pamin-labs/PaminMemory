@@ -422,9 +422,10 @@ fn environment() -> impl Iterator<Item = (String, String)> {
 /// a text to its vector and from the vectors to an index: those that change
 /// how a model executes ([`pamin_index::EXECUTION_SETTINGS`], which its plan
 /// keys are named by too, each as the knob that sets it -- see [`knob`]) and
-/// those that change what a drain builds. A vector cache's producer and an
-/// index's stamp are named by these and by [`NATIVE_SETTINGS`], and by
-/// nothing else a run sets.
+/// those that change what a drain builds ([`INDEX_SETTINGS`]). A vector
+/// cache's producer is named by the first ([`embedding_settings`]), an
+/// index's stamp by both ([`index_settings`]), each with
+/// [`NATIVE_SETTINGS`], and by nothing else a run sets.
 ///
 /// An allowlist, so a knob added elsewhere -- the reranker's, the search's
 /// -- cannot discard a cache or unvouch an index whose vectors it never
@@ -445,8 +446,9 @@ fn knob(setting: &str) -> String {
     format!("PAMIN_EVAL_{}", setting.to_ascii_uppercase())
 }
 
-/// The knobs that change what an index build makes of the vectors: when a
-/// drain builds the vector graph.
+/// The knobs that change what an index build makes of the vectors -- when
+/// a drain builds the vector graph -- but not the vectors: they name an
+/// index's stamp, not a vector cache's producer.
 const INDEX_SETTINGS: [&str; 1] = ["PAMIN_EVAL_UNINDEXED_BUDGET"];
 
 /// The `PAMIN_EVAL_*` knobs off that path, with why: they name a run's record
@@ -521,27 +523,39 @@ const NATIVE_SETTINGS: [&str; 3] = [
     "TOKENIZERS_PARALLELISM",
 ];
 
-/// The [`settings`] set now that can change what a text embeds to or what
-/// an index of the vectors holds: only those [`producer_setting`] allows.
-/// A cache of model output, and an index's stamp, are named by these;
-/// every other setting -- the harnesses' knobs, the significance gate, the
-/// reranker's and the search's -- names the record only.
-pub fn runtime_settings() -> Vec<String> {
-    runtime(settings(environment()))
+/// The [`settings`] set now that can change what a text embeds to: only
+/// those [`producer_setting`] allows for vectors. A cache of model output
+/// is named by these; every other setting -- an index build's, the
+/// harnesses' knobs, the significance gate, the reranker's and the
+/// search's -- names the record, or an index's stamp, only.
+pub fn embedding_settings() -> Vec<String> {
+    runtime(settings(environment()), false)
 }
 
-fn runtime(settings: Vec<String>) -> Vec<String> {
+/// [`embedding_settings`], and those that change what an index of the
+/// vectors holds ([`INDEX_SETTINGS`]): what an index's stamp is named by.
+pub fn index_settings() -> Vec<String> {
+    runtime(settings(environment()), true)
+}
+
+/// The `settings` that name a vector producer, or with `index` an index's.
+fn runtime(settings: Vec<String>, index: bool) -> Vec<String> {
     settings
         .into_iter()
         .filter(|line| {
-            producer_setting(line.split_once('=').map_or(line.as_str(), |(name, _)| name))
+            let name = line.split_once('=').map_or(line.as_str(), |(name, _)| name);
+            producer_setting(name, index)
         })
         .collect()
 }
 
-/// Whether the variable `name` can change what an embedding producer makes.
-fn producer_setting(name: &str) -> bool {
-    producer_pamin(name)
+/// Whether the variable `name` can change what an embedding producer makes,
+/// or with `index`, what an index build makes of it.
+fn producer_setting(name: &str, index: bool) -> bool {
+    pamin_index::EXECUTION_SETTINGS
+        .iter()
+        .any(|setting| knob(setting) == name)
+        || (index && INDEX_SETTINGS.contains(&name))
         || NATIVE_SETTINGS.contains(&name)
         || pamin_index::CUDA_SELECTION.contains(&name)
         || ALWAYS_PREFIXES
@@ -3565,8 +3579,23 @@ mod tests {
         ] {
             let set = settings([(knob.to_string(), "7".to_string())]);
             assert_eq!(set, [format!("{knob}=7")], "{knob} names the record");
-            assert!(runtime(set).is_empty(), "{knob} names the producer");
+            assert!(runtime(set, true).is_empty(), "{knob} names the producer");
         }
+    }
+
+    /// The unindexed budget changes what an index build makes of the
+    /// vectors, not the vectors: it names an index's stamp, not a vector
+    /// cache's producer.
+    #[test]
+    fn an_index_setting_names_the_index_not_the_vectors() {
+        let budget = settings([(
+            "PAMIN_EVAL_UNINDEXED_BUDGET".to_string(),
+            "64".to_string(),
+        )]);
+        assert!(runtime(budget.clone(), false).is_empty());
+        assert_eq!(runtime(budget, true), ["PAMIN_EVAL_UNINDEXED_BUDGET=64"]);
+        let device = settings([("PAMIN_EVAL_DEVICE".to_string(), "cpu".to_string())]);
+        assert_eq!(runtime(device.clone(), false), runtime(device, true));
     }
 
     /// Every `PAMIN_` setting a run can be under is placed. The libraries
@@ -3631,6 +3660,20 @@ mod tests {
         assert!(gone.is_empty(), "placed but no knob: {gone:?}");
     }
 
+    /// `source` up to its test module: `mod tests`, or a `pub(crate) mod
+    /// tests` whose helpers other modules' tests share. What follows it is
+    /// compiled for tests only.
+    fn product_source(source: &str) -> &str {
+        [
+            "#[cfg(test)]\nmod tests",
+            "#[cfg(test)]\npub(crate) mod tests",
+        ]
+        .iter()
+        .filter_map(|module| source.find(module))
+        .min()
+        .map_or(source, |at| &source[..at])
+    }
+
     /// The quoted `PAMIN_` literals in every `.rs` file under `dir`, outside
     /// comment lines and the file's test module.
     fn pamin_literals(dir: &Path, into: &mut BTreeSet<String>) {
@@ -3644,9 +3687,7 @@ mod tests {
                 continue;
             }
             let source = std::fs::read_to_string(&path).expect("read a source file");
-            let product = source
-                .find("#[cfg(test)]\nmod tests")
-                .map_or(source.as_str(), |at| &source[..at]);
+            let product = product_source(&source);
             for line in product.lines() {
                 if line.trim_start().starts_with("//") {
                     continue;
@@ -3837,9 +3878,7 @@ mod tests {
             {
                 continue;
             }
-            let product = source
-                .find("#[cfg(test)]\nmod tests")
-                .map_or(source.as_str(), |at| &source[..at]);
+            let product = product_source(&source);
             for (at, _) in product.match_indices('"') {
                 let rest = &product[at + 1..];
                 let Some(end) = rest.find('"') else { continue };
@@ -3933,24 +3972,27 @@ mod tests {
         // on that path reads.
         let set = |name: &str, value: &str| (name.to_string(), value.to_string());
         assert_eq!(
-            runtime(settings([
-                set("OMP_NUM_THREADS", "1"),
-                set("MKL_NUM_THREADS", "2"),
-                set("OPENBLAS_NUM_THREADS", "3"),
-                set("ORT_LOGGING", "x"),
-                set("PAMIN_EVAL_DEVICE", "cpu"),
-                set("PAMIN_EVAL_HOME", "/data"),
-                set("XQUAD_ALL_QUERIES", "1"),
-                set("MUSIQUE_SAMPLE", "60"),
-                set("SIGNIFICANCE_GATE", "off"),
-                set("PAMIN_EVAL_RERANK_DEPTH", "20"),
-                set("PAMIN_EVAL_RERANK_BATCH", "8"),
-                set("PAMIN_EVAL_RERANK_BATCH_TOKENS", "4096"),
-                set("PAMIN_EVAL_RERANK_MAX_TOKENS", "256"),
-                set("PAMIN_EVAL_SEARCH_EFFORT", "100"),
-                set("PAMIN_SOMETHING_NEW", "1"),
-                set("TOKIO_WORKER_THREADS", "2"),
-            ])),
+            runtime(
+                settings([
+                    set("OMP_NUM_THREADS", "1"),
+                    set("MKL_NUM_THREADS", "2"),
+                    set("OPENBLAS_NUM_THREADS", "3"),
+                    set("ORT_LOGGING", "x"),
+                    set("PAMIN_EVAL_DEVICE", "cpu"),
+                    set("PAMIN_EVAL_HOME", "/data"),
+                    set("XQUAD_ALL_QUERIES", "1"),
+                    set("MUSIQUE_SAMPLE", "60"),
+                    set("SIGNIFICANCE_GATE", "off"),
+                    set("PAMIN_EVAL_RERANK_DEPTH", "20"),
+                    set("PAMIN_EVAL_RERANK_BATCH", "8"),
+                    set("PAMIN_EVAL_RERANK_BATCH_TOKENS", "4096"),
+                    set("PAMIN_EVAL_RERANK_MAX_TOKENS", "256"),
+                    set("PAMIN_EVAL_SEARCH_EFFORT", "100"),
+                    set("PAMIN_SOMETHING_NEW", "1"),
+                    set("TOKIO_WORKER_THREADS", "2"),
+                ]),
+                false
+            ),
             [
                 "MKL_NUM_THREADS=2",
                 "OMP_NUM_THREADS=1",
