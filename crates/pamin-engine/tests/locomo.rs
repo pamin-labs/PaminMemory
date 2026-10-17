@@ -620,7 +620,7 @@ async fn locomo_evidence_with_and_without_links() {
     // every rule for using the reranker's scores. See `reranking`.
     let mut rules = std::env::var("RERANK_RULES")
         .is_ok()
-        .then(|| reranking::Priced::new(&workspace.root().join("models")));
+        .then(reranking::Priced::default);
     let mut questions = 0usize;
     let mut linked_edges = 0usize;
     const TABLES: [&str; 2] = ["without the graph", "with the graph"];
@@ -675,6 +675,7 @@ async fn locomo_evidence_with_and_without_links() {
                 channels::enough_room(&hits, WIDE);
                 let replayed = reranking::replay(&hits, tier);
                 rules.observe(
+                    &engine,
                     &question.category,
                     &question.text,
                     &hits,
@@ -691,7 +692,6 @@ async fn locomo_evidence_with_and_without_links() {
                         );
                     },
                 );
-                rules.planned_like(&engine);
                 continue;
             }
             let fusions = [Fusion::default().without(Channel::Graph), Fusion::default()];
