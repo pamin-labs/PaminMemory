@@ -120,12 +120,11 @@ pub const KNOBS: &[(&str, &str)] = &[
 /// Product variables a harness may find set and has no use for: they say
 /// where a workspace is or what to log, which `pamin` reads and a harness
 /// does not.
-const PRODUCT: &[&str] = &[
-    "PAMIN_HOME",
-    "PAMIN_PROJECT",
-    "PAMIN_LOG",
-    "PAMIN_VECTOR_INDEX",
-];
+///
+/// Not `PAMIN_VECTOR_INDEX`. It changes what `pamin` measures, a harness opens
+/// the vector index it names in code, and a run with it set would be recorded
+/// under that index while measuring the other one.
+const PRODUCT: &[&str] = &["PAMIN_HOME", "PAMIN_PROJECT", "PAMIN_LOG"];
 
 /// Variables a build script sets with `cargo:rustc-env` -- `pamin-index`'s
 /// two and `pamin-engine`'s four -- which Cargo also sets on every test of
