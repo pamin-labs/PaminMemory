@@ -210,6 +210,36 @@ impl Encoder {
         self.forward(&encodings)
     }
 
+    /// How many passes [`run_each`](Self::run_each) runs at once for
+    /// `batches` batches, with the sessions it runs them on loaded: 1 when it
+    /// runs them one after another on [`session`](Self::session).
+    ///
+    /// `run_each` calls this itself; a caller that times its passes calls it
+    /// first, so that loading the sessions is not counted as running them.
+    pub(crate) fn ready(&mut self, batches: usize) -> Result<usize> {
+        let Some((model, sessions)) = &mut self.side_by_side else {
+            return Ok(1);
+        };
+        let wanted = crate::inference::budget()?.min(batches);
+        // One pass at a time gains nothing on a session of its own.
+        if wanted < 2 {
+            return Ok(1);
+        }
+        while sessions.len() < wanted {
+            // A side session only saves time, and `session` still runs
+            // every batch: one that will not load leaves the passes to
+            // those that did.
+            match crate::inference::cpu_session(model, 1) {
+                Ok(session) => sessions.push(session),
+                Err(error) => {
+                    tracing::warn!(%error, loaded = sessions.len(), "could not load a side-by-side session");
+                    return Ok(sessions.len().max(1));
+                }
+            }
+        }
+        Ok(wanted)
+    }
+
     /// Each of `batches`, from [`encode`](Self::encode), in a forward pass of
     /// its own as [`run_encoded`](Self::run_encoded) runs it, its outputs
     /// taken by `read`, in `batches`' order.
@@ -236,29 +266,8 @@ impl Encoder {
         batches: Vec<Vec<Encoding>>,
         read: impl Fn(SessionOutputs<'_>) -> Result<T> + Sync,
     ) -> Result<Vec<T>> {
-        let mut wanted = match &self.side_by_side {
-            Some(_) => crate::inference::budget()?.min(batches.len()),
-            None => 1,
-        };
-        if let Some((model, sessions)) = &mut self.side_by_side
-            && wanted > 1
-        {
-            while sessions.len() < wanted {
-                // A side session only saves time, and `session` still runs
-                // every batch: one that will not load leaves the passes to
-                // those that did.
-                match crate::inference::cpu_session(model, 1) {
-                    Ok(session) => sessions.push(session),
-                    Err(error) => {
-                        tracing::warn!(%error, loaded = sessions.len(), "could not load a side-by-side session");
-                        wanted = sessions.len();
-                        break;
-                    }
-                }
-            }
-        }
+        let wanted = self.ready(batches.len())?;
         let sessions = match &mut self.side_by_side {
-            // One pass at a time gains nothing on a session of its own.
             Some((_, sessions)) if wanted > 1 => sessions,
             _ => {
                 return batches
