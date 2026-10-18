@@ -379,33 +379,6 @@ pub fn installation_missing(prefix: &std::path::Path) -> Option<String> {
         .find(|relative| !prefix.join(relative).is_file())
 }
 
-/// Where a supplied installation's cluster should put its socket, if one is
-/// supplied. See the note beside `unix_socket_directories`.
-///
-/// Refused for a workspace whose path is not UTF-8: the setting is text, and
-/// any spelling of it but the bytes themselves names a directory the server
-/// cannot create its socket in.
-fn supplied_socket_directory(
-    workspace: &Workspace,
-    store: &StoreSettings,
-) -> Result<Option<String>> {
-    if store.postgres_dir.is_none() {
-        return Ok(None);
-    }
-    let data = workspace.postgres_data_dir();
-    let Some(directory) = data.parent() else {
-        return Ok(None);
-    };
-    let directory = directory.to_str().ok_or_else(|| {
-        crate::StoreError::Installation(format!(
-            "a supplied PostgreSQL installation puts its socket in the workspace, \
-             and {} is not a UTF-8 path PostgreSQL can be given",
-            directory.display()
-        ))
-    })?;
-    Ok(Some(directory.to_owned()))
-}
-
 /// What a bundled installation carries that nothing here will ever read.
 ///
 /// `share/man` and `share/doc` are documentation for the client programs.
@@ -534,16 +507,15 @@ async fn start_server(workspace: &Workspace, store: &StoreSettings) -> Result<Lo
             // running this. The server then starts, binds its port, and dies
             // on `could not create lock file ... Permission denied`, which
             // `pg_ctl` reports as the unhelpful "could not start server".
-            // Connections here are over TCP, so this only decides where the
-            // socket file lands, and the workspace is where everything else
-            // this cluster owns already lives.
+            // Every connection here is over TCP, and `pg_ctl` waits on the
+            // data directory's `postmaster.pid`, so no socket is wanted: an
+            // empty list makes none, where any directory would be one more
+            // path to own, and one PostgreSQL limits to 107 characters.
             //
             // Only for a supplied installation: the bundled archive's
-            // compiled-in default is one this project has always relied on,
-            // and overriding it everywhere would put a socket path of the
-            // workspace's depth under PostgreSQL's 107-character limit.
-            if let Some(directory) = supplied_socket_directory(workspace, store)? {
-                configuration.insert("unix_socket_directories".to_string(), directory);
+            // compiled-in default is one this project has always relied on.
+            if store.postgres_dir.is_some() {
+                configuration.insert("unix_socket_directories".to_string(), String::new());
             }
             configuration
         },
@@ -1054,30 +1026,5 @@ mod tests {
     fn a_data_directory_without_a_lock_file_has_nothing_to_remove() {
         let dir = tempfile::tempdir().expect("temp data dir");
         assert_eq!(stale_pid_file(dir.path()), None);
-    }
-
-    /// A supplied installation's socket goes in the workspace as written, and
-    /// a workspace no text can name is refused rather than given a socket
-    /// directory that is some other path.
-    #[cfg(unix)]
-    #[test]
-    fn a_supplied_socket_directory_is_the_workspace_or_refused() {
-        use std::os::unix::ffi::OsStrExt;
-        let supplied = StoreSettings {
-            postgres_dir: Some("/usr/lib/postgresql/17".into()),
-            ..StoreSettings::default()
-        };
-        let workspace = crate::Workspace::at(r"/tmp/a\b");
-        let directory = super::supplied_socket_directory(&workspace, &supplied).unwrap();
-        assert_eq!(
-            directory.as_deref().map(std::path::Path::new),
-            workspace.postgres_data_dir().parent()
-        );
-        assert_eq!(
-            super::supplied_socket_directory(&workspace, &StoreSettings::default()).unwrap(),
-            None
-        );
-        let bytes = crate::Workspace::at(std::ffi::OsStr::from_bytes(b"/tmp/a-\x80"));
-        assert!(super::supplied_socket_directory(&bytes, &supplied).is_err());
     }
 }
