@@ -664,23 +664,32 @@ fn arena_limit_given(malloc_arena_max: Option<&[u8]>, tunables: Option<&[u8]>) -
         })
 }
 
-/// Whether glibc takes `value` as an arena limit: a whole decimal or
-/// `0x`-prefixed hexadecimal number of at least one, the way its tunables
-/// parser reads one and the tunable's minimum.
+/// Whether glibc takes `value` as an arena limit. Its tunables parser
+/// (`_dl_strtoul`) skips leading blanks and a `+`, reads `0x` as hexadecimal
+/// and a leading `0` as octal, and takes the value only if every byte is
+/// used; the tunable's minimum is one. Checked against glibc 2.39: `+1`,
+/// ` 1`, `0x2` and `010` (eight) limit the arenas, while ``, `0`, `0x`,
+/// `08` and `2x` are ignored. A negative value is taken as none, since it
+/// sets no lower limit than glibc's own.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn arena_limit(value: &[u8]) -> bool {
-    let (digits, radix) = match value
+    let value = value.trim_ascii_start();
+    let value = value.strip_prefix(b"+").unwrap_or(value);
+    let (digits, radix) = if let Some(hex) = value
         .strip_prefix(b"0x")
         .or_else(|| value.strip_prefix(b"0X"))
     {
-        Some(hex) => (hex, 16),
-        None => (value, 10),
+        (hex, 16)
+    } else if value.len() > 1 && value[0] == b'0' {
+        (&value[1..], 8)
+    } else {
+        (value, 10)
     };
-    std::str::from_utf8(digits)
-        .ok()
-        .filter(|digits| !digits.starts_with('+'))
-        .and_then(|digits| u64::from_str_radix(digits, radix).ok())
-        .is_some_and(|limit| limit >= 1)
+    !digits.is_empty()
+        && digits
+            .iter()
+            .all(|digit| char::from(*digit).is_digit(radix))
+        && digits.iter().any(|digit| *digit != b'0')
 }
 
 /// Whether the connection asked the server to stop.
@@ -885,7 +894,12 @@ mod tests {
         assert!(!given(None, Some(b"glibc.malloc.trim_threshold=0")));
         assert!(!given(None, Some(b"glibc.malloc.arena_test=2")));
         // Values glibc ignores leave the cap to apply.
-        for ignored in ["", "0", "two", "2x", "+2", "-1", "0x"] {
+        for applied in ["+1", " 1", "0x2", "0X2", "010", "8"] {
+            assert!(given(Some(applied), None), "{applied:?}");
+            let tunables = format!("glibc.malloc.arena_max={applied}");
+            assert!(given(None, Some(tunables.as_bytes())), "{applied:?}");
+        }
+        for ignored in ["", "0", "00", "two", "2x", "-1", "0x", "08", "1.0"] {
             assert!(!given(Some(ignored), None), "{ignored:?}");
             let tunables = format!("glibc.malloc.arena_max={ignored}");
             assert!(!given(None, Some(tunables.as_bytes())), "{ignored:?}");
