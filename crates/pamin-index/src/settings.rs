@@ -181,6 +181,17 @@ pub fn spelled_paths(paths: &[PathBuf]) -> String {
     serde_json::to_string(&paths).expect("a list of strings serializes")
 }
 
+/// `path` for a person or a program to read back: as written when it is
+/// UTF-8, so the path it names is the path given, and [`spelled_path`] only
+/// when it is not, where nothing as written could name it. Not an identity:
+/// a UTF-8 path spelling a byte's escape reads like the path with that byte.
+pub fn shown_path(path: &Path) -> String {
+    match path.to_str() {
+        Some(text) => text.to_string(),
+        None => spelled_path(path),
+    }
+}
+
 /// `path` as text that identifies it: as written when it is UTF-8, and
 /// losslessly when it is not. For a key, an identity or a comparison, where
 /// `display` or `to_string_lossy` would spell every byte it cannot decode as
@@ -252,6 +263,17 @@ mod tests {
         // no UTF-8 path spells what a byte that is not UTF-8 does.
         assert_eq!(spelled_path(Path::new("/opt/ép.so")), "/opt/ép.so");
         assert_ne!(spelled_path(&path(br"/opt/ep-\x80.so")), spelled_path(&x80));
+    }
+
+    /// A UTF-8 path is shown as written, a backslash included, and one that
+    /// is not is shown as it is spelled.
+    #[cfg(unix)]
+    #[test]
+    fn a_path_is_shown_as_written_when_it_can_be() {
+        use std::os::unix::ffi::OsStrExt;
+        assert_eq!(shown_path(Path::new(r"/tmp/a\b")), r"/tmp/a\b");
+        let x80 = PathBuf::from(std::ffi::OsStr::from_bytes(b"/opt/ep-\x80.so"));
+        assert_eq!(shown_path(&x80), "/opt/ep-\\x80.so");
     }
 
     /// A separator inside a path does not make it two paths.
