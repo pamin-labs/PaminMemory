@@ -85,7 +85,7 @@ async fn the_ledger_holds_its_promises() {
     the_projects_owing_work_are_the_ones_a_claim_would_take_from(&database).await;
     what_a_topic_says_now_is_one_lookup(&database).await;
     a_completion_names_the_claim_it_belongs_to(&database).await;
-    a_claimed_job_counts_until_it_settles(&database).await;
+    a_job_is_in_flight_until_it_settles(&database).await;
     one_projects_worker_never_takes_anothers_work(&database).await;
     a_derived_edge_the_content_stopped_making_is_closed(&database).await;
     several_topics_restate_their_mentions_at_once(&database).await;
@@ -3309,17 +3309,18 @@ async fn a_completion_names_the_claim_it_belongs_to(database: &Database) {
     );
 }
 
-/// A job is held while a claim's lease runs, and not after the claim is
-/// recorded, fails, or lapses.
-///
-/// What a drain owing everything waits on, so each way a claim ends has to end
-/// the wait: a held count that kept a failed job would hold the drain for the
-/// hour the job waits to retry.
-async fn a_claimed_job_counts_until_it_settles(database: &Database) {
-    let project = repository::ensure_project(database.pool(), "claimed")
+/// What a drain that owes everything waits for: a job another round holds or
+/// is about to take, and nothing that will not run without somebody asking.
+async fn a_job_is_in_flight_until_it_settles(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "in-flight")
         .await
         .expect("ensure project");
-    let any_claimed = || jobs::any_claimed(database.pool(), project.id);
+    let any_in_flight = || jobs::any_in_flight(database.pool(), project.id);
+    assert!(
+        !any_in_flight().await.expect("probe"),
+        "an empty queue is in flight"
+    );
+
     let topics: Vec<uuid::Uuid> = (1..=3).map(uuid::Uuid::from_u128).collect();
     for topic in &topics {
         jobs::enqueue(
@@ -3331,14 +3332,22 @@ async fn a_claimed_job_counts_until_it_settles(database: &Database) {
         .await
         .expect("enqueue");
     }
-    assert!(!any_claimed().await.expect("probe"), "owed is not claimed");
+    // Due and unclaimed: what another round's uncommitted claim looks like
+    // from outside it.
+    assert!(
+        any_in_flight().await.expect("probe"),
+        "a due job is not in flight"
+    );
 
     const WORKER: &str = "the-claiming-worker";
     let claimed = jobs::claim(database.pool(), project.id, WORKER, 3, &JobKind::ALL)
         .await
         .expect("claim");
     assert_eq!(claimed.len(), 3);
-    assert!(any_claimed().await.expect("probe"), "a claimed job counts");
+    assert!(
+        any_in_flight().await.expect("probe"),
+        "a claimed job is not in flight"
+    );
 
     jobs::complete(database.pool(), &[&claimed[0]], WORKER)
         .await
@@ -3346,43 +3355,60 @@ async fn a_claimed_job_counts_until_it_settles(database: &Database) {
     jobs::fail(database.pool(), &claimed[1], WORKER, "the premise")
         .await
         .expect("fail");
-    // The last claim lapsed on its last attempt: nothing takes it again. With
-    // it, nothing left counts, so the completed and the failed job do not.
-    let set = |attempts: i32, available_at: time::OffsetDateTime| {
-        sqlx::query("UPDATE index_jobs SET attempts = $1, available_at = $2 WHERE id = $3")
-            .bind(attempts)
-            .bind(available_at)
-            .bind(claimed[2].id.0)
-            .execute(database.pool())
+    let set = |claimed_at: Option<time::OffsetDateTime>,
+               attempts: i32,
+               available_at: time::OffsetDateTime| {
+        sqlx::query(
+            "UPDATE index_jobs SET claimed_at = $1, attempts = $2, available_at = $3 WHERE id = $4",
+        )
+        .bind(claimed_at)
+        .bind(attempts)
+        .bind(available_at)
+        .bind(claimed[2].id.0)
+        .execute(database.pool())
     };
-    let lapsed = time::OffsetDateTime::now_utc() - std::time::Duration::from_secs(1);
-    set(pamin_core::MAX_ATTEMPTS, lapsed)
+    let now = time::OffsetDateTime::now_utc();
+    let lapsed = now - std::time::Duration::from_secs(1);
+    let running = now + std::time::Duration::from_secs(60);
+
+    // A claim lapsed on its last attempt: nothing takes it again. With it,
+    // nothing left is in flight -- so neither the completed job nor the
+    // failed one, which waits out its retry.
+    set(Some(now), pamin_core::MAX_ATTEMPTS, lapsed)
         .await
         .expect("lapse the last attempt");
     assert!(
-        !any_claimed().await.expect("probe"),
-        "a completed job, a failed one or a lapsed last attempt counts"
+        !any_in_flight().await.expect("probe"),
+        "a completed job, a deferred retry or a lapsed last attempt is in flight"
     );
 
-    // Lapsed with attempts left, a claim takes it again, so it counts: the
-    // claim that missed it and this probe are two reads, and the lease can
-    // lapse between them.
-    set(1, lapsed).await.expect("lapse an earlier attempt");
+    // Unclaimed with its attempts used: it waits for a replay, not a claim.
+    set(None, pamin_core::MAX_ATTEMPTS, lapsed)
+        .await
+        .expect("exhaust the job");
     assert!(
-        any_claimed().await.expect("probe"),
-        "a lapsed claim a claim will take again does not count"
+        !any_in_flight().await.expect("probe"),
+        "an exhausted job is in flight"
+    );
+
+    // Lapsed with attempts left, the next claim takes it again: the claim
+    // that missed it and this probe are two reads, and the lease can lapse
+    // between them.
+    set(Some(now), 1, lapsed)
+        .await
+        .expect("lapse an earlier attempt");
+    assert!(
+        any_in_flight().await.expect("probe"),
+        "a lapsed claim a claim will take again is not in flight"
     );
 
     // And on its last attempt with the lease still running, it is held.
-    set(
-        pamin_core::MAX_ATTEMPTS,
-        time::OffsetDateTime::now_utc() + std::time::Duration::from_secs(60),
-    )
-    .await
-    .expect("hold the last attempt");
+    set(Some(now), pamin_core::MAX_ATTEMPTS, running)
+        .await
+        .expect("hold the last attempt");
     assert!(
-        any_claimed().await.expect("probe"),
-        "a held last attempt does not count"
+        any_in_flight().await.expect("probe"),
+        "a held last attempt is not in flight"
     );
 }
 

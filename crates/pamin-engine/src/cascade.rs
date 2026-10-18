@@ -199,7 +199,7 @@ impl Engine {
                 // the claim above looked. Without this a drain reported work
                 // owed that was done and only waiting to be recorded.
                 if owed == Owed::Everything
-                    && jobs::any_claimed(self.database.pool(), self.project).await?
+                    && jobs::any_in_flight(self.database.pool(), self.project).await?
                 {
                     tokio::time::sleep(CLAIMED_POLL).await;
                     continue;

@@ -418,29 +418,37 @@ pub async fn pending(executor: impl PgExecutor<'_>, project: ProjectId) -> Resul
     Ok(waiting)
 }
 
-/// Whether any job a round has claimed will still run.
+/// Whether any job is in flight: claimed by a round and still to run, or due
+/// and about to be.
 ///
 /// What a drain that owes everything waits for once it can claim nothing:
-/// work another round has taken and not yet settled. That is a job held under
-/// a running lease, and also one whose lease has lapsed and that a claim will
-/// take again: a claim and this probe are two reads, and a lease that lapses
-/// between them would otherwise leave a due job seen by neither. The wait is
-/// bounded by [`LEASE`].
+/// work another round has taken and not yet settled. Three kinds of row say
+/// so, because a claim and this probe are two reads and each can fall
+/// between another round's steps:
 ///
-/// Not counted: a failed job -- failing clears the claim, so one waiting out
-/// [`RETRY_AFTER`] is not waited for -- and a lapsed claim on its last
-/// attempt, which no claim takes again.
+/// - a job held under a running lease;
+/// - a lapsed claim with attempts left, which the next claim takes again --
+///   its lease can lapse after the claim skipped it and before this looks;
+/// - a due job with attempts left that nobody holds yet. A claim skips a row
+///   another claim has locked and not committed, while this read still sees
+///   it unclaimed; seeing it here means it is being taken.
+///
+/// Not counted: a failed job waiting out [`RETRY_AFTER`] -- failing clears
+/// the claim and defers it -- and a lapsed claim on its last attempt, which
+/// no claim takes again. The wait is bounded by [`LEASE`].
 ///
 /// A probe rather than a count: the drain asks this every tenth of a second,
-/// and it stops at the first claim instead of reading a backlog of failed
+/// and it stops at the first such row instead of reading a backlog of failed
 /// jobs to the end.
-pub async fn any_claimed(executor: impl PgExecutor<'_>, project: ProjectId) -> Result<bool> {
-    let (claimed,): (bool,) = sqlx::query_as(
+pub async fn any_in_flight(executor: impl PgExecutor<'_>, project: ProjectId) -> Result<bool> {
+    let (in_flight,): (bool,) = sqlx::query_as(
         "SELECT EXISTS (
              SELECT 1 FROM index_jobs
               WHERE project_id = $1
-                AND claimed_at IS NOT NULL
-                AND (available_at > $2 OR attempts < $3)
+                AND (
+                    (claimed_at IS NOT NULL AND available_at > $2)
+                    OR (attempts < $3 AND (claimed_at IS NOT NULL OR available_at <= $2))
+                )
          )",
     )
     .bind(project.0)
@@ -449,7 +457,7 @@ pub async fn any_claimed(executor: impl PgExecutor<'_>, project: ProjectId) -> R
     .fetch_one(executor)
     .await?;
 
-    Ok(claimed)
+    Ok(in_flight)
 }
 
 /// How many jobs are waiting, counted no further than `cap`.
