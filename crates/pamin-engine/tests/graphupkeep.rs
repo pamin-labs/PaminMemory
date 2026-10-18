@@ -43,7 +43,7 @@ const MEMORIES: usize = 12;
 
 /// Low enough that twelve memories trip it, high enough that the first few do
 /// not, so the "before" half of the assertion has something to observe.
-const BUDGET: u64 = 5;
+const BUDGET: std::num::NonZeroU64 = std::num::NonZeroU64::new(5).unwrap();
 
 /// The product's settings, with the budget lowered to [`BUDGET`].
 fn settings() -> pamin_engine::Settings {
