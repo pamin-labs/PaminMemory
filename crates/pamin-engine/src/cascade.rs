@@ -391,6 +391,9 @@ impl Engine {
             return;
         }
 
+        // From the read to the last write, so a sync of the same topic that
+        // read the ledger earlier cannot write after this one.
+        let _syncing = self.syncing.lock().await;
         let wanted: Vec<TopicId> = topics.iter().map(|(_, topic)| *topic).collect();
         let states = match pamin_store::repository::current_states_of(
             self.database.pool(),
@@ -552,6 +555,8 @@ impl Engine {
     /// because the projection holds one document per topic: there is no state
     /// to unindex separately from the topic it belonged to.
     async fn sync_topic_index(&self, topic: TopicId) -> Result<()> {
+        // As in `sync_indexes`, from the read to the write.
+        let _syncing = self.syncing.lock().await;
         let states = pamin_store::repository::current_states_of(
             self.database.pool(),
             self.project,
