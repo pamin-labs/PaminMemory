@@ -629,7 +629,9 @@ pub(crate) fn cap_heap_arenas() {
 
     if arena_limit_given(
         std::env::var_os("MALLOC_ARENA_MAX").is_some(),
-        std::env::var("GLIBC_TUNABLES").ok().as_deref(),
+        std::env::var_os("GLIBC_TUNABLES")
+            .as_deref()
+            .map(std::os::unix::ffi::OsStrExt::as_bytes),
     ) {
         return;
     }
@@ -646,14 +648,14 @@ pub(crate) fn cap_heap_arenas() {}
 
 /// Whether the process was started with its own glibc arena limit: through
 /// `MALLOC_ARENA_MAX`, or as `glibc.malloc.arena_max` among the
-/// colon-separated `GLIBC_TUNABLES`.
+/// colon-separated `GLIBC_TUNABLES`, read as bytes as glibc reads them.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-fn arena_limit_given(malloc_arena_max: bool, tunables: Option<&str>) -> bool {
+fn arena_limit_given(malloc_arena_max: bool, tunables: Option<&[u8]>) -> bool {
     malloc_arena_max
         || tunables.is_some_and(|tunables| {
             tunables
-                .split(':')
-                .any(|tunable| tunable.starts_with("glibc.malloc.arena_max="))
+                .split(|byte| *byte == b':')
+                .any(|tunable| tunable.starts_with(b"glibc.malloc.arena_max="))
         })
 }
 
@@ -844,16 +846,23 @@ mod tests {
     #[test]
     fn an_arena_limit_the_process_was_started_with_is_left_alone() {
         assert!(arena_limit_given(true, None));
-        assert!(arena_limit_given(false, Some("glibc.malloc.arena_max=1")));
+        assert!(arena_limit_given(false, Some(b"glibc.malloc.arena_max=1")));
         assert!(arena_limit_given(
             false,
-            Some("glibc.malloc.trim_threshold=0:glibc.malloc.arena_max=8")
+            Some(b"glibc.malloc.trim_threshold=0:glibc.malloc.arena_max=8")
         ));
         assert!(!arena_limit_given(false, None));
         assert!(!arena_limit_given(
             false,
-            Some("glibc.malloc.trim_threshold=0")
+            Some(b"glibc.malloc.trim_threshold=0")
         ));
-        assert!(!arena_limit_given(false, Some("glibc.malloc.arena_test=2")));
+        assert!(!arena_limit_given(
+            false,
+            Some(b"glibc.malloc.arena_test=2")
+        ));
+        assert!(arena_limit_given(
+            false,
+            Some(b"glibc.malloc.arena_max=1:glibc.\xff=0")
+        ));
     }
 }
