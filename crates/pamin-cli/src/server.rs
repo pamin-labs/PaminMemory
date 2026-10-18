@@ -669,8 +669,8 @@ fn arena_limit_given(malloc_arena_max: Option<&[u8]>, tunables: Option<&[u8]>) -
 /// and a leading `0` as octal, and takes the value only if every byte is
 /// used; the tunable's minimum is one. Checked against glibc 2.39: `+1`,
 /// ` 1`, `0x2` and `010` (eight) limit the arenas, while ``, `0`, `0x`,
-/// `08` and `2x` are ignored. A negative value is taken as none, since it
-/// sets no lower limit than glibc's own.
+/// `08`, `2x` and anything past 64 bits are ignored. A negative value is
+/// taken as none, since it sets no lower limit than glibc's own.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 fn arena_limit(value: &[u8]) -> bool {
     let value = value.trim_ascii_start();
@@ -685,11 +685,14 @@ fn arena_limit(value: &[u8]) -> bool {
     } else {
         (value, 10)
     };
-    !digits.is_empty()
-        && digits
-            .iter()
-            .all(|digit| char::from(*digit).is_digit(radix))
-        && digits.iter().any(|digit| *digit != b'0')
+    // The digits are checked first: `from_str_radix` would take a sign.
+    digits
+        .iter()
+        .all(|digit| char::from(*digit).is_digit(radix))
+        && std::str::from_utf8(digits)
+            .ok()
+            .and_then(|digits| u64::from_str_radix(digits, radix).ok())
+            .is_some_and(|limit| limit >= 1)
 }
 
 /// Whether the connection asked the server to stop.
@@ -899,7 +902,19 @@ mod tests {
             let tunables = format!("glibc.malloc.arena_max={applied}");
             assert!(given(None, Some(tunables.as_bytes())), "{applied:?}");
         }
-        for ignored in ["", "0", "00", "two", "2x", "-1", "0x", "08", "1.0"] {
+        for ignored in [
+            "",
+            "0",
+            "00",
+            "two",
+            "2x",
+            "-1",
+            "0x",
+            "08",
+            "1.0",
+            "18446744073709551616",
+            "0x10000000000000000",
+        ] {
             assert!(!given(Some(ignored), None), "{ignored:?}");
             let tunables = format!("glibc.malloc.arena_max={ignored}");
             assert!(!given(None, Some(tunables.as_bytes())), "{ignored:?}");
