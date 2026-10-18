@@ -1411,15 +1411,16 @@ impl ProjectionIndex {
     /// lends through (see [`Previous`]), would seal a writable collection's
     /// open segment each time one was made and block its `optimize` while
     /// open. The text comes from the n-gram field, which holds the content
-    /// verbatim; the segmented one is derived from it.
-    fn fetch(&self, topics: &[TopicId]) -> Result<HashMap<TopicId, Doc>> {
+    /// verbatim; the segmented one is derived from it. `vectors` says whether
+    /// to bring the vectors along, which only a caller that copies them needs.
+    fn fetch(&self, topics: &[TopicId], vectors: bool) -> Result<HashMap<TopicId, Doc>> {
         let keys: Vec<String> = topics.iter().map(|topic| self.keys.key(*topic)).collect();
         let mut stored: HashMap<TopicId, Doc> = HashMap::with_capacity(keys.len());
         for chunk in keys.chunks(WRITE_BATCH) {
             let chunk: Vec<&str> = chunk.iter().map(String::as_str).collect();
             for doc in
                 self.collection
-                    .fetch_with_options(&chunk, Some(self.stored_fields()), true)?
+                    .fetch_with_options(&chunk, Some(self.stored_fields()), vectors)?
             {
                 if let Some(topic) = doc.get_pk().and_then(|key| self.keys.topic(key)) {
                     stored.insert(topic, doc);
@@ -1608,14 +1609,18 @@ impl Previous {
         Ok(lendable)
     }
 
-    /// Hands `take` every document this index can lend, `batch` at a time,
-    /// as the topic, the text wanted for it and its stored vector, with what
-    /// produced those vectors ([`Stored::encoding`]); returns the topics it
-    /// lent.
+    /// Hands `take` every document this index can lend, at most `batch` at a
+    /// time, as the topic, the text wanted for it and its stored vector, with
+    /// what produced those vectors ([`Stored::encoding`]); returns the topics
+    /// it lent.
     ///
     /// Each batch shares one encoding, so the caller can record it as this
     /// index did: a rebuild that dropped it would leave every lent document
-    /// one the next sync of it has to embed again.
+    /// one the next sync of it has to embed again. The bound holds across
+    /// encodings, not per encoding: a long-lived index can carry many, and
+    /// waiting for each to fill a batch would hold most of the collection's
+    /// vectors at once. So whenever `batch` documents are waiting in all,
+    /// every encoding's are handed over.
     ///
     /// A topic is lent when this index holds it with exactly the text in
     /// `wanted`; everything else is the caller's to embed. In the order this
@@ -1632,6 +1637,7 @@ impl Previous {
     ) -> Result<HashSet<TopicId>> {
         let mut lent = HashSet::new();
         let mut pending: BTreeMap<Option<String>, Vec<PendingVectorDocument<'_>>> = BTreeMap::new();
+        let mut waiting = 0;
         let mut hand_over =
             |encoding: &Option<String>, pending: &mut Vec<PendingVectorDocument<'_>>| {
                 let documents: Vec<VectorDocument<'_>> = pending
@@ -1667,10 +1673,18 @@ impl Previous {
             };
             let encoding = self.index.encoding_of(&doc)?;
             lent.insert(topic);
-            let group = pending.entry(encoding.clone()).or_default();
-            group.push((topic, wanted[&topic], vector, secondary));
-            if group.len() == batch {
-                hand_over(&encoding, group)?;
+            pending
+                .entry(encoding)
+                .or_default()
+                .push((topic, wanted[&topic], vector, secondary));
+            waiting += 1;
+            if waiting == batch {
+                for (encoding, group) in &mut pending {
+                    if !group.is_empty() {
+                        hand_over(encoding, group)?;
+                    }
+                }
+                waiting = 0;
             }
             Ok(())
         })?;
@@ -1790,7 +1804,7 @@ impl Projection for ProjectionIndex {
     /// A document without its text or its vector is refused rather than read
     /// as absent: a copy that took it for absent would drop it without a word.
     fn stored(&self, topics: &[TopicId]) -> Result<Vec<Option<Stored>>> {
-        let stored = self.fetch(topics)?;
+        let stored = self.fetch(topics, true)?;
         topics
             .iter()
             .map(|topic| {
@@ -1820,6 +1834,27 @@ impl Projection for ProjectionIndex {
                         "the document for topic {topic} came back without its text or its vector"
                     ))),
                 }
+            })
+            .collect()
+    }
+
+    /// Without the vectors: the answer compares only the text and the
+    /// encoding, and a sync asks it of every batch, most of which hold
+    /// nothing. Read through [`stored`](Projection::stored), it fetched and
+    /// decoded a primary and a secondary vector per document only to drop
+    /// them. A buffered write still counts and a deleted topic still does
+    /// not, because both go through the same keyed fetch.
+    fn holds(&self, wanted: &[(TopicId, &str)], encoding: &str) -> Result<Vec<bool>> {
+        let topics: Vec<TopicId> = wanted.iter().map(|(topic, _)| *topic).collect();
+        let stored = self.fetch(&topics, false)?;
+        wanted
+            .iter()
+            .map(|(topic, text)| {
+                let Some(doc) = stored.get(topic) else {
+                    return Ok(false);
+                };
+                Ok(holds_exactly(doc.get_string(FIELD_NGRAM)?.as_deref(), text)
+                    && self.encoding_of(doc)?.as_deref() == Some(encoding))
             })
             .collect()
     }
