@@ -181,50 +181,65 @@ it can find something the first could not. The rules below are a heuristic for
 spending that cost; no agent-task measurement yet shows how often a repeat
 search finds something new.
 
+**What counts as backed.** A fact is backed when you have content that states
+it, from a version that applies to the time the question asks about. Which
+version applies depends on the timeline the question is on (see *The two
+timelines*):
+
+- *What holds, or held, at a time* (now, unless the question names another):
+  the version's `valid_from` and `valid_to` must cover that time, and an
+  absent bound is open. `search` returns a topic's current state without
+  checking that interval, so a hit can state a fact that has lapsed or not
+  yet begun.
+- *What we knew or decided at a time*: the version that was current then.
+  Step back with `read --version-offset` until `recorded_at` is at or before
+  that time. Open validity bounds on the current version do not answer this.
+
+A search hit carries its topic's full current content, so for a question about
+now there is nothing more to `read`. `topics` and `neighbors` return names and
+edges, not content: `read` each one that looks relevant before you use it or
+rule it out.
+
 - **Before searching again, name what is missing.** List the facts the
-  question needs, then check them against the results you already have. Stop
-  when each one is backed by a hit whose `valid_from` and `valid_to` cover the
-  time the question asks about: now, unless it names another time. An absent
-  bound is open. `search` returns a topic's current state without checking
-  that interval, so a hit can state a fact that has lapsed or not yet begun. A
-  fact missing from those results is missing from one page of five, not from
-  memory, so take it to the rules below rather than concluding it is not
-  there. A hit already carries its topic's full current content; do not `read`
-  it again. `read` is for its earlier versions and the source span a claim
-  came from.
+  question needs and check them against what you already have. A fact missing
+  from the results is missing from one page of five, not from memory, so take
+  it to the rules below rather than concluding it is not there.
 - **Rephrase at most once, and never to the same place.** If the second
   phrasing brings back mostly the same topics (say, four of the five),
   the ranking is not the problem and a third phrasing will land there too.
   Switch to a path that does not rank:
   - `grep` for an exact string you expect the answer to contain. It searches
-    every version ever written, superseded ones included, so `read` the topic
-    named in a hit's `source` and answer from it only if the current version
-    still says so. A hit whose `filter_decision` is `filtered` was held by the
-    sensory filter: if it was the topic's first write there is no topic to
-    `read`, and if not, the current version never took it in. Such a hit is
-    the only record of what was written, so use it, saying it was recorded
-    but never promoted to a memory;
+    every version ever written, superseded ones included, so check each hit
+    against its topic's version for the time asked about. For a CLI write,
+    `source` is `manual:<topic>`; pass `read` the part after the colon. A hit
+    whose `filter_decision` is `filtered` depends on its `filter_reason`. A
+    restatement repeated the topic's state at the time, so the topic is
+    checked like any other hit. For any other reason, no version took the
+    content in, and if it was the topic's first write there is no topic to
+    `read`. The hit is then the only record of what was written, so use it,
+    saying it was recorded but never promoted to a memory. `grep` returns at
+    most twenty matches by default; if it returns that many, narrow the
+    literal or raise `--limit` before treating them as all there is.
   - `neighbors --depth 1` from the best topic you found, with `--kind` to
     narrow it. The default depth is two and nothing caps how many it returns,
-    which on a well-connected topic can be most of the project. It lists
-    topics and edges, not what they say, so `read` each neighbour that looks
-    relevant before ruling it out.
+    which on a well-connected topic can be most of the project. For a question
+    about a past time, add `--at <rfc3339>`; without it only edges that still
+    hold are followed.
 
   `topics` is not one of them: it merges name matches with the same ranked
   search, unreranked. But it returns twenty by default against `search`'s
-  five, so a content hit you have not already seen is new evidence too, as is
-  any name match. It also shows what the workspace calls things.
+  five, so a topic it shows that you have not seen is worth reading, as is any
+  name match. It also shows what the workspace calls things.
 - **After two searches, a `grep` that found nothing usable and a one-hop
   `neighbors` from the best topic, stop and say what you tried.** A `grep`
-  found nothing usable when it missed, or when the current version of every
-  topic it hit no longer says what matched. Read the neighbours that look
-  relevant before stopping, and skip `neighbors` only when no hit is related
-  to the question. Report that those probes found nothing, not that
-  the memory does not exist: `grep` matches one exact literal, case-sensitive
-  unless you pass `-i`, and `search` returns five results by default, so
-  differently worded or lower-ranked memories can still be there. An answer
-  built from the closest near-miss is worse than an honest "I searched for X
-  and Y and found nothing".
+  found nothing usable when it returned fewer matches than its limit and no
+  hit backs the fact. Read the neighbours that look relevant before stopping,
+  and skip `neighbors` only when no hit is related to the question. Report
+  that those probes found nothing, not that the memory does not exist: `grep`
+  matches one exact literal, case-sensitive unless you pass `-i`, and `search`
+  returns five results by default, so differently worded or lower-ranked
+  memories can still be there. An answer built from the closest near-miss is
+  worse than an honest "I searched for X and Y and found nothing".
 
 ## Relationships
 
