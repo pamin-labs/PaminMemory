@@ -211,7 +211,9 @@ pub fn paths(name: &str) -> Vec<PathBuf> {
 
 /// Refuses a relative path, and one that is not UTF-8: a record spells its
 /// settings as text, and two paths that differ only in bytes text cannot hold
-/// would be spelt, and named, alike.
+/// would be spelt, and named, alike. Refuses one that does not exist too: the
+/// product warns past a library it cannot load, so the arm would run without
+/// it under a record named by it.
 fn absolute(name: &str, path: &Path) {
     assert!(
         path.is_absolute(),
@@ -223,6 +225,7 @@ fn absolute(name: &str, path: &Path) {
         "{name}: {} is not UTF-8",
         path.display()
     );
+    assert!(path.exists(), "{name}: {} does not exist", path.display());
 }
 
 fn text(name: &str) -> Option<String> {
