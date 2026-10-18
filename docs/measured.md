@@ -102,8 +102,12 @@ python3 benchmarks/results/retrieval/verify_xquad_models.py /path/to/eval-home/m
 The harness reads its settings from `PAMIN_EVAL_*` variables, never the
 product's `PAMIN_*` names, and refuses a `PAMIN_*` variable it would ignore.
 The search also refuses every `PAMIN_EVAL_*` setting except
-`PAMIN_EVAL_DEVICE=cpu`, so the baseline runs the shipped settings whatever the
-shell exports. That includes `PAMIN_EVAL_INFERENCE_THREADS`: the thread count
+`PAMIN_EVAL_DEVICE=cpu` and `PAMIN_EVAL_POSTGRES_DIR`, so the baseline runs the
+shipped settings whatever the shell exports. The PostgreSQL directory is
+allowed because a host without a downloadable PostgreSQL needs it, and no
+ranking reads it. Another installation can still move the timings, so a run
+that sets it records the path, absolute, among its settings; leave it unset to
+use the installation `pamin` downloads. That includes `PAMIN_EVAL_INFERENCE_THREADS`: the thread count
 decides how many pairs a CPU reranker pass takes (one where passes run side by
 side, up to four at one thread), and so the rankings.
 
