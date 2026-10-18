@@ -17,6 +17,8 @@
 //!
 //! Run with `cargo test -p pamin-store --test jobsettle -- --ignored`.
 
+mod common;
+
 use pamin_core::{JobKind, ProjectId};
 use pamin_store::{Connections, Database, Workspace, jobs};
 
@@ -41,7 +43,7 @@ async fn finished_work_leaves_no_row_and_live_work_stays() {
         (None, Some(dir)) => Workspace::at(dir.path()),
         (None, None) => unreachable!("one of the two is always set"),
     };
-    let database = Database::open(&workspace, Connections::PerCommand)
+    let database = Database::open(&workspace, Connections::PerCommand, &common::store())
         .await
         .expect("open the database");
 

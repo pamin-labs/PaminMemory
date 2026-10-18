@@ -114,10 +114,7 @@ use scoring::{NDCG_AT, RECALL_AT, Scores};
 const DEPTH: usize = RECALL_AT + 1;
 
 /// The channel and graph depths to search at: the shipped defaults.
-const DEPTHS: Depths = Depths {
-    channel: 50,
-    graph: 2,
-};
+const DEPTHS: Depths = Depths::DEFAULT;
 
 /// The one group. MIRACL has no split inside a language and inventing one
 /// would be reporting a number nobody else reports.
@@ -478,7 +475,8 @@ fn the_model_ranks_real_passages() {
     let home = eval_home();
     shape.observe_models();
     let embedder = harness::shape::owned(
-        Embedder::load(&home.join("models")).expect("load the embedding model"),
+        Embedder::load(&home.join("models"), &crate::harness::support::inference())
+            .expect("load the embedding model"),
     );
     // No engine: the record's providers are the harness's own model.
     shape.ran_on(Vec::new);
@@ -667,7 +665,7 @@ async fn search() {
             "MIRACL",
             &questions,
             DEPTH as u32,
-            DEPTHS,
+            harness::depths(),
             &variants,
             |index, into, hits| {
                 let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
@@ -720,7 +718,7 @@ async fn search() {
         .search_fused(
             &corpus.queries[0].text,
             DEPTH as u32,
-            DEPTHS,
+            harness::depths(),
             Fusion::default(),
         )
         .await
@@ -743,12 +741,12 @@ async fn search() {
     // `FEATURES_OUT`: every candidate fusion saw, one row each, for fitting a
     // fusion offline. See `features`.
     if let Some(mut dump) = features::Features::from_env("miracl-sw") {
-        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
         harness::shape::tables(["features"]);
         harness::shape::table("features");
         for query in &corpus.queries {
             let hits = engine
-                .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+                .search_fused(&query.text, WIDE, harness::depths(), Fusion::default())
                 .await
                 .expect("search");
             let relevant = query.relevant();
@@ -843,15 +841,15 @@ async fn search() {
             pamin_index::Passage::Named,
             "the new project embeds names"
         );
-        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
         let mut paired = channels::Paired::default();
         for query in &corpus.queries {
             let before = engine
-                .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+                .search_fused(&query.text, WIDE, harness::depths(), Fusion::default())
                 .await
                 .expect("search");
             let after = other
-                .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+                .search_fused(&query.text, WIDE, harness::depths(), Fusion::default())
                 .await
                 .expect("search");
             paired.observe(GROUP, &before, &after, |into, ranking| {
@@ -875,12 +873,12 @@ async fn search() {
     // learned router -- priced against the shipped pass. See
     // `reranking::Routes`.
     if std::env::var("ROUTES").is_ok() {
-        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
         let tier = Rerank::default();
         let mut routes = reranking::Routes::default();
         for query in &corpus.queries {
             let hits = tier
-                .search(&engine, &query.text, WIDE, DEPTHS)
+                .search(&engine, &query.text, WIDE, harness::depths())
                 .await
                 .expect("search");
             channels::enough_room(&hits, WIDE);
@@ -1033,17 +1031,22 @@ enum Route {
 }
 
 async fn run(engine: &Engine, corpus: &Corpus, route: Route) -> Scores {
+    run_at(engine, corpus, route, harness::depths()).await
+}
+
+/// [`run`] at `depths`.
+async fn run_at(engine: &Engine, corpus: &Corpus, route: Route, depths: Depths) -> Scores {
     let mut scores = Scores::default();
     for query in &corpus.queries {
         let hits = match &route {
             Route::Shipped(rerank) => {
                 rerank
-                    .search(engine, &query.text, DEPTH as u32, DEPTHS)
+                    .search(engine, &query.text, DEPTH as u32, depths)
                     .await
             }
             Route::Fused(fusion) => {
                 engine
-                    .search_fused(&query.text, DEPTH as u32, DEPTHS, fusion.clone())
+                    .search_fused(&query.text, DEPTH as u32, depths, fusion.clone())
                     .await
             }
         }
@@ -1056,12 +1059,12 @@ async fn run(engine: &Engine, corpus: &Corpus, route: Route) -> Scores {
 
 /// Every rule in `reranking::rules` over the shipped tier's own scores.
 async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
-    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+    const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
     let tier = Rerank::default();
     let mut priced = reranking::Priced::default();
     for query in &corpus.queries {
         let hits = tier
-            .search(engine, &query.text, WIDE, DEPTHS)
+            .search(engine, &query.text, WIDE, harness::depths())
             .await
             .expect("search");
         channels::enough_room(&hits, WIDE);
@@ -1097,10 +1100,14 @@ async fn context(
 ) {
     use std::collections::BTreeMap;
 
-    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+    const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
     let tier = Rerank::default();
     let model = harness::shape::owned(
-        pamin_index::Reranker::load(&workspace.root().join("models")).expect("load the reranker"),
+        pamin_index::Reranker::load(
+            &workspace.root().join("models"),
+            &crate::harness::support::inference(),
+        )
+        .expect("load the reranker"),
     );
     shape.also_ran("context reranker", &model, pamin_index::Reranker::plans);
     let labels = reranking::context_labels();
@@ -1108,7 +1115,7 @@ async fn context(
     harness::shape::tables(labels.iter().map(|(label, _)| label));
     for query in &corpus.queries {
         let hits = tier
-            .search(engine, &query.text, WIDE, DEPTHS)
+            .search(engine, &query.text, WIDE, harness::depths())
             .await
             .expect("search");
         channels::enough_room(&hits, WIDE);
@@ -1146,7 +1153,7 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
     use std::collections::BTreeMap;
 
     /// Past four times the channel depth, so `take(limit)` cannot bite.
-    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+    const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
 
     /// Every channel, so leaving one out is asked of all four.
     const CHANNELS: &[Channel] = &[
@@ -1185,7 +1192,7 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
 
     for query in &corpus.queries {
         let hits = engine
-            .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
+            .search_fused(&query.text, WIDE, harness::depths(), Fusion::default())
             .await
             .expect("search");
 
@@ -1307,12 +1314,12 @@ async fn attribute_memory(engine: &Engine, corpus: &Corpus) {
         .map(|query| query.text.as_str())
         .collect();
     for tier in [Rerank::Off, Rerank::Accurate] {
-        tier.search(engine, queries[0], DEPTH as u32, DEPTHS)
+        tier.search(engine, queries[0], DEPTH as u32, harness::depths())
             .await
             .expect("search");
         memory::Resident::now().print(&format!("one search, {}", tier.name()));
         for query in &queries {
-            tier.search(engine, query, DEPTH as u32, DEPTHS)
+            tier.search(engine, query, DEPTH as u32, harness::depths())
                 .await
                 .expect("search");
         }
@@ -1417,8 +1424,8 @@ async fn reshape_in_place(engine: &Engine, corpus: &Corpus) {
 /// Asks every question at each search width in `efforts`, fused and through
 /// the shipped reranker, paired against the first width.
 ///
-/// The width is read from `PAMIN_SEARCH_EFFORT` on every query, so setting it
-/// between passes is the whole mechanism.
+/// The width is the search's own ([`Depths::effort`]), so each pass searches
+/// at its width and nothing else in the process sees it.
 async fn compare_efforts(engine: &Engine, corpus: &Corpus, efforts: &str) {
     let efforts: Vec<&str> = efforts.split(',').collect();
     let segmentation = engine.segmentation().expect("the shape");
@@ -1431,11 +1438,9 @@ async fn compare_efforts(engine: &Engine, corpus: &Corpus, efforts: &str) {
         ("fused", Route::Fused(Fusion::default())),
         ("shipped", Route::Shipped(Rerank::default())),
     ];
-    // The environment is set only holding the turn (see
-    // `harness::ModelsTurn`).
-    let _turn = harness::environment_turn();
-    // Dropped before the turn, panicking or not.
-    let effort_knob = harness::KnobSweep::claim("PAMIN_SEARCH_EFFORT");
+    // Each width is a pass's own: one the caller set would name the record
+    // while no pass ran under it.
+    let _effort = harness::KnobSweep::claim("PAMIN_EVAL_SEARCH_EFFORT");
     // Every question is asked once at each width: one table each.
     let pass = |name: &str, effort: &str| format!("{name} width {effort}");
     harness::shape::tables(
@@ -1446,10 +1451,13 @@ async fn compare_efforts(engine: &Engine, corpus: &Corpus, efforts: &str) {
     for (name, route) in &routes {
         let mut baseline: Option<Scores> = None;
         for effort in &efforts {
-            effort_knob.set(effort);
             harness::shape::table(pass(name, effort));
+            let depths = Depths {
+                effort: effort.trim().parse().expect("EFFORTS takes search widths"),
+                ..harness::depths()
+            };
             let started = std::time::Instant::now();
-            let scores = run(engine, corpus, clone_route(route)).await;
+            let scores = run_at(engine, corpus, clone_route(route), depths).await;
             let seconds = started.elapsed().as_secs_f64();
             let paired = baseline
                 .as_ref()
@@ -1482,6 +1490,7 @@ async fn open(workspace: &Workspace, project: &str) -> Engine {
         project,
         VectorIndex::default(),
         Access::ReadWrite,
+        &crate::harness::settings(),
     )
     .await
     .unwrap_or_else(|error| panic!("open {project}: {error}"))

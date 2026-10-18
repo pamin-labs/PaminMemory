@@ -958,21 +958,21 @@ pub(crate) mod tests {
     /// with
     ///
     /// ```sh
-    /// PAMIN_TEST_MODELS=/path/to/models PAMIN_PARITY_CORPORA=/path/a.json:/path/b.json \
+    /// PAMIN_EVAL_MODELS=/path/to/models PAMIN_EVAL_PARITY_CORPORA=/path/a.json:/path/b.json \
     ///   cargo test --release -p pamin-index --lib -- --ignored --nocapture \
     ///   the_compact_vocabulary_encodes_as_tokenizers_own
     /// ```
     ///
-    /// `PAMIN_TEST_MODELS` is a model cache in the hub's layout, written to
+    /// `PAMIN_EVAL_MODELS` is a model cache in the hub's layout, written to
     /// only to fetch what it lacks; without it the files are fetched into a
-    /// temporary one. `PAMIN_PARITY_CORPORA` lists JSON files, every string
+    /// temporary one. `PAMIN_EVAL_PARITY_CORPORA` lists JSON files, every string
     /// in which is a text -- the XQuAD-R, MuSiQue and LOCOMO files the
     /// evaluation harnesses read, for instance.
     #[test]
     #[ignore = "needs the models' tokenizer files and corpora; see the comment"]
     fn the_compact_vocabulary_encodes_as_tokenizers_own() {
         let temporary = tempfile::tempdir().expect("a temporary directory");
-        let cache = std::env::var_os("PAMIN_TEST_MODELS")
+        let cache = std::env::var_os("PAMIN_EVAL_MODELS")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| temporary.path().to_path_buf());
 
@@ -984,9 +984,10 @@ pub(crate) mod tests {
             .cloned()
             .collect();
         let mut seen = std::collections::HashSet::new();
-        for path in
-            std::env::split_paths(&std::env::var_os("PAMIN_PARITY_CORPORA").unwrap_or_default())
-                .filter(|path| !path.as_os_str().is_empty())
+        for path in std::env::split_paths(
+            &std::env::var_os("PAMIN_EVAL_PARITY_CORPORA").unwrap_or_default(),
+        )
+        .filter(|path| !path.as_os_str().is_empty())
         {
             let document: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&path).expect("a corpus"))

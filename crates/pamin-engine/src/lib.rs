@@ -8,9 +8,11 @@
 mod cascade;
 mod engine;
 mod reshape;
+mod settings;
 
 pub use cascade::{Drained, Owed};
 pub use engine::{
-    Depths, Engine, MODEL_IDLE_VAR, Models, RERANK_FUSION, Rebuilt, Recorded, SearchHit, Write,
-    model_idle, place, rerankable, score_blend_order,
+    Depths, Engine, Models, RERANK_FUSION, Rebuilt, Recorded, SearchHit, Write, place, rerankable,
+    score_blend_order,
 };
+pub use settings::Settings;

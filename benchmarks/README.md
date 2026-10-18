@@ -210,7 +210,11 @@ before the recorded search command; this fetches the two archived model
 revisions and makes the product loader use them. Its committed log is the
 source for `python3 benchmarks/results/retrieval/derive_xquad.py`, which reads
 the code commit, named passage encoding, indexed document count and forced CPU
-reranker export printed at run time; the search command sets `PAMIN_DEVICE=cpu`.
+reranker export printed at run time; the search command sets
+`PAMIN_EVAL_DEVICE=cpu` and refuses any other `PAMIN_EVAL_*` setting except
+`PAMIN_EVAL_POSTGRES_DIR`, which a host that supplies PostgreSQL needs and the
+record names. A run
+through the CLI uses `pamin serve --device cpu` instead.
 the input manifest covers all eleven upstream JSON files, including the
 question and answer keys, and the harness rejects stale cached copies. The
 archived index marker is checked as `named` by the extractor. The model

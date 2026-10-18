@@ -7,26 +7,20 @@ use serde::{Deserialize, Serialize};
 
 /// Where PaminMemory keeps its database, indexes, and models.
 ///
-/// Defaults to `~/.pamin`, overridable with `PAMIN_HOME` so a test or a second
-/// checkout can run against its own state.
+/// Defaults to `~/.pamin`. The binary takes another with `--home` (or
+/// `PAMIN_HOME`) so a test or a second checkout can run against its own state;
+/// this crate reads no environment for it.
 #[derive(Clone, Debug)]
 pub struct Workspace {
     root: PathBuf,
 }
 
 impl Workspace {
-    /// Opens the workspace named by `PAMIN_HOME`, or `~/.pamin` otherwise.
+    /// Opens the default workspace, `~/.pamin`.
     pub fn discover() -> std::io::Result<Self> {
-        let root = match std::env::var_os("PAMIN_HOME") {
-            Some(path) => PathBuf::from(path),
-            None => {
-                let home = std::env::home_dir().ok_or_else(|| {
-                    std::io::Error::other("cannot locate a home directory; set PAMIN_HOME")
-                })?;
-                home.join(".pamin")
-            }
-        };
-        Ok(Self::at(root))
+        let home = std::env::home_dir()
+            .ok_or_else(|| std::io::Error::other("cannot locate a home directory; pass --home"))?;
+        Ok(Self::at(home.join(".pamin")))
     }
 
     /// Opens a workspace at an explicit path.
@@ -122,6 +116,20 @@ pub struct LocalServer {
     pub password: String,
     pub database: String,
     pub installation_dir: PathBuf,
+    /// The store settings the cluster was started with, so a caller asking
+    /// for others is refused rather than served by it. `None` in a record
+    /// written before this was kept, which no request matches.
+    #[serde(default)]
+    pub started_with: Option<StartedWith>,
+}
+
+/// What a cluster was started with from [`crate::StoreSettings`]. The path as
+/// the operating system's own string, so a path that is not UTF-8 is
+/// recorded, and compared, byte for byte.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartedWith {
+    pub jit: bool,
+    pub postgres_dir: Option<std::ffi::OsString>,
 }
 
 impl LocalServer {
