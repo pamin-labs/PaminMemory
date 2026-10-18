@@ -3581,13 +3581,15 @@ mod tests {
     }
 
     /// A harness on the shipped path refuses what the CLI resolves before the
-    /// engine and the search's knobs, and allows where things are, what is
-    /// logged, the build Cargo describes, and the producer's settings.
+    /// engine, the search's knobs and the removed profile, and allows where
+    /// things are, what is logged, the build Cargo describes, and the
+    /// producer's settings.
     #[test]
     fn the_shipped_path_refuses_what_it_does_not_honour() {
         let refused = [
             "PAMIN_CHANNEL_DEPTH",
             "PAMIN_GRAPH_DEPTH",
+            "PAMIN_PROFILE",
             "PAMIN_RERANK",
             "PAMIN_RERANK_BATCH",
             "PAMIN_RERANK_BATCH_TOKENS",
@@ -3603,7 +3605,6 @@ mod tests {
             "PAMIN_EVAL_HOME",
             "PAMIN_HOME",
             "PAMIN_LOG",
-            "PAMIN_PROFILE",
             "PAMIN_UNINDEXED_BUDGET",
         ];
         assert_eq!(
