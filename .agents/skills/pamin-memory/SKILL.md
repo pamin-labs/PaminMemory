@@ -173,50 +173,85 @@ it can find something the first could not. The rules below are a heuristic for
 spending that cost; no agent-task measurement yet shows how often a repeat
 search finds something new.
 
+**What counts as backed.** A fact is backed when you have content that states
+it, from a version that applies to the time the question asks about. Which
+version applies depends on the timeline the question is on (see *The two
+timelines*):
+
+- *What holds, or held, at a time* (now, unless the question names another):
+  the version must satisfy `valid_from <= time < valid_to`, the same half-open
+  interval the store uses, and an absent bound is open. `search` returns a
+  topic's current state without checking that interval, so a hit can state a
+  fact that has lapsed or not yet begun.
+- *What we knew or decided at a time*: the version that was current then.
+  Step back with `read --version-offset` until `recorded_at` is at or before
+  that time. Open validity bounds on the current version do not answer this.
+
+Run every command in these rules with `--json`. The plain output of `read`
+leaves out `valid_from` and `valid_to`, and that of `grep` leaves out
+`filter_reason`, and the rules need all three. A walk past the oldest surviving
+version returns that version again, with an `actual_version_offset` smaller than
+the offset asked for. Stop there: if the oldest version does not apply, none
+does, so say so rather than reading further.
+
+A search hit carries its topic's full current content, so for a question about
+now there is nothing more to `read` when its validity covers now. When it does
+not, an earlier version may: step back with `read --version-offset`. `topics`
+and `neighbors` return names and edges, not content: `read` each one that looks
+relevant before you use it or rule it out.
+
 - **Before searching again, name what is missing.** List the facts the
-  question needs, then check them against the results you already have. Stop
-  when each one is backed by a hit whose `valid_from` and `valid_to` cover the
-  time the question asks about: now, unless it names another time. An absent
-  bound is open. `search` returns a topic's current state without checking
-  that interval, so a hit can state a fact that has lapsed or not yet begun. A
-  fact missing from those results is missing from one page of five, not from
-  memory, so take it to the rules below rather than concluding it is not
-  there. A hit already carries its topic's full current content; do not `read`
-  it again. `read` is for its earlier versions and the source span a claim
-  came from.
+  question needs and check them against what you already have. A fact missing
+  from the results is missing from one page of five, not from memory, so take
+  it to the rules below rather than concluding it is not there.
 - **Rephrase at most once, and never to the same place.** If the second
   phrasing brings back mostly the same topics (say, four of the five),
-  the ranking is not the problem and a third phrasing will land there too.
-  Switch to a path that does not rank:
+  the ranking is probably not the problem and a third phrasing is likely to
+  land there too. Switch to a path that does not rank:
   - `grep` for an exact string you expect the answer to contain. It searches
-    every version ever written, superseded ones included, so `read` the topic
-    named in a hit's `source` and answer from it only if the current version
-    still says so. A hit whose `filter_decision` is `filtered` was held by the
-    sensory filter: if it was the topic's first write there is no topic to
-    `read`, and if not, the current version never took it in. Such a hit is
-    the only record of what was written, so use it, saying it was recorded
-    but never promoted to a memory;
+    every version ever written, superseded ones included, so check each hit
+    against its topic's version for the time asked about. For a CLI write,
+    `source` is `manual:<topic>`; pass `read` the part after the colon. A hit
+    whose `filter_decision` is `filtered` depends on its `filter_reason`. A
+    restatement repeated the topic's state at the time, so the topic is
+    checked like any other hit. For any other reason, no version took the
+    content in, and if it was the topic's first write there is no topic to
+    `read`. The hit is then the only record of what was written, so use it,
+    saying it was recorded but never promoted to a memory. `grep` does not
+    report when evidence was recorded, so for a question about what was known
+    by a past time, say such a hit is undated rather than counting it.
   - `neighbors --depth 1` from the best topic you found, with `--kind` to
     narrow it. The default depth is two and nothing caps how many it returns,
-    which on a well-connected topic can be most of the project. It lists
-    topics and edges, not what they say, so `read` each neighbour that looks
-    relevant before ruling it out.
+    which on a well-connected topic can be most of the project. Without
+    `--at` it follows every edge not yet retracted, whatever its validity: the
+    graph as believed today. For a question about what holds or held at a
+    time, now included, pass `--at <rfc3339>` for that time. `--at` filters by
+    when an edge was true, not when it was recorded, so no flag rebuilds the
+    graph as it was believed at a past time; for a question about what was
+    known then, run it without `--at` and say in your report that it followed
+    today's edges.
 
   `topics` is not one of them: it merges name matches with the same ranked
   search, unreranked. But it returns twenty by default against `search`'s
-  five, so a content hit you have not already seen is new evidence too, as is
-  any name match. It also shows what the workspace calls things.
-- **After two searches, a `grep` that found nothing usable and a one-hop
-  `neighbors` from the best topic, stop and say what you tried.** A `grep`
-  found nothing usable when it missed, or when the current version of every
-  topic it hit no longer says what matched. Read the neighbours that look
-  relevant before stopping, and skip `neighbors` only when no hit is related
-  to the question. Report that those probes found nothing, not that
-  the memory does not exist: `grep` matches one exact literal, case-sensitive
-  unless you pass `-i`, and `search` returns five results by default, so
-  differently worded or lower-ranked memories can still be there. An answer
-  built from the closest near-miss is worse than an honest "I searched for X
-  and Y and found nothing".
+  five, so a topic it shows that you have not seen is worth reading, as is any
+  name match. It also shows what the workspace calls things.
+- **Stop and say what you tried once every probe has come back empty.** A
+  probe that returned as many results as its limit (twenty by default for
+  `grep` and `topics`) has not come back empty, whatever it held: narrow it or
+  raise `--limit` first.
+  1. two searches;
+  2. a `grep` with no hit that backs the fact and no held hit you can use as
+     above. Unless the casing is part of an identifier, a miss counts only
+     after a retry with `-i`;
+  3. `topics` for the same subject, reading any result you have not seen;
+  4. a one-hop `neighbors` from the best topic, reading the neighbours that
+     look relevant. Skip it only when no hit is related to the question.
+
+  Report that those probes found nothing, not that the memory does not exist:
+  `grep` matches one exact literal and `search` returns five results by
+  default, so differently worded or lower-ranked memories can still be there.
+  An answer built from the closest near-miss is worse than an honest "I
+  searched for X and Y and found nothing".
 
 ## Relationships
 
