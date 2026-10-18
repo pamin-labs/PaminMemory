@@ -80,6 +80,12 @@
 //! | `LOCOMO_CONVERSATIONS` | read only the first this many conversations |
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
 //!
+//! Any other `PAMIN_` variable fails the run before it starts, unless it
+//! only says where something is or what to log, or chooses how a model
+//! executes or an index is built, which the record names
+//! (`harness::shape::shipped_path_only`): the rest are settings this
+//! harness does not honour as `pamin search` would, or sweeps.
+//!
 //! Projects are named after a digest of the records and links they hold, and
 //! of the execution plan and model revision that embedded them, so a reused
 //! `PAMIN_EVAL_HOME` never scores a corpus built by older code or data, or
@@ -163,18 +169,6 @@ const DEPTHS: Depths = Depths {
     channel: 50,
     graph: 2,
 };
-
-/// Runtime overrides the product reads on every search, outside `Depths`:
-/// the rerank shortlist, its token cap, its batch size and token budget, and
-/// the vector search's width. A run with one set is a sweep, not the search
-/// `pamin search` ships.
-const TUNING: [&str; 5] = [
-    "PAMIN_RERANK_DEPTH",
-    "PAMIN_RERANK_MAX_TOKENS",
-    "PAMIN_RERANK_BATCH",
-    "PAMIN_RERANK_BATCH_TOKENS",
-    "PAMIN_SEARCH_EFFORT",
-];
 
 /// LOCOMO's adversarial category, whose evidence is the trap.
 const ADVERSARIAL: usize = 5;
@@ -672,12 +666,7 @@ async fn locomo_evidence_with_and_without_links() {
         (shipped.channel, shipped.graph),
         "DEPTHS must be what `pamin search` ships"
     );
-    for name in TUNING {
-        assert!(
-            std::env::var_os(name).is_none(),
-            "{name} is set, so this would not be the shipped search path; unset it"
-        );
-    }
+    harness::shape::shipped_path_only();
     let loaded = load();
     let (named, profile) = harness::profile();
     // Published before anything is indexed, so a run that dies still said
