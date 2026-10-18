@@ -418,24 +418,30 @@ pub async fn pending(executor: impl PgExecutor<'_>, project: ProjectId) -> Resul
     Ok(waiting)
 }
 
-/// How many jobs a round has claimed and that will still run.
+/// Whether any job a round has claimed will still run.
 ///
 /// What a drain that owes everything waits for once it can claim nothing:
 /// work another round has taken and not yet settled. That is a job held under
 /// a running lease, and also one whose lease has lapsed and that a claim will
-/// take again: a claim and this count are two reads, and a lease that lapses
-/// between them would otherwise leave a due job counted by neither. The wait
-/// is bounded by [`LEASE`].
+/// take again: a claim and this probe are two reads, and a lease that lapses
+/// between them would otherwise leave a due job seen by neither. The wait is
+/// bounded by [`LEASE`].
 ///
 /// Not counted: a failed job -- failing clears the claim, so one waiting out
 /// [`RETRY_AFTER`] is not waited for -- and a lapsed claim on its last
 /// attempt, which no claim takes again.
-pub async fn claimed(executor: impl PgExecutor<'_>, project: ProjectId) -> Result<i64> {
-    let (claimed,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM index_jobs
-          WHERE project_id = $1
-            AND claimed_at IS NOT NULL
-            AND (available_at > $2 OR attempts < $3)",
+///
+/// A probe rather than a count: the drain asks this every tenth of a second,
+/// and it stops at the first claim instead of reading a backlog of failed
+/// jobs to the end.
+pub async fn any_claimed(executor: impl PgExecutor<'_>, project: ProjectId) -> Result<bool> {
+    let (claimed,): (bool,) = sqlx::query_as(
+        "SELECT EXISTS (
+             SELECT 1 FROM index_jobs
+              WHERE project_id = $1
+                AND claimed_at IS NOT NULL
+                AND (available_at > $2 OR attempts < $3)
+         )",
     )
     .bind(project.0)
     .bind(OffsetDateTime::now_utc())
