@@ -1410,15 +1410,16 @@ impl ProjectionIndex {
     /// lends through (see [`Previous`]), would seal a writable collection's
     /// open segment each time one was made and block its `optimize` while
     /// open. The text comes from the n-gram field, which holds the content
-    /// verbatim; the segmented one is derived from it.
-    fn fetch(&self, topics: &[TopicId]) -> Result<HashMap<TopicId, Doc>> {
+    /// verbatim; the segmented one is derived from it. `vectors` says whether
+    /// to bring the vectors along, which only a caller that copies them needs.
+    fn fetch(&self, topics: &[TopicId], vectors: bool) -> Result<HashMap<TopicId, Doc>> {
         let keys: Vec<String> = topics.iter().map(|topic| self.keys.key(*topic)).collect();
         let mut stored: HashMap<TopicId, Doc> = HashMap::with_capacity(keys.len());
         for chunk in keys.chunks(WRITE_BATCH) {
             let chunk: Vec<&str> = chunk.iter().map(String::as_str).collect();
             for doc in
                 self.collection
-                    .fetch_with_options(&chunk, Some(self.stored_fields()), true)?
+                    .fetch_with_options(&chunk, Some(self.stored_fields()), vectors)?
             {
                 if let Some(topic) = doc.get_pk().and_then(|key| self.keys.topic(key)) {
                     stored.insert(topic, doc);
@@ -1802,7 +1803,7 @@ impl Projection for ProjectionIndex {
     /// A document without its text or its vector is refused rather than read
     /// as absent: a copy that took it for absent would drop it without a word.
     fn stored(&self, topics: &[TopicId]) -> Result<Vec<Option<Stored>>> {
-        let stored = self.fetch(topics)?;
+        let stored = self.fetch(topics, true)?;
         topics
             .iter()
             .map(|topic| {
@@ -1832,6 +1833,27 @@ impl Projection for ProjectionIndex {
                         "the document for topic {topic} came back without its text or its vector"
                     ))),
                 }
+            })
+            .collect()
+    }
+
+    /// Without the vectors: the answer compares only the text and the
+    /// encoding, and a sync asks it of every batch, most of which hold
+    /// nothing. Read through [`stored`](Projection::stored), it fetched and
+    /// decoded a primary and a secondary vector per document only to drop
+    /// them. A buffered write still counts and a deleted topic still does
+    /// not, because both go through the same keyed fetch.
+    fn holds(&self, wanted: &[(TopicId, &str)], encoding: &str) -> Result<Vec<bool>> {
+        let topics: Vec<TopicId> = wanted.iter().map(|(topic, _)| *topic).collect();
+        let stored = self.fetch(&topics, false)?;
+        wanted
+            .iter()
+            .map(|(topic, text)| {
+                let Some(doc) = stored.get(topic) else {
+                    return Ok(false);
+                };
+                Ok(holds_exactly(doc.get_string(FIELD_NGRAM)?.as_deref(), text)
+                    && self.encoding_of(doc)?.as_deref() == Some(encoding))
             })
             .collect()
     }
