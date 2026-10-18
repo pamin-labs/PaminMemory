@@ -171,6 +171,15 @@ struct Tally {
 
 thread_local! {
     static TALLY: RefCell<Option<Tally>> = const { RefCell::new(None) };
+    /// The corpus digest of the shape this thread published, per thread for
+    /// the reason [`Tally`] is.
+    static PUBLISHED: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// The [`Shape::digest`] of the shape this test published, for a file the
+/// run writes beside its record to carry; `None` before one is published.
+pub fn published_digest() -> Option<String> {
+    PUBLISHED.with(|published| published.borrow().clone())
 }
 
 /// Runs `f` on this thread's tally.
@@ -267,7 +276,7 @@ const NOT_IDENTITY: [(&str, &str); 6] = [
 /// that is set names the record, whichever harness reads it, so no harness
 /// keeps a list of its own that can miss one.
 /// `every_evaluation_read_is_classified` holds the tests to this.
-const EVAL_SETTINGS: [&str; 30] = [
+const EVAL_SETTINGS: [&str; 29] = [
     "AT_LIMIT",
     "CALIBRATE",
     "CHANNELS",
@@ -277,7 +286,6 @@ const EVAL_SETTINGS: [&str; 30] = [
     "DEPTH_VARIANTS",
     "EFFORTS",
     "ENTITIES",
-    "FEATURES_OUT",
     "GATE",
     "GRAPHS",
     "LABELS",
@@ -289,25 +297,27 @@ const EVAL_SETTINGS: [&str; 30] = [
     "PAIRS",
     "PASSAGES",
     "REACH",
+    "REPLAY_OUT",
     "RERANK_RULES",
     "RESCORE_IN",
     "RESHAPE",
     "ROUTES",
-    "SUFFICIENCY_OUT",
     "SWEEP",
     "SWEEP_AGAINST",
     "TIERS",
     "XQUAD_ALL_QUERIES",
 ];
 
+/// Settings in [`EVAL_SETTINGS`] whose value is a path to write to: being
+/// set changes the run, where it writes does not. `REPLAY_OUT` adds the
+/// rules arm and scores the superset with the engine's reranker, which the
+/// reranked-pair counts some harnesses report include.
+const NAMED_BY_PRESENCE: [&str; 1] = ["REPLAY_OUT"];
+
 /// Variables the evaluation tests read that change nothing a record is
 /// named by, with why.
-const EVAL_NOT_IDENTITY: [(&str, &str); 7] = [
+const EVAL_NOT_IDENTITY: [(&str, &str); 6] = [
     ("CHANNELS_OUT", "where a table is written"),
-    (
-        "SHORTLIST_OUT",
-        "where the shortlists a reranker saw are written",
-    ),
     (
         "ESCI_DIR",
         "where a dataset is; what it holds is the corpus digest",
@@ -406,7 +416,13 @@ fn settings(set: impl IntoIterator<Item = (String, String)>) -> Vec<String> {
                     && !NOT_SETTINGS.contains(&name.as_str())
                     && !super::eval::BUILD.contains(&name.as_str()))
         })
-        .map(|(name, value)| format!("{name}={value}"))
+        .map(|(name, value)| {
+            if NAMED_BY_PRESENCE.contains(&name.as_str()) {
+                format!("{name}=set")
+            } else {
+                format!("{name}={value}")
+            }
+        })
         .collect();
     settings.sort();
     settings
@@ -727,7 +743,7 @@ fn report(line: &str) {
 
 /// A path beside `path` that no other writer uses: named by this process and
 /// the time, then `suffix`.
-fn unique(path: &Path, suffix: &str) -> PathBuf {
+pub fn unique(path: &Path, suffix: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_nanos());
@@ -1229,6 +1245,89 @@ pub fn provider(plan: &pamin_index::PlanUse) -> String {
 }
 
 const UNSTABLE: &str = "!unstable";
+
+/// The run a file was written by, for a file that is not a record to carry:
+/// what a record's name stands for, spelled out.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Run {
+    /// The compiled commit ([`Source`]).
+    pub commit: String,
+    /// Why this run cannot vouch for `commit`, if it cannot.
+    pub noncanonical: Option<String>,
+    /// [`build_digest`].
+    pub build: String,
+    /// [`settings`], as a record is named by them.
+    pub settings: Vec<String>,
+    /// `label/role=repository@commit` for every model `engines` loaded.
+    pub models: Vec<String>,
+    /// `label/role=`[`provider`] for every plan those models ran on.
+    pub providers: Vec<String>,
+}
+
+/// [`Run::models`] and [`Run::providers`] for `engines` as they stand now:
+/// every plan each has run on so far, once outstanding loads have finished.
+pub fn loaded(engines: &[(&str, &pamin_engine::Engine)]) -> (Vec<String>, Vec<String>) {
+    let (models, providers) = plans(engines);
+    let providers = providers
+        .into_iter()
+        .map(|(role, provider)| format!("{role}={provider}"))
+        .collect();
+    (models, providers)
+}
+
+/// [`loaded`], with each provider still beside its role, as
+/// [`plan_reasons`] reads them.
+fn plans(engines: &[(&str, &pamin_engine::Engine)]) -> (Vec<String>, Vec<(String, String)>) {
+    let plans = self::engines(engines)();
+    let mut models: Vec<String> = plans
+        .iter()
+        .map(|(role, plan)| format!("{role}={}", plan.revision))
+        .collect();
+    models.sort();
+    models.dedup();
+    let mut providers: Vec<(String, String)> = plans
+        .iter()
+        .map(|(role, plan)| (role.clone(), provider(plan)))
+        .collect();
+    providers.sort();
+    providers.dedup();
+    (models, providers)
+}
+
+/// The [`Run`] searching `engines`, each under its label as [`engines`]
+/// takes them, once their outstanding loads have finished. Not canonical
+/// for the reasons a record's plans would make it not (see
+/// [`plan_reasons`]), as well as its source's.
+pub fn run(engines: &[(&str, &pamin_engine::Engine)]) -> Run {
+    let settings = settings(environment());
+    let mut source = ungated(source(), &settings);
+    let (models, providers) = plans(engines);
+    for reason in plan_reasons(&providers) {
+        note(&mut source.noncanonical, &reason);
+    }
+    Run {
+        commit: source.commit,
+        noncanonical: source.noncanonical,
+        build: build_digest(),
+        settings,
+        models,
+        providers: providers
+            .into_iter()
+            .map(|(role, provider)| format!("{role}={provider}"))
+            .collect(),
+    }
+}
+
+/// Adds `reason` to why a run is not canonical, once.
+fn note(noncanonical: &mut Option<String>, reason: &str) {
+    let noncanonical = noncanonical.get_or_insert_with(String::new);
+    if !noncanonical.split("; ").any(|known| known == reason) {
+        if !noncanonical.is_empty() {
+            noncanonical.push_str("; ");
+        }
+        noncanonical.push_str(reason);
+    }
+}
 
 /// Why a run's plans keep its record from being canonical, if they do: a
 /// plan whose hardware is not named stably across processes (a DirectML
@@ -1762,13 +1861,7 @@ impl Shape {
         let (indexed, unvouched) = self.check_indexes();
         self.indexed = indexed;
         for reason in plan_reasons(&providers).into_iter().chain(unvouched) {
-            let noncanonical = self.source.noncanonical.get_or_insert_with(String::new);
-            if !noncanonical.split("; ").any(|known| known == reason) {
-                if !noncanonical.is_empty() {
-                    noncanonical.push_str("; ");
-                }
-                noncanonical.push_str(&reason);
-            }
+            note(&mut self.source.noncanonical, &reason);
         }
         self.providers = providers
             .into_iter()
@@ -1950,6 +2043,7 @@ impl Shape {
             record.display()
         ));
         self.record = Some(record);
+        PUBLISHED.with(|published| *published.borrow_mut() = Some(digest));
         open_tally();
     }
 
@@ -3589,6 +3683,14 @@ mod tests {
     /// The reranker's knobs and the search's effort name the record but not
     /// the producer: a tuned arm reuses the shipped run's vector cache and
     /// index, whose vectors no such knob touched.
+    #[test]
+    fn a_record_is_named_by_asking_for_a_replay_not_by_where_it_goes() {
+        let at = |path: &str| settings([("REPLAY_OUT".to_string(), path.to_string())]);
+        assert_eq!(at("/a/one.jsonl"), at("/b/two.jsonl"));
+        assert_eq!(at("/a/one.jsonl"), ["REPLAY_OUT=set"]);
+        assert!(settings(std::iter::empty()).is_empty());
+    }
+
     #[test]
     fn reranker_and_search_knobs_name_the_record_not_the_producer() {
         for knob in [

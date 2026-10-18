@@ -698,6 +698,33 @@ impl Models {
         )
     }
 
+    /// What the reranker scores each of `documents` for `query`, in their
+    /// order, or `None` if this process has not loaded it. Never loads it.
+    /// The handle is cloned out from under the registry lock first, as in
+    /// [`counted`](Self::counted).
+    fn scores(
+        &self,
+        query: &str,
+        documents: &[&str],
+    ) -> Option<Result<Vec<f32>, pamin_index::IndexError>> {
+        let held = {
+            let held = self
+                .reranker
+                .lock()
+                .expect("the reranker registry lock is poisoned");
+            let (_, reranker) = held.as_ref()?;
+            Arc::clone(reranker)
+        };
+        let mut reranker = held.lock().expect("the reranker lock is poisoned");
+        Some(reranker.rank(query, documents).map(|ranked| {
+            let mut scores = vec![0.0; documents.len()];
+            for one in ranked {
+                scores[one.position] = one.score;
+            }
+            scores
+        }))
+    }
+
     /// The execution plans of the reranker if this process has loaded it,
     /// as [`reranker_role`]. The handle is cloned out from under the registry
     /// lock first, as in [`counted`](Self::counted).
@@ -1737,6 +1764,25 @@ impl Engine {
         documents: &[&str],
     ) -> Option<std::result::Result<Vec<Vec<usize>>, pamin_index::IndexError>> {
         self.models.passes(query, documents)
+    }
+
+    /// What this engine's reranker scores each of `documents` for `query`,
+    /// in their order -- the model, settings and execution target its
+    /// searches use -- or `None` if this process has not loaded it. Never
+    /// loads it. Counted in [`reranked`](Self::reranked) like a search's
+    /// pass.
+    ///
+    /// Nothing in the product calls it. An evaluation recording what the
+    /// model would have said of candidates a search did not show it asks the
+    /// engine's reranker, as [`rerank_passes`](Self::rerank_passes) does,
+    /// rather than loading a second copy of the model.
+    #[doc(hidden)]
+    pub fn rerank_scores(
+        &self,
+        query: &str,
+        documents: &[&str],
+    ) -> Option<std::result::Result<Vec<f32>, pamin_index::IndexError>> {
+        self.models.scores(query, documents)
     }
 
     /// Loads the embedding model now, if it is not loaded yet, rather than at
