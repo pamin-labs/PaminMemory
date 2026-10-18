@@ -72,6 +72,24 @@ pub struct StoreSettings {
     pub postgres_dir: Option<std::path::PathBuf>,
 }
 
+impl StoreSettings {
+    /// These settings with [`Self::postgres_dir`] made absolute against the
+    /// current directory, which is what a cluster is started from and what
+    /// its record is compared by. Recorded as given, `pg` from two
+    /// directories would be one prefix to the comparison and two to the
+    /// server, and a caller would reuse a cluster started from the other.
+    fn resolved(&self) -> Result<Self> {
+        Ok(Self {
+            jit: self.jit,
+            postgres_dir: self
+                .postgres_dir
+                .as_deref()
+                .map(std::path::absolute)
+                .transpose()?,
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct Database {
     pool: PgPool,
@@ -94,6 +112,7 @@ impl Database {
         connections: Connections,
         settings: &StoreSettings,
     ) -> Result<Self> {
+        let settings = &settings.resolved()?;
         let running = match workspace.read_server()? {
             Some(existing) if listening(existing.port) && !reusable(&existing, settings) => {
                 // Started with other store settings -- by an earlier run, or
@@ -665,6 +684,28 @@ mod tests {
         old.remove("started_with");
         let read: crate::LocalServer = serde_json::from_value(old.into()).unwrap();
         assert!(!super::reusable(&read, &StoreSettings::default()));
+    }
+
+    /// A relative prefix is recorded as the absolute path it names from here,
+    /// so the same spelling from another directory is another prefix.
+    #[test]
+    fn a_relative_prefix_is_resolved_before_it_is_recorded() {
+        let here = std::env::current_dir().unwrap();
+        let relative = StoreSettings {
+            jit: false,
+            postgres_dir: Some("pg".into()),
+        };
+        let resolved = relative.resolved().unwrap();
+        assert_eq!(resolved.postgres_dir, Some(here.join("pg")));
+        assert_eq!(resolved.resolved().unwrap(), resolved);
+        assert_ne!(
+            super::started_with(&resolved),
+            super::started_with(&relative)
+        );
+        assert_eq!(
+            StoreSettings::default().resolved().unwrap(),
+            StoreSettings::default()
+        );
     }
 
     /// Two prefixes that differ only in bytes that are not UTF-8 are recorded
