@@ -270,8 +270,8 @@ fn refuse_removed_settings() -> Result<()> {
 const REMOVED: &[(&str, &str)] = &[
     (
         "PAMIN_NO_SERVER",
-        "was removed: every command now goes through the workspace's server, and none \
-         can run in the calling process.",
+        "was removed: every command but `serve`, `stop` and `config` now goes through \
+         the workspace's server, and none can run in the calling process.",
     ),
     (
         "PAMIN_PROFILE",
