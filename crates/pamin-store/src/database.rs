@@ -719,7 +719,10 @@ mod tests {
             assert!(message.contains(named), "{message}");
         }
         let message = super::other_settings(&workspace, &read, &bundled).to_string();
-        assert!(message.contains("an older build did not record"), "{message}");
+        assert!(
+            message.contains("an older build did not record"),
+            "{message}"
+        );
         assert!(message.contains("the bundled installation"), "{message}");
     }
 
