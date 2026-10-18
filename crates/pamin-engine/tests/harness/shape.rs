@@ -735,7 +735,7 @@ fn report(line: &str) {
 
 /// A path beside `path` that no other writer uses: named by this process and
 /// the time, then `suffix`.
-fn unique(path: &Path, suffix: &str) -> PathBuf {
+pub fn unique(path: &Path, suffix: &str) -> PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_nanos());
@@ -1237,6 +1237,50 @@ pub fn provider(plan: &pamin_index::PlanUse) -> String {
 }
 
 const UNSTABLE: &str = "!unstable";
+
+/// The run a file was written by, for a file that is not a record to carry:
+/// what a record's name stands for, spelled out.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Run {
+    /// The compiled commit ([`Source`]).
+    pub commit: String,
+    /// Why this run cannot vouch for `commit`, if it cannot.
+    pub noncanonical: Option<String>,
+    /// [`build_digest`].
+    pub build: String,
+    /// [`settings`], as a record is named by them.
+    pub settings: Vec<String>,
+    /// `label/role=repository@commit` for every model `engines` loaded.
+    pub models: Vec<String>,
+    /// `label/role=`[`provider`] for every plan those models ran on.
+    pub providers: Vec<String>,
+}
+
+/// The [`Run`] searching `engines`, each under its label as [`engines`]
+/// takes them, once their outstanding loads have finished.
+pub fn run(engines: &[(&str, &pamin_engine::Engine)]) -> Run {
+    let settings = settings(environment());
+    let source = ungated(source(), &settings);
+    let plans = self::engines(engines)();
+    let mut models: Vec<String> = plans
+        .iter()
+        .map(|(role, plan)| format!("{role}={}", plan.revision))
+        .collect();
+    models.dedup();
+    let mut providers: Vec<String> = plans
+        .iter()
+        .map(|(role, plan)| format!("{role}={}", provider(plan)))
+        .collect();
+    providers.dedup();
+    Run {
+        commit: source.commit,
+        noncanonical: source.noncanonical,
+        build: build_digest(),
+        settings,
+        models,
+        providers,
+    }
+}
 
 /// Why a run's plans keep its record from being canonical, if they do: a
 /// plan whose hardware is not named stably across processes (a DirectML

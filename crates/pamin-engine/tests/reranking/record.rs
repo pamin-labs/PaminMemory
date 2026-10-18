@@ -100,6 +100,9 @@ pub struct Line {
     /// SHA-256 over the run's question and document set (see
     /// `harness::shape::Shape::digest`).
     pub corpus: String,
+    /// The commit, build, settings, models and plans that wrote the line: a
+    /// corpus recorded twice is told apart by these, not by its digest.
+    pub run: crate::harness::shape::Run,
     /// Which search of the run, from zero, in the order asked.
     pub search: usize,
     pub group: String,
@@ -236,8 +239,8 @@ impl Line {
     }
 }
 
-/// The open record, and what has been written to it. Lines go to a
-/// `.partial` file beside `path`, which [`finish`](Self::finish) renames to
+/// The open record, and what has been written to it. Lines go to a partial
+/// file of its own beside `path`, which [`finish`](Self::finish) renames to
 /// `path` only once every gate has passed, so a run that panics or stops
 /// part way leaves no file a replay could take for a whole corpus.
 pub struct Record {
@@ -247,6 +250,8 @@ pub struct Record {
     /// The run's corpus digest, from its published shape or named by the
     /// harness ([`super::Priced::corpus`]).
     pub corpus: Option<String>,
+    /// Read once the first search has loaded the models it names.
+    run: Option<crate::harness::shape::Run>,
     searches: usize,
     /// Pairs the shipped searches showed the model, and pairs the superset
     /// scored.
@@ -258,9 +263,8 @@ impl Record {
     /// The record `REPLAY_OUT` names, or `None` when it is not asked for.
     pub fn from_env() -> Option<Self> {
         let path = PathBuf::from(std::env::var_os("REPLAY_OUT")?);
-        let mut partial = path.clone().into_os_string();
-        partial.push(".partial");
-        let partial = PathBuf::from(partial);
+        // Its own, so two runs naming one record never write into each other's.
+        let partial = crate::harness::shape::unique(&path, "partial");
         let file = File::create(&partial)
             .unwrap_or_else(|error| panic!("creating {}: {error}", partial.display()));
         Some(Self {
@@ -268,6 +272,7 @@ impl Record {
             partial,
             out: BufWriter::new(file),
             corpus: crate::harness::shape::published_digest(),
+            run: None,
             searches: 0,
             shown: 0,
             scored: 0,
@@ -366,6 +371,10 @@ impl Record {
                 "REPLAY_OUT needs the corpus digest: publish a shape, or name it with \
                  `Priced::corpus`",
             ),
+            run: self
+                .run
+                .get_or_insert_with(|| crate::harness::shape::run(&[("primary", engine)]))
+                .clone(),
             search: self.searches,
             group: asked.group.to_string(),
             question: asked.question.to_string(),
@@ -686,6 +695,14 @@ mod tests {
         candidates[2].relevant = vec!["k".to_string()];
         let line = Line {
             corpus: String::new(),
+            run: crate::harness::shape::Run {
+                commit: String::new(),
+                noncanonical: None,
+                build: String::new(),
+                settings: Vec::new(),
+                models: Vec::new(),
+                providers: Vec::new(),
+            },
             search: 0,
             group: String::new(),
             question: String::new(),
