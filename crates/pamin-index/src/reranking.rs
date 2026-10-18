@@ -372,14 +372,14 @@ const BATCH: usize = 4;
 /// three rotated runs of 120 warm queries an arm: p50 0.834 of four pairs'
 /// [0.757, 0.931], p95 0.850 [0.715, 0.997], peak resident memory of the
 /// search server 0.884. Accuracy, `Engine::search_reranked` over copies of one
-/// index, paired by query (sign-flip, Holm over every group):
+/// index, paired by query (sign-flip; p as drawn, then Holm over every group):
 ///
-/// | group | queries | nDCG@10, four pairs | one pair | difference | p |
-/// |---|---|---|---|---|---|
-/// | XQuAD-R cross-lingual | 1,190 | 0.7231 | 0.7229 | -0.0001 | 0.87 |
-/// | XQuAD-R same-language | 1,190 | 0.8679 | 0.8667 | -0.0012 | 0.33 |
-/// | XQuAD-R single target | 1,190 | 0.6662 | 0.6649 | -0.0013 | 0.51 |
-/// | MuSiQue 2-hop, first 200 | 200 | 0.7669 | 0.7709 | +0.0040 | 0.28 |
+/// | group | queries | nDCG@10, four pairs | one pair | difference | p | p, Holm |
+/// |---|---|---|---|---|---|---|
+/// | XQuAD-R cross-lingual | 1,190 | 0.7231 | 0.7229 | -0.0001 | 0.87 | 1.00 |
+/// | XQuAD-R same-language | 1,190 | 0.8679 | 0.8667 | -0.0012 | 0.33 | 1.00 |
+/// | XQuAD-R single target | 1,190 | 0.6662 | 0.6649 | -0.0013 | 0.51 | 1.00 |
+/// | MuSiQue 2-hop, first 200 | 200 | 0.7669 | 0.7709 | +0.0040 | 0.28 | 1.00 |
 ///
 /// Rankings move -- about a third of top-fives -- but no group significantly,
 /// and recall@50 is unchanged. On an accelerator nothing has measured one
