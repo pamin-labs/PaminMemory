@@ -208,7 +208,9 @@ pub fn dataset_dir(var: &str, name: &str) -> PathBuf {
 }
 
 /// The settings a run measures: the product's defaults, and whatever the
-/// `PAMIN_EVAL_*` knobs change about them (see [`eval::KNOBS`]).
+/// `PAMIN_EVAL_*` knobs change about them (see [`eval::KNOBS`]). Not when an
+/// idle model is given back: only the resident server's sweep reads that, and
+/// no harness runs it, so there is no knob a record could be named by.
 ///
 /// Read once per call into a value the harness hands to [`Engine::open`],
 /// rather than read by the libraries on every load: the libraries read no
@@ -219,8 +221,7 @@ pub fn settings() -> pamin_engine::Settings {
     pamin_engine::Settings {
         inference: support::inference(),
         store: store(),
-        model_idle: eval::parsed::<std::num::NonZeroU64>("PAMIN_EVAL_MODEL_IDLE")
-            .unwrap_or(default.model_idle),
+        model_idle: default.model_idle,
         unindexed_budget: eval::parsed::<std::num::NonZeroU64>("PAMIN_EVAL_UNINDEXED_BUDGET")
             .unwrap_or(default.unindexed_budget),
     }
