@@ -1256,11 +1256,9 @@ pub struct Run {
     pub providers: Vec<String>,
 }
 
-/// The [`Run`] searching `engines`, each under its label as [`engines`]
-/// takes them, once their outstanding loads have finished.
-pub fn run(engines: &[(&str, &pamin_engine::Engine)]) -> Run {
-    let settings = settings(environment());
-    let source = ungated(source(), &settings);
+/// [`Run::models`] and [`Run::providers`] for `engines` as they stand now:
+/// every plan each has run on so far, once outstanding loads have finished.
+pub fn loaded(engines: &[(&str, &pamin_engine::Engine)]) -> (Vec<String>, Vec<String>) {
     let plans = self::engines(engines)();
     let mut models: Vec<String> = plans
         .iter()
@@ -1272,6 +1270,15 @@ pub fn run(engines: &[(&str, &pamin_engine::Engine)]) -> Run {
         .map(|(role, plan)| format!("{role}={}", provider(plan)))
         .collect();
     providers.dedup();
+    (models, providers)
+}
+
+/// The [`Run`] searching `engines`, each under its label as [`engines`]
+/// takes them, once their outstanding loads have finished.
+pub fn run(engines: &[(&str, &pamin_engine::Engine)]) -> Run {
+    let settings = settings(environment());
+    let source = ungated(source(), &settings);
+    let (models, providers) = loaded(engines);
     Run {
         commit: source.commit,
         noncanonical: source.noncanonical,
