@@ -1302,6 +1302,7 @@ revisions unchanged:
 | search p50 ms (pooled) | 1,203.1 | 1,159.5 | −43.6 (−3.6%) | 0.964 [0.893, 1.043] |
 | search p95 ms (pooled) | 1,913.2 | 1,734.4 | −178.9 (−9.3%) | 0.907 [0.845, 1.034] |
 | ingest wall s (import and drain) | 140.5 | 134.8 | −5.7 (−4.0%) | 0.960 [0.894, 1.065] |
+| search server CPU user s per query | 4.422 | 4.257 | −0.166 (−3.7%) | 0.963 [0.890, 1.062] |
 | search server CPU sys s per query | 0.085 | 0.025 | −0.060 (−70.3%) | 0.297 [0.257, 0.335] |
 | search server peak RSS MB (VmHWM) | 2,451 | 1,322 | −1,129 (−46.1%) | 0.539 [0.523, 0.555] |
 | search server peak anonymous RSS MB | 1,527 | 418 | −1,109 (−72.6%) | 0.274 [0.262, 0.286] |
