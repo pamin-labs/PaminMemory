@@ -1259,33 +1259,65 @@ pub struct Run {
 /// [`Run::models`] and [`Run::providers`] for `engines` as they stand now:
 /// every plan each has run on so far, once outstanding loads have finished.
 pub fn loaded(engines: &[(&str, &pamin_engine::Engine)]) -> (Vec<String>, Vec<String>) {
+    let (models, providers) = plans(engines);
+    let providers = providers
+        .into_iter()
+        .map(|(role, provider)| format!("{role}={provider}"))
+        .collect();
+    (models, providers)
+}
+
+/// [`loaded`], with each provider still beside its role, as
+/// [`plan_reasons`] reads them.
+fn plans(engines: &[(&str, &pamin_engine::Engine)]) -> (Vec<String>, Vec<(String, String)>) {
     let plans = self::engines(engines)();
     let mut models: Vec<String> = plans
         .iter()
         .map(|(role, plan)| format!("{role}={}", plan.revision))
         .collect();
+    models.sort();
     models.dedup();
-    let mut providers: Vec<String> = plans
+    let mut providers: Vec<(String, String)> = plans
         .iter()
-        .map(|(role, plan)| format!("{role}={}", provider(plan)))
+        .map(|(role, plan)| (role.clone(), provider(plan)))
         .collect();
+    providers.sort();
     providers.dedup();
     (models, providers)
 }
 
 /// The [`Run`] searching `engines`, each under its label as [`engines`]
-/// takes them, once their outstanding loads have finished.
+/// takes them, once their outstanding loads have finished. Not canonical
+/// for the reasons a record's plans would make it not (see
+/// [`plan_reasons`]), as well as its source's.
 pub fn run(engines: &[(&str, &pamin_engine::Engine)]) -> Run {
     let settings = settings(environment());
-    let source = ungated(source(), &settings);
-    let (models, providers) = loaded(engines);
+    let mut source = ungated(source(), &settings);
+    let (models, providers) = plans(engines);
+    for reason in plan_reasons(&providers) {
+        note(&mut source.noncanonical, &reason);
+    }
     Run {
         commit: source.commit,
         noncanonical: source.noncanonical,
         build: build_digest(),
         settings,
         models,
-        providers,
+        providers: providers
+            .into_iter()
+            .map(|(role, provider)| format!("{role}={provider}"))
+            .collect(),
+    }
+}
+
+/// Adds `reason` to why a run is not canonical, once.
+fn note(noncanonical: &mut Option<String>, reason: &str) {
+    let noncanonical = noncanonical.get_or_insert_with(String::new);
+    if !noncanonical.split("; ").any(|known| known == reason) {
+        if !noncanonical.is_empty() {
+            noncanonical.push_str("; ");
+        }
+        noncanonical.push_str(reason);
     }
 }
 
@@ -1821,13 +1853,7 @@ impl Shape {
         let (indexed, unvouched) = self.check_indexes();
         self.indexed = indexed;
         for reason in plan_reasons(&providers).into_iter().chain(unvouched) {
-            let noncanonical = self.source.noncanonical.get_or_insert_with(String::new);
-            if !noncanonical.split("; ").any(|known| known == reason) {
-                if !noncanonical.is_empty() {
-                    noncanonical.push_str("; ");
-                }
-                noncanonical.push_str(&reason);
-            }
+            note(&mut self.source.noncanonical, &reason);
         }
         self.providers = providers
             .into_iter()
