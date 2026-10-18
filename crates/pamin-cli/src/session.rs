@@ -218,7 +218,7 @@ impl Session {
     /// everything back by exiting, and closing an index it is about to use
     /// again would be the opposite of the point.
     pub fn close_what_is_idle(&self) -> (Vec<String>, bool, bool) {
-        let idle = self.models.settings().model_idle;
+        let idle = self.models.settings().idle();
         let engines = self.engines.close_idle(idle);
         let embedder = self.models.release_idle_embedder();
         let reranker = self.models.release_idle_reranker();

@@ -964,7 +964,7 @@ impl Reranker {
     /// one after another is the one they ran in.
     pub fn plan(&self, lengths: &[usize]) -> Vec<Vec<usize>> {
         let (budget, most) = self.model.batch_limits(
-            self.settings.rerank.batch_tokens,
+            self.settings.rerank.batch_tokens.get(),
             batch(&self.model, &self.settings),
         );
         plan_positions(lengths, budget, most, |length| {
@@ -992,7 +992,7 @@ impl Reranker {
                 self.scores.invalidate();
             }
             let limits = self.model.batch_limits(
-                self.settings.rerank.batch_tokens,
+                self.settings.rerank.batch_tokens.get(),
                 batch(&self.model, &self.settings),
             );
             let list = ListKey::of(&keys, limits);
@@ -1017,8 +1017,8 @@ impl Reranker {
                             .collect::<Vec<_>>(),
                     )?;
                     let encode_us = start.elapsed().as_micros() as u64;
-                    let limits =
-                        model.batch_limits(settings.rerank.batch_tokens, batch(model, settings));
+                    let limits = model
+                        .batch_limits(settings.rerank.batch_tokens.get(), batch(model, settings));
                     let list = ListKey::of(&keys, limits);
                     let planned = model_batches_at(model, encodings, limits);
                     let attempt = cached.score(
@@ -1130,7 +1130,7 @@ fn load_model(cache_dir: &Path, settings: &crate::InferenceSettings) -> Result<(
     std::fs::create_dir_all(cache_dir)?;
     let threads = settings.budget()?;
     let max_tokens = settings.rerank.max_tokens.get();
-    let batch_tokens = settings.rerank.batch_tokens;
+    let batch_tokens = settings.rerank.batch_tokens.get();
 
     let repository = Repository::open(cache_dir, REPOSITORY)?;
 
@@ -2643,7 +2643,7 @@ mod tests {
         let batches: Vec<Vec<Encoding>> = model_batches(
             &model,
             encodings,
-            settings.rerank.batch_tokens,
+            settings.rerank.batch_tokens.get(),
             batch(&model, &settings),
         )
         .into_iter()

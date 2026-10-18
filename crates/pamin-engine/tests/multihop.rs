@@ -122,7 +122,7 @@ const DEPTH: usize = RECALL_AT + 1;
 const DEPTHS: Depths = Depths::DEFAULT;
 
 /// Past four times the channel depth, so a trace is never truncated.
-const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
 
 /// A paragraph longer than this is cut, on a character boundary, at about what
 /// the embedders' window holds; joined same-title paragraphs can run long.
@@ -659,7 +659,7 @@ async fn search_answers_questions_that_take_several_steps() {
     // learned router -- priced against the shipped pass. See
     // `reranking::Routes`.
     if std::env::var("ROUTES").is_ok() {
-        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
         let mut routes = reranking::Routes::default();
         for query in &corpus.queries {
             let hits = engine
@@ -1262,7 +1262,7 @@ fn proper_names_are_runs_of_capitals_across_particles() {
 async fn reach(engine: &Engine, corpus: &Corpus, label: &str) {
     use pamin_core::{Channel, Why};
 
-    let head = crate::harness::depths().rerank;
+    let head = crate::harness::depths().rerank.get();
     let mut missed = 0usize;
     let mut graph_only = 0usize;
     let mut graph_only_in_head = 0usize;

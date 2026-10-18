@@ -20,7 +20,6 @@
 use std::collections::BTreeMap;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::parser::ValueSource;
@@ -309,15 +308,13 @@ impl Server {
         let model_idle = args
             .model_idle
             .or(serve.model_idle)
-            .map_or(default.model_idle, |seconds| {
-                Duration::from_secs(seconds.get())
-            });
+            .unwrap_or(default.model_idle);
         pick(
             "model_idle",
             args.model_idle.map(|n| n.to_string()),
             given("model_idle"),
             serve.model_idle.map(|n| n.to_string()),
-            default.model_idle.as_secs().to_string(),
+            default.model_idle.to_string(),
         );
 
         let open_indexes = args
@@ -622,7 +619,7 @@ mod tests {
         )
         .unwrap();
         let server = resolve(root.path(), &["--model-idle", "5"]).unwrap();
-        assert_eq!(server.settings.model_idle, Duration::from_secs(5));
+        assert_eq!(server.settings.model_idle.get(), 5);
         assert_eq!(source(&server, "model_idle"), Source::Flag);
         assert!(server.settings.store.jit);
         assert_eq!(source(&server, "jit"), Source::Config);
@@ -664,7 +661,7 @@ mod tests {
         let mut command: Vec<&str> = line.iter().map(String::as_str).collect();
         command.insert(0, "--jit=false");
         let server = resolve(root.path(), &command).unwrap();
-        assert_eq!(server.settings.model_idle, Duration::from_secs(60));
+        assert_eq!(server.settings.model_idle.get(), 60);
     }
 
     /// A relative path is made absolute before it is stored or compared: a

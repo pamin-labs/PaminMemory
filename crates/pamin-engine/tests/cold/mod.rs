@@ -405,7 +405,7 @@ fn parts(models: &std::path::Path, [query, other]: [&str; 2]) -> Vec<(&'static s
     drop(embedder);
 
     // What a cold search hands it: up to the reranker's depth of candidates.
-    let documents: Vec<String> = (0..crate::harness::depths().rerank)
+    let documents: Vec<String> = (0..crate::harness::depths().rerank.get())
         .map(|n| format!("{other} {n}: a memory the lexical channels did not find"))
         .collect();
     let documents: Vec<&str> = documents.iter().map(String::as_str).collect();

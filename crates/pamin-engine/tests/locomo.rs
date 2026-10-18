@@ -681,7 +681,7 @@ async fn locomo_evidence_with_and_without_links() {
         for question in &conversation.questions {
             questions += 1;
             if let Some(rules) = &mut rules {
-                const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+                const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
                 let hits = engine
                     .search_reranked(&question.text, WIDE, DEPTHS)
                     .await

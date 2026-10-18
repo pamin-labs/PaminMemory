@@ -1189,7 +1189,7 @@ async fn report_channels(
     use pamin_core::Channel;
 
     /// Past four times the channel depth, so `take(limit)` cannot bite.
-    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+    const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
 
     let mut alone: BTreeMap<Channel, BTreeMap<String, Scores>> = BTreeMap::new();
     let mut without: BTreeMap<Channel, BTreeMap<String, Scores>> = BTreeMap::new();
@@ -1875,7 +1875,7 @@ async fn search_reaches_across_languages() {
     // run -- and its question id is the dataset's, so every asking of one
     // question can be kept in one fold.
     if let Some(mut dump) = features::Features::from_env("xquad-r") {
-        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
         harness::shape::tables(["features"]);
         harness::shape::table("features");
         for query in &queries {
@@ -1953,7 +1953,7 @@ async fn search_reaches_across_languages() {
     // learned router -- priced against the shipped pass. See
     // `reranking::Routes`.
     if std::env::var("ROUTES").is_ok() {
-        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
         let tier = Rerank::default();
         let mut routes = reranking::Routes::default();
         for query in &queries {
@@ -2282,7 +2282,7 @@ async fn labels(engine: &Engine, queries: &[Query<'_>], named: &str) {
         "query tokens",
     ];
 
-    let head = crate::harness::depths().rerank;
+    let head = crate::harness::depths().rerank.get();
     let mut samples: Vec<Sample> = Vec::new();
     let mut per_tier: Vec<BTreeMap<String, Scores>> =
         LADDER.iter().map(|_| BTreeMap::new()).collect();
@@ -3072,7 +3072,7 @@ async fn pairs_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
     const CAPS: [usize; 8] = [0, 2, 4, 6, 8, 10, 12, usize::MAX];
 
     let tier = Rerank::default();
-    let head = crate::harness::depths().rerank;
+    let head = crate::harness::depths().rerank.get();
 
     let mut shipped: BTreeMap<String, Scores> = BTreeMap::new();
     let mut fused_only: BTreeMap<String, Scores> = BTreeMap::new();
@@ -3260,7 +3260,7 @@ async fn run<'a>(engine: &Engine, queries: &[Query<'a>], route: Route) -> BTreeM
 
 /// Every rule in `reranking::rules` over the shipped tier's own scores.
 async fn rerank_rules(engine: &Engine, queries: &[Query<'_>], named: &str) {
-    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+    const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
     let tier = Rerank::default();
     let mut priced = reranking::Priced::default();
     for query in queries {
@@ -3300,7 +3300,7 @@ async fn context(
     queries: &[Query<'_>],
     named: &str,
 ) {
-    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+    const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
     let tier = Rerank::default();
     let model = harness::shape::owned(
         pamin_index::Reranker::load(

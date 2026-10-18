@@ -686,6 +686,20 @@ mod tests {
             .unwrap();
     }
 
+    /// A search depth of zero is refused, except the graph's, which turns the
+    /// walk off.
+    #[test]
+    fn a_zero_search_depth_is_refused() {
+        let parse = |flag: &str, value: &str| {
+            Cli::command().try_get_matches_from(["pamin", "search", "q", flag, value])
+        };
+        for flag in ["--channel-depth", "--rerank-depth", "--search-effort"] {
+            assert!(parse(flag, "0").is_err(), "{flag} 0 was accepted");
+            assert!(parse(flag, "1").is_ok(), "{flag} 1 was refused");
+        }
+        assert!(parse("--graph-depth", "0").is_ok());
+    }
+
     /// The vector index a command gets when nobody names one.
     ///
     /// Two defaults, and nothing else makes them agree: `clap` parses a string

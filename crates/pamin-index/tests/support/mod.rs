@@ -28,7 +28,7 @@ pub fn inference() -> InferenceSettings {
         rerank: RerankSettings {
             batch: eval::parsed("PAMIN_EVAL_RERANK_BATCH"),
             batch_tokens: eval::parsed::<std::num::NonZeroUsize>("PAMIN_EVAL_RERANK_BATCH_TOKENS")
-                .map_or(default.rerank.batch_tokens, |n| n.get()),
+                .unwrap_or(default.rerank.batch_tokens),
             max_tokens: eval::parsed::<std::num::NonZeroUsize>("PAMIN_EVAL_RERANK_MAX_TOKENS")
                 .unwrap_or(default.rerank.max_tokens),
         },

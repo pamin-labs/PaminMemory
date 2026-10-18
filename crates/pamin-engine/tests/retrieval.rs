@@ -227,7 +227,7 @@ async fn retrieval_quality_by_group() {
     // `FEATURES_OUT`: every candidate fusion saw, one row each, for fitting a
     // fusion offline. See `features`.
     if let Some(mut dump) = features::Features::from_env("own") {
-        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
         for (index, query) in queries.iter().enumerate() {
             let hits = engine
                 .search_fused(&query.query, WIDE, harness::depths(), Fusion::default())
@@ -319,7 +319,7 @@ async fn retrieval_quality_by_group() {
             pamin_index::Passage::Named,
             "the new project embeds names"
         );
-        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
         let mut paired = channels::Paired::default();
         for query in &queries {
             let before = engine
@@ -345,7 +345,7 @@ async fn retrieval_quality_by_group() {
     // learned router -- priced against the shipped pass. See
     // `reranking::Routes`.
     if std::env::var("ROUTES").is_ok() {
-        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
         let tier = Rerank::default();
         let mut routes = reranking::Routes::default();
         for query in &queries {
@@ -630,7 +630,7 @@ async fn report_tiers(engine: &Engine, queries: &[Query]) {
 /// name before it; the memory the graph walked from after it, for a candidate
 /// the graph reached; and both.
 async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query]) {
-    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+    const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
     let tier = Rerank::default();
     let mut model = pamin_index::Reranker::load(
         &workspace.root().join("models"),
@@ -682,7 +682,7 @@ async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query]) {
 /// p = 0.0018), so it traded one group for another and was dropped. Blending
 /// keeps fusion's opinion of every candidate rather than of some.
 async fn rerank_rules(engine: &Engine, queries: &[Query]) {
-    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+    const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
     let tier = Rerank::default();
     let mut priced = reranking::Priced::default();
     for query in queries {
@@ -722,7 +722,7 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
     use pamin_core::Channel;
 
     /// Past four times the channel depth, so `take(limit)` cannot bite.
-    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+    const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
 
     /// Every channel, so leaving one out is asked of all four.
     const CHANNELS: &[Channel] = &[

@@ -1101,7 +1101,10 @@ pub async fn compare_reranked(
             // The depth is the search's own, so each pass sets it for itself
             // and nothing else in the process sees it.
             let depths = pamin_engine::Depths {
-                rerank: setting.depth.unwrap_or(pamin_index::reranking::DEPTH),
+                rerank: std::num::NonZeroUsize::new(
+                    setting.depth.unwrap_or(pamin_index::reranking::DEPTH),
+                )
+                .expect("a rerank depth is not zero"),
                 ..depths
             };
             let hits = engine

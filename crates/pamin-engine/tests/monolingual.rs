@@ -741,7 +741,7 @@ async fn search() {
     // `FEATURES_OUT`: every candidate fusion saw, one row each, for fitting a
     // fusion offline. See `features`.
     if let Some(mut dump) = features::Features::from_env("miracl-sw") {
-        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
         harness::shape::tables(["features"]);
         harness::shape::table("features");
         for query in &corpus.queries {
@@ -841,7 +841,7 @@ async fn search() {
             pamin_index::Passage::Named,
             "the new project embeds names"
         );
-        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
         let mut paired = channels::Paired::default();
         for query in &corpus.queries {
             let before = engine
@@ -873,7 +873,7 @@ async fn search() {
     // learned router -- priced against the shipped pass. See
     // `reranking::Routes`.
     if std::env::var("ROUTES").is_ok() {
-        const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
         let tier = Rerank::default();
         let mut routes = reranking::Routes::default();
         for query in &corpus.queries {
@@ -1059,7 +1059,7 @@ async fn run_at(engine: &Engine, corpus: &Corpus, route: Route, depths: Depths) 
 
 /// Every rule in `reranking::rules` over the shipped tier's own scores.
 async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
-    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+    const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
     let tier = Rerank::default();
     let mut priced = reranking::Priced::default();
     for query in &corpus.queries {
@@ -1100,7 +1100,7 @@ async fn context(
 ) {
     use std::collections::BTreeMap;
 
-    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+    const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
     let tier = Rerank::default();
     let model = harness::shape::owned(
         pamin_index::Reranker::load(
@@ -1153,7 +1153,7 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
     use std::collections::BTreeMap;
 
     /// Past four times the channel depth, so `take(limit)` cannot bite.
-    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+    const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
 
     /// Every channel, so leaving one out is asked of all four.
     const CHANNELS: &[Channel] = &[
