@@ -590,6 +590,48 @@ fn trim_heap() {
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 fn trim_heap() {}
 
+/// How many heap arenas glibc may keep: [`cap_heap_arenas`].
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+const HEAP_ARENAS: i32 = 2;
+
+/// Caps how many heap arenas glibc keeps, at [`HEAP_ARENAS`].
+///
+/// glibc gives a thread that finds the main heap contended an arena of its
+/// own, up to eight per core, and an arena keeps what it has freed. A search
+/// runs its reranker passes on threads of their own, so a four-core server
+/// ended a search holding thirty-two arenas and about a gigabyte of free heap
+/// in them. Measured at the entry point (q51: `pamin serve` at d0b6b89, four
+/// Xeon cores, 3,230 texts, 120 timed searches, four rotated runs an arm,
+/// the same cap set through `GLIBC_TUNABLES`): search peak RSS 2,354 to
+/// 1,306 MB, its anonymous part 1,425 to 398 MB, ingest peak RSS 1,797 to
+/// 1,124 MB, search p50 0.958x [0.899, 1.020] and p95 0.967x [0.899, 1.035]
+/// of before, the same top five on every query.
+///
+/// Must run before a second thread allocates: glibc reads the cap when it
+/// first needs an arena beyond the main one, and keeps that figure. So
+/// `main` calls this before it starts the runtime.
+///
+/// glibc only, like [`trim_heap`]; elsewhere it does nothing.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub(crate) fn cap_heap_arenas() {
+    unsafe extern "C" {
+        /// glibc's own, declared here rather than through a crate for the
+        /// reason [`trim_heap`] gives.
+        fn mallopt(param: i32, value: i32) -> i32;
+    }
+    /// `M_ARENA_MAX` in glibc's `malloc.h`.
+    const M_ARENA_MAX: i32 = -8;
+
+    // SAFETY: `mallopt` takes two integers by value and only changes a limit
+    // the allocator consults when it next makes an arena. Its flag is not
+    // read: this runs before logging starts, and a refused cap leaves glibc's
+    // default, which is the behaviour this had before.
+    unsafe { mallopt(M_ARENA_MAX, HEAP_ARENAS) };
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+pub(crate) fn cap_heap_arenas() {}
+
 /// Whether the connection asked the server to stop.
 enum Shutdown {
     Requested,
