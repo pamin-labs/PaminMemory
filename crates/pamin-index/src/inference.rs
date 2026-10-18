@@ -2300,7 +2300,7 @@ fn register_plugins(
                         })
                         .map(|(provider, _)| provider)
                         .collect();
-                    match claim(&mut registry.providers, &brought, path) {
+                    match claim(&mut registry.providers, &before, &brought, path) {
                         Ok(()) => Some(library),
                         Err(refusal) => {
                             if let Err(error) = library.unregister() {
@@ -2326,18 +2326,33 @@ fn register_plugins(
 }
 
 /// Records that the library at `path` brought the plugin providers
-/// `brought`, or refuses it if another library already brought one of them.
+/// `brought`, or refuses it if another library already brought one of them,
+/// or the runtime had one of them built in (`before` holds the providers
+/// listed before the library was registered).
 ///
 /// ONNX Runtime plans a device by its provider's name, and a device does not
-/// say which library it came from. Two libraries bringing one provider name
-/// cannot be told apart: a caller naming the second would plan on the
-/// first, or be filtered off both and fall back without a word. So the
-/// second is refused, naming both.
+/// say which library it came from. Two sources of one provider name cannot be
+/// told apart: a caller naming the library would plan on the other's devices,
+/// or a caller not naming it would be filtered off both and fall back without
+/// a word. So the library is refused, naming what already provides it.
 fn claim(
     providers: &mut std::collections::BTreeMap<String, PathBuf>,
+    before: &std::collections::BTreeMap<String, usize>,
     brought: &[String],
     path: &Path,
 ) -> std::result::Result<(), String> {
+    let built_in = brought
+        .iter()
+        .find(|provider| before.contains_key(*provider) && !providers.contains_key(*provider));
+    if let Some(provider) = built_in {
+        return Err(format!(
+            "the execution-provider library {} provides {provider}, which this ONNX \
+             Runtime already provides; a provider is chosen by name, so the library's \
+             devices could not be told from the built-in ones: use them from separate \
+             processes",
+            path.display()
+        ));
+    }
     let taken = brought.iter().find_map(|provider| {
         providers
             .get(provider)
@@ -2420,8 +2435,11 @@ mod tests {
         let b = PathBuf::from("/opt/b/libnpu_ep.so");
         let npu = ["NpuExecutionProvider".to_string()];
         let mut providers = std::collections::BTreeMap::new();
-        super::claim(&mut providers, &npu, &a).unwrap();
-        let refusal = super::claim(&mut providers, &npu, &b).unwrap_err();
+        let none = std::collections::BTreeMap::new();
+        super::claim(&mut providers, &none, &npu, &a).unwrap();
+        // Listed before `b` registered, as `a`'s.
+        let listed = std::collections::BTreeMap::from([(npu[0].clone(), 1)]);
+        let refusal = super::claim(&mut providers, &listed, &npu, &b).unwrap_err();
         for named in [
             "/opt/a/libnpu_ep.so",
             "/opt/b/libnpu_ep.so",
@@ -2431,8 +2449,28 @@ mod tests {
         }
         assert_eq!(providers["NpuExecutionProvider"], a);
         // Another provider is the second library's own.
-        super::claim(&mut providers, &["OtherExecutionProvider".to_string()], &b).unwrap();
+        super::claim(
+            &mut providers,
+            &listed,
+            &["OtherExecutionProvider".to_string()],
+            &b,
+        )
+        .unwrap();
         assert_eq!(providers["OtherExecutionProvider"], b);
+    }
+
+    /// A library bringing more devices of a provider the runtime has built in
+    /// is refused, and the provider stays the runtime's.
+    #[test]
+    fn a_library_bringing_a_built_in_provider_is_refused() {
+        let path = std::path::PathBuf::from("/opt/a/libdml_ep.so");
+        let dml = ["DmlExecutionProvider".to_string()];
+        let mut providers = std::collections::BTreeMap::new();
+        let built_in = std::collections::BTreeMap::from([(dml[0].clone(), 1)]);
+        let refusal = super::claim(&mut providers, &built_in, &dml, &path).unwrap_err();
+        assert!(refusal.contains("/opt/a/libdml_ep.so"), "{refusal}");
+        assert!(refusal.contains("already provides"), "{refusal}");
+        assert!(providers.is_empty());
     }
 
     /// The thread budget a default configuration gives a session.
