@@ -61,7 +61,7 @@
 use std::time::{Duration, Instant};
 
 use crate::harness::Rerank;
-use pamin_engine::{Depths, Engine, Models};
+use pamin_engine::{Engine, Models};
 use pamin_index::{Access, Embedder, Reranker, VectorIndex};
 use pamin_store::{Database, Workspace};
 
@@ -212,7 +212,7 @@ async fn reranked<'q>(
     let mut found = Vec::new();
     for query in queries {
         let before = scored(&engine);
-        tier.search(&engine, query, LIMIT, Depths::default())
+        tier.search(&engine, query, LIMIT, crate::harness::depths())
             .await
             .expect("search");
         if scored(&engine) > before {
@@ -249,7 +249,7 @@ async fn open(database: &Database, workspace: &Workspace, project: &str) -> (Eng
 async fn search(engine: &Engine, query: &str, tier: Rerank, after: u64) -> Duration {
     let started = Instant::now();
     let hits = tier
-        .search(engine, query, LIMIT, Depths::default())
+        .search(engine, query, LIMIT, crate::harness::depths())
         .await
         .expect("search");
     let took = started.elapsed();
