@@ -1034,21 +1034,30 @@ fn load<T: serde::de::DeserializeOwned>(name: &str) -> Vec<T> {
     serde_json::from_str(&text).unwrap_or_else(|error| panic!("parsing {name}: {error}"))
 }
 
-/// SHA-256 over the corpus and the questions asked of it, in order.
+/// SHA-256 over the corpus and the questions asked of it, in order. Each
+/// section and each query's list of relevant topics is counted before its
+/// fields, so moving fields between memories and queries changes it.
 fn digest(corpus: &[Memory], queries: &[Query]) -> String {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
-    let fields = corpus
-        .iter()
-        .flat_map(|memory| [&memory.topic, &memory.content, &memory.language])
-        .chain(queries.iter().flat_map(|query| {
-            [&query.group, &query.query]
-                .into_iter()
-                .chain(&query.relevant)
-        }));
-    for field in fields {
+    let mut field = |field: &str| {
         hash.update(field.len().to_le_bytes());
         hash.update(field.as_bytes());
+    };
+    field(&corpus.len().to_string());
+    for memory in corpus {
+        for text in [&memory.topic, &memory.content, &memory.language] {
+            field(text);
+        }
+    }
+    field(&queries.len().to_string());
+    for query in queries {
+        field(&query.group);
+        field(&query.query);
+        field(&query.relevant.len().to_string());
+        for topic in &query.relevant {
+            field(topic);
+        }
     }
     format!("{:x}", hash.finalize())
 }
