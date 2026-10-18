@@ -157,6 +157,24 @@ struct Query {
     relevant: HashSet<String>,
 }
 
+impl Query {
+    /// The passages judged relevant to this query.
+    ///
+    /// Every arm that grades a query reads its answer key here, so this is
+    /// where the run's coverage is counted -- into the table the arm last
+    /// named with `harness::shape::table`.
+    fn relevant(&self) -> &HashSet<String> {
+        harness::shape::tally(GROUP, &self.id);
+        &self.relevant
+    }
+
+    /// Scores `ranked` against this query's answer key, into `into`.
+    fn score(&self, into: &mut Scores, ranked: &[String]) {
+        let relevant = self.relevant();
+        into.add(ranked, relevant.len(), |topic| relevant.contains(topic));
+    }
+}
+
 struct Corpus {
     passages: Vec<Passage>,
     queries: Vec<Query>,
@@ -256,6 +274,28 @@ impl Corpus {
             }
         }
         format!("{hash:016x}")
+    }
+
+    /// The run's shape (see [`harness::shape`]): every passage in file
+    /// order, and every query with its judged passages, in the one group.
+    fn shape(&self) -> harness::shape::Shape {
+        let selection = if self.capped {
+            "every dev query with a judged passage in the first MIRACL_MAX_DOCS passages"
+        } else {
+            "every dev query with a judged passage"
+        };
+        let mut shape = harness::shape::Shape::new("miracl-sw", selection.into(), None);
+        for passage in &self.passages {
+            shape.document(&[&passage.docid, &passage.text]);
+        }
+        for query in &self.queries {
+            let mut relevant: Vec<&str> = query.relevant.iter().map(String::as_str).collect();
+            relevant.sort_unstable();
+            let mut fields = vec![query.text.as_str()];
+            fields.extend(relevant);
+            shape.query(&[GROUP], &query.id, &fields);
+        }
+        shape
     }
 
     fn describe(&self, named: &str) {
@@ -435,19 +475,40 @@ const MODEL_FLOORS: (f64, f64) = (0.0, 0.0);
 fn the_model_ranks_real_passages() {
     let corpus = Corpus::load();
     let (named, profile) = profile();
+    let mut shape = corpus.shape();
+    shape.publish("the_model_ranks_real_passages", &named);
     corpus.describe(&named);
 
     let home = eval_home();
-    let mut embedder =
-        Embedder::load(profile, &home.join("models")).expect("load the embedding model");
+    shape.observe_models();
+    let embedder = harness::shape::owned(
+        Embedder::load(profile, &home.join("models")).expect("load the embedding model"),
+    );
+    // No engine: the record's providers are the harness's own model.
+    shape.ran_on(Vec::new);
+    shape.also_ran("embedding", &embedder, Embedder::plans);
+    shape.also_ran("embedding secondary", &embedder, |embedder| {
+        embedder.secondary_plans().unwrap_or_default()
+    });
+    let mut embedder = harness::shape::lock(&embedder);
 
     let width = profile.dimensions() as usize;
-    let vectors = embed_corpus(&mut embedder, &corpus, &home, width);
+    let (file, embedded) = embed_corpus(&mut embedder, &corpus, &home, width);
+    shape.cached(
+        &file,
+        &embedded.producer,
+        embedded.reused,
+        corpus.passages.len(),
+    );
+    let vectors = embedded.vectors;
 
+    harness::shape::tables(["embedding space"]);
+    harness::shape::table("embedding space");
     let mut scores = Scores::default();
     let started = std::time::Instant::now();
     for query in &corpus.queries {
-        let vector = unit(embedder.embed_query(&query.text).expect("embed the query"));
+        let vector =
+            harness::vectors::unit(embedder.embed_query(&query.text).expect("embed the query"));
 
         let mut scored: Vec<(f32, usize)> = (0..corpus.passages.len())
             .map(|document| {
@@ -464,9 +525,7 @@ fn the_model_ranks_real_passages() {
             .into_iter()
             .map(|(_, document)| corpus.passages[document].docid.clone())
             .collect();
-        scores.add(&ranked, query.relevant.len(), |topic| {
-            query.relevant.contains(topic)
-        });
+        query.score(&mut scores, &ranked);
     }
 
     report(
@@ -477,13 +536,14 @@ fn the_model_ranks_real_passages() {
     assert_floors(&named, &corpus, &scores, MODEL_FLOORS);
 }
 
-/// Embeds every passage, reusing and resuming a cache on disk.
-///
-/// Resumable rather than merely cached: on the default profile this is hours
-/// of forward passes, and a machine that loses the process halfway would
-/// otherwise start again from nothing. Vectors are appended in batches, so the
-/// length of the file is how many are done.
-fn embed_corpus(embedder: &mut Embedder, corpus: &Corpus, home: &Path, width: usize) -> Vec<f32> {
+/// Embeds every passage through the shared vector cache (see
+/// `harness::vectors`).
+fn embed_corpus(
+    embedder: &mut Embedder,
+    corpus: &Corpus,
+    home: &Path,
+    width: usize,
+) -> (String, harness::vectors::Embedded) {
     /// How many passages go into one call.
     ///
     /// A call and not a forward pass on the default profile: the joint export
@@ -492,90 +552,19 @@ fn embed_corpus(embedder: &mut Embedder, corpus: &Corpus, home: &Path, width: us
     /// when the process dies.
     const BATCH: usize = 32;
 
-    let path = home.join(format!(
+    let file = format!(
         "miracl-sw-{}-{}.f32",
         embedder.profile().model_id().replace('/', "-"),
         corpus.fingerprint()
-    ));
-    std::fs::create_dir_all(home).expect("the evaluation directory");
-
-    let bytes = std::fs::metadata(&path)
-        .map(|file| file.len() as usize)
-        .unwrap_or(0);
-    let mut done = bytes / 4 / width;
-    if done > corpus.passages.len() {
-        // The name carries the model and the corpus, so a mismatch cannot
-        // happen -- but a truncated write can leave half a vector, and half a
-        // vector is worse than none.
-        done = 0;
-    }
-    let mut vectors: Vec<f32> = std::fs::read(&path)
-        .map(|raw| {
-            raw[..done * width * 4]
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|bytes| f32::from_le_bytes(*bytes))
-                .collect()
-        })
-        .unwrap_or_default();
-    if done > 0 {
-        println!("  reusing {done} embedded passages");
-    }
-
-    let resumed = done;
-    let started = std::time::Instant::now();
-    while done < corpus.passages.len() {
-        let batch: Vec<&str> = corpus.passages[done..]
-            .iter()
-            .take(BATCH)
-            .map(|passage| passage.text.as_str())
-            .collect();
-        let embedded = embedder.embed_passages(&batch).expect("embed the corpus");
-
-        let mut appended = Vec::with_capacity(batch.len() * width * 4);
-        for vector in embedded {
-            let vector = unit(vector);
-            for value in &vector {
-                appended.extend_from_slice(&value.to_le_bytes());
-            }
-            vectors.extend_from_slice(&vector);
-        }
-        append(&path, &appended);
-
-        done += batch.len();
-        if done.is_multiple_of(BATCH * 50) {
-            let rate = (done - resumed) as f64 / started.elapsed().as_secs_f64();
-            println!(
-                "  embedded {done}/{} at {rate:.1}/s, {:.0} minutes left",
-                corpus.passages.len(),
-                (corpus.passages.len() - done) as f64 / rate / 60.0,
-            );
-        }
-    }
-
-    vectors
-}
-
-fn append(path: &Path, bytes: &[u8]) {
-    use std::io::Write as _;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .unwrap_or_else(|error| panic!("opening {}: {error}", path.display()));
-    file.write_all(bytes).expect("write the vector cache");
-}
-
-/// Scales a vector to unit length, so a dot product is a cosine.
-fn unit(mut vector: Vec<f32>) -> Vec<f32> {
-    let norm: f32 = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        for value in &mut vector {
-            *value /= norm;
-        }
-    }
-    vector
+    );
+    let path = home.join(&file);
+    let texts: Vec<&str> = corpus
+        .passages
+        .iter()
+        .map(|passage| passage.text.as_str())
+        .collect();
+    let embedded = harness::vectors::embed(embedder, &path, &texts, width, BATCH);
+    (file, embedded)
 }
 
 // ---------------------------------------------------------------------------
@@ -603,6 +592,9 @@ const RERANK_IS_WORTH: f64 = 0.0;
 #[test]
 #[ignore = "provisions PostgreSQL, downloads a corpus, and indexes it"]
 fn search_ranks_real_passages() {
+    // Loads models one test at a time (see `harness::ModelsTurn`): the
+    // published shape takes the turn, and `MEMORY`, which publishes none,
+    // takes its own.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -620,7 +612,6 @@ async fn search() {
 
     let corpus = Corpus::load();
     let (named, profile) = profile();
-    corpus.describe(&named);
 
     let home = eval_home();
     let temporary = (std::env::var("PAMIN_EVAL_HOME").is_err())
@@ -633,22 +624,34 @@ async fn search() {
     // The profile is part of the workspace identity: an index records the
     // profile it was built with and refuses to open under another.
     let project = format!("miracl-sw-{named}-{}", corpus.fingerprint());
-    let engine = Engine::open(
-        &workspace,
-        &project,
-        profile,
-        VectorIndex::default(),
-        Access::ReadWrite,
-    )
-    .await
-    .expect("open the engine");
 
     // `MEMORY`: where the resident memory goes, stage by stage. First, so no
-    // other arm has loaded anything yet. See `memory`.
+    // other arm has loaded anything yet. See `memory`. It grades no question,
+    // so it publishes no shape -- one that scores nothing fails its run --
+    // and takes the turn at loading models that a shape would.
     if std::env::var("MEMORY").is_ok() {
-        attribute_memory(&engine, &corpus).await;
+        let _turn = harness::load_models();
+        corpus.describe(&named);
+        attribute_memory(&open(&workspace, &project, profile).await, &corpus).await;
         return;
     }
+
+    let mut shape = corpus.shape();
+    // Published before the run describes itself, so a failed write to
+    // stdout still leaves the in-progress record.
+    shape.publish("search_ranks_real_passages", &named);
+    corpus.describe(&named);
+    shape.observe_models();
+    let engine = open(&workspace, &project, profile).await;
+    shape.ran_on(harness::shape::engines(&[("primary", &engine)]));
+    harness::index(
+        &mut shape,
+        "primary",
+        &engine,
+        workspace.root(),
+        corpus.passages.len(),
+    )
+    .await;
 
     // `RESHAPE`: the index reshaped in place, the way the server does it when
     // idle, with every question asked before and after. Leaves the project in
@@ -676,11 +679,8 @@ async fn search() {
             DEPTHS,
             &variants,
             |index, into, hits| {
-                let query = &corpus.queries[index];
                 let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
-                into.add(&ranked, query.relevant.len(), |topic| {
-                    query.relevant.contains(topic)
-                });
+                corpus.queries[index].score(into, &ranked);
             },
         )
         .await;
@@ -753,21 +753,24 @@ async fn search() {
     // fusion offline. See `features`.
     if let Some(mut dump) = features::Features::from_env("miracl-sw") {
         const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+        harness::shape::tables(["features"]);
+        harness::shape::table("features");
         for query in &corpus.queries {
             let hits = engine
                 .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
                 .await
                 .expect("search");
+            let relevant = query.relevant();
             let asked = features::Asked {
                 group: GROUP,
                 question: &query.id,
                 text: &query.text,
                 // What `write_corpus` labels every passage with.
                 language: Some("sw"),
-                judged: query.relevant.len(),
+                judged: relevant.len(),
             };
             dump.observe(&asked, &hits, WIDE, |docid| {
-                Some(f64::from(query.relevant.contains(docid)))
+                Some(f64::from(relevant.contains(docid)))
             });
         }
         dump.finish(corpus.queries.len());
@@ -787,7 +790,9 @@ async fn search() {
         println!("\n  setting                nDCG@{NDCG_AT}   recall@{RECALL_AT}");
         println!("  ------------------------------------------------");
         let mut measured: Vec<(String, Scores)> = Vec::new();
+        harness::shape::tables(settings.iter().map(|(label, _)| label));
         for (label, fusion) in settings {
+            harness::shape::table(&label);
             let scores = run(&engine, &corpus, Route::Fused(fusion)).await;
             println!(
                 "  {label:<20}   {:>7.4}   {:>9.4}",
@@ -823,15 +828,19 @@ async fn search() {
     // the topic's name, asked every question alongside this one. See
     // `channels::Paired`.
     if std::env::var("PASSAGES").is_ok() {
-        let other = Engine::open(
-            &workspace,
-            &format!("{project}-named"),
-            profile,
-            VectorIndex::default(),
-            Access::ReadWrite,
+        let other = open(&workspace, &format!("{project}-named"), profile).await;
+        shape.ran_on(harness::shape::engines(&[
+            ("primary", &engine),
+            ("named", &other),
+        ]));
+        harness::index(
+            &mut shape,
+            "named",
+            &other,
+            workspace.root(),
+            corpus.passages.len(),
         )
-        .await
-        .expect("open the named project");
+        .await;
         write_corpus(&other, &corpus).await;
         assert_eq!(
             engine.passage(),
@@ -855,9 +864,7 @@ async fn search() {
                 .await
                 .expect("search");
             paired.observe(GROUP, &before, &after, |into, ranking| {
-                into.add(ranking, query.relevant.len(), |topic| {
-                    query.relevant.contains(topic)
-                });
+                query.score(into, ranking)
             });
         }
         paired.report(&format!(
@@ -878,8 +885,15 @@ async fn search() {
     if std::env::var("ROUTES").is_ok() {
         const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
         let tier = Rerank::default();
-        let mut small = pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
-            .expect("load the small reranker");
+        let small = harness::shape::owned(
+            pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
+                .expect("load the small reranker"),
+        );
+        shape.also_ran(
+            "routes small reranker",
+            &small,
+            pamin_index::Reranker::plans,
+        );
         let mut routes = reranking::Routes::default();
         for query in &corpus.queries {
             let hits = engine
@@ -893,13 +907,9 @@ async fn search() {
                 &query.text,
                 &hits,
                 &replayed,
-                &mut small,
+                &mut harness::shape::lock(&small),
                 &query.text,
-                |into, ranking| {
-                    into.add(ranking, query.relevant.len(), |topic| {
-                        query.relevant.contains(topic)
-                    });
-                },
+                |into, ranking| query.score(into, ranking),
             );
         }
         routes.report(&format!(
@@ -912,13 +922,16 @@ async fn search() {
     // `CONTEXT`: the shipped tier shown each candidate's name and seed. See
     // `reranking::in_context`.
     if std::env::var("CONTEXT").is_ok() {
-        context(&engine, &workspace, &corpus, &named).await;
+        context(&engine, &mut shape, &workspace, &corpus, &named).await;
         return;
     }
 
     if std::env::var("TIERS").is_ok() {
         let mut priced: Vec<(Rerank, Scores)> = Vec::new();
-        for tier in [Rerank::Off, Rerank::Fast, Rerank::Accurate] {
+        let tiers = [Rerank::Off, Rerank::Fast, Rerank::Accurate];
+        harness::shape::tables(tiers.map(|tier| tier.name()));
+        for tier in tiers {
+            harness::shape::table(tier.name());
             let started = std::time::Instant::now();
             let scores = run(&engine, &corpus, Route::Shipped(tier)).await;
             report(
@@ -955,6 +968,8 @@ async fn search() {
         return;
     }
 
+    harness::shape::tables(["shipped", "fusion alone"]);
+    harness::shape::table("shipped");
     let started = std::time::Instant::now();
     let shipped = run(&engine, &corpus, Route::Shipped(Rerank::default())).await;
     report(
@@ -969,6 +984,7 @@ async fn search() {
     // the other corpus's answer carries over. It does not: reranking touches
     // only what the lexical channels missed, and how much of the shortlist
     // that is differs by corpus more than by tier.
+    harness::shape::table("fusion alone");
     let started = std::time::Instant::now();
     let fused = run(&engine, &corpus, Route::Fused(Fusion::default())).await;
     report(
@@ -1051,9 +1067,7 @@ async fn run(engine: &Engine, corpus: &Corpus, route: Route) -> Scores {
         }
         .expect("search");
         let ranked: Vec<String> = hits.into_iter().map(|hit| hit.topic).collect();
-        scores.add(&ranked, query.relevant.len(), |topic| {
-            query.relevant.contains(topic)
-        });
+        query.score(&mut scores, &ranked);
     }
     scores
 }
@@ -1066,6 +1080,7 @@ async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
     let tier = Rerank::default();
     let rules = reranking::rules();
     let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); rules.len()];
+    harness::shape::tables(rules.iter().map(|(label, _)| label));
     for query in &corpus.queries {
         let hits = engine
             .search_reranked(&query.text, WIDE, DEPTHS, tier)
@@ -1073,11 +1088,11 @@ async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
             .expect("search");
         channels::enough_room(&hits, WIDE);
         let replayed = reranking::replay(&hits, tier);
-        for ((_, rule), into) in rules.iter().zip(&mut measured) {
-            into.entry(GROUP.to_string()).or_default().add(
+        for ((label, rule), into) in rules.iter().zip(&mut measured) {
+            harness::shape::table(label);
+            query.score(
+                into.entry(GROUP.to_string()).or_default(),
                 &replayed.order(*rule),
-                query.relevant.len(),
-                |topic| query.relevant.contains(topic),
             );
         }
     }
@@ -1099,15 +1114,25 @@ async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
 /// This corpus's names are MIRACL's own document ids behind a prefix, so the
 /// named renderings ask what a name that carries nothing costs; it has no
 /// edges, so the seeded renderings equal their unseeded counterparts.
-async fn context(engine: &Engine, workspace: &Workspace, corpus: &Corpus, named: &str) {
+async fn context(
+    engine: &Engine,
+    shape: &mut harness::shape::Shape,
+    workspace: &Workspace,
+    corpus: &Corpus,
+    named: &str,
+) {
     use std::collections::BTreeMap;
 
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
-    let mut model = pamin_index::Reranker::load(tier, &workspace.root().join("models"))
-        .expect("load the reranker");
+    let model = harness::shape::owned(
+        pamin_index::Reranker::load(tier, &workspace.root().join("models"))
+            .expect("load the reranker"),
+    );
+    shape.also_ran("context reranker", &model, pamin_index::Reranker::plans);
     let labels = reranking::context_labels();
     let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
+    harness::shape::tables(labels.iter().map(|(label, _)| label));
     for query in &corpus.queries {
         let hits = engine
             .search_reranked(&query.text, WIDE, DEPTHS, tier)
@@ -1115,13 +1140,15 @@ async fn context(engine: &Engine, workspace: &Workspace, corpus: &Corpus, named:
             .expect("search");
         channels::enough_room(&hits, WIDE);
         let replayed = reranking::replay(&hits, tier);
-        let (orders, _) = reranking::in_context(&hits, &replayed, &mut model, &query.text);
-        for (order, into) in orders.iter().zip(&mut measured) {
-            into.entry(GROUP.to_string())
-                .or_default()
-                .add(order, query.relevant.len(), |topic| {
-                    query.relevant.contains(topic)
-                });
+        let (orders, _) = reranking::in_context(
+            &hits,
+            &replayed,
+            &mut harness::shape::lock(&model),
+            &query.text,
+        );
+        for ((order, into), (label, _)) in orders.iter().zip(&mut measured).zip(&labels) {
+            harness::shape::table(label);
+            query.score(into.entry(GROUP.to_string()).or_default(), order);
         }
     }
     reranking::report(
@@ -1156,6 +1183,9 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
         Channel::Graph,
     ];
 
+    /// The coverage table every channel on its own is scored under.
+    const ALONE: &str = "each channel alone";
+
     let mut alone: BTreeMap<Channel, Scores> = BTreeMap::new();
     let mut without: BTreeMap<Channel, Scores> = BTreeMap::new();
     let mut whole = Scores::default();
@@ -1165,6 +1195,20 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
     // rows above. One pass, the whole grid.
     let variants = channels::variants();
     let mut offline: Vec<Scores> = variants.iter().map(|_| Scores::default()).collect();
+    // One table for the channels alone, not one each: a channel is scored
+    // only on the queries it returned anything for, and the count it was
+    // scored on is printed beside it.
+    harness::shape::tables(
+        ["fused", ALONE]
+            .map(String::from)
+            .into_iter()
+            .chain(CHANNELS.iter().map(channels::without_table))
+            .chain(
+                variants
+                    .iter()
+                    .map(|(label, _)| channels::variant_table(label)),
+            ),
+    );
 
     for query in &corpus.queries {
         let hits = engine
@@ -1179,13 +1223,13 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
         channels::same_as_the_engine(&hits, &Fusion::default());
 
         let each = channels::each_alone(&hits);
+        harness::shape::table(ALONE);
+        let relevant = query.relevant();
         for (channel, ranking) in &each {
             alone
                 .entry(*channel)
                 .or_default()
-                .add(ranking, query.relevant.len(), |topic| {
-                    query.relevant.contains(topic)
-                });
+                .add(ranking, relevant.len(), |topic| relevant.contains(topic));
         }
 
         for missing in CHANNELS {
@@ -1193,29 +1237,22 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
                 &hits,
                 &channels::effective_fusion(&hits, &Fusion::default()).without(*missing),
             );
-            without
-                .entry(*missing)
-                .or_default()
-                .add(&ranking, query.relevant.len(), |topic| {
-                    query.relevant.contains(topic)
-                });
+            harness::shape::table(channels::without_table(missing));
+            query.score(without.entry(*missing).or_default(), &ranking);
         }
 
-        whole.add(
+        harness::shape::table("fused");
+        query.score(
+            &mut whole,
             &hits
                 .iter()
                 .map(|hit| hit.topic.clone())
                 .collect::<Vec<String>>(),
-            query.relevant.len(),
-            |topic| query.relevant.contains(topic),
         );
 
-        for ((_, fusion), into) in variants.iter().zip(&mut offline) {
-            into.add(
-                &channels::as_if(&hits, fusion),
-                query.relevant.len(),
-                |topic| query.relevant.contains(topic),
-            );
+        for ((label, fusion), into) in variants.iter().zip(&mut offline) {
+            harness::shape::table(channels::variant_table(label));
+            query.score(into, &channels::as_if(&hits, fusion));
         }
 
         if let (Some(segmented), Some(ngram)) = (
@@ -1353,8 +1390,16 @@ async fn reshape_in_place(engine: &Engine, corpus: &Corpus) {
         ("fused", Route::Fused(Fusion::default())),
         ("shipped", Route::Shipped(Rerank::default())),
     ];
+    // Every question is asked once before and once after: one table each.
+    let pass = |name: &str, when: &str| format!("{name} {when}");
+    harness::shape::tables(
+        routes
+            .iter()
+            .flat_map(|(name, _)| ["before", "after"].map(|when| pass(name, when))),
+    );
     let mut earlier = Vec::new();
-    for (_, route) in &routes {
+    for (name, route) in &routes {
+        harness::shape::table(pass(name, "before"));
         earlier.push(run(engine, corpus, clone_route(route)).await);
     }
 
@@ -1388,6 +1433,7 @@ async fn reshape_in_place(engine: &Engine, corpus: &Corpus) {
         "  route      nDCG@{NDCG_AT} before   after    recall@{RECALL_AT} before   after   paired"
     );
     for ((name, route), was) in routes.iter().zip(&earlier) {
+        harness::shape::table(pass(name, "after"));
         let now = run(engine, corpus, clone_route(route)).await;
         println!(
             "  {name:<8}   {:>13.4}  {:>6.4}   {:>15.4}  {:>6.4}   {}",
@@ -1417,12 +1463,23 @@ async fn compare_efforts(engine: &Engine, corpus: &Corpus, efforts: &str) {
         ("fused", Route::Fused(Fusion::default())),
         ("shipped", Route::Shipped(Rerank::default())),
     ];
+    // The environment is set only holding the turn (see
+    // `harness::ModelsTurn`).
+    let _turn = harness::environment_turn();
+    // Dropped before the turn, panicking or not.
+    let effort_knob = harness::KnobSweep::claim("PAMIN_SEARCH_EFFORT");
+    // Every question is asked once at each width: one table each.
+    let pass = |name: &str, effort: &str| format!("{name} width {effort}");
+    harness::shape::tables(
+        routes
+            .iter()
+            .flat_map(|(name, _)| efforts.iter().map(|effort| pass(name, effort))),
+    );
     for (name, route) in &routes {
         let mut baseline: Option<Scores> = None;
         for effort in &efforts {
-            // SAFETY: the harness runs one test on one thread at a time, and
-            // nothing else reads the environment while this is written.
-            unsafe { std::env::set_var("PAMIN_SEARCH_EFFORT", effort) };
+            effort_knob.set(effort);
+            harness::shape::table(pass(name, effort));
             let started = std::time::Instant::now();
             let scores = run(engine, corpus, clone_route(route)).await;
             let seconds = started.elapsed().as_secs_f64();
@@ -1441,7 +1498,6 @@ async fn compare_efforts(engine: &Engine, corpus: &Corpus, efforts: &str) {
             }
         }
     }
-    unsafe { std::env::remove_var("PAMIN_SEARCH_EFFORT") };
 }
 
 fn clone_route(route: &Route) -> Route {
@@ -1449,6 +1505,19 @@ fn clone_route(route: &Route) -> Route {
         Route::Shipped(rerank) => Route::Shipped(*rerank),
         Route::Fused(fusion) => Route::Fused(fusion.clone()),
     }
+}
+
+/// Opens `project` in `workspace` for reading and writing.
+async fn open(workspace: &Workspace, project: &str, profile: pamin_index::Profile) -> Engine {
+    Engine::open(
+        workspace,
+        project,
+        profile,
+        VectorIndex::default(),
+        Access::ReadWrite,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("open {project}: {error}"))
 }
 
 async fn write_corpus(engine: &Engine, corpus: &Corpus) {
