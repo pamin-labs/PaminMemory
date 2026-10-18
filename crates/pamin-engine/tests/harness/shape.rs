@@ -256,7 +256,7 @@ const ALWAYS_PREFIXES: [&str; 7] = ["ORT_", "OMP_", "MKL_", "KMP_", "OPENBLAS_",
 
 /// Variables the product reads that change no result or timing, with why.
 /// Anything else it reads names the record.
-const NOT_IDENTITY: [(&str, &str); 6] = [
+const NOT_IDENTITY: [(&str, &str); 8] = [
     ("HF_HOME", "where downloaded models are cached, not which"),
     ("LOCALAPPDATA", "where the WinML runtime is unpacked"),
     ("OUT_DIR", "a build directory, compiled in"),
@@ -269,6 +269,14 @@ const NOT_IDENTITY: [(&str, &str); 6] = [
         "the CPU, recorded as the hardware's cpu",
     ),
     ("HOSTNAME", "who holds a cascade claim in a shared store"),
+    (
+        "MALLOC_ARENA_MAX",
+        "how many heap arenas glibc keeps, which only memory depends on",
+    ),
+    (
+        "GLIBC_TUNABLES",
+        "whether it already limits glibc's heap arenas, which only memory depends on",
+    ),
 ];
 
 /// Variables outside `PAMIN_` the evaluation tests read that choose what a
