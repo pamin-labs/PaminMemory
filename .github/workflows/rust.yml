@@ -63,7 +63,7 @@ jobs:
     name: SIMD kernels on ${{ matrix.os }}
     # The host vector kernels pick an instruction set per CPU: NEON on Linux
     # aarch64, Accelerate on Apple silicon (whose tests also run the NEON
-    # kernel), F16C/AVX2/AVX-512 on x86-64. The `check`
+    # kernel), F16C/AVX2 on x86-64. The `check`
     # job only ever runs the x86-64 ones, so these run each other path's own
     # tests on its own hardware.
     strategy:
