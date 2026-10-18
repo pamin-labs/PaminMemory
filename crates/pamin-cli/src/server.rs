@@ -628,7 +628,9 @@ pub(crate) fn cap_heap_arenas() {
     const M_ARENA_MAX: i32 = -8;
 
     if arena_limit_given(
-        std::env::var_os("MALLOC_ARENA_MAX").is_some(),
+        std::env::var_os("MALLOC_ARENA_MAX")
+            .as_deref()
+            .map(std::os::unix::ffi::OsStrExt::as_bytes),
         std::env::var_os("GLIBC_TUNABLES")
             .as_deref()
             .map(std::os::unix::ffi::OsStrExt::as_bytes),
@@ -648,15 +650,37 @@ pub(crate) fn cap_heap_arenas() {}
 
 /// Whether the process was started with its own glibc arena limit: through
 /// `MALLOC_ARENA_MAX`, or as `glibc.malloc.arena_max` among the
-/// colon-separated `GLIBC_TUNABLES`, read as bytes as glibc reads them.
+/// colon-separated `GLIBC_TUNABLES`, read as bytes as glibc reads them. A
+/// value glibc would ignore is no limit.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-fn arena_limit_given(malloc_arena_max: bool, tunables: Option<&[u8]>) -> bool {
-    malloc_arena_max
+fn arena_limit_given(malloc_arena_max: Option<&[u8]>, tunables: Option<&[u8]>) -> bool {
+    malloc_arena_max.is_some_and(arena_limit)
         || tunables.is_some_and(|tunables| {
-            tunables
-                .split(|byte| *byte == b':')
-                .any(|tunable| tunable.starts_with(b"glibc.malloc.arena_max="))
+            tunables.split(|byte| *byte == b':').any(|tunable| {
+                tunable
+                    .strip_prefix(b"glibc.malloc.arena_max=")
+                    .is_some_and(arena_limit)
+            })
         })
+}
+
+/// Whether glibc takes `value` as an arena limit: a whole decimal or
+/// `0x`-prefixed hexadecimal number of at least one, the way its tunables
+/// parser reads one and the tunable's minimum.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn arena_limit(value: &[u8]) -> bool {
+    let (digits, radix) = match value
+        .strip_prefix(b"0x")
+        .or_else(|| value.strip_prefix(b"0X"))
+    {
+        Some(hex) => (hex, 16),
+        None => (value, 10),
+    };
+    std::str::from_utf8(digits)
+        .ok()
+        .filter(|digits| !digits.starts_with('+'))
+        .and_then(|digits| u64::from_str_radix(digits, radix).ok())
+        .is_some_and(|limit| limit >= 1)
 }
 
 /// Whether the connection asked the server to stop.
@@ -845,24 +869,26 @@ mod tests {
 
     #[test]
     fn an_arena_limit_the_process_was_started_with_is_left_alone() {
-        assert!(arena_limit_given(true, None));
-        assert!(arena_limit_given(false, Some(b"glibc.malloc.arena_max=1")));
-        assert!(arena_limit_given(
-            false,
+        let given = |env: Option<&str>, tunables: Option<&[u8]>| {
+            arena_limit_given(env.map(str::as_bytes), tunables)
+        };
+        assert!(given(Some("1"), None));
+        assert!(given(Some("0x10"), None));
+        assert!(given(None, Some(b"glibc.malloc.arena_max=1")));
+        assert!(given(
+            None,
             Some(b"glibc.malloc.trim_threshold=0:glibc.malloc.arena_max=8")
         ));
-        assert!(!arena_limit_given(false, None));
-        assert!(!arena_limit_given(
-            false,
-            Some(b"glibc.malloc.trim_threshold=0")
-        ));
-        assert!(!arena_limit_given(
-            false,
-            Some(b"glibc.malloc.arena_test=2")
-        ));
-        assert!(arena_limit_given(
-            false,
-            Some(b"glibc.malloc.arena_max=1:glibc.\xff=0")
-        ));
+        assert!(given(None, Some(b"glibc.malloc.arena_max=1:glibc.\xff=0")));
+
+        assert!(!given(None, None));
+        assert!(!given(None, Some(b"glibc.malloc.trim_threshold=0")));
+        assert!(!given(None, Some(b"glibc.malloc.arena_test=2")));
+        // Values glibc ignores leave the cap to apply.
+        for ignored in ["", "0", "two", "2x", "+2", "-1", "0x"] {
+            assert!(!given(Some(ignored), None), "{ignored:?}");
+            let tunables = format!("glibc.malloc.arena_max={ignored}");
+            assert!(!given(None, Some(tunables.as_bytes())), "{ignored:?}");
+        }
     }
 }
