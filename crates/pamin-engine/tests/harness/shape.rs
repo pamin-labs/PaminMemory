@@ -303,6 +303,12 @@ const EVAL_SETTINGS: [&str; 29] = [
     "XQUAD_ALL_QUERIES",
 ];
 
+/// Settings in [`EVAL_SETTINGS`] whose value is a path to write to: being
+/// set changes the run, where it writes does not. `REPLAY_OUT` adds the
+/// rules arm and scores the superset with the engine's reranker, which the
+/// reranked-pair counts some harnesses report include.
+const NAMED_BY_PRESENCE: [&str; 1] = ["REPLAY_OUT"];
+
 /// Variables the evaluation tests read that change nothing a record is
 /// named by, with why.
 const EVAL_NOT_IDENTITY: [(&str, &str); 6] = [
@@ -405,7 +411,13 @@ fn settings(set: impl IntoIterator<Item = (String, String)>) -> Vec<String> {
                     && !NOT_SETTINGS.contains(&name.as_str())
                     && !super::eval::BUILD.contains(&name.as_str()))
         })
-        .map(|(name, value)| format!("{name}={value}"))
+        .map(|(name, value)| {
+            if NAMED_BY_PRESENCE.contains(&name.as_str()) {
+                format!("{name}=set")
+            } else {
+                format!("{name}={value}")
+            }
+        })
         .collect();
     settings.sort();
     settings
@@ -3586,6 +3598,14 @@ mod tests {
     /// The reranker's knobs and the search's effort name the record but not
     /// the producer: a tuned arm reuses the shipped run's vector cache and
     /// index, whose vectors no such knob touched.
+    #[test]
+    fn a_record_is_named_by_asking_for_a_replay_not_by_where_it_goes() {
+        let at = |path: &str| settings([("REPLAY_OUT".to_string(), path.to_string())]);
+        assert_eq!(at("/a/one.jsonl"), at("/b/two.jsonl"));
+        assert_eq!(at("/a/one.jsonl"), ["REPLAY_OUT=set"]);
+        assert!(settings(std::iter::empty()).is_empty());
+    }
+
     #[test]
     fn reranker_and_search_knobs_name_the_record_not_the_producer() {
         for knob in [
