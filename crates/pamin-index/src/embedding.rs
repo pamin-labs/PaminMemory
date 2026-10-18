@@ -508,10 +508,9 @@ fn joint_session(
 /// ColBERT representations come back from the same pass and are dropped. They
 /// are not free -- the pass computes them -- but neither is wanted, and no
 /// cheaper export of this model's int8 weights exists.
-fn dense(outputs: ort::session::SessionOutputs<'_>) -> Result<Vec<f32>> {
-    let first = outputs
-        .values()
-        .next()
+fn dense(outputs: crate::encoder::Outputs) -> Result<Vec<f32>> {
+    let (_, first) = outputs
+        .first()
         .ok_or_else(|| IndexError::Engine("the joint export returned nothing".into()))?;
     let (shape, values) = first
         .try_extract_tensor::<f32>()
@@ -700,9 +699,9 @@ mod tests {
     /// count.
     ///
     /// Alone is one pass after another; side by side is as many passes at once
-    /// as there are cores, each on a session of its own, taking texts in
-    /// whatever order they finish. Lengths from a few tokens to the 512-token
-    /// cap, more texts than cores, so every session runs several.
+    /// as there are cores, all on one shared session of one thread, taking
+    /// texts in whatever order they finish. Lengths from a few tokens to the
+    /// 512-token cap, more texts than cores, so every thread runs several.
     /// The model is read from, or downloaded into, `PAMIN_TEST_MODEL_CACHE`.
     #[test]
     #[ignore = "downloads BGE-M3's int8 export; set PAMIN_TEST_MODEL_CACHE"]
@@ -713,9 +712,9 @@ mod tests {
         let mut embedder = Embedder::load(&cache).expect("load the model");
         assert_eq!(embedder.device(), crate::inference::Device::Cpu);
         assert_eq!(
-            embedder.model.side_by_side_sessions(),
-            0,
-            "loading, calibration included, loaded side sessions"
+            embedder.model.side_by_side_passes(),
+            (0, 0),
+            "loading, calibration included, loaded the shared session"
         );
         let long = "migration rollback ".repeat(300);
         let texts = [
@@ -734,16 +733,18 @@ mod tests {
             .iter()
             .map(|text| bits(&embedder.embed_passage(text).unwrap()))
             .collect();
-        assert_eq!(embedder.model.side_by_side_sessions(), 0);
+        assert_eq!(embedder.model.side_by_side_passes(), (0, 0));
         let together: Vec<Vec<u32>> = embedder
             .embed_passages(&texts)
             .unwrap()
             .iter()
             .map(|vector| bits(vector))
             .collect();
+        let (sessions, at_once) = embedder.model.side_by_side_passes();
+        assert_eq!(sessions, 1, "the passes did not run on one shared session");
         assert!(
-            embedder.model.side_by_side_sessions() > 1,
-            "nothing ran side by side; this needs more than one core"
+            at_once > 1,
+            "no two passes ran on it at once; this needs more than one core"
         );
         assert!(alone == together, "a vector changed side by side");
     }
