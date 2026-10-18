@@ -1291,7 +1291,9 @@ an arena of its own (up to eight per core) and each arena kept what it freed.
 On four cores a server ended a search holding 31 to 35 arenas of 64 MiB and
 about a gigabyte of free heap. `pamin` now caps them at two
 (`mallopt(M_ARENA_MAX, 2)` in `main`, before the runtime starts its threads;
-glibc only). At the search entry point, before `d0b6b89` and after `7977b78`,
+glibc only). A process started with `MALLOC_ARENA_MAX` or
+`glibc.malloc.arena_max` in `GLIBC_TUNABLES` keeps that limit instead,
+higher or lower, and the figures below do not describe it. At the search entry point, before `d0b6b89` and after `7977b78`,
 same conditions as the tokenizer rows above but 4 runs per arm in the order
 CPPC PCCP, `inference_threads = 4` from `config.toml`, the resolved model
 revisions unchanged:
