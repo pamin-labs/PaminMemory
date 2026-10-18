@@ -118,10 +118,11 @@ impl Database {
                 // Started with other store settings -- by an earlier run, or
                 // by a server that exited and left its cluster up -- which
                 // apply only when the cluster starts. Reusing it would run
-                // with what it has while this caller recorded what it asked.
-                tracing::info!("restarting the cluster, started with other store settings");
-                stop(workspace).await?;
-                None
+                // with what it has while this caller recorded what it asked,
+                // and restarting it would pull it from under whoever else
+                // holds a pool on it: the cluster is the workspace's, not
+                // this caller's. So the caller is told how to replace it.
+                return Err(other_settings(workspace, &existing, settings));
             }
             Some(existing) if listening(existing.port) => {
                 // Refused credentials or anything else that is not this
@@ -171,6 +172,36 @@ fn started_with(store: &StoreSettings) -> StartedWith {
 /// Whether the running cluster `server` records was started with `store`.
 fn reusable(server: &LocalServer, store: &StoreSettings) -> bool {
     server.started_with.as_ref() == Some(&started_with(store))
+}
+
+/// Refuses `requested` against a running cluster `server` records was
+/// started with something else, naming both and how to replace it.
+fn other_settings(
+    workspace: &Workspace,
+    server: &LocalServer,
+    requested: &StoreSettings,
+) -> crate::StoreError {
+    fn described(started: Option<&StartedWith>) -> String {
+        let Some(started) = started else {
+            return "settings an older build did not record".to_string();
+        };
+        let prefix = started.postgres_dir.as_ref().map_or_else(
+            || "the bundled installation".to_string(),
+            |prefix| std::path::Path::new(prefix).display().to_string(),
+        );
+        format!(
+            "jit {} and {prefix}",
+            if started.jit { "on" } else { "off" }
+        )
+    }
+    crate::StoreError::OtherSettings(format!(
+        "the PostgreSQL of {} is running with {}, and this asked for {}; they apply \
+         only when it starts, so stop the workspace first (`pamin --home {} stop`)",
+        workspace.root().display(),
+        described(server.started_with.as_ref()),
+        described(Some(&started_with(requested))),
+        workspace.root().display(),
+    ))
 }
 
 /// Opens a pool sized for one short-lived command.
@@ -641,22 +672,15 @@ mod tests {
 
     /// A running cluster is reused only by a caller asking for the store
     /// settings it was started with; a changed `jit` or PostgreSQL prefix,
-    /// or a record from before settings were kept, restarts it.
+    /// or a record from before settings were kept, is refused, naming both
+    /// and how to stop the workspace rather than stopping it.
     #[test]
     fn a_cluster_is_reused_only_with_the_settings_it_started_with() {
         let started = StoreSettings {
             jit: false,
             postgres_dir: Some("/usr/lib/postgresql/17".into()),
         };
-        let mut server = crate::LocalServer {
-            host: "localhost".into(),
-            port: 5432,
-            username: "postgres".into(),
-            password: "secret".into(),
-            database: "pamin".into(),
-            installation_dir: "/usr/lib/postgresql/17".into(),
-            started_with: Some(super::started_with(&started)),
-        };
+        let mut server = read_started(&started);
         assert!(super::reusable(&server, &started));
         let jit = StoreSettings {
             jit: true,
@@ -684,6 +708,32 @@ mod tests {
         old.remove("started_with");
         let read: crate::LocalServer = serde_json::from_value(old.into()).unwrap();
         assert!(!super::reusable(&read, &StoreSettings::default()));
+
+        let workspace = crate::Workspace::at("/home/agent/.pamin");
+        let message = super::other_settings(&workspace, &read_started(&started), &jit).to_string();
+        for named in [
+            "running with jit off and /usr/lib/postgresql/17",
+            "asked for jit on and /usr/lib/postgresql/17",
+            "`pamin --home /home/agent/.pamin stop`",
+        ] {
+            assert!(message.contains(named), "{message}");
+        }
+        let message = super::other_settings(&workspace, &read, &bundled).to_string();
+        assert!(message.contains("an older build did not record"), "{message}");
+        assert!(message.contains("the bundled installation"), "{message}");
+    }
+
+    /// A record of a cluster started with `store`.
+    fn read_started(store: &StoreSettings) -> crate::LocalServer {
+        crate::LocalServer {
+            host: "localhost".into(),
+            port: 5432,
+            username: "postgres".into(),
+            password: "secret".into(),
+            database: "pamin".into(),
+            installation_dir: "/usr/lib/postgresql/17".into(),
+            started_with: Some(super::started_with(store)),
+        }
     }
 
     /// A relative prefix is recorded as the absolute path it names from here,
