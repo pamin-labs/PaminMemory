@@ -196,9 +196,10 @@ timelines*):
   that time. Open validity bounds on the current version do not answer this.
 
 A search hit carries its topic's full current content, so for a question about
-now there is nothing more to `read`. `topics` and `neighbors` return names and
-edges, not content: `read` each one that looks relevant before you use it or
-rule it out.
+now there is nothing more to `read` when its validity covers now. When it does
+not, an earlier version may: step back with `read --version-offset`. `topics`
+and `neighbors` return names and edges, not content: `read` each one that looks
+relevant before you use it or rule it out.
 
 - **Before searching again, name what is missing.** List the facts the
   question needs and check them against what you already have. A fact missing
@@ -208,7 +209,8 @@ rule it out.
   phrasing brings back mostly the same topics (say, four of the five),
   the ranking is not the problem and a third phrasing will land there too.
   Switch to a path that does not rank:
-  - `grep` for an exact string you expect the answer to contain. It searches
+  - `grep --json` for an exact string you expect the answer to contain; the
+    plain output omits `filter_reason`, which the rules below need. It searches
     every version ever written, superseded ones included, so check each hit
     against its topic's version for the time asked about. For a CLI write,
     `source` is `manual:<topic>`; pass `read` the part after the colon. A hit
@@ -223,8 +225,11 @@ rule it out.
   - `neighbors --depth 1` from the best topic you found, with `--kind` to
     narrow it. The default depth is two and nothing caps how many it returns,
     which on a well-connected topic can be most of the project. For a question
-    about a past time, add `--at <rfc3339>`; without it only edges that still
-    hold are followed.
+    about what held at a past time, add `--at <rfc3339>`; without it only edges
+    that still hold are followed. `--at` filters by when an edge was true, not
+    when it was recorded, so no flag rebuilds the graph as it was believed at a
+    past time. For a question about what was known then, run it without
+    `--at` and say in your report that it followed today's edges.
 
   `topics` is not one of them: it merges name matches with the same ranked
   search, unreranked. But it returns twenty by default against `search`'s
