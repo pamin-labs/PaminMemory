@@ -43,7 +43,9 @@
 //! | variable | what it does |
 //! |---|---|
 //! | `MUSIQUE_DIR` | where cached pages are, instead of fetching them |
-//! | `MUSIQUE_QUESTIONS` | read only the first this many questions |
+//! | `MUSIQUE_QUESTIONS` | read only the first this many questions -- the split is ordered by hop count, so a short prefix is all two-hop; kept so a run can be paired with a project built on a prefix |
+//! | `MUSIQUE_SAMPLE` | ask this many, drawn from the whole split by a seeded hash, stratified by hop count |
+//! | `EVAL_SEED` | the seed `MUSIQUE_SAMPLE` draws with, default `harness::shape::SEED` |
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
 //! | `CHANNELS` | the channel diagnostic and the offline fusion sweep |
 //! | `FEATURES_OUT` | a path: every candidate fusion saw, one row each, for fitting a fusion offline |
@@ -60,7 +62,7 @@ mod reranking;
 mod scoring;
 mod statistics;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 use std::process::Command;
 
@@ -69,6 +71,7 @@ use pamin_engine::{Depths, Engine};
 use pamin_index::{Access, Profile, Rerank, VectorIndex};
 use pamin_store::Workspace;
 
+use harness::shape::Shape;
 use scoring::{NDCG_AT, RECALL_AT, Scores};
 
 /// Where the rows come from: the answerable half of the dev split.
@@ -93,6 +96,25 @@ fn questions() -> usize {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(QUESTIONS)
+}
+
+/// `MUSIQUE_SAMPLE`: how many questions to draw from the whole split.
+///
+/// The way to ask fewer than all of them and still ask every hop count. A
+/// prefix of 600 -- what runs have used to stay short -- is 600 two-hop
+/// questions, because the split is ordered by hop count; the three- and
+/// four-hop questions, where a walk should matter most, were never in it.
+fn sample() -> Option<usize> {
+    let sample = std::env::var("MUSIQUE_SAMPLE").ok().map(|value| {
+        value
+            .parse()
+            .expect("MUSIQUE_SAMPLE is a number of questions")
+    });
+    assert!(
+        sample.is_none() || std::env::var("MUSIQUE_QUESTIONS").is_err(),
+        "MUSIQUE_SAMPLE draws from the whole split and MUSIQUE_QUESTIONS takes a prefix; set one"
+    );
+    sample
 }
 
 /// How deep to retrieve, so recall@50 can be scored.
@@ -145,6 +167,11 @@ struct Query {
 struct Corpus {
     memories: Vec<Memory>,
     queries: Vec<Query>,
+    /// How the questions were chosen, and with what seed, for the run's shape.
+    selection: String,
+    seed: Option<u64>,
+    /// Questions read and not asked: id, group, reason.
+    excluded: Vec<(String, String, String)>,
 }
 
 impl Corpus {
@@ -154,7 +181,13 @@ impl Corpus {
             .unwrap_or_else(|error| panic!("creating {}: {error}", dir.display()));
 
         let mut rows: Vec<Row> = Vec::new();
-        let wanted = questions();
+        let mut reported: Option<usize> = None;
+        let sample = sample();
+        let wanted = if sample.is_some() {
+            QUESTIONS
+        } else {
+            questions()
+        };
         for offset in (0..wanted).step_by(PER_PAGE) {
             let path = dir.join(format!("page-{offset:05}.json"));
             download(&path, &format!("{ROWS}&offset={offset}&length={PER_PAGE}"));
@@ -162,6 +195,19 @@ impl Corpus {
                 .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
             let body: serde_json::Value = serde_json::from_str(&text)
                 .unwrap_or_else(|error| panic!("parsing {}: {error}", path.display()));
+            if let Some(total) = body["num_rows_total"].as_u64() {
+                let total = total as usize;
+                if let Some(earlier) = reported {
+                    assert_eq!(
+                        earlier,
+                        total,
+                        "{} reports {total} rows in the split where an earlier page reported \
+                         {earlier}: the cached pages are from different versions of it",
+                        path.display()
+                    );
+                }
+                reported = Some(total);
+            }
             for row in body["rows"]
                 .as_array()
                 .unwrap_or_else(|| panic!("{} has no rows: {text:.200}", path.display()))
@@ -172,12 +218,16 @@ impl Corpus {
                 );
             }
         }
+        complete(rows.len(), wanted, reported, &dir);
         rows.truncate(wanted);
+        distinct(rows.iter().map(|row| row.id.as_str()), &dir);
+        let (rows, selection, seed) = select(rows, sample, harness::shape::seed());
 
         // Distinct paragraphs per title, in first-seen order so the joined
         // text is the same on every run.
         let mut texts: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut queries = Vec::new();
+        let mut excluded = Vec::new();
         for row in &rows {
             for paragraph in &row.paragraphs {
                 let seen = texts.entry(paragraph.title.clone()).or_default();
@@ -185,17 +235,24 @@ impl Corpus {
                     seen.push(paragraph.paragraph_text.clone());
                 }
             }
-            let hops = row.id.split("hop").next().unwrap_or("?");
+            let relevant: HashSet<String> = row
+                .paragraphs
+                .iter()
+                .filter(|paragraph| paragraph.is_supporting)
+                .map(|paragraph| paragraph.title.clone())
+                .collect();
+            // Scored, it would count zero whatever came back -- a question the
+            // corpus cannot grade. Its paragraphs stay: they are documents
+            // every other question is searched among.
+            if !answerable(row) {
+                excluded.push((row.id.clone(), group(row), "no supporting paragraph".into()));
+                continue;
+            }
             queries.push(Query {
                 id: row.id.clone(),
                 text: row.question.clone(),
-                group: format!("{hops}hop"),
-                relevant: row
-                    .paragraphs
-                    .iter()
-                    .filter(|paragraph| paragraph.is_supporting)
-                    .map(|paragraph| paragraph.title.clone())
-                    .collect(),
+                group: group(row),
+                relevant,
             });
         }
 
@@ -207,7 +264,33 @@ impl Corpus {
             })
             .collect();
 
-        Self { memories, queries }
+        Self {
+            memories,
+            queries,
+            selection,
+            seed,
+            excluded,
+        }
+    }
+
+    /// What a run asks: every memory, every question with its supporting
+    /// titles, and the questions excluded at load. See [`harness::shape`].
+    fn shape(&self) -> Shape {
+        let mut shape = Shape::new("musique", self.selection.clone(), self.seed);
+        for memory in &self.memories {
+            shape.document(&[&memory.title, &memory.text]);
+        }
+        for query in &self.queries {
+            let mut relevant: Vec<&str> = query.relevant.iter().map(String::as_str).collect();
+            relevant.sort_unstable();
+            let mut fields = vec![query.text.as_str()];
+            fields.extend(relevant);
+            shape.query(&[&query.group], &query.id, &fields);
+        }
+        for (id, group, reason) in &self.excluded {
+            shape.exclude(&[group], id, reason);
+        }
+        shape
     }
 
     fn fingerprint(&self) -> String {
@@ -242,6 +325,201 @@ impl Corpus {
     }
 }
 
+/// Fails unless the pages held every question asked for and, when the whole
+/// split was asked for -- which is what `MUSIQUE_SAMPLE` draws from -- unless
+/// the dataset API reports that as the whole split.
+///
+/// A page that came back short, cached or fetched, drops the tail. The split
+/// is ordered by hop count, so the tail is the four-hop questions, and a
+/// sample drawn from what is left still asks every hop count it has.
+///
+/// The whole split needs the reported total: without it, a split that grew
+/// past `QUESTIONS` fills the last page past it, and the rows beyond are
+/// dropped as surplus, so a sample would be drawn from a prefix.
+fn complete(loaded: usize, wanted: usize, reported: Option<usize>, dir: &Path) {
+    if wanted == QUESTIONS {
+        let total = reported.unwrap_or_else(|| {
+            panic!(
+                "no page under {} reports how many rows the split has, so reading {QUESTIONS} \
+                 cannot be shown to be the whole of it. Delete the cached pages and rerun",
+                dir.display()
+            )
+        });
+        assert_eq!(
+            total, QUESTIONS,
+            "the dataset API reports {total} rows in the split, where the whole split is \
+             taken to be {QUESTIONS}: the dataset has changed, and `QUESTIONS` with it"
+        );
+    }
+    assert!(
+        loaded >= wanted,
+        "read {loaded} of the {wanted} MuSiQue questions asked for, {} short: a page under \
+         {} came back short. Delete the cached pages and rerun",
+        wanted - loaded,
+        dir.display()
+    );
+}
+
+/// Fails if any question id was read twice. Pages that overlap -- a cached
+/// page from one offset beside a fetched page from another -- can hold the
+/// right number of rows with some repeated and others missing, which the row
+/// count alone does not see.
+fn distinct<'a>(ids: impl Iterator<Item = &'a str>, dir: &Path) {
+    let mut seen = HashSet::new();
+    let repeated: BTreeSet<&str> = ids.filter(|id| !seen.insert(*id)).collect();
+    assert!(
+        repeated.is_empty(),
+        "{} MuSiQue question ids were read more than once, e.g. {:?}: the pages under {} \
+         overlap. Delete the cached pages and rerun",
+        repeated.len(),
+        repeated.iter().take(3).collect::<Vec<_>>(),
+        dir.display()
+    );
+}
+
+/// The loader's premise: a run reads every question it asks for, once each,
+/// and the whole split is what the API says it is.
+#[test]
+fn a_short_read_of_the_split_fails() {
+    let dir = Path::new("cache");
+    distinct(["2hop__1", "3hop__1"].into_iter(), dir);
+    let repeated = std::panic::catch_unwind(|| {
+        distinct(["2hop__1", "3hop__1", "2hop__1"].into_iter(), dir);
+    })
+    .expect_err("a repeated id passed");
+    let message = repeated
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_default();
+    assert!(message.contains("1 MuSiQue question ids"), "{message}");
+
+    complete(QUESTIONS, QUESTIONS, Some(QUESTIONS), dir);
+    complete(600, 600, Some(QUESTIONS), dir);
+    complete(600, 600, None, dir);
+    for (loaded, wanted, reported, expected) in [
+        (QUESTIONS, QUESTIONS, None, "no page under"),
+        (2_400, QUESTIONS, Some(QUESTIONS), "17 short"),
+        (QUESTIONS, QUESTIONS, Some(2_500), "reports 2500 rows"),
+        (500, 600, Some(QUESTIONS), "100 short"),
+    ] {
+        let failed = std::panic::catch_unwind(|| complete(loaded, wanted, reported, dir))
+            .expect_err("a short read passed");
+        let message = failed.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(message.contains(expected), "{message}");
+    }
+}
+
+/// `2hop`, `3hop` or `4hop`, read from the question's id.
+fn group(row: &Row) -> String {
+    let hops = row.id.split("hop").next().unwrap_or("?");
+    format!("{hops}hop")
+}
+
+/// The rows a run asks, how they were chosen in words, and the seed if one
+/// chose them.
+///
+/// A sample is drawn per hop count in proportion to the split, by a hash of
+/// the seed and the question id, and never by anything a run measured. Each
+/// row carries its twenty paragraphs, and the corpus is built from the rows
+/// drawn, so a question is asked among exactly the paragraphs it came with:
+/// the linked group stays whole. The corpus is smaller than the whole split's,
+/// so a sample's figures are not comparable with a prefix's or the whole
+/// split's -- compare samples with samples, at the same seed.
+fn select(rows: Vec<Row>, sample: Option<usize>, seed: u64) -> (Vec<Row>, String, Option<u64>) {
+    let Some(wanted) = sample else {
+        let selection = if std::env::var("MUSIQUE_QUESTIONS").is_ok() {
+            format!(
+                "the first {} questions in the dataset's order, which is by hop count",
+                rows.len()
+            )
+        } else {
+            "every answerable dev question".to_string()
+        };
+        return (rows, selection, None);
+    };
+    let read = rows.len();
+    let hops: HashSet<String> = rows
+        .iter()
+        .filter(|row| answerable(row))
+        .map(group)
+        .collect();
+    let drawn = harness::shape::stratified(rows, wanted, seed, group, |row| row.id.clone());
+    // The premise of the mode: every hop count is asked. A sample too small
+    // to reach one is a prefix by another name. Asked means scored: a drawn
+    // question with no supporting paragraph is excluded at load, so it does
+    // not reach its hop count.
+    let reached: HashSet<String> = drawn
+        .iter()
+        .filter(|row| answerable(row))
+        .map(group)
+        .collect();
+    assert_eq!(
+        reached, hops,
+        "a sample of {wanted} does not reach every hop count in the split"
+    );
+    let selection =
+        format!("a seeded sample of {wanted} of {read} questions, stratified by hop count");
+    (drawn, selection, Some(seed))
+}
+
+/// Whether a question can be graded: it has a supporting paragraph to find.
+fn answerable(row: &Row) -> bool {
+    row.paragraphs
+        .iter()
+        .any(|paragraph| paragraph.is_supporting)
+}
+
+/// Rows ordered by hop count, as the split is, each with one supporting
+/// paragraph unless its id is in `unanswerable`.
+fn rows(unanswerable: &[String]) -> Vec<Row> {
+    [("2hop", 50), ("3hop", 30), ("4hop", 20)]
+        .into_iter()
+        .flat_map(|(hops, count)| {
+            (0..count).map(move |at| {
+                let id = format!("{hops}__{at}");
+                Row {
+                    paragraphs: vec![Paragraph {
+                        title: id.clone(),
+                        paragraph_text: String::new(),
+                        is_supporting: !unanswerable.contains(&id),
+                    }],
+                    id,
+                    question: String::new(),
+                }
+            })
+        })
+        .collect()
+}
+
+/// A hop count whose only drawn questions are excluded at load is not asked,
+/// and the sample says so before anything is indexed.
+#[test]
+#[should_panic(expected = "does not reach every hop count")]
+fn a_sample_whose_drawn_questions_cannot_be_graded_does_not_reach_their_hop_count() {
+    let (drawn, _, _) = select(rows(&[]), Some(10), harness::shape::SEED);
+    let four: Vec<String> = drawn
+        .iter()
+        .filter(|row| group(row) == "4hop")
+        .map(|row| row.id.clone())
+        .collect();
+    assert!(!four.is_empty() && four.len() < 20);
+    // Drawn by id alone, so the same rows are drawn again; the split still
+    // has gradable four-hop questions, just not these.
+    select(rows(&four), Some(10), harness::shape::SEED);
+}
+
+#[test]
+fn a_sample_asks_every_hop_count_where_a_prefix_does_not() {
+    let rows = rows(&[]);
+    let prefix: HashSet<String> = rows[..10].iter().map(group).collect();
+    assert_eq!(prefix.len(), 1, "{prefix:?}");
+
+    let (drawn, _, seed) = select(rows, Some(10), harness::shape::SEED);
+    assert_eq!(seed, Some(harness::shape::SEED));
+    let count = |hops: &str| drawn.iter().filter(|row| group(row) == hops).count();
+    assert_eq!((count("2hop"), count("3hop"), count("4hop")), (5, 3, 2));
+}
+
 /// Fetches one page if it is not already cached, through `curl` for the reason
 /// the other harnesses give, under a partial name renamed on success.
 fn download(path: &Path, url: &str) {
@@ -264,7 +542,11 @@ fn download(path: &Path, url: &str) {
     std::fs::rename(&partial, path).expect("name the downloaded page");
 }
 
+/// Scores one ranking, and counts it toward the run's coverage. Every arm
+/// that scores comes through here; the two that do not -- `FEATURES_OUT` and
+/// `REACH` -- count each question themselves.
 fn score(into: &mut Scores, query: &Query, ranked: &[String]) {
+    harness::shape::tally(&query.group, &query.id);
     into.add(ranked, query.relevant.len(), |title| {
         query.relevant.contains(title)
     });
@@ -274,10 +556,22 @@ fn score(into: &mut Scores, query: &Query, ranked: &[String]) {
 #[ignore = "provisions postgres, downloads the dataset and model weights, and embeds the corpus"]
 async fn search_answers_questions_that_take_several_steps() {
     let corpus = Corpus::load();
-    corpus.describe();
-
     let named = std::env::var("PAMIN_PROFILE").unwrap_or_else(|_| DEFAULT_PROFILE.into());
     let profile = Profile::parse(&named).unwrap_or_else(|| panic!("unknown profile {named}"));
+    let mut shape = corpus.shape();
+    // Published before anything is printed, so a failed write to stdout
+    // still leaves the in-progress record.
+    shape.publish("search_answers_questions_that_take_several_steps", &named);
+    corpus.describe();
+    // The run ends on a significance gate per hop count; a sample too small
+    // to ever pass it fails here, before the corpus is indexed.
+    let mut asked: BTreeMap<&str, usize> = BTreeMap::new();
+    for query in &corpus.queries {
+        *asked.entry(query.group.as_str()).or_default() += 1;
+    }
+    let gated = asked.iter().all(|(group, questions)| {
+        statistics::gate(&format!("MuSiQue {group}, the graph's worth"), *questions)
+    });
     let home = std::env::var("PAMIN_EVAL_HOME").ok();
     let scratch = home
         .is_none()
@@ -289,6 +583,7 @@ async fn search_answers_questions_that_take_several_steps() {
     };
 
     let project = format!("musique-{named}-{}", corpus.fingerprint());
+    shape.observe_models();
     let engine = Engine::open(
         &workspace,
         &project,
@@ -298,10 +593,11 @@ async fn search_answers_questions_that_take_several_steps() {
     )
     .await
     .expect("open the engine");
+    shape.ran_on(harness::shape::engines(&[("primary", &engine)]));
     if std::env::var("CHANNELS").is_ok() {
         assert_eq!(engine.passage(), pamin_index::Passage::Named);
     }
-    write_corpus(&engine, &corpus).await;
+    write_corpus(&engine, &corpus, &mut shape, "primary", &workspace).await;
     if std::env::var("CHANNELS").is_ok() {
         assert_eq!(engine.passage(), pamin_index::Passage::Named);
         assert_eq!(
@@ -331,7 +627,11 @@ async fn search_answers_questions_that_take_several_steps() {
         )
         .await
         .expect("open the named project");
-        write_corpus(&other, &corpus).await;
+        shape.ran_on(harness::shape::engines(&[
+            ("primary", &engine),
+            ("named", &other),
+        ]));
+        write_corpus(&other, &corpus, &mut shape, "named", &workspace).await;
         assert_eq!(
             engine.passage(),
             pamin_index::Passage::Content,
@@ -367,8 +667,15 @@ async fn search_answers_questions_that_take_several_steps() {
     if std::env::var("ROUTES").is_ok() {
         const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
         let tier = Rerank::default();
-        let mut small = pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
-            .expect("load the small reranker");
+        let small = harness::shape::owned(
+            pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
+                .expect("load the small reranker"),
+        );
+        shape.also_ran(
+            "routes small reranker",
+            &small,
+            pamin_index::Reranker::plans,
+        );
         let mut routes = reranking::Routes::default();
         for query in &corpus.queries {
             let hits = engine
@@ -382,7 +689,7 @@ async fn search_answers_questions_that_take_several_steps() {
                 &query.text,
                 &hits,
                 &replayed,
-                &mut small,
+                &mut harness::shape::lock(&small),
                 &query.text,
                 |into, ranking| score(into, query, ranking),
             );
@@ -395,6 +702,7 @@ async fn search_answers_questions_that_take_several_steps() {
     }
 
     if std::env::var("REACH").is_ok() {
+        harness::shape::tables(["names only", "with shared names"]);
         reach(&engine, &corpus, "names only").await;
         let entities = Engine::open(
             &workspace,
@@ -405,18 +713,35 @@ async fn search_answers_questions_that_take_several_steps() {
         )
         .await
         .expect("open the entity project; run ENTITIES first");
+        shape.ran_on(harness::shape::engines(&[
+            ("primary", &engine),
+            ("entities", &entities),
+        ]));
+        harness::index(
+            &mut shape,
+            "entities",
+            &entities,
+            workspace.root(),
+            corpus.memories.len(),
+        )
+        .await;
         reach(&entities, &corpus, "with shared names").await;
         return;
     }
 
     if std::env::var("ENTITIES").is_ok() {
-        entities(&engine, &workspace, &corpus, &project, profile, &named).await;
+        entities(
+            &engine, &mut shape, &workspace, &corpus, &project, profile, &named,
+        )
+        .await;
         return;
     }
 
     // `FEATURES_OUT`: every candidate fusion saw, one row each, for fitting a
     // fusion offline. See `features`.
     if let Some(mut dump) = features::Features::from_env("musique") {
+        harness::shape::tables(["features"]);
+        harness::shape::table("features");
         for query in &corpus.queries {
             let hits = engine
                 .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
@@ -433,6 +758,7 @@ async fn search_answers_questions_that_take_several_steps() {
             dump.observe(&asked, &hits, WIDE, |title| {
                 Some(f64::from(query.relevant.contains(title)))
             });
+            harness::shape::tally(&query.group, &query.id);
         }
         dump.finish(corpus.queries.len());
         return;
@@ -478,10 +804,14 @@ async fn search_answers_questions_that_take_several_steps() {
 
     if std::env::var("CONTEXT").is_ok() {
         let tier = Rerank::default();
-        let mut model = pamin_index::Reranker::load(tier, &workspace.root().join("models"))
-            .expect("load the reranker");
+        let model = harness::shape::owned(
+            pamin_index::Reranker::load(tier, &workspace.root().join("models"))
+                .expect("load the reranker"),
+        );
+        shape.also_ran("context reranker", &model, pamin_index::Reranker::plans);
         let labels = reranking::context_labels();
         let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
+        harness::shape::tables(labels.iter().map(|(label, _)| label));
         let mut seeded = 0usize;
         for query in &corpus.queries {
             let hits = engine
@@ -490,9 +820,15 @@ async fn search_answers_questions_that_take_several_steps() {
                 .expect("search");
             channels::enough_room(&hits, WIDE);
             let replayed = reranking::replay(&hits, tier);
-            let (orders, shown) = reranking::in_context(&hits, &replayed, &mut model, &query.text);
+            let (orders, shown) = reranking::in_context(
+                &hits,
+                &replayed,
+                &mut harness::shape::lock(&model),
+                &query.text,
+            );
             seeded += shown;
-            for (order, into) in orders.iter().zip(&mut measured) {
+            for ((order, into), (label, _)) in orders.iter().zip(&mut measured).zip(&labels) {
+                harness::shape::table(label);
                 score(into.entry(query.group.clone()).or_default(), query, order);
             }
         }
@@ -514,14 +850,17 @@ async fn search_answers_questions_that_take_several_steps() {
     // made on the path a user gets rather than offline.
     let mut shipped: BTreeMap<String, Scores> = BTreeMap::new();
     let mut graphless: BTreeMap<String, Scores> = BTreeMap::new();
+    harness::shape::tables(["shipped", "without the graph"]);
     for query in &corpus.queries {
-        for (fusion, into) in [
-            (Fusion::default(), &mut shipped),
+        for (table, fusion, into) in [
+            ("shipped", Fusion::default(), &mut shipped),
             (
+                "without the graph",
                 Fusion::default().without(pamin_core::Channel::Graph),
                 &mut graphless,
             ),
         ] {
+            harness::shape::table(table);
             let hits = engine
                 .search_reranked_with(&query.text, DEPTH as u32, DEPTHS, Rerank::default(), fusion)
                 .await
@@ -530,7 +869,6 @@ async fn search_answers_questions_that_take_several_steps() {
             score(into.entry(query.group.clone()).or_default(), query, &ranked);
         }
     }
-
     println!("\n  the shipped search path, {named}, against the same path without the graph");
     println!("  group   questions   nDCG@{NDCG_AT}   recall@{RECALL_AT}   without the graph");
     println!("  ------------------------------------------------------------------------------");
@@ -565,7 +903,7 @@ async fn search_answers_questions_that_take_several_steps() {
     // 0.6834 shipped, and the graph worth 0.0406 of it (114W/238L, p=0.0001).
     // Asserted as a direction rather than a figure, because the group's mean
     // moves with how many questions are asked.
-    for (group, scores) in &shipped {
+    for (group, scores) in shipped.iter().filter(|_| gated) {
         let without = statistics::compare(&scores.per_query, &graphless[group].per_query);
         assert!(
             without.mean < 0.0 && without.is_significant(),
@@ -574,7 +912,23 @@ async fn search_answers_questions_that_take_several_steps() {
     }
 }
 
-async fn write_corpus(engine: &Engine, corpus: &Corpus) {
+/// Hands the index to `shape` under `label` (see `harness::index`), then
+/// writes every memory not already a topic and runs the queue.
+async fn write_corpus(
+    engine: &Engine,
+    corpus: &Corpus,
+    shape: &mut Shape,
+    label: &str,
+    workspace: &Workspace,
+) {
+    harness::index(
+        shape,
+        label,
+        engine,
+        workspace.root(),
+        corpus.memories.len(),
+    )
+    .await;
     let mut written = 0usize;
     for memory in &corpus.memories {
         if !harness::write_absent(
@@ -642,6 +996,7 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) {
 /// query, not added to the graph.
 async fn entities(
     base: &Engine,
+    shape: &mut Shape,
     workspace: &Workspace,
     corpus: &Corpus,
     project: &str,
@@ -666,7 +1021,11 @@ async fn entities(
     )
     .await
     .expect("open the entity project");
-    write_corpus(&engine, corpus).await;
+    shape.ran_on(harness::shape::engines(&[
+        ("primary", base),
+        ("entities", &engine),
+    ]));
+    write_corpus(&engine, corpus, shape, "entities", workspace).await;
 
     let names: Vec<HashSet<String>> = corpus
         .memories
@@ -767,9 +1126,15 @@ async fn entities(
     let mut before: BTreeMap<String, Scores> = BTreeMap::new();
     let mut after: BTreeMap<String, Scores> = BTreeMap::new();
     let mut diagnosis = channels::Diagnosis::default();
+    harness::shape::tables(["names only", "with shared names"]);
     for query in &corpus.queries {
         for (searcher, into, observed) in [(base, &mut before, false), (&engine, &mut after, true)]
         {
+            harness::shape::table(if observed {
+                "with shared names"
+            } else {
+                "names only"
+            });
             let hits = searcher
                 .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
                 .await
@@ -895,12 +1260,14 @@ async fn reach(engine: &Engine, corpus: &Corpus, label: &str) {
     let mut graph_found_missed = 0usize;
     let mut vector_found_missed = 0usize;
     let mut fused_ranks: Vec<usize> = Vec::new();
+    harness::shape::table(label);
     for query in &corpus.queries {
         let hits = engine
             .search_fused(&query.text, WIDE, DEPTHS, Fusion::default())
             .await
             .expect("search");
         channels::enough_room(&hits, WIDE);
+        harness::shape::tally(&query.group, &query.id);
         for (position, hit) in hits.iter().enumerate() {
             if !query.relevant.contains(&hit.topic) {
                 continue;
