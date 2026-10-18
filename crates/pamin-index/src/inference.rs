@@ -474,7 +474,7 @@ pub(crate) fn cpu() -> ExecutionProviderDispatch {
 pub(crate) fn preferred<T>(
     mut load: impl FnMut(Device, Target) -> Result<T>,
 ) -> Result<(T, Device)> {
-    for (device, provider) in accelerators(&crate::InferenceSettings::default()) {
+    for (device, provider) in accelerators(&crate::InferenceSettings::default())? {
         match load(device, provider) {
             Ok(model) => return Ok((model, device)),
             Err(error) => tracing::warn!(
@@ -1169,7 +1169,7 @@ pub(crate) fn measured<T: RuntimeModel>(
 ) -> Result<(T, Device)> {
     measured_among(
         settings,
-        accelerators(settings),
+        accelerators(settings)?,
         identity,
         cache_dir,
         references,
@@ -2203,13 +2203,16 @@ fn coreml() -> ort::ep::CoreML {
 /// the GPU's fp16 export onto the CPU -- slower than the int8 one it was
 /// chosen over -- and report nothing; failing here lets the caller load the
 /// CPU's own export instead and record that it did.
-pub(crate) fn accelerators(settings: &crate::InferenceSettings) -> Vec<(Device, Target)> {
+///
+/// Refuses a caller naming a plugin library that was refused for bringing a
+/// provider another library already brought; see [`claim`].
+pub(crate) fn accelerators(settings: &crate::InferenceSettings) -> Result<Vec<(Device, Target)>> {
     if settings.device == crate::DeviceChoice::Cpu {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let mut result = Vec::new();
     if let Ok(environment) = ort::environment::Environment::current() {
-        let plugins = register_plugins(&environment, &settings.ep_libraries);
+        let plugins = register_plugins(&environment, &settings.ep_libraries)?;
         #[cfg(target_os = "windows")]
         crate::winml::register(&environment);
         for device in environment.devices() {
@@ -2232,7 +2235,7 @@ pub(crate) fn accelerators(settings: &crate::InferenceSettings) -> Vec<(Device, 
             .into_iter()
             .map(|(device, ep)| (device, vec![ep.error_on_failure()].into())),
     );
-    result
+    Ok(result)
 }
 
 /// Retain registered libraries for the environment/session lifetime. Paths
@@ -2246,28 +2249,36 @@ pub(crate) fn accelerators(settings: &crate::InferenceSettings) -> Vec<(Device, 
 ///
 /// The registry is the process's, so a library one caller named stays
 /// registered for every later one. Returns which library each plugin
-/// execution provider came from -- the providers whose devices appeared when
+/// execution provider came from -- the providers that gained devices when
 /// that library was registered -- so [`requested`] can keep a caller to the
-/// libraries it named.
+/// libraries it named. A library bringing a provider another one already
+/// brought is unregistered and refused; see [`claim`].
 fn register_plugins(
     environment: &std::sync::Arc<ort::environment::Environment>,
     libraries: &[PathBuf],
-) -> std::collections::BTreeMap<String, PathBuf> {
+) -> Result<std::collections::BTreeMap<String, PathBuf>> {
     #[derive(Default)]
     struct Registry {
         libraries: std::collections::BTreeMap<PathBuf, Option<ort::ep::ExecutionProviderLibrary>>,
         providers: std::collections::BTreeMap<String, PathBuf>,
+        /// Why each refused library was refused.
+        refused: std::collections::BTreeMap<PathBuf, String>,
     }
     static REGISTERED: std::sync::Mutex<Option<Registry>> = std::sync::Mutex::new(None);
     let mut registered = REGISTERED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let registry = registered.get_or_insert_with(Registry::default);
-    let providers = || -> std::collections::BTreeSet<String> {
-        environment
-            .devices()
-            .filter_map(|device| device.ep().ok().map(str::to_owned))
-            .collect()
+    // Devices per provider, so a library bringing more devices of a provider
+    // already listed is seen bringing that provider.
+    let providers = || -> std::collections::BTreeMap<String, usize> {
+        let mut devices = std::collections::BTreeMap::new();
+        for device in environment.devices() {
+            if let Ok(provider) = device.ep() {
+                *devices.entry(provider.to_owned()).or_default() += 1;
+            }
+        }
+        devices
     };
     for path in libraries {
         if registry.libraries.contains_key(path) {
@@ -2282,10 +2293,23 @@ fn register_plugins(
             let name = format!("pamin-plugin-{}", registry.libraries.len());
             match environment.register_ep_library(name, path) {
                 Ok(library) => {
-                    for provider in providers().difference(&before) {
-                        registry.providers.insert(provider.clone(), path.clone());
+                    let brought: Vec<String> = providers()
+                        .into_iter()
+                        .filter(|(provider, count)| {
+                            before.get(provider).is_none_or(|was| count > was)
+                        })
+                        .map(|(provider, _)| provider)
+                        .collect();
+                    match claim(&mut registry.providers, &brought, path) {
+                        Ok(()) => Some(library),
+                        Err(refusal) => {
+                            if let Err(error) = library.unregister() {
+                                tracing::warn!(path = %path.display(), %error, "could not unregister a refused execution-provider library");
+                            }
+                            registry.refused.insert(path.clone(), refusal);
+                            None
+                        }
                     }
-                    Some(library)
                 }
                 Err(error) => {
                     tracing::warn!(path = %path.display(), %error, "execution-provider library unavailable");
@@ -2295,7 +2319,44 @@ fn register_plugins(
         };
         registry.libraries.insert(path.clone(), library);
     }
-    registry.providers.clone()
+    if let Some(refusal) = libraries.iter().find_map(|path| registry.refused.get(path)) {
+        return Err(IndexError::PluginConflict(refusal.clone()));
+    }
+    Ok(registry.providers.clone())
+}
+
+/// Records that the library at `path` brought the plugin providers
+/// `brought`, or refuses it if another library already brought one of them.
+///
+/// ONNX Runtime plans a device by its provider's name, and a device does not
+/// say which library it came from. Two libraries bringing one provider name
+/// cannot be told apart: a caller naming the second would plan on the
+/// first, or be filtered off both and fall back without a word. So the
+/// second is refused, naming both.
+fn claim(
+    providers: &mut std::collections::BTreeMap<String, PathBuf>,
+    brought: &[String],
+    path: &Path,
+) -> std::result::Result<(), String> {
+    let taken = brought.iter().find_map(|provider| {
+        providers
+            .get(provider)
+            .filter(|owner| owner.as_path() != path)
+            .map(|owner| (provider, owner))
+    });
+    if let Some((provider, owner)) = taken {
+        return Err(format!(
+            "the execution-provider library {} provides {provider}, which {} already \
+             provides in this process; a provider is chosen by name, so only one of \
+             them can be used: name one, or use them from separate processes",
+            path.display(),
+            owner.display()
+        ));
+    }
+    for provider in brought {
+        providers.insert(provider.clone(), path.to_path_buf());
+    }
+    Ok(())
 }
 
 /// Whether a device of `provider` is one this caller may plan on: a provider
@@ -2348,6 +2409,30 @@ mod tests {
         assert!(requested("BNpuExecutionProvider", &[b, a]));
         // A provider no plugin brought is built in, and every caller has it.
         assert!(requested("QNNExecutionProvider", &[]));
+    }
+
+    /// A second library bringing a provider the first already brought is
+    /// refused, naming both, and leaves the provider the first's.
+    #[test]
+    fn a_library_bringing_a_taken_provider_is_refused() {
+        use std::path::PathBuf;
+        let a = PathBuf::from("/opt/a/libnpu_ep.so");
+        let b = PathBuf::from("/opt/b/libnpu_ep.so");
+        let npu = ["NpuExecutionProvider".to_string()];
+        let mut providers = std::collections::BTreeMap::new();
+        super::claim(&mut providers, &npu, &a).unwrap();
+        let refusal = super::claim(&mut providers, &npu, &b).unwrap_err();
+        for named in [
+            "/opt/a/libnpu_ep.so",
+            "/opt/b/libnpu_ep.so",
+            "NpuExecutionProvider",
+        ] {
+            assert!(refusal.contains(named), "{refusal}");
+        }
+        assert_eq!(providers["NpuExecutionProvider"], a);
+        // Another provider is the second library's own.
+        super::claim(&mut providers, &["OtherExecutionProvider".to_string()], &b).unwrap();
+        assert_eq!(providers["OtherExecutionProvider"], b);
     }
 
     /// The thread budget a default configuration gives a session.
@@ -4635,6 +4720,7 @@ mod tests {
         .expect("CPU fallback");
         assert_eq!((model, device), (42, Device::Cpu));
         let expected: Vec<_> = accelerators(&crate::InferenceSettings::default())
+            .expect("no plugin library is named")
             .into_iter()
             .map(|(device, _)| device)
             .chain([Device::Cpu])
@@ -4683,7 +4769,9 @@ mod tests {
     /// this suite has run on -- that is each of them.
     #[test]
     fn a_device_that_will_not_register_is_never_asked_for_its_model() {
-        for (device, provider) in accelerators(&crate::InferenceSettings::default()) {
+        for (device, provider) in
+            accelerators(&crate::InferenceSettings::default()).expect("no plugin library is named")
+        {
             let registers = options(threads(), provider.clone()).is_ok();
             if registers {
                 continue;
