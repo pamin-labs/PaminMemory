@@ -33,9 +33,13 @@ const RETRY: Duration = Duration::from_millis(50);
 /// `Ok(None)` means there was no server and none was wanted -- only `stop` asks
 /// for that, since starting a server to stop it is a way of doing nothing
 /// slowly. Every other call gets one started.
+///
+/// `serve` is the flags to start a server with: the ones this command was
+/// given for it, so the server it starts runs with what was asked for.
 pub async fn ask(
     workspace: &Workspace,
     request: &Request,
+    serve: &[std::ffi::OsString],
 ) -> Result<Option<Box<serde_json::value::RawValue>>> {
     let path = socket_path(workspace);
     let start_one = !matches!(request.call, Call::Stop);
@@ -44,7 +48,7 @@ pub async fn ask(
         Ok(stream) => stream,
         Err(_) if !start_one => return Ok(None),
         Err(_) => {
-            spawn(workspace, &path).await?;
+            spawn(workspace, &path, serve).await?;
             UnixStream::connect(&path)
                 .await
                 .with_context(|| format!("connecting to the server at {}", path.display()))?
@@ -60,7 +64,7 @@ pub async fn ask(
             // which fields still line up.
             tracing::info!(%server, ours = %version(), "replacing a server from another build");
             stop_and_wait(&path).await?;
-            spawn(workspace, &path).await?;
+            spawn(workspace, &path, serve).await?;
 
             let mut fresh = UnixStream::connect(&path)
                 .await
@@ -109,7 +113,7 @@ const MAX_RESPONSE: usize = 16 * 1024 * 1024;
 /// Only one process starts one. The rest wait, which is the same outcome and
 /// costs nothing: twenty agents running `pamin search` against a cold workspace
 /// should provision it once, not twenty times.
-async fn spawn(workspace: &Workspace, path: &Path) -> Result<()> {
+async fn spawn(workspace: &Workspace, path: &Path, serve: &[std::ffi::OsString]) -> Result<()> {
     std::fs::create_dir_all(workspace.root())?;
     let lock = workspace.root().join(SPAWN_LOCK);
     // Held only by the caller that wins the race to start one; the losers wait
@@ -142,6 +146,7 @@ async fn spawn(workspace: &Workspace, path: &Path) -> Result<()> {
             .arg("--home")
             .arg(workspace.root())
             .arg("serve")
+            .args(serve)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(log.try_clone()?))
             .stderr(std::process::Stdio::from(log))
@@ -253,19 +258,11 @@ fn diagnose(log: &str, path: &Path) -> String {
 
 /// Asks a server to stop, and waits for its socket to go.
 async fn stop_and_wait(path: &Path) -> Result<()> {
-    let farewell = Request {
-        version: String::new(),
-        project: String::new(),
-        profile: String::new(),
-        vector_index: String::new(),
-        call: Call::Stop,
-    };
-
     // The version is deliberately empty, and the server does not look at it for
     // `stop`: stopping means the same thing in every build, and a server that
     // refused it on a mismatch would be one nothing could ever replace.
     if let Ok(mut stream) = UnixStream::connect(path).await {
-        let _ = exchange(&mut stream, &farewell).await;
+        let _ = exchange(&mut stream, &farewell()).await;
     }
 
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -277,9 +274,33 @@ async fn stop_and_wait(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The `stop` a client sends to replace a server.
+///
+/// It names a vector index the server can parse, the default one: a server
+/// from a build that parses the index before it stops refused an empty name,
+/// and so ended without stopping the database, which then kept the settings
+/// the replacement was started to change.
+fn farewell() -> Request {
+    Request {
+        version: String::new(),
+        project: String::new(),
+        profile: String::new(),
+        vector_index: pamin_index::VectorIndex::default().label().to_string(),
+        server: Default::default(),
+        call: Call::Stop,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::diagnose;
+
+    /// The replacing `stop` names an index the server can parse.
+    #[test]
+    fn the_replacing_stop_names_a_vector_index() {
+        let request = super::farewell();
+        assert!(pamin_index::VectorIndex::parse(&request.vector_index).is_some());
+    }
     use std::path::Path;
 
     /// What `initdb` actually writes when a container runs as root, wrapped in

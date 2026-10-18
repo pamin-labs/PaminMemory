@@ -50,7 +50,7 @@ async fn the_ledger_holds_its_promises() {
     let home = tempfile::tempdir().expect("temp workspace");
     let workspace = Workspace::at(home.path());
 
-    let database = Database::open(&workspace, Connections::PerCommand)
+    let database = Database::open(&workspace, Connections::PerCommand, &common::store())
         .await
         .expect("open workspace");
 
@@ -115,7 +115,7 @@ async fn a_stopped_server_is_started_again_without_waiting(workspace: &Workspace
     );
 
     let started = std::time::Instant::now();
-    let reopened = Database::open(workspace, Connections::PerCommand)
+    let reopened = Database::open(workspace, Connections::PerCommand, &common::store())
         .await
         .expect("reopen a stopped workspace");
     let waited = started.elapsed();
@@ -202,7 +202,7 @@ async fn the_cluster_forces_what_it_writes_to_disk(database: &Database) {
 
 async fn reopening_reuses_the_running_server(workspace: &Workspace) {
     // Must not start a second cluster, and must not fail re-applying migrations.
-    let reopened = Database::open(workspace, Connections::PerCommand)
+    let reopened = Database::open(workspace, Connections::PerCommand, &common::store())
         .await
         .expect("reopen workspace");
     drop(reopened);

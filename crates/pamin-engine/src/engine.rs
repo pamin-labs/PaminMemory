@@ -19,33 +19,51 @@ use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
 use pamin_store::{Connections, Database, PgConnection, Workspace, graph, jobs, repository};
 use time::OffsetDateTime;
 
+use crate::Settings;
+
 /// How deep each channel reaches before fusion.
 ///
 /// These are inputs rather than constants because they are provisional: the
 /// evaluation harness exists to settle them, and it cannot sweep a value that
 /// is compiled in. The defaults are the ones the architecture specifies, so
 /// nothing changes for a caller that does not ask.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Depths {
     /// Candidates each channel contributes.
     ///
     /// Deep enough for rank fusion to find agreement between channels, shallow
-    /// enough that reranking stays cheap.
-    pub channel: u32,
+    /// enough that reranking stays cheap. Never zero, which would leave
+    /// every channel, and so the search, empty.
+    pub channel: std::num::NonZeroU32,
     /// Edges the graph channel walks out from its seeds.
     ///
     /// Two hops reaches a topic's neighbours and their neighbours, which is
     /// where "related to something related to this" stops being informative
     /// and starts being most of the project.
     pub graph: u8,
+    /// How many of the fused results the reranker is shown as its head; see
+    /// [`pamin_index::reranking::DEPTH`] for what settled the default.
+    /// Never zero, which would rerank nothing while calling it reranked.
+    pub rerank: std::num::NonZeroUsize,
+    /// How wide the in-memory vector graph is searched; see
+    /// [`pamin_index::projection::SEARCH_EFFORT`]. Never zero, which is no
+    /// width for a graph search to have.
+    pub effort: std::num::NonZeroU32,
+}
+
+impl Depths {
+    /// What the product searches with.
+    pub const DEFAULT: Self = Self {
+        channel: std::num::NonZeroU32::new(50).unwrap(),
+        graph: 2,
+        rerank: std::num::NonZeroUsize::new(pamin_index::reranking::DEPTH).unwrap(),
+        effort: std::num::NonZeroU32::new(pamin_index::projection::SEARCH_EFFORT).unwrap(),
+    };
 }
 
 impl Default for Depths {
     fn default() -> Self {
-        Self {
-            channel: 50,
-            graph: 2,
-        }
+        Self::DEFAULT
     }
 }
 
@@ -410,7 +428,7 @@ pub struct Engine {
     /// The registry rather than a loaded model: most searches do not rerank,
     /// most workspaces never will, and half a gigabyte should not be read off
     /// disk by opening a project.
-    models: Models,
+    pub(crate) models: Models,
     /// The model loads a search started ahead of its need and did not wait
     /// for. See [`settle_loads`](Self::settle_loads).
     preloads: Preloads,
@@ -474,6 +492,9 @@ struct Rebuilding {
 #[derive(Clone)]
 pub struct Models {
     dir: std::path::PathBuf,
+    /// What this process was started with: how the models load, how long
+    /// they are held, and what every engine opened on them is given.
+    settings: Arc<Settings>,
     loaded: Arc<Mutex<Option<Held<Embedder>>>>,
     /// The same arrangement for the one reranker, while it is loaded.
     ///
@@ -527,13 +548,20 @@ type Held<T> = (Instant, Arc<Mutex<T>>);
 /// One window for models and for the indexes that pin them, because the
 /// model dominates: reopening an index is part of the 4,528 ms and reloading
 /// the weights is most of it.
-const MODEL_IDLE: Duration = Duration::from_secs(30 * 60);
+pub(crate) const MODEL_IDLE: Duration = Duration::from_secs(30 * 60);
 
 impl Models {
-    /// Reads and writes the weights a workspace caches.
-    pub fn in_workspace(workspace: &Workspace) -> Self {
+    /// What this process was started with.
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    /// Reads and writes the weights a workspace caches, loading and holding
+    /// them as `settings` says.
+    pub fn new(workspace: &Workspace, settings: Settings) -> Self {
         Self {
             dir: workspace.root().join("models"),
+            settings: Arc::new(settings),
             loaded: Arc::default(),
             reranker: Arc::default(),
         }
@@ -556,7 +584,10 @@ impl Models {
             return Ok(Arc::clone(embedder));
         }
 
-        let embedder = Arc::new(Mutex::new(Embedder::load(&self.dir)?));
+        let embedder = Arc::new(Mutex::new(Embedder::load(
+            &self.dir,
+            &self.settings.inference,
+        )?));
         *loaded = Some((Instant::now(), Arc::clone(&embedder)));
         Ok(embedder)
     }
@@ -576,7 +607,10 @@ impl Models {
             return Ok(Arc::clone(reranker));
         }
 
-        let reranker = Arc::new(Mutex::new(Reranker::load(&self.dir)?));
+        let reranker = Arc::new(Mutex::new(Reranker::load(
+            &self.dir,
+            &self.settings.inference,
+        )?));
         *held = Some((Instant::now(), Arc::clone(&reranker)));
         Ok(reranker)
     }
@@ -591,7 +625,7 @@ impl Models {
     /// they run while that request is answered and while the agent reads the
     /// answer, instead of in front of the search that needs them. What is
     /// loaded is handed out and released like anything else here -- it is
-    /// stamped as used now, and given back after [`model_idle`] if nothing
+    /// stamped as used now, and given back after [`Settings::model_idle`] if nothing
     /// asks for it -- so warming a model nobody then uses costs it for one
     /// idle window and no longer.
     ///
@@ -606,8 +640,8 @@ impl Models {
     /// arm measured them at 1,300 ms together, against 1,089 and 977 alone.
     pub fn warm(&self) -> Result<(), pamin_index::IndexError> {
         std::thread::scope(|scope| {
-            let reranker =
-                Reranker::is_downloaded(&self.dir).then(|| scope.spawn(|| self.reranker()));
+            let reranker = Reranker::is_downloaded(&self.dir, &self.settings.inference)
+                .then(|| scope.spawn(|| self.reranker()));
             let embedder = self.embedder();
             let reranker =
                 reranker.map(|loading| loading.join().expect("a reranker load panicked"));
@@ -713,7 +747,8 @@ impl Models {
         };
 
         let idle = loaded.as_ref().is_some_and(|(last_used, embedder)| {
-            is_idle(*last_used, Instant::now(), model_idle()) && Arc::strong_count(embedder) == 1
+            is_idle(*last_used, Instant::now(), self.settings.idle())
+                && Arc::strong_count(embedder) == 1
         });
         if idle {
             *loaded = None;
@@ -741,7 +776,8 @@ impl Models {
         };
 
         let idle = held.as_ref().is_some_and(|(last_used, reranker)| {
-            is_idle(*last_used, Instant::now(), model_idle()) && Arc::strong_count(reranker) == 1
+            is_idle(*last_used, Instant::now(), self.settings.idle())
+                && Arc::strong_count(reranker) == 1
         });
         if idle {
             *held = None;
@@ -775,22 +811,6 @@ fn is_idle(last_used: Instant, now: Instant, idle: Duration) -> bool {
     now.saturating_duration_since(last_used) >= idle
 }
 
-/// The idle window, or what [`MODEL_IDLE`] says.
-///
-/// `PAMIN_MODEL_IDLE`, in seconds, so that a machine where memory is scarcer
-/// than a second of latency can say so, and so that a test can shorten it to
-/// something it can wait out. Zero is ignored rather than honoured: a zero
-/// window releases a model the tick after it loads and turns every search into
-/// a model load.
-pub fn model_idle() -> Duration {
-    pamin_core::env::positive(MODEL_IDLE_VAR)
-        .map(Duration::from_secs)
-        .unwrap_or(MODEL_IDLE)
-}
-
-/// Overrides [`MODEL_IDLE`], in seconds.
-pub const MODEL_IDLE_VAR: &str = "PAMIN_MODEL_IDLE";
-
 /// A memory's content hash, as the ledger stores it.
 ///
 /// Part of what recording a memory means rather than a detail of the caller:
@@ -814,9 +834,10 @@ impl Engine {
         project: &str,
         vector_index: VectorIndex,
         access: Access,
+        settings: &Settings,
     ) -> Result<Self> {
-        let database = Database::open(workspace, Connections::PerCommand).await?;
-        let models = Models::in_workspace(workspace);
+        let database = Database::open(workspace, Connections::PerCommand, &settings.store).await?;
+        let models = Models::new(workspace, settings.clone());
         Self::assemble(
             database,
             &models,
@@ -1745,8 +1766,8 @@ impl Engine {
     /// across processes ([`pamin_index::PlanUse`]). A model not loaded is not
     /// listed.
     ///
-    /// For an evaluation to say which execution path produced it: under
-    /// `PAMIN_DEVICE=auto` the same build runs on whatever the machine has.
+    /// For an evaluation to say which execution path produced it: on the
+    /// `auto` device the same build runs on whatever the machine has.
     ///
     /// Never panics or waits, so a run that is already failing can still ask:
     /// a poisoned lock is read through, since the device it guards is set at
@@ -1846,7 +1867,7 @@ impl Engine {
             .iter()
             .map(|result| result.why.as_slice())
             .collect();
-        let unlexical = rerankable(&traces);
+        let unlexical = rerankable(&traces, depths.rerank.get());
         if !can_be_seen(&unlexical, limit) {
             return Ok(fused.hits(limit));
         }
@@ -1897,7 +1918,7 @@ impl Engine {
         fused.results = place(
             std::mem::take(&mut fused.results),
             &unlexical,
-            pamin_index::reranking::depth(),
+            depths.rerank.get(),
             &best_first,
         );
         Ok(fused.hits(limit))
@@ -1937,15 +1958,19 @@ impl Engine {
             let lists = vec![
                 ChannelResults::new(
                     Channel::LexicalSegmented,
-                    index.recall_segmented(query, depths.channel)?,
+                    index.recall_segmented(query, depths.channel.get())?,
                 ),
                 ChannelResults::new(
                     Channel::LexicalNgram,
-                    index.recall_ngram(query, depths.channel)?,
+                    index.recall_ngram(query, depths.channel.get())?,
                 ),
                 ChannelResults::new(
                     Channel::Vector,
-                    index.recall_vector(&embedding, depths.channel)?,
+                    index.recall_vector_at(
+                        &embedding,
+                        depths.channel.get(),
+                        depths.effort.get(),
+                    )?,
                 ),
             ];
             Ok::<_, pamin_index::IndexError>(lists)
@@ -2135,7 +2160,7 @@ impl Engine {
         // second bound is checked rather than trusted -- the walk says what it
         // left unread, `strongest` says whether any of that could have ranked
         // here, and when it could the walk is made again reading everything.
-        let keep = options.depths.channel as usize;
+        let keep = options.depths.channel.get() as usize;
         let expansion = Expansion::to_depth(options.depths.graph).keeping(keep);
         let neighbors = match graph::expand_reading(
             &mut *connection,
@@ -2700,8 +2725,8 @@ const GRAPH_SHOWN_AT_MOST: usize = 30;
 /// One rule, public so the harnesses that replay a search from its trace use
 /// this rather than a copy that could drift from it. `traces` is each fused
 /// result's `why`, in fused order.
-pub fn rerankable(traces: &[&[Why]]) -> Vec<usize> {
-    let head = pamin_index::reranking::depth().min(traces.len());
+pub fn rerankable(traces: &[&[Why]], depth: usize) -> Vec<usize> {
+    let head = depth.min(traces.len());
     let graph_only = |why: &[Why]| -> Option<f32> {
         let mut graph = None;
         for entry in why {
@@ -2922,6 +2947,7 @@ mod tests {
     fn planning_passes_never_loads_a_reranker() {
         let models = super::Models {
             dir: std::path::PathBuf::from("/nonexistent/pamin-models"),
+            settings: std::sync::Arc::default(),
             loaded: std::sync::Arc::default(),
             reranker: std::sync::Arc::default(),
         };
@@ -2935,6 +2961,7 @@ mod tests {
 
         let models = super::Models {
             dir: std::path::PathBuf::new(),
+            settings: std::sync::Arc::default(),
             loaded: std::sync::Arc::default(),
             reranker: std::sync::Arc::default(),
         };
@@ -3174,7 +3201,7 @@ mod tests {
             weight: 1.0,
             contribution: 0.0,
         };
-        let head = pamin_index::reranking::depth();
+        let head = pamin_index::reranking::DEPTH;
         let mut traces: Vec<Vec<Why>> = Vec::new();
         for at in 0..head {
             // Every other head position has lexical evidence.
@@ -3204,7 +3231,7 @@ mod tests {
         }
         let borrowed: Vec<&[Why]> = traces.iter().map(Vec::as_slice).collect();
 
-        let shown = rerankable(&borrowed);
+        let shown = rerankable(&borrowed, head);
         let head_shown: Vec<usize> = shown.iter().copied().filter(|at| *at < head).collect();
         assert_eq!(head_shown, (0..head).collect::<Vec<_>>());
         let below: Vec<usize> = shown.iter().copied().filter(|at| *at >= head).collect();
@@ -3217,7 +3244,7 @@ mod tests {
         // With fewer finds at the threshold than the cap, every one of them is
         // shown, the one exactly at it included, and none under it.
         let few: Vec<&[Why]> = borrowed[..first_strong + 2].to_vec();
-        let shown = rerankable(&few);
+        let shown = rerankable(&few, head);
         let below: Vec<usize> = shown.iter().copied().filter(|at| *at >= head).collect();
         assert_eq!(below, vec![first_strong, first_strong + 1]);
     }

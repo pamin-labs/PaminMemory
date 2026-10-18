@@ -16,6 +16,8 @@
 //! because building the graph is setup and `assert_edges` also decides, locks
 //! and versions every edge it is given. What is measured is the walk only.
 
+mod common;
+
 use pamin_core::{ProjectId, TopicId};
 use pamin_store::graph::{Expansion, Neighbor};
 use pamin_store::{Connections, Database, Workspace, graph, repository};
@@ -159,7 +161,7 @@ async fn a_walk_stops_once_the_caller_has_enough() {
     let workspace = Workspace::at(
         std::env::var("PAMIN_EVAL_HOME").unwrap_or_else(|_| "/tmp/pamin-ws".to_string()),
     );
-    let database = Database::open(&workspace, Connections::PerCommand)
+    let database = Database::open(&workspace, Connections::PerCommand, &common::store())
         .await
         .expect("open the database");
     let run = uuid::Uuid::now_v7();
@@ -656,7 +658,7 @@ async fn a_bounded_walk_ranks_as_the_whole_walk_does() {
     let workspace = Workspace::at(
         std::env::var("PAMIN_EVAL_HOME").unwrap_or_else(|_| "/tmp/pamin-ws".to_string()),
     );
-    let database = Database::open(&workspace, Connections::PerCommand)
+    let database = Database::open(&workspace, Connections::PerCommand, &common::store())
         .await
         .expect("open the database");
     let run = uuid::Uuid::now_v7();

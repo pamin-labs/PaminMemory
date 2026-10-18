@@ -44,6 +44,11 @@ pub enum IndexError {
     )]
     Unavailable(String),
 
+    /// A plugin execution-provider library that cannot be told apart from
+    /// one already registered; see `inference::claim`.
+    #[error("{0}")]
+    PluginConflict(String),
+
     #[error("index io: {0}")]
     Io(#[from] std::io::Error),
 }

@@ -28,13 +28,26 @@ use crate::protocol::{Call, Request, Response, SOCKET};
 use crate::session::Session;
 
 /// Serves until stopped, and cleans up the socket on the way out.
-pub async fn run(workspace: &Workspace) -> Result<()> {
+///
+/// `server` is what it runs with, fixed for its lifetime: a request that asks
+/// for other settings is refused, never served with these.
+pub async fn run(workspace: &Workspace, server: crate::settings::Server) -> Result<()> {
     let path = socket_path(workspace);
     std::fs::create_dir_all(workspace.root())?;
 
     // Before the socket exists, so a client that connects finds a server that
     // can answer rather than one still starting the database.
-    let session = Arc::new(Session::open(workspace).await?);
+    for entry in &server.entries {
+        tracing::info!(
+            setting = entry.key,
+            value = %entry.value,
+            source = entry.source.name(),
+            "server setting"
+        );
+    }
+    let session =
+        Arc::new(Session::open(workspace, server.settings.clone(), server.open_indexes).await?);
+    let server = Arc::new(server);
 
     // A socket file left by a process that died is not a listener, so the stale
     // one has to go before binding. Connecting to it first is what tells the
@@ -71,9 +84,10 @@ pub async fn run(workspace: &Workspace) -> Result<()> {
         };
 
         let session = Arc::clone(&session);
+        let server = Arc::clone(&server);
         let path = path.clone();
         tokio::spawn(async move {
-            match serve_connection(&session, stream).await {
+            match serve_connection(&session, &server, stream).await {
                 Ok(Shutdown::Requested) => {
                     // Answered first, then gone: the client is waiting on the
                     // reply that says the database stopped.
@@ -239,16 +253,6 @@ async fn maintain(session: Arc<Session>) {
 /// it was set before measuring.
 const CATCH_UP_BATCH: i32 = 16;
 
-/// Overrides [`CATCH_UP_BATCH`], for sweeping it without editing the tree.
-///
-/// Undocumented on purpose, like the reranker's depth and batch: it exists so
-/// a measurement can try sizes, not as something a caller can evaluate.
-const CATCH_UP_BATCH_VAR: &str = "PAMIN_CATCH_UP_BATCH";
-
-fn catch_up_batch() -> i32 {
-    pamin_core::env::positive(CATCH_UP_BATCH_VAR).unwrap_or(CATCH_UP_BATCH)
-}
-
 /// How long one tick may spend catching up, across every project.
 ///
 /// Not the wait a request can see -- a request stops the catching up between
@@ -311,7 +315,7 @@ impl Default for CatchingUp {
     fn default() -> Self {
         Self {
             refused: HashMap::new(),
-            batch: catch_up_batch(),
+            batch: CATCH_UP_BATCH,
         }
     }
 }
@@ -593,7 +597,11 @@ enum Shutdown {
 }
 
 /// Reads requests from one client until it hangs up.
-async fn serve_connection(session: &Arc<Session>, stream: UnixStream) -> Result<Shutdown> {
+async fn serve_connection(
+    session: &Arc<Session>,
+    server: &crate::settings::Server,
+    stream: UnixStream,
+) -> Result<Shutdown> {
     let mut framed = Framed::new(stream, LinesCodec::new_with_max_length(MAX_REQUEST));
 
     while let Some(line) = framed.next().await {
@@ -621,6 +629,15 @@ async fn serve_connection(session: &Arc<Session>, stream: UnixStream) -> Result<
             framed.send(serde_json::to_string(&response)?).await?;
             // No point carrying on: the client is about to replace this
             // process rather than trust field names that may have moved.
+            continue;
+        }
+        // Then the settings. Never served with other settings than asked
+        // for, and never replaced from here: a server another agent is using
+        // is not this client's to restart, so the caller is told how.
+        if !stopping && let Some(message) = server.mismatch(&request.server) {
+            framed
+                .send(serde_json::to_string(&Response::Err(message))?)
+                .await?;
             continue;
         }
         let name = request.call.name();
@@ -671,14 +688,21 @@ async fn answer(session: &Arc<Session>, request: Request) -> Result<Payload> {
         ..
     } = request;
 
+    // `stop` before the vector index is read: it opens no index, and a stop
+    // that was refused for the index it named would end this server with
+    // the database still running.
+    if let Call::Stop = call {
+        return json(command::stop::execute(session.workspace()).await?);
+    }
+
     let vector_index = VectorIndex::parse(&vector_index)
         .ok_or_else(|| anyhow::anyhow!("unknown vector index {vector_index:?}"))?;
 
     // Before the request, not after it: the loads are what the next search
     // would wait for, and this request is the earliest sign one is coming.
-    // Not for `stop`, which is about to end the process, nor for `reindex`,
-    // which discards the index a warm-up would be holding open.
-    if !matches!(call, Call::Stop | Call::Reindex(_)) {
+    // Not for `reindex`, which discards the index a warm-up would be holding
+    // open.
+    if !matches!(call, Call::Reindex(_)) {
         session.warm(&project, vector_index);
     }
 
@@ -707,7 +731,7 @@ async fn answer(session: &Arc<Session>, request: Request) -> Result<Payload> {
         Call::Cascade(args) => {
             json(command::cascade::answer(session, &project, vector_index, args).await?)?
         }
-        Call::Stop => json(command::stop::execute(session.workspace()).await?)?,
+        Call::Stop => unreachable!("answered above"),
     };
 
     Ok(value)

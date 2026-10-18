@@ -8,7 +8,7 @@
 //! cargo test -p pamin-index --test prepared -- --ignored --nocapture
 //! ```
 //!
-//! and with `PAMIN_TEST_MODELS` pointing at a model directory that already
+//! and with `PAMIN_EVAL_MODELS` pointing at a model directory that already
 //! holds them to skip the download -- its `models--*` entries are linked into
 //! a temporary directory, so the copies are written there and removed after.
 //!
@@ -20,14 +20,16 @@
 //! had fallen back to packing on the heap, and the copy would look free. In a
 //! fresh process there is nothing to hand back.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use pamin_index::{Device, Embedder, Reranker};
 
 /// Which load a child process runs, and where its models are.
-const ARM: &str = "PAMIN_PREPARED_ARM";
-const CACHE: &str = "PAMIN_PREPARED_CACHE";
+const ARM: &str = "PAMIN_EVAL_PREPARED_ARM";
+const CACHE: &str = "PAMIN_EVAL_PREPARED_CACHE";
 
 /// What a child prints its result after, so it can be found in libtest's own
 /// output.
@@ -176,11 +178,11 @@ fn run(model: &str, cache: &Path, prepared: bool) -> Arm {
         .env(CACHE, cache)
         // The copy is for the CPU; on a machine with a GPU the reranker would
         // load the fp16 export there and neither arm would test anything.
-        .env("PAMIN_DEVICE", "cpu");
+        .env("PAMIN_EVAL_DEVICE", "cpu");
     if prepared {
-        command.env_remove("PAMIN_PREPARED");
+        command.env_remove("PAMIN_EVAL_PREPARED");
     } else {
-        command.env("PAMIN_PREPARED", "off");
+        command.env("PAMIN_EVAL_PREPARED", "false");
     }
     let output = command.output().expect("run the child");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -222,7 +224,8 @@ fn child(model: &str, cache: &Path) {
     // last of them would measure a process that no longer holds a model.
     let mut score: Box<dyn FnMut() -> Vec<f32>> = match model {
         "accurate" => {
-            let mut reranker = Reranker::load(cache).expect("load the reranker");
+            let mut reranker =
+                Reranker::load(cache, &support::inference()).expect("load the reranker");
             assert_eq!(reranker.device(), Device::Cpu, "the copy is for the CPU");
             Box::new(move || {
                 let mut scores = vec![f32::NAN; TEXTS.len()];
@@ -233,7 +236,8 @@ fn child(model: &str, cache: &Path) {
             })
         }
         "embedder" => {
-            let mut embedder = Embedder::load(cache).expect("load the embedder");
+            let mut embedder =
+                Embedder::load(cache, &support::inference()).expect("load the embedder");
             Box::new(move || {
                 let vectors = embedder.embed_passages(TEXTS).expect("embed");
                 vectors.into_iter().flatten().collect()
@@ -314,10 +318,10 @@ fn only_copy(copies: &Path) -> PathBuf {
 /// Links the models an existing cache holds into `cache`, so nothing is
 /// downloaded and nothing is written beside them.
 fn link_models(cache: &Path) {
-    let Ok(existing) = std::env::var("PAMIN_TEST_MODELS") else {
+    let Ok(existing) = std::env::var("PAMIN_EVAL_MODELS") else {
         return;
     };
-    for entry in std::fs::read_dir(&existing).expect("PAMIN_TEST_MODELS") {
+    for entry in std::fs::read_dir(&existing).expect("PAMIN_EVAL_MODELS") {
         let path = entry.expect("an entry").path();
         let name = path.file_name().expect("a name").to_owned();
         if name.to_string_lossy().starts_with("models--") {

@@ -212,15 +212,22 @@ pub(crate) trait Download {
 /// written -- a read-only or full disk, a file lock the filesystem does not
 /// support, a graph the runtime will not re-serialize. The model then loads
 /// the way it did before copies existed, which costs memory and nothing else.
-/// `PAMIN_PREPARED=off` asks for that on purpose, for a measurement that needs
-/// the unmapped load, and fetches the download if it was removed.
+/// Turning [`prepared`](crate::InferenceSettings::prepared) off asks for that
+/// on purpose, for a measurement that needs the unmapped load, and fetches the
+/// download if it was removed.
 ///
 /// The copy's graph with its attention fused, where that scored identically,
-/// and `PAMIN_FUSED_ATTENTION=off` asks for the graph as ONNX Runtime wrote
-/// it -- the other arm of a measurement of what the fusion is worth.
-pub(crate) fn load_path(download: &impl Download, cache_dir: &Path) -> Result<PathBuf> {
+/// and turning [`fused_attention`](crate::InferenceSettings::fused_attention)
+/// off asks for the graph as ONNX Runtime wrote it -- the other arm of a
+/// measurement of what the fusion is worth.
+pub(crate) fn load_path(
+    download: &impl Download,
+    cache_dir: &Path,
+    settings: &crate::InferenceSettings,
+) -> Result<PathBuf> {
     let root = cache_dir.join("prepared");
-    if !wanted() {
+    let fused = settings.fused_attention;
+    if !settings.prepared {
         let fetched = download.fetch()?;
         if let Some(recorded) = record(download, &root) {
             recorded
@@ -233,7 +240,10 @@ pub(crate) fn load_path(download: &impl Download, cache_dir: &Path) -> Result<Pa
         Some(source) => source,
         None => {
             let recorded = recorded(download, &root);
-            if let Some(copy) = recorded.as_ref().and_then(|source| found(source, &root)) {
+            if let Some(copy) = recorded
+                .as_ref()
+                .and_then(|source| found(source, &root, fused))
+            {
                 collect(&root, SystemTime::now());
                 return Ok(copy);
             }
@@ -258,17 +268,17 @@ pub(crate) fn load_path(download: &impl Download, cache_dir: &Path) -> Result<Pa
             fetched
         }
     };
-    match prepare(&source, &root) {
+    match prepare(&source, &root, settings.budget()?) {
         Ok(copy) => {
             collect(&root, SystemTime::now());
-            Ok(graph(copy))
+            Ok(graph(copy, fused))
         }
         Err(error) => {
             // Another process released the download between this one finding
             // it and keying it, which it does only once the copy is complete.
             if !source.exists()
                 && let Some(copy) =
-                    recorded(download, &root).and_then(|source| found(&source, &root))
+                    recorded(download, &root).and_then(|source| found(&source, &root, fused))
             {
                 collect(&root, SystemTime::now());
                 return Ok(copy);
@@ -299,10 +309,15 @@ pub(crate) fn is_copy(path: &Path, cache_dir: &Path) -> bool {
 /// interruption between the two costs a download, never the copy.
 ///
 /// Best effort, and a no-op where there is nothing to do: the download is
-/// already gone, there is no complete copy for it, `PAMIN_PREPARED=off`, or
-/// the file is not the model directory's own ([`Download::remove`]).
-pub(crate) fn release(download: &impl Download, cache_dir: &Path) {
-    if !wanted() {
+/// already gone, there is no complete copy for it, copies are not
+/// [`prepared`](crate::InferenceSettings::prepared), or the file is not the
+/// model directory's own ([`Download::remove`]).
+pub(crate) fn release(
+    download: &impl Download,
+    cache_dir: &Path,
+    settings: &crate::InferenceSettings,
+) {
+    if !settings.prepared {
         return;
     }
     let Some(source) = download.on_disk() else {
@@ -399,23 +414,22 @@ pub(crate) fn release(download: &impl Download, cache_dir: &Path) {
 /// copy that fits this runtime and CPU.
 ///
 /// Asking is not loading: the copy is neither stamped nor held.
-pub(crate) fn is_ready(download: &impl Download, cache_dir: &Path) -> bool {
+pub(crate) fn is_ready(
+    download: &impl Download,
+    cache_dir: &Path,
+    settings: &crate::InferenceSettings,
+) -> bool {
     let root = cache_dir.join("prepared");
     download.on_disk().is_some()
-        || (wanted()
+        || (settings.prepared
             && recorded(download, &root)
                 .is_some_and(|source| settled(&root.join(source.key().0)).is_some()))
 }
 
-/// Whether copies are wanted at all: unless `PAMIN_PREPARED=off`.
-fn wanted() -> bool {
-    !pamin_core::env::is("PAMIN_PREPARED", "off")
-}
-
-/// The graph a caller loads from a settled copy: the fused one unless
-/// `PAMIN_FUSED_ATTENTION=off` asks for the one ONNX Runtime wrote.
-fn graph(copy: PathBuf) -> PathBuf {
-    if copy.ends_with(FUSED) && !fusion_wanted() {
+/// The graph a caller loads from a settled copy: the fused one unless `fused`
+/// is false, which asks for the one ONNX Runtime wrote.
+fn graph(copy: PathBuf, fused: bool) -> PathBuf {
+    if copy.ends_with(FUSED) && !fused {
         copy.with_file_name(MODEL)
     } else {
         copy
@@ -424,8 +438,8 @@ fn graph(copy: PathBuf) -> PathBuf {
 
 /// The settled copy of the download `source` described, if this runtime and
 /// CPU have one, stamped and held as [`prepare`] does with a copy it finds.
-fn found(source: &Source, root: &Path) -> Option<PathBuf> {
-    find(root, &source.key().0).map(graph)
+fn found(source: &Source, root: &Path, fused: bool) -> Option<PathBuf> {
+    find(root, &source.key().0).map(|copy| graph(copy, fused))
 }
 
 /// What a removed download was, as [`release`] recorded it, if the record
@@ -569,7 +583,7 @@ fn records(download: &impl Download, root: &Path) -> Vec<PathBuf> {
 /// for a copy written before the fusion existed, on the first load that finds
 /// it -- and the path returned is the graph to load: [`FUSED`] if it was
 /// kept, [`MODEL`] if not.
-fn prepare(source: &Path, root: &Path) -> Result<PathBuf> {
+fn prepare(source: &Path, root: &Path, threads: usize) -> Result<PathBuf> {
     let (key, described) = Source::of(source)?.key();
     let done = root.join(&key);
     let copy = done.join(MODEL);
@@ -587,7 +601,7 @@ fn prepare(source: &Path, root: &Path) -> Result<PathBuf> {
         Some(settled) => settled,
         None if copy.exists() => {
             crate::activity::prepared();
-            fuse(&done)
+            fuse(&done, threads)
         }
         None => {
             crate::activity::prepared();
@@ -612,7 +626,7 @@ fn prepare(source: &Path, root: &Path) -> Result<PathBuf> {
                 key = %described,
                 "wrote a mapped copy of the model"
             );
-            fuse(&done)
+            fuse(&done, threads)
         }
     };
     // Stamped before the lock is let go of, so a removal that takes it in
@@ -843,13 +857,6 @@ fn settled(copy: &Path) -> Option<PathBuf> {
     (copy.join(UNFUSED).exists() && copy.join(MODEL).exists()).then(|| copy.join(MODEL))
 }
 
-/// Whether a caller wants the fused graph where there is one: unless
-/// `PAMIN_FUSED_ATTENTION=off`, which exists so the two can be measured
-/// against each other through the product's own load.
-fn fusion_wanted() -> bool {
-    !pamin_core::env::is("PAMIN_FUSED_ATTENTION", "off")
-}
-
 /// Fuses the attention of the complete copy in `copy`, keeps the result only
 /// if it scores a probe exactly as the unfused graph does, and returns the
 /// graph to load. Called under the copy's lock.
@@ -858,10 +865,10 @@ fn fusion_wanted() -> bool {
 /// that differs, a graph the runtime refuses -- is written to [`UNFUSED`]
 /// and logged, and the copy loads the graph ONNX Runtime wrote, which is what
 /// it loaded before this existed.
-fn fuse(copy: &Path) -> PathBuf {
+fn fuse(copy: &Path, threads: usize) -> PathBuf {
     let model = copy.join(MODEL);
     let started = std::time::Instant::now();
-    match try_fuse(copy) {
+    match try_fuse(copy, threads) {
         Ok((layers, (before, after))) => {
             tracing::info!(
                 copy = %copy.display(),
@@ -885,7 +892,7 @@ fn fuse(copy: &Path) -> PathBuf {
 
 /// The fusion itself: the rewrite, written beside the graph it came from,
 /// checked, and renamed into place only once it has passed.
-fn try_fuse(copy: &Path) -> std::result::Result<(usize, (usize, usize)), String> {
+fn try_fuse(copy: &Path, threads: usize) -> std::result::Result<(usize, (usize, usize)), String> {
     let model = copy.join(MODEL);
     let original = std::fs::read(&model).map_err(|error| format!("reading the graph: {error}"))?;
     let fused = crate::attention::fuse(&original)?;
@@ -893,7 +900,7 @@ fn try_fuse(copy: &Path) -> std::result::Result<(usize, (usize, usize)), String>
     let written = std::fs::write(&candidate, &fused.model)
         .and_then(|()| std::fs::File::open(&candidate)?.sync_all())
         .map_err(|error| format!("writing the fused graph: {error}"))
-        .and_then(|()| same_on_a_probe(&model, &candidate))
+        .and_then(|()| same_on_a_probe(&model, &candidate, threads))
         .and_then(|()| {
             std::fs::rename(&candidate, copy.join(FUSED))
                 .map_err(|error| format!("renaming the fused graph into place: {error}"))
@@ -913,7 +920,11 @@ fn try_fuse(copy: &Path) -> std::result::Result<(usize, (usize, usize)), String>
 /// The token ids are arbitrary: any ids below a thousand are in every
 /// vocabulary these models have, and the question is whether the two graphs
 /// agree, not what either one thinks of the text.
-fn same_on_a_probe(expected: &Path, candidate: &Path) -> std::result::Result<(), String> {
+fn same_on_a_probe(
+    expected: &Path,
+    candidate: &Path,
+    threads: usize,
+) -> std::result::Result<(), String> {
     const LENGTH: usize = 24;
     const PADDED_FROM: usize = 13;
     let ids: Vec<i64> = (0..2 * LENGTH)
@@ -932,7 +943,7 @@ fn same_on_a_probe(expected: &Path, candidate: &Path) -> std::result::Result<(),
 
     let outputs = |path: &Path| -> std::result::Result<Vec<(String, Vec<u32>)>, String> {
         let failed = |error: &dyn std::fmt::Display| format!("{}: {error}", path.display());
-        let mut session = crate::inference::probe(path).map_err(|error| failed(&error))?;
+        let mut session = crate::inference::probe(threads, path).map_err(|error| failed(&error))?;
         let mut feed = Vec::new();
         for input in session.inputs() {
             let values = match input.name() {
@@ -1418,7 +1429,7 @@ mod tests {
     /// Loads `path` the way a model is loaded, which is what [`release`]
     /// waits for.
     fn load(path: &Path) {
-        crate::inference::session(vec![crate::inference::cpu()], || Ok(path.to_path_buf()))
+        crate::inference::session(1, vec![crate::inference::cpu()], || Ok(path.to_path_buf()))
             .unwrap_or_else(|error| panic!("load {}: {error}", path.display()));
     }
 
@@ -1430,9 +1441,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let hub = Hub::new(dir.path(), &tiny_model());
         let cache = dir.path().join("models");
-        let copy = load_path(&hub, &cache).expect("the first load");
+        let copy =
+            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("the first load");
         load(&copy);
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         assert!(hub.on_disk().is_none());
         let record = std::fs::read_to_string(cache.join("prepared").join(record_name(&hub)))
             .expect("the record");
@@ -1442,29 +1454,38 @@ mod tests {
         );
 
         hub.online.set(false);
-        assert_eq!(load_path(&hub, &cache).expect("the same revision"), copy);
+        assert_eq!(
+            load_path(&hub, &cache, &crate::InferenceSettings::default())
+                .expect("the same revision"),
+            copy
+        );
         hub.moved("someone/model@decaf", "4567cdef");
-        assert!(!is_ready(&hub, &cache), "the old revision's copy is ready");
         assert!(
-            load_path(&hub, &cache).is_err(),
+            !is_ready(&hub, &cache, &crate::InferenceSettings::default()),
+            "the old revision's copy is ready"
+        );
+        assert!(
+            load_path(&hub, &cache, &crate::InferenceSettings::default()).is_err(),
             "the old revision's copy loaded under the new ref"
         );
         hub.online.set(true);
-        let new = load_path(&hub, &cache).expect("a load of the new revision");
+        let new = load_path(&hub, &cache, &crate::InferenceSettings::default())
+            .expect("a load of the new revision");
         assert_eq!(hub.fetches.get(), 2, "the new revision was not fetched");
 
         // A replaced revision's copy goes as soon as its record names
         // another revision -- unless a process holds it, as this one holds
         // the first copy, which then waits for the usual sweep.
         load(&new);
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         assert!(copy.exists(), "a held copy was removed");
         held().remove(new.parent().expect("the copy's directory"));
         hub.moved("someone/model@beef", "89abef01");
-        let newest = load_path(&hub, &cache).expect("a load of the next revision");
+        let newest = load_path(&hub, &cache, &crate::InferenceSettings::default())
+            .expect("a load of the next revision");
         assert_eq!(hub.fetches.get(), 3, "the next revision was not fetched");
         load(&newest);
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         assert!(!new.exists(), "the replaced, unheld copy is still on disk");
         assert!(newest.exists() && copy.exists());
     }
@@ -1520,9 +1541,10 @@ mod tests {
         let model = tiny_model();
         let hub = Hub::new(dir.path(), &model);
         let cache = dir.path().join("models");
-        let copy = load_path(&hub, &cache).expect("the first load");
+        let copy =
+            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("the first load");
         load(&copy);
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
 
         // Another weight, the same length.
         let raw: Vec<u8> = (0..32 * 32)
@@ -1539,7 +1561,8 @@ mod tests {
         let blob = hub.blob.borrow().file_name().expect("a name").to_owned();
         hub.moved("someone/model@decaf", &blob.to_string_lossy());
 
-        let new = load_path(&hub, &cache).expect("a load of the new revision");
+        let new = load_path(&hub, &cache, &crate::InferenceSettings::default())
+            .expect("a load of the new revision");
         assert_eq!(hub.fetches.get(), 2);
         assert_ne!(new, copy, "the new weights were keyed as the old copy");
         load(&new);
@@ -1554,9 +1577,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let hub = Hub::new(dir.path(), &tiny_model());
         let cache = dir.path().join("models");
-        let copy = load_path(&hub, &cache).expect("the first load");
+        let copy =
+            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("the first load");
         load(&copy);
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         let path = cache.join("prepared").join(record_name(&hub));
         let record = std::fs::read_to_string(&path).expect("the record");
         let legacy: String = record
@@ -1571,16 +1595,22 @@ mod tests {
         std::fs::remove_file(&path).expect("no record of this revision");
 
         hub.online.set(false);
-        assert!(!is_ready(&hub, &cache), "an unverified copy is ready");
         assert!(
-            load_path(&hub, &cache).is_err(),
+            !is_ready(&hub, &cache, &crate::InferenceSettings::default()),
+            "an unverified copy is ready"
+        );
+        assert!(
+            load_path(&hub, &cache, &crate::InferenceSettings::default()).is_err(),
             "an unverified copy loaded"
         );
         hub.online.set(true);
-        assert_eq!(load_path(&hub, &cache).expect("a verified load"), copy);
+        assert_eq!(
+            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("a verified load"),
+            copy
+        );
         assert_eq!(hub.fetches.get(), 2);
         load(&copy);
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         assert_eq!(std::fs::read_to_string(&path).expect("the record"), record);
         assert!(
             !old.exists(),
@@ -1597,25 +1627,32 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let hub = Hub::new(dir.path(), &tiny_model());
         let cache = dir.path().join("models");
-        let first = load_path(&hub, &cache).expect("the first revision");
+        let first = load_path(&hub, &cache, &crate::InferenceSettings::default())
+            .expect("the first revision");
         load(&first);
         hub.moved("someone/model@decaf", "4567cdef");
-        let second = load_path(&hub, &cache).expect("the second revision");
+        let second = load_path(&hub, &cache, &crate::InferenceSettings::default())
+            .expect("the second revision");
         load(&second);
         // Both downloads are on disk and both copies are held, as in two
         // processes loading at once; the second revision releases first.
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         hub.moved("someone/model@c0ffee", "0123abcd");
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         let records = records(&hub, &cache.join("prepared"));
         assert_eq!(records.len(), 2, "{records:?}");
 
         hub.online.set(false);
         let fetches = hub.fetches.get();
-        assert_eq!(load_path(&hub, &cache).expect("the first, offline"), first);
+        assert_eq!(
+            load_path(&hub, &cache, &crate::InferenceSettings::default())
+                .expect("the first, offline"),
+            first
+        );
         hub.moved("someone/model@decaf", "4567cdef");
         assert_eq!(
-            load_path(&hub, &cache).expect("the second, offline"),
+            load_path(&hub, &cache, &crate::InferenceSettings::default())
+                .expect("the second, offline"),
             second
         );
         assert_eq!(hub.fetches.get(), fetches);
@@ -1630,27 +1667,40 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let hub = Hub::new(dir.path(), &tiny_model());
         let cache = dir.path().join("models");
-        let copy = load_path(&hub, &cache).expect("the first revision");
+        let copy = load_path(&hub, &cache, &crate::InferenceSettings::default())
+            .expect("the first revision");
         load(&copy);
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         assert!(hub.on_disk().is_none());
 
         // The ref moves to a commit with the same weights: the same blob.
         hub.moved("someone/model@decaf", "0123abcd");
-        let same = load_path(&hub, &cache).expect("the second revision");
+        let same = load_path(&hub, &cache, &crate::InferenceSettings::default())
+            .expect("the second revision");
         assert_eq!(same, copy, "the same weights were written again");
         load(&same);
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         assert!(hub.on_disk().is_none());
         let records = records(&hub, &cache.join("prepared"));
         assert_eq!(records.len(), 2, "{records:?}");
 
         hub.online.set(false);
         let fetches = hub.fetches.get();
-        assert_eq!(load_path(&hub, &cache).expect("the second, offline"), copy);
+        assert_eq!(
+            load_path(&hub, &cache, &crate::InferenceSettings::default())
+                .expect("the second, offline"),
+            copy
+        );
         hub.moved("someone/model@c0ffee", "0123abcd");
-        assert!(is_ready(&hub, &cache), "the first revision lost its record");
-        assert_eq!(load_path(&hub, &cache).expect("the first, offline"), copy);
+        assert!(
+            is_ready(&hub, &cache, &crate::InferenceSettings::default()),
+            "the first revision lost its record"
+        );
+        assert_eq!(
+            load_path(&hub, &cache, &crate::InferenceSettings::default())
+                .expect("the first, offline"),
+            copy
+        );
         assert_eq!(hub.fetches.get(), fetches);
     }
 
@@ -1666,7 +1716,8 @@ mod tests {
         let root = cache.join("prepared");
 
         // First load: fetched, written into a copy, loaded, then removed.
-        let copy = load_path(&hub, &cache).expect("the first load");
+        let copy =
+            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("the first load");
         assert_eq!(hub.fetches.get(), 1);
         assert!(copy.starts_with(&root), "loaded {copy:?}, not a copy");
         assert!(is_copy(&copy, &cache));
@@ -1675,7 +1726,7 @@ mod tests {
             "the download went before the copy had loaded"
         );
         load(&copy);
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         assert!(
             hub.on_disk().is_none(),
             "the download is still beside its copy"
@@ -1688,15 +1739,22 @@ mod tests {
 
         // Offline, the copy is found by its record alone.
         hub.online.set(false);
-        assert!(is_ready(&hub, &cache));
-        assert_eq!(load_path(&hub, &cache).expect("a load offline"), copy);
+        assert!(is_ready(&hub, &cache, &crate::InferenceSettings::default()));
+        assert_eq!(
+            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("a load offline"),
+            copy
+        );
         assert_eq!(hub.fetches.get(), 1, "a load with a fitting copy fetched");
 
         // What a runtime upgrade or another CPU looks like from here: the
         // only copy on disk is keyed for something else.
         std::fs::rename(root.join(&key), root.join("0".repeat(32))).expect("move the copy");
-        assert!(!is_ready(&hub, &cache));
-        let refused = load_path(&hub, &cache)
+        assert!(!is_ready(
+            &hub,
+            &cache,
+            &crate::InferenceSettings::default()
+        ));
+        let refused = load_path(&hub, &cache, &crate::InferenceSettings::default())
             .expect_err("a load with no fitting copy and no network must fail")
             .to_string();
         assert!(
@@ -1709,14 +1767,15 @@ mod tests {
         // Back online: fetched again, and keyed as the removed file was, so
         // a copy another runtime keeps for it would still fit.
         hub.online.set(true);
-        let rewritten = load_path(&hub, &cache).expect("a load once online");
+        let rewritten = load_path(&hub, &cache, &crate::InferenceSettings::default())
+            .expect("a load once online");
         assert_eq!(hub.fetches.get(), 2);
         assert_eq!(
             rewritten, copy,
             "the fresh download keyed differently from the removed one"
         );
         load(&rewritten);
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         assert!(hub.on_disk().is_none());
     }
 
@@ -1729,13 +1788,14 @@ mod tests {
         let hub = Hub::new(dir.path(), b"this is not a protobuf");
         let cache = dir.path().join("models");
 
-        let loaded = load_path(&hub, &cache).expect("fall back");
+        let loaded =
+            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("fall back");
         assert!(
             !is_copy(&loaded, &cache),
             "the download it fell back to is taken for a copy"
         );
         assert_eq!(Some(loaded), hub.on_disk());
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         assert!(
             hub.on_disk().is_some(),
             "the only loadable file was removed"
@@ -1772,7 +1832,7 @@ mod tests {
         std::fs::write(partial.join(MODEL), b"half a model").expect("half-write it");
 
         let before = crate::LoadActivity::now();
-        assert!(prepare(&source, &root).is_err());
+        assert!(prepare(&source, &root, 1).is_err());
         assert!(!partial.exists(), "the crashed writer's files survived");
         // Counted as preparing: the load did the work, if not to the end.
         assert!(crate::LoadActivity::now().prepared > before.prepared);
@@ -1792,7 +1852,7 @@ mod tests {
         std::fs::write(root.join(&key).join(MODEL), b"a copy").expect("write the copy");
 
         assert_eq!(
-            prepare(&source, &root).expect("find the copy"),
+            prepare(&source, &root, 1).expect("find the copy"),
             root.join(key).join(MODEL)
         );
     }
@@ -1997,9 +2057,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let hub = Hub::new(dir.path(), &tiny_model());
         let cache = dir.path().join("models");
-        let copy = load_path(&hub, &cache).expect("the first load");
+        let copy =
+            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("the first load");
         load(&copy);
-        release(&hub, &cache);
+        release(&hub, &cache, &crate::InferenceSettings::default());
         assert!(hub.on_disk().is_none(), "the download was kept");
         let done = copy.parent().expect("the copy's directory").to_path_buf();
         let key = done
@@ -2014,7 +2075,10 @@ mod tests {
         assert!(unused(&done, now), "the fixture's copy is not old enough");
 
         hub.online.set(false);
-        assert_eq!(load_path(&hub, &cache).expect("a load offline"), copy);
+        assert_eq!(
+            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("a load offline"),
+            copy
+        );
         assert!(
             !unused(&done, now),
             "a copy found through its record was not stamped"
@@ -2116,7 +2180,7 @@ mod tests {
             "the fixture's copy is not old enough to be collected"
         );
 
-        prepare(&source, &root).expect("find the copy");
+        prepare(&source, &root, 1).expect("find the copy");
         assert!(!unused(&done, now), "loading the copy did not stamp it");
 
         collect(&root, now + 30 * DAY);

@@ -806,7 +806,7 @@ pub fn replay(hits: &[SearchHit]) -> Replayed {
     let results = Fusion::default().fuse(&crate::channels::replay(hits));
     // The engine's own rule for what the model is shown, not a copy of it.
     let traces: Vec<&[Why]> = results.iter().map(|result| result.why.as_slice()).collect();
-    let movable = pamin_engine::rerankable(&traces);
+    let movable = pamin_engine::rerankable(&traces, crate::harness::depths().rerank.get());
     let fused: Vec<String> = results
         .iter()
         .map(|result| named[&result.topic].to_string())
@@ -841,7 +841,7 @@ pub fn replay(hits: &[SearchHit]) -> Replayed {
             fusion: Vec::new(),
             model: Vec::new(),
             graph: Vec::new(),
-            head: pamin_index::reranking::depth(),
+            head: crate::harness::depths().rerank.get(),
             lead,
             agree,
             passes: None,
@@ -880,7 +880,7 @@ pub fn replay(hits: &[SearchHit]) -> Replayed {
                         .unwrap_or(0.0)
                 })
                 .collect(),
-            head: pamin_index::reranking::depth(),
+            head: crate::harness::depths().rerank.get(),
             lead,
             agree,
             passes: None,

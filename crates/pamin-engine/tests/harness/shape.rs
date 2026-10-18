@@ -191,27 +191,30 @@ fn open_tally() {
     });
 }
 
-/// `PAMIN_` variables that say only where something is, or what to log, and
-/// change no result -- and the four `PAMIN_ENGINE_` variables `build.rs` sets
-/// with `cargo:rustc-env`, which Cargo also sets on every test it runs: they
-/// describe the build, which the record names as its source and build.
-/// Every other `PAMIN_` variable is taken to change what is measured.
-const NOT_SETTINGS: [&str; 15] = [
-    "PAMIN_EMBEDDING_TEST_OUTPUT",
-    "PAMIN_ENGINE_BUILD_ENVIRONMENT",
-    "PAMIN_ENGINE_COMMIT",
-    "PAMIN_ENGINE_DIRTY",
-    "PAMIN_ENGINE_SOURCES",
+/// `PAMIN_` variables that say only where something is, which project `pamin`
+/// works in, or what to log, and change no result: a harness names its own
+/// projects in code. Not `PAMIN_EVAL_POSTGRES_DIR`: it says where a
+/// PostgreSQL installation is, but another installation can be another
+/// version or build, which changes the timings a record keeps (no ranking
+/// reads it), so it is in [`NOT_PRODUCER`]. Every other `PAMIN_` variable is
+/// taken to change what is measured: the `PAMIN_EVAL_*` knobs a harness reads
+/// into its settings (see `support/eval.rs`), and any product variable a
+/// harness would refuse. Nor
+/// do the variables build scripts set with `cargo:rustc-env`
+/// ([`eval::BUILD`](super::eval::BUILD)), which Cargo also sets on every test
+/// it runs: they describe the build, which the record names as its source and
+/// build.
+const NOT_SETTINGS: [&str; 10] = [
+    "PAMIN_EVAL_EMBEDDING_OUTPUT",
     "PAMIN_EVAL_HOME",
+    "PAMIN_EVAL_MODEL_CACHE",
+    "PAMIN_EVAL_NATIVE_CACHE",
+    "PAMIN_EVAL_PREPARED_CACHE",
+    "PAMIN_EVAL_RERANK_OUTPUT",
+    "PAMIN_EVAL_SHARED_CACHE",
     "PAMIN_HOME",
     "PAMIN_LOG",
-    "PAMIN_MATRIX_OUTPUT",
-    "PAMIN_NATIVE_TEST_CACHE",
-    "PAMIN_POSTGRES_DIR",
-    "PAMIN_PREPARED_CACHE",
-    "PAMIN_RERANK_TEST_OUTPUT",
-    "PAMIN_SHARED_CACHE",
-    "PAMIN_TEST_MODEL_CACHE",
+    "PAMIN_PROJECT",
 ];
 
 /// Variables outside `PAMIN_` that every harness's record is named by,
@@ -329,7 +332,7 @@ const EVAL_NOT_IDENTITY: [(&str, &str); 7] = [
 
 /// Environment reads in the evaluation tests whose name is not a literal at
 /// the read, with where the names come from.
-const EVAL_INDIRECT: [(&str, &str); 8] = [
+const EVAL_INDIRECT: [(&str, &str); 10] = [
     (
         "pamin-engine/tests/harness/mod.rs: std::env::var(var)",
         "dataset_dir's variable, a literal at every dataset_dir call",
@@ -339,28 +342,37 @@ const EVAL_INDIRECT: [(&str, &str); 8] = [
         "KnobSweep's knob, a literal at every KnobSweep::claim call, checked unset",
     ),
     (
+        "pamin-engine/tests/locomo.rs: std::env::var_os(name)",
+        "PAMIN_EVAL_RERANK_DEPTH, PAMIN_EVAL_RERANK_MAX_TOKENS and PAMIN_EVAL_SEARCH_EFFORT, \
+         asserted unset",
+    ),
+    (
         "pamin-index/tests/prepared.rs: std::env::var(ARM)",
-        "PAMIN_PREPARED_ARM, a measuring child's arm",
+        "PAMIN_EVAL_PREPARED_ARM, a measuring child's arm",
     ),
     (
         "pamin-index/tests/prepared.rs: std::env::var(CACHE)",
-        "PAMIN_PREPARED_CACHE, a measuring child's cache",
+        "PAMIN_EVAL_PREPARED_CACHE, a measuring child's cache",
     ),
     (
         "pamin-index/tests/shared_vocabulary.rs: std::env::var(ARM)",
-        "PAMIN_SHARED_ARM, a measuring child's arm",
+        "PAMIN_EVAL_SHARED_ARM, a measuring child's arm",
     ),
     (
         "pamin-index/tests/shared_vocabulary.rs: std::env::var(CACHE)",
-        "PAMIN_SHARED_CACHE, a measuring child's cache",
+        "PAMIN_EVAL_SHARED_CACHE, a measuring child's cache",
     ),
     (
         "pamin-index/tests/shared_vocabulary.rs: std::env::var(name)",
-        "PAMIN_SHARED_*_COPY, the prepared copies a child loads",
+        "PAMIN_EVAL_SHARED_*_COPY, the prepared copies a child loads",
     ),
     (
-        "pamin-index/tests/shared_vocabulary.rs: std::env::var_os(tuned)",
-        "PAMIN_RERANK_* batch limits, asserted unset",
+        "pamin-index/tests/support/eval.rs: std::env::var(name)",
+        "a PAMIN_EVAL_* knob, each listed in its KNOBS",
+    ),
+    (
+        "pamin-index/tests/support/eval.rs: std::env::var_os(name)",
+        "a PAMIN_EVAL_* path knob, each listed in its KNOBS",
     ),
 ];
 
@@ -379,8 +391,9 @@ fn identity_variable(name: &str) -> bool {
 /// [`NOT_SETTINGS`].
 ///
 /// The `PAMIN_` variables are found rather than listed. A list was kept per
-/// harness, and the product's runtime knobs -- `PAMIN_RERANK_DEPTH`,
-/// `PAMIN_SEARCH_EFFORT` -- were never on it, so a run with one set was
+/// harness, and the product's runtime knobs -- the reranker's depth, the
+/// search effort, now `PAMIN_EVAL_RERANK_DEPTH` and `PAMIN_EVAL_SEARCH_EFFORT`
+/// -- were never on it, so a run with one set was
 /// recorded as the shipped run, over the shipped run's record. The
 /// harnesses' own knobs were listed per harness as well, and MuSiQue's list
 /// left out `RERANK_RULES`, so they are one shared list now.
@@ -389,7 +402,9 @@ fn settings(set: impl IntoIterator<Item = (String, String)>) -> Vec<String> {
         .into_iter()
         .filter(|(name, _)| {
             identity_variable(name)
-                || (name.starts_with("PAMIN_") && !NOT_SETTINGS.contains(&name.as_str()))
+                || (name.starts_with("PAMIN_")
+                    && !NOT_SETTINGS.contains(&name.as_str())
+                    && !super::eval::BUILD.contains(&name.as_str()))
         })
         .map(|(name, value)| format!("{name}={value}"))
         .collect();
@@ -407,92 +422,103 @@ fn environment() -> impl Iterator<Item = (String, String)> {
     })
 }
 
-/// Refuses a run in which a `PAMIN_` variable is set that a harness calling
-/// the product's engine on the shipped path does not honour as `pamin` would.
-///
-/// An allowlist: the variables that name no setting ([`NOT_SETTINGS`]), and
-/// those the product reads below the engine, on the path from a text to its
-/// vector and from the vectors to an index ([`producer_pamin`]), which reach
-/// a harness's engine as they reach `pamin`'s and which the record and the
-/// index stamp name. Every other one is refused. The CLI resolves some
-/// before the engine sees them -- `PAMIN_RERANK`, `PAMIN_CHANNEL_DEPTH`,
-/// `PAMIN_GRAPH_DEPTH`, `PAMIN_VECTOR_INDEX` -- and a harness that passes
-/// its own arguments never reads them, so the record would name a setting
-/// the run ignored. The engine does read the search's and the reranker's
-/// knobs, and a run with one set is a sweep, not the shipped path.
-pub fn shipped_path_only() {
-    let refused = unhonoured(environment().map(|(name, _)| name));
-    assert!(
-        refused.is_empty(),
-        "{refused:?} set, which this harness does not honour as the shipped \
-         search path would; unset them"
-    );
-}
-
-/// The names among `names` that [`shipped_path_only`] refuses, sorted.
-fn unhonoured(names: impl IntoIterator<Item = String>) -> Vec<String> {
-    let mut refused: Vec<String> = names
-        .into_iter()
-        .filter(|name| {
-            name.starts_with("PAMIN_")
-                && !NOT_SETTINGS.contains(&name.as_str())
-                && !producer_pamin(name)
-        })
-        .collect();
-    refused.sort();
-    refused
-}
-
-/// The `PAMIN_` variables the product reads on the path from a text to its
-/// vector and from the vectors to an index: those that change how a model
-/// executes ([`pamin_index::EXECUTION_SETTINGS`], which its plan keys are
-/// named by too) and those that change what a drain builds
-/// ([`INDEX_SETTINGS`]). A vector cache's producer is named by the first
-/// ([`embedding_settings`]), an index's stamp by both
-/// ([`index_settings`]), each with [`NATIVE_SETTINGS`], and by nothing else
-/// a run sets.
+/// The `PAMIN_EVAL_*` knobs that set what the product does on the path from
+/// a text to its vector and from the vectors to an index: those that change
+/// how a model executes ([`pamin_index::EXECUTION_SETTINGS`], which its plan
+/// keys are named by too, each as the knob that sets it -- see [`knob`]) and
+/// those that change what a drain builds ([`INDEX_SETTINGS`]). A vector
+/// cache's producer is named by the first ([`embedding_settings`]), an
+/// index's stamp by both ([`index_settings`]), each with
+/// [`NATIVE_SETTINGS`], and by nothing else a run sets.
 ///
 /// An allowlist, so a knob added elsewhere -- the reranker's, the search's
 /// -- cannot discard a cache or unvouch an index whose vectors it never
-/// touched. `every_product_pamin_read_is_placed` holds the product to it:
-/// every `PAMIN_` variable the product reads is here or in
-/// [`NOT_PRODUCER`] with why.
+/// touched. `every_pamin_setting_is_placed` holds the knobs to it: every
+/// knob a run can set is here, in [`NOT_PRODUCER`] with why, or in
+/// [`NOT_SETTINGS`].
 fn producer_pamin(name: &str) -> bool {
-    pamin_index::EXECUTION_SETTINGS.contains(&name) || INDEX_SETTINGS.contains(&name)
+    pamin_index::EXECUTION_SETTINGS
+        .iter()
+        .any(|setting| knob(setting) == name)
+        || INDEX_SETTINGS.contains(&name)
 }
 
-/// The `PAMIN_` variables that change what an index build makes of the
-/// vectors -- when a drain builds the vector graph -- but not the vectors:
-/// they name an index's stamp, not a vector cache's producer.
-const INDEX_SETTINGS: [&str; 1] = ["PAMIN_UNINDEXED_BUDGET"];
+/// The `PAMIN_EVAL_*` knob that sets the inference setting `setting`, as
+/// [`pamin_index::InferenceSettings::overrides`] names it: `device` is
+/// `PAMIN_EVAL_DEVICE` (see `support::inference`).
+fn knob(setting: &str) -> String {
+    format!("PAMIN_EVAL_{}", setting.to_ascii_uppercase())
+}
 
-/// The `PAMIN_` variables the product reads off that path, with why: they
-/// name a run's record (see [`settings`]), not its vectors.
-const NOT_PRODUCER: [(&str, &str); 11] = [
-    ("PAMIN_HOME", "where a workspace is"),
+/// The knobs that change what an index build makes of the vectors -- when
+/// a drain builds the vector graph -- but not the vectors: they name an
+/// index's stamp, not a vector cache's producer.
+const INDEX_SETTINGS: [&str; 1] = ["PAMIN_EVAL_UNINDEXED_BUDGET"];
+
+/// The `PAMIN_EVAL_*` knobs off that path, with why: they name a run's record
+/// (see [`settings`]), not its vectors.
+const NOT_PRODUCER: [(&str, &str); 16] = [
     (
-        "PAMIN_INFERENCE_BUILD",
-        "compiled in, and named by the producer's build line",
+        "PAMIN_EVAL_EXPECT_DEVICE",
+        "the device a pamin-index child asserts it ran on",
+    ),
+    ("PAMIN_EVAL_JIT", "how Postgres plans the store's queries"),
+    (
+        "PAMIN_EVAL_JOINT_GRAPH",
+        "a graph a pamin-index test compares",
     ),
     (
-        "PAMIN_INFERENCE_CARGO",
-        "compiled in, and named by the producer's build line",
+        "PAMIN_EVAL_MODELS",
+        "a model cache a pamin-index test copies",
     ),
-    ("PAMIN_JIT", "how Postgres plans the store's queries"),
-    ("PAMIN_MODEL_IDLE", "when an idle model is released"),
-    ("PAMIN_POSTGRES_DIR", "where the Postgres binaries are"),
-    ("PAMIN_RERANK_BATCH", "the reranker's batches"),
-    ("PAMIN_RERANK_BATCH_TOKENS", "the reranker's batches"),
     (
-        "PAMIN_RERANK_DEPTH",
+        "PAMIN_EVAL_NATIVE_MODEL_SOURCE",
+        "a pamin-index test's cached export",
+    ),
+    (
+        "PAMIN_EVAL_PARITY_CORPORA",
+        "the corpora a pamin-index tokenizer test reads",
+    ),
+    (
+        "PAMIN_EVAL_POSTGRES_DIR",
+        "which PostgreSQL installation the store runs on",
+    ),
+    (
+        "PAMIN_EVAL_PREPARED_ARM",
+        "a pamin-index measuring child's arm",
+    ),
+    ("PAMIN_EVAL_RERANK_BATCH", "the reranker's batches"),
+    ("PAMIN_EVAL_RERANK_BATCH_TOKENS", "the reranker's batches"),
+    (
+        "PAMIN_EVAL_RERANK_DEPTH",
         "how many candidates the reranker sees",
     ),
-    ("PAMIN_RERANK_MAX_TOKENS", "the reranker's input length"),
     (
-        "PAMIN_SEARCH_EFFORT",
+        "PAMIN_EVAL_RERANK_MAX_TOKENS",
+        "the reranker's input length",
+    ),
+    (
+        "PAMIN_EVAL_SEARCH_EFFORT",
         "how hard a query searches the vector graph",
     ),
+    (
+        "PAMIN_EVAL_SHARED_ACCURATE_COPY",
+        "a prepared copy a pamin-index child loads",
+    ),
+    (
+        "PAMIN_EVAL_SHARED_ARM",
+        "a pamin-index measuring child's arm",
+    ),
+    (
+        "PAMIN_EVAL_SHARED_EMBEDDER_COPY",
+        "a prepared copy a pamin-index child loads",
+    ),
 ];
+
+/// The `PAMIN_` names the libraries' sources hold outside their tests: each
+/// one compiled in by `env!` from a build script, not read at run time, and
+/// named by a producer's and a record's build line.
+const COMPILED: [&str; 2] = ["PAMIN_INFERENCE_BUILD", "PAMIN_INFERENCE_CARGO"];
 
 /// The variables outside `PAMIN_` that change what a model computes: the
 /// native libraries' families ([`ALWAYS_PREFIXES`]), the CUDA device
@@ -533,7 +559,9 @@ fn runtime(settings: Vec<String>, index: bool) -> Vec<String> {
 /// Whether the variable `name` can change what an embedding producer makes,
 /// or with `index`, what an index build makes of it.
 fn producer_setting(name: &str, index: bool) -> bool {
-    pamin_index::EXECUTION_SETTINGS.contains(&name)
+    pamin_index::EXECUTION_SETTINGS
+        .iter()
+        .any(|setting| knob(setting) == name)
         || (index && INDEX_SETTINGS.contains(&name))
         || NATIVE_SETTINGS.contains(&name)
         || pamin_index::CUDA_SELECTION.contains(&name)
@@ -545,11 +573,25 @@ fn producer_setting(name: &str, index: bool) -> bool {
 /// The arm's name in a record's file name: `shipped` when nothing is set,
 /// else a short hash of [`settings`], which can hold paths and run long. The
 /// settings themselves are printed and recorded in full.
+///
+/// A `PAMIN_EVAL_*` knob is hashed under the `PAMIN_*` name it replaced, so an
+/// arm keeps the name its records were written under before the knobs moved:
+/// `PAMIN_EVAL_DEVICE=cpu` is still `arm-ed2cc2fa76ba`, the XQuAD-R CPU
+/// baseline's `PAMIN_DEVICE=cpu`. Nothing is lost: `eval::check` refuses the
+/// old names, so none is set beside the knob that replaced it, and the
+/// `PAMIN_EVAL_HOME` that would meet `PAMIN_HOME` is in neither's arm.
 fn arm(settings: &[String]) -> String {
     if settings.is_empty() {
         return "shipped".to_string();
     }
-    let hash = Sha256::digest(settings.join("\n").as_bytes());
+    let spelled: Vec<String> = settings
+        .iter()
+        .map(|line| match line.strip_prefix("PAMIN_EVAL_") {
+            Some(rest) => format!("PAMIN_{rest}"),
+            None => line.clone(),
+        })
+        .collect();
+    let hash = Sha256::digest(spelled.join("\n").as_bytes());
     let short: String = hash[..6].iter().map(|byte| format!("{byte:02x}")).collect();
     format!("arm-{short}")
 }
@@ -1389,9 +1431,9 @@ impl Shape {
         }
     }
 
-    /// Reads the settings the run is under, holding the turn first: another
-    /// test's experimental arm sets the environment only while it holds the
-    /// turn, so the settings read are this run's own, not that arm's.
+    /// Reads the settings the run is under, holding the turn first, which
+    /// the run then holds until its record is written: what it reads is
+    /// read once, by the run it names.
     fn read_settings(&mut self) {
         self.take_turn();
         self.settings = settings(environment());
@@ -2775,9 +2817,7 @@ mod tests {
     }
 
     /// A run reads its settings only once it holds the turn, so it waits
-    /// out another test's experimental arm -- which sets the environment
-    /// only while it holds the turn -- rather than recording that arm's
-    /// transient settings as its own.
+    /// out another test that holds it.
     #[test]
     fn settings_are_read_holding_the_turn() {
         let arm = super::super::load_models();
@@ -2798,40 +2838,6 @@ mod tests {
         assert!(
             other.join().expect("the other run"),
             "read without the turn"
-        );
-    }
-
-    /// Code that sets the environment for an experimental arm takes the
-    /// turn itself when its test holds none -- a comparison run from a test
-    /// with no evaluation and no model-loading turn -- and reuses its
-    /// thread's turn when it does, rather than waiting on itself; and it
-    /// waits while another thread holds it.
-    #[test]
-    fn an_environment_arm_takes_the_turn_it_needs() {
-        use super::super::{environment_turn, holds_turn, load_models};
-        let (taken, waiting) = std::sync::mpsc::channel();
-        let held = load_models();
-        let unheld = std::thread::spawn(move || {
-            // No turn of its own: it waits for one, then holds it.
-            let turn = environment_turn();
-            taken.send(()).expect("say it took the turn");
-            let holding = turn.is_some() && holds_turn();
-            // Holding it, it takes no second one.
-            let nested = environment_turn().is_none();
-            drop(turn);
-            (holding, nested, holds_turn())
-        });
-        assert!(
-            waiting
-                .recv_timeout(std::time::Duration::from_millis(200))
-                .is_err(),
-            "the environment was set while another thread held the turn"
-        );
-        assert!(environment_turn().is_none(), "the holder waited on itself");
-        drop(held);
-        assert_eq!(
-            unheld.join().expect("the other thread"),
-            (true, true, false)
         );
     }
 
@@ -3580,50 +3586,17 @@ mod tests {
         assert_eq!(visible_cuda(None, Some("0"), None), ["cuda: unknown"]);
     }
 
-    /// A harness on the shipped path refuses what the CLI resolves before the
-    /// engine, the search's knobs and the removed profile, and allows where
-    /// things are, what is logged, the build Cargo describes, and the
-    /// producer's settings.
-    #[test]
-    fn the_shipped_path_refuses_what_it_does_not_honour() {
-        let refused = [
-            "PAMIN_CHANNEL_DEPTH",
-            "PAMIN_GRAPH_DEPTH",
-            "PAMIN_PROFILE",
-            "PAMIN_RERANK",
-            "PAMIN_RERANK_BATCH",
-            "PAMIN_RERANK_BATCH_TOKENS",
-            "PAMIN_RERANK_DEPTH",
-            "PAMIN_RERANK_MAX_TOKENS",
-            "PAMIN_SEARCH_EFFORT",
-            "PAMIN_VECTOR_INDEX",
-        ];
-        let allowed = [
-            "HOME",
-            "PAMIN_DEVICE",
-            "PAMIN_ENGINE_COMMIT",
-            "PAMIN_EVAL_HOME",
-            "PAMIN_HOME",
-            "PAMIN_LOG",
-            "PAMIN_UNINDEXED_BUDGET",
-        ];
-        assert_eq!(
-            unhonoured(refused.iter().chain(&allowed).map(|name| name.to_string())),
-            refused
-        );
-    }
-
     /// The reranker's knobs and the search's effort name the record but not
     /// the producer: a tuned arm reuses the shipped run's vector cache and
     /// index, whose vectors no such knob touched.
     #[test]
     fn reranker_and_search_knobs_name_the_record_not_the_producer() {
         for knob in [
-            "PAMIN_RERANK_DEPTH",
-            "PAMIN_RERANK_BATCH",
-            "PAMIN_RERANK_BATCH_TOKENS",
-            "PAMIN_RERANK_MAX_TOKENS",
-            "PAMIN_SEARCH_EFFORT",
+            "PAMIN_EVAL_RERANK_DEPTH",
+            "PAMIN_EVAL_RERANK_BATCH",
+            "PAMIN_EVAL_RERANK_BATCH_TOKENS",
+            "PAMIN_EVAL_RERANK_MAX_TOKENS",
+            "PAMIN_EVAL_SEARCH_EFFORT",
         ] {
             let set = settings([(knob.to_string(), "7".to_string())]);
             assert_eq!(set, [format!("{knob}=7")], "{knob} names the record");
@@ -3636,22 +3609,27 @@ mod tests {
     /// cache's producer.
     #[test]
     fn an_index_setting_names_the_index_not_the_vectors() {
-        let budget = settings([("PAMIN_UNINDEXED_BUDGET".to_string(), "64".to_string())]);
+        let budget = settings([("PAMIN_EVAL_UNINDEXED_BUDGET".to_string(), "64".to_string())]);
         assert!(runtime(budget.clone(), false).is_empty());
-        assert_eq!(runtime(budget, true), ["PAMIN_UNINDEXED_BUDGET=64"]);
-        let device = settings([("PAMIN_DEVICE".to_string(), "cpu".to_string())]);
+        assert_eq!(runtime(budget, true), ["PAMIN_EVAL_UNINDEXED_BUDGET=64"]);
+        let device = settings([("PAMIN_EVAL_DEVICE".to_string(), "cpu".to_string())]);
         assert_eq!(runtime(device.clone(), false), runtime(device, true));
     }
 
-    /// Every `PAMIN_` variable the product reads is placed: on the embedding
-    /// and index-build path ([`producer_pamin`]), naming vector caches and
-    /// index stamps, or off it ([`NOT_PRODUCER`]) with why. A new read
-    /// fails here until it is placed, so a knob on that path cannot be left
-    /// out of the producer, nor one off it put in by default. Names are the
-    /// quoted `PAMIN_` literals of the product crates' sources, outside
-    /// comments and test modules, which is how every read is written.
+    /// Every `PAMIN_` setting a run can be under is placed. The libraries
+    /// read none at run time -- the only `PAMIN_` names their sources hold
+    /// outside their tests are [`COMPILED`] in -- so a setting reaches them
+    /// only as a `PAMIN_EVAL_*` knob a harness reads into the value it passes
+    /// (`support/eval.rs`). Each knob is on the embedding and index-build
+    /// path ([`producer_pamin`]), naming vector caches and index stamps, off
+    /// it ([`NOT_PRODUCER`]) with why, or no setting at all
+    /// ([`NOT_SETTINGS`]). A new knob, or a library that reads a `PAMIN_`
+    /// variable again, fails here until it is placed, so a knob on that path
+    /// cannot be left out of the producer, nor one off it put in by default.
+    /// Library names are the quoted `PAMIN_` literals of their sources,
+    /// outside comments and test modules, which is how every read is written.
     #[test]
-    fn every_product_pamin_read_is_placed() {
+    fn every_pamin_setting_is_placed() {
         let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("the crates directory");
@@ -3660,25 +3638,44 @@ mod tests {
             pamin_literals(&crates.join(name).join("src"), &mut found);
         }
         assert!(
-            found.contains("PAMIN_DEVICE") && found.contains("PAMIN_RERANK_DEPTH"),
+            found.contains("PAMIN_INFERENCE_BUILD"),
             "this test is not reading the source: {found:?}"
         );
-        let placed =
-            |name: &str| producer_pamin(name) || NOT_PRODUCER.iter().any(|(off, _)| *off == name);
-        let unplaced: Vec<&String> = found.iter().filter(|name| !placed(name)).collect();
+        let read: Vec<&String> = found
+            .iter()
+            .filter(|name| !COMPILED.contains(&name.as_str()))
+            .collect();
+        assert!(
+            read.is_empty(),
+            "a library reads these, which it takes as settings instead: {read:?}"
+        );
+
+        let knobs: BTreeSet<&str> = super::super::eval::KNOBS
+            .iter()
+            .map(|(knob, _)| *knob)
+            .collect();
+        let placed = |name: &str| {
+            producer_pamin(name)
+                || NOT_PRODUCER.iter().any(|(off, _)| *off == name)
+                || NOT_SETTINGS.contains(&name)
+        };
+        let unplaced: Vec<&&str> = knobs.iter().filter(|name| !placed(name)).collect();
         assert!(
             unplaced.is_empty(),
-            "read by the product, and in neither producer_pamin nor NOT_PRODUCER: \
-             {unplaced:?}"
+            "a knob in none of producer_pamin, NOT_PRODUCER and NOT_SETTINGS: {unplaced:?}"
         );
-        let gone: Vec<&str> = pamin_index::EXECUTION_SETTINGS
+        let executing: Vec<String> = pamin_index::EXECUTION_SETTINGS
             .iter()
-            .chain(&INDEX_SETTINGS)
-            .copied()
-            .chain(NOT_PRODUCER.iter().map(|(name, _)| *name))
-            .filter(|name| !found.contains(*name))
+            .map(|setting| knob(setting))
             .collect();
-        assert!(gone.is_empty(), "placed but no longer read: {gone:?}");
+        let gone: Vec<&str> = executing
+            .iter()
+            .map(String::as_str)
+            .chain(INDEX_SETTINGS)
+            .chain(NOT_PRODUCER.iter().map(|(name, _)| *name))
+            .filter(|name| !knobs.contains(name))
+            .collect();
+        assert!(gone.is_empty(), "placed but no knob: {gone:?}");
     }
 
     /// `source` up to its test module: `mod tests`, or a `pub(crate) mod
@@ -3966,20 +3963,29 @@ mod tests {
             ),
         ]);
         assert_eq!(built, "shipped");
-        let depth = named(&[("PAMIN_RERANK_DEPTH", "20")]);
-        let effort = named(&[("PAMIN_SEARCH_EFFORT", "low")]);
-        let both = named(&[("PAMIN_SEARCH_EFFORT", "low"), ("PAMIN_RERANK_DEPTH", "20")]);
+        // The XQuAD-R CPU baseline keeps the arm it was recorded under as
+        // `PAMIN_DEVICE=cpu`.
+        assert_eq!(named(&[("PAMIN_EVAL_DEVICE", "cpu")]), "arm-ed2cc2fa76ba");
+        let depth = named(&[("PAMIN_EVAL_RERANK_DEPTH", "20")]);
+        let effort = named(&[("PAMIN_EVAL_SEARCH_EFFORT", "200")]);
+        let both = named(&[
+            ("PAMIN_EVAL_SEARCH_EFFORT", "200"),
+            ("PAMIN_EVAL_RERANK_DEPTH", "20"),
+        ]);
         let swept = named(&[("SWEEP", "1"), ("PAMIN_EVAL_HOME", "/data")]);
         let distinct: BTreeSet<&String> = [&shipped, &depth, &effort, &both, &swept].into();
         assert_eq!(distinct.len(), 5, "{distinct:?}");
         // Found in any order, named the same.
         assert_eq!(
             both,
-            named(&[("PAMIN_RERANK_DEPTH", "20"), ("PAMIN_SEARCH_EFFORT", "low")])
+            named(&[
+                ("PAMIN_EVAL_RERANK_DEPTH", "20"),
+                ("PAMIN_EVAL_SEARCH_EFFORT", "200"),
+            ])
         );
         assert_eq!(
-            settings([("PAMIN_DEVICE".to_string(), "cpu".to_string())]),
-            ["PAMIN_DEVICE=cpu"]
+            settings([("PAMIN_EVAL_DEVICE".to_string(), "cpu".to_string())]),
+            ["PAMIN_EVAL_DEVICE=cpu"]
         );
         // What a model computes is named by the native libraries' settings
         // and the product's embedding path, not by the harness's own knobs,
@@ -3993,16 +3999,16 @@ mod tests {
                     set("MKL_NUM_THREADS", "2"),
                     set("OPENBLAS_NUM_THREADS", "3"),
                     set("ORT_LOGGING", "x"),
-                    set("PAMIN_DEVICE", "cpu"),
+                    set("PAMIN_EVAL_DEVICE", "cpu"),
                     set("PAMIN_EVAL_HOME", "/data"),
                     set("XQUAD_ALL_QUERIES", "1"),
                     set("MUSIQUE_SAMPLE", "60"),
                     set("SIGNIFICANCE_GATE", "off"),
-                    set("PAMIN_RERANK_DEPTH", "20"),
-                    set("PAMIN_RERANK_BATCH", "8"),
-                    set("PAMIN_RERANK_BATCH_TOKENS", "4096"),
-                    set("PAMIN_RERANK_MAX_TOKENS", "256"),
-                    set("PAMIN_SEARCH_EFFORT", "100"),
+                    set("PAMIN_EVAL_RERANK_DEPTH", "20"),
+                    set("PAMIN_EVAL_RERANK_BATCH", "8"),
+                    set("PAMIN_EVAL_RERANK_BATCH_TOKENS", "4096"),
+                    set("PAMIN_EVAL_RERANK_MAX_TOKENS", "256"),
+                    set("PAMIN_EVAL_SEARCH_EFFORT", "100"),
                     set("PAMIN_SOMETHING_NEW", "1"),
                     set("TOKIO_WORKER_THREADS", "2"),
                 ]),
@@ -4013,7 +4019,7 @@ mod tests {
                 "OMP_NUM_THREADS=1",
                 "OPENBLAS_NUM_THREADS=3",
                 "ORT_LOGGING=x",
-                "PAMIN_DEVICE=cpu",
+                "PAMIN_EVAL_DEVICE=cpu",
             ]
         );
         // Named by every harness, though no harness lists it -- the record,

@@ -103,7 +103,7 @@ async fn one_statement_records_each_name_against_its_topic() {
         (None, None) => unreachable!("one of the two is always set"),
     };
 
-    let database = Database::open(&workspace, Connections::PerCommand)
+    let database = Database::open(&workspace, Connections::PerCommand, &common::store())
         .await
         .expect("open the database");
 

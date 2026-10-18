@@ -79,11 +79,9 @@
 //! | `LOCOMO_DIR` | where `locomo10.json` and `locomo-audit-errors.json` are cached, instead of fetching them |
 //! | `LOCOMO_CONVERSATIONS` | read only the first this many conversations |
 //!
-//! Any other `PAMIN_` variable fails the run before it starts, unless it
-//! only says where something is or what to log, or chooses how a model
-//! executes or an index is built, which the record names
-//! (`harness::shape::shipped_path_only`): the rest are settings this
-//! harness does not honour as `pamin search` would, or sweeps.
+//! Any other `PAMIN_` variable fails the run before it starts: one no test
+//! reads (`support::eval::check`), or one of the search's tuning knobs
+//! ([`TUNING`]), which would make this a sweep rather than `pamin search`.
 //!
 //! Projects are named after a digest of the records and links they hold, and
 //! of the execution plan and model revision that embedded them, so a reused
@@ -166,10 +164,17 @@ const RECITED_UNCHANGED: usize = 62;
 /// What the product's `pamin search` asks for by default. A constant because
 /// the rule replay sizes a constant from it; the test asserts it still equals
 /// [`Depths::default`].
-const DEPTHS: Depths = Depths {
-    channel: 50,
-    graph: 2,
-};
+const DEPTHS: Depths = Depths::DEFAULT;
+
+/// The knobs that tune a search away from what `pamin search` ships: the
+/// rerank shortlist, its token cap, and the vector search's width. A run with
+/// one set is a sweep, not the shipped search path, which this run searches
+/// with ([`DEPTHS`] and the default reranker settings).
+const TUNING: [&str; 3] = [
+    "PAMIN_EVAL_RERANK_DEPTH",
+    "PAMIN_EVAL_RERANK_MAX_TOKENS",
+    "PAMIN_EVAL_SEARCH_EFFORT",
+];
 
 /// LOCOMO's adversarial category, whose evidence is the trap.
 const ADVERSARIAL: usize = 5;
@@ -665,7 +670,12 @@ async fn locomo_evidence_with_and_without_links() {
         (shipped.channel, shipped.graph),
         "DEPTHS must be what `pamin search` ships"
     );
-    harness::shape::shipped_path_only();
+    for name in TUNING {
+        assert!(
+            std::env::var_os(name).is_none(),
+            "{name} is set, so this would not be the shipped search path; unset it"
+        );
+    }
     let loaded = load();
     let named = harness::profile();
     // Published before anything is indexed, so a run that dies still said
@@ -689,10 +699,11 @@ async fn locomo_evidence_with_and_without_links() {
     // One database and one model registry for every conversation, as a
     // resident server holds them: `Engine::open` makes a registry of its own,
     // which reloaded the weights for each conversation.
-    let database = Database::open(&workspace, Connections::PerCommand)
+    let settings = harness::settings();
+    let database = Database::open(&workspace, Connections::PerCommand, &settings.store)
         .await
         .expect("open the database");
-    let models = Models::in_workspace(&workspace);
+    let models = Models::new(&workspace, settings);
     let by = embedded_by(&database, &models, &workspace, &named).await;
 
     // [without the graph, with it], by category; each question in the same
@@ -760,7 +771,7 @@ async fn locomo_evidence_with_and_without_links() {
         for question in &conversation.questions {
             questions += 1;
             if let Some(rules) = &mut rules {
-                const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+                const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
                 let hits = engine
                     .search_reranked(&question.text, WIDE, DEPTHS)
                     .await

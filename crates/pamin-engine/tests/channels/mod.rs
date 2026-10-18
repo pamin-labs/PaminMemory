@@ -1027,7 +1027,7 @@ impl Paired {
 #[derive(Clone, Default)]
 pub struct Setting {
     pub fusion: Fusion,
-    /// `PAMIN_RERANK_DEPTH` for the pass; `None` leaves the shipped depth.
+    /// The reranker's depth for the pass; `None` leaves the shipped depth.
     pub depth: Option<usize>,
 }
 
@@ -1093,18 +1093,20 @@ pub async fn compare_reranked(
     crate::harness::shape::tables(&tables);
     let mut measured: Vec<BTreeMap<String, crate::scoring::Scores>> =
         vec![BTreeMap::new(); settings.len()];
-    // The environment is the process's: it is set only holding the turn --
-    // the caller's, or one taken here -- or another evaluation could read
-    // this arm's depth as its own settings (see `harness::ModelsTurn`).
-    let _turn = crate::harness::environment_turn();
-    // Dropped before the turn, panicking or not.
-    let depth = crate::harness::KnobSweep::claim("PAMIN_RERANK_DEPTH");
+    // Each row sets its own depth: a depth the caller set would name the
+    // record while no row ran under it.
+    let _depth = crate::harness::KnobSweep::claim("PAMIN_EVAL_RERANK_DEPTH");
     for (index, (text, group)) in questions.iter().enumerate() {
         for ((setting, into), table) in settings.iter().zip(&mut measured).zip(&tables) {
-            match setting.depth {
-                Some(value) => depth.set(&value.to_string()),
-                None => depth.unset(),
-            }
+            // The depth is the search's own, so each pass sets it for itself
+            // and nothing else in the process sees it.
+            let depths = pamin_engine::Depths {
+                rerank: std::num::NonZeroUsize::new(
+                    setting.depth.unwrap_or(pamin_index::reranking::DEPTH),
+                )
+                .expect("a rerank depth is not zero"),
+                ..depths
+            };
             let hits = engine
                 .search_reranked_with(text, limit, depths, setting.fusion.clone())
                 .await

@@ -346,10 +346,36 @@ what was measured, not what was assumed. Re-deriving `DEPTH`, `BATCH` and
 justification written for them was wrong** — the values were right by luck, and
 the comments were teaching the next reader something false.
 
-Make constants settable when you need to sweep them (`PAMIN_RERANK_DEPTH` and
-friends) rather than editing the tree for each configuration. Undocumented on
-purpose: they exist so a sweep does not dirty the working tree, not as a
-supported surface.
+Sweep a constant by passing it, not by editing the tree or the environment.
+The libraries read no environment: a setting is a field of `Settings` (or of
+`Depths`, for what varies per search) whose default is the measured constant,
+and a harness builds the value it measures. Never `set_var`: the environment is
+shared by every test thread in the binary. Add a flag only when a CLI-level
+timing needs one, and keep it hidden unless it is a supported setting.
+
+Harnesses and tests take their knobs from `PAMIN_EVAL_*` variables, so a bare
+`PAMIN_*` always means a product setting. `crates/pamin-index/tests/support/eval.rs`
+lists every knob and is the one place they are read: once per run, into
+`Settings` and `Depths`, refusing a value that does not parse and any `PAMIN_*`
+variable the run would silently ignore -- a misspelled knob, or a product name
+such as `PAMIN_DEVICE` (`PAMIN_EVAL_DEVICE` in a harness). The product knobs
+(`PAMIN_EVAL_DEVICE`, `_INFERENCE_THREADS`, `_PREPARED`, `_RERANK_DEPTH`,
+`_SEARCH_EFFORT`, `_RERANK_BATCH`, `_RERANK_MAX_TOKENS` and the rest) name the
+record's arm; the location ones (`PAMIN_EVAL_HOME`, `PAMIN_EVAL_MODEL_CACHE`, a
+child's output path) do not.
+
+Behind the CLI the setting is the server's, not the command's: the server reads
+its flags and `$PAMIN_HOME/config.toml` when it starts and keeps them, and a
+command asking for others is refused. Stop the server before timing a CLI arm
+with different settings; `pamin config` shows what a command would start one
+with, and the server logs what it started with.
+
+`PAMIN_EVAL_HOME` is where the harnesses keep datasets, models and workspaces
+between runs (a temporary directory if unset), and where each run records its
+shape: `$PAMIN_EVAL_HOME/shape/`, one file per test, profile, arm, corpus
+digest and query order, with the settings, providers and commit that produced
+it. Read the shape record before trusting a table: it is what says which arm
+and which code a figure came from.
 
 ## Auditing claims the code no longer backs
 
@@ -585,11 +611,12 @@ model cache rather than downloading 1.7 GB again:
 
 ```sh
 W=/tmp/scratch-ws
+E=/path/to/an/existing/workspace                 # e.g. under $PAMIN_EVAL_HOME
 mkdir -p "$W/postgres"
-ln -s /tmp/pamin-eval5/models "$W/models"       # whatever cache already exists
-cp -a /tmp/pamin-eval5/postgres/install "$W/postgres/"
+ln -s "$E/models" "$W/models"                    # whatever cache already exists
+cp -a "$E/postgres/install" "$W/postgres/"
 chown -R ubuntu:ubuntu "$W"
-su ubuntu -c "PAMIN_HOME=$W .../pamin init"
+su ubuntu -c ".../pamin --home $W init"          # ubuntu: any unprivileged user
 ```
 
 Once the server is up, other users can reach it through the socket, so only the

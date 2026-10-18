@@ -41,6 +41,9 @@
 //!   cargo test -p pamin-engine --test writecost -- --ignored --nocapture
 //! ```
 
+#[path = "../../pamin-index/tests/support/mod.rs"]
+mod support;
+
 use std::time::Instant;
 
 use pamin_core::{FilterDecision, Validity};
@@ -181,6 +184,29 @@ fn request<'a>(topic: &'a str, content: &'a str, hash: &'a str) -> Write<'a> {
     }
 }
 
+/// The product's settings, as the `PAMIN_EVAL_*` knobs change them.
+fn settings() -> pamin_engine::Settings {
+    pamin_engine::Settings {
+        inference: support::inference(),
+        store: store(),
+        unindexed_budget: support::eval::parsed::<std::num::NonZeroU64>(
+            "PAMIN_EVAL_UNINDEXED_BUDGET",
+        )
+        .unwrap_or(pamin_engine::Settings::default().unindexed_budget),
+        ..pamin_engine::Settings::default()
+    }
+}
+
+/// The store settings: the defaults, and `PAMIN_EVAL_JIT` and
+/// `PAMIN_EVAL_POSTGRES_DIR`.
+fn store() -> pamin_store::StoreSettings {
+    support::eval::check();
+    pamin_store::StoreSettings {
+        jit: support::eval::switch("PAMIN_EVAL_JIT").unwrap_or_default(),
+        postgres_dir: support::eval::path("PAMIN_EVAL_POSTGRES_DIR"),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "provisions postgres and downloads model weights"]
 async fn one_write_does_not_pay_for_the_whole_project() {
@@ -193,7 +219,7 @@ async fn one_write_does_not_pay_for_the_whole_project() {
         (None, Some(dir)) => Workspace::at(dir.path()),
         (None, None) => unreachable!("one of the two is always set"),
     };
-    let database = Database::open(&workspace, Connections::PerCommand)
+    let database = Database::open(&workspace, Connections::PerCommand, &store())
         .await
         .expect("open the database");
 
@@ -210,9 +236,15 @@ async fn one_write_does_not_pay_for_the_whole_project() {
             .expect("ensure project");
         fill(&database, project.id, topics, 3).await;
 
-        let engine = Engine::open(&workspace, &name, VectorIndex::default(), Access::ReadWrite)
-            .await
-            .expect("open the engine");
+        let engine = Engine::open(
+            &workspace,
+            &name,
+            VectorIndex::default(),
+            Access::ReadWrite,
+            &settings(),
+        )
+        .await
+        .expect("open the engine");
 
         // Once before the clock starts. The first write of a process loads the
         // model and opens the index, and neither is what this is about.
@@ -345,7 +377,7 @@ async fn derivation_does_not_pay_for_the_widest_name_in_the_project() {
         (None, Some(dir)) => Workspace::at(dir.path()),
         (None, None) => unreachable!("one of the two is always set"),
     };
-    let database = Database::open(&workspace, Connections::PerCommand)
+    let database = Database::open(&workspace, Connections::PerCommand, &store())
         .await
         .expect("open the database");
 
@@ -372,9 +404,15 @@ async fn derivation_does_not_pay_for_the_widest_name_in_the_project() {
              every row below it would be measuring the wrong axis"
         );
 
-        let engine = Engine::open(&workspace, &name, VectorIndex::default(), Access::ReadWrite)
-            .await
-            .expect("open the engine");
+        let engine = Engine::open(
+            &workspace,
+            &name,
+            VectorIndex::default(),
+            Access::ReadWrite,
+            &settings(),
+        )
+        .await
+        .expect("open the engine");
         let recorded = engine
             .write(&request("incident review", PROSE, "incident-wide"))
             .await
