@@ -200,18 +200,20 @@ fn open_tally() {
     });
 }
 
-/// `PAMIN_` variables that say only where something is, or what to log, and
-/// change no result. Not `PAMIN_EVAL_POSTGRES_DIR`: it says where a
+/// `PAMIN_` variables that say only where something is, which project `pamin`
+/// works in, or what to log, and change no result: a harness names its own
+/// projects in code. Not `PAMIN_EVAL_POSTGRES_DIR`: it says where a
 /// PostgreSQL installation is, but another installation can be another
 /// version or build, which changes the timings a record keeps (no ranking
 /// reads it), so it is in [`NOT_PRODUCER`]. Every other `PAMIN_` variable is
-/// taken to change what is measured: the `PAMIN_EVAL_*` knobs a harness reads into its settings (see
-/// `support/eval.rs`), and any product variable a harness would refuse. Nor
+/// taken to change what is measured: the `PAMIN_EVAL_*` knobs a harness reads
+/// into its settings (see `support/eval.rs`), and any product variable a
+/// harness would refuse. Nor
 /// do the variables build scripts set with `cargo:rustc-env`
 /// ([`eval::BUILD`](super::eval::BUILD)), which Cargo also sets on every test
 /// it runs: they describe the build, which the record names as its source and
 /// build.
-const NOT_SETTINGS: [&str; 9] = [
+const NOT_SETTINGS: [&str; 10] = [
     "PAMIN_EVAL_EMBEDDING_OUTPUT",
     "PAMIN_EVAL_HOME",
     "PAMIN_EVAL_MODEL_CACHE",
@@ -221,6 +223,7 @@ const NOT_SETTINGS: [&str; 9] = [
     "PAMIN_EVAL_SHARED_CACHE",
     "PAMIN_HOME",
     "PAMIN_LOG",
+    "PAMIN_PROJECT",
 ];
 
 /// Variables outside `PAMIN_` that every harness's record is named by,

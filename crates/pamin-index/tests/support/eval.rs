@@ -186,9 +186,9 @@ pub fn path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name).map(PathBuf::from)
 }
 
-/// A path knob that must be absolute, for a path a record is named by: a
-/// relative one names different files from different working directories
-/// under one spelling.
+/// A path knob that must be absolute and UTF-8, for a path a record is named
+/// by: a relative one names different files from different working
+/// directories under one spelling.
 pub fn absolute_path(name: &str) -> Option<PathBuf> {
     let path = path(name)?;
     absolute(name, &path);
@@ -209,10 +209,18 @@ pub fn paths(name: &str) -> Vec<PathBuf> {
     paths
 }
 
+/// Refuses a relative path, and one that is not UTF-8: a record spells its
+/// settings as text, and two paths that differ only in bytes text cannot hold
+/// would be spelt, and named, alike.
 fn absolute(name: &str, path: &Path) {
     assert!(
         path.is_absolute(),
         "{name}: {} is not an absolute path",
+        path.display()
+    );
+    assert!(
+        path.to_str().is_some(),
+        "{name}: {} is not UTF-8",
         path.display()
     );
 }
