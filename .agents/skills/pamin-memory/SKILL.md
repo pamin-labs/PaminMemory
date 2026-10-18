@@ -187,19 +187,20 @@ version applies depends on the timeline the question is on (see *The two
 timelines*):
 
 - *What holds, or held, at a time* (now, unless the question names another):
-  the version's `valid_from` and `valid_to` must cover that time, and an
-  absent bound is open. `search` returns a topic's current state without
-  checking that interval, so a hit can state a fact that has lapsed or not
-  yet begun.
+  the version must satisfy `valid_from <= time < valid_to`, the same half-open
+  interval the store uses, and an absent bound is open. `search` returns a
+  topic's current state without checking that interval, so a hit can state a
+  fact that has lapsed or not yet begun.
 - *What we knew or decided at a time*: the version that was current then.
   Step back with `read --version-offset` until `recorded_at` is at or before
   that time. Open validity bounds on the current version do not answer this.
 
-Walk versions with `read --json`: the plain output shows `recorded_at` but not
-`valid_from` or `valid_to`. A walk past the oldest surviving version returns
-that version again, with an `actual_version_offset` smaller than the offset
-asked for. Stop there: if the oldest version does not apply, none does, so say
-so rather than reading further.
+Run every command in these rules with `--json`. The plain output of `read`
+leaves out `valid_from` and `valid_to`, and that of `grep` leaves out
+`filter_reason`, and the rules need all three. A walk past the oldest surviving
+version returns that version again, with an `actual_version_offset` smaller than
+the offset asked for. Stop there: if the oldest version does not apply, none
+does, so say so rather than reading further.
 
 A search hit carries its topic's full current content, so for a question about
 now there is nothing more to `read` when its validity covers now. When it does
@@ -215,8 +216,7 @@ relevant before you use it or rule it out.
   phrasing brings back mostly the same topics (say, four of the five),
   the ranking is probably not the problem and a third phrasing is likely to
   land there too. Switch to a path that does not rank:
-  - `grep --json` for an exact string you expect the answer to contain; the
-    plain output omits `filter_reason`, which the rules below need. It searches
+  - `grep` for an exact string you expect the answer to contain. It searches
     every version ever written, superseded ones included, so check each hit
     against its topic's version for the time asked about. For a CLI write,
     `source` is `manual:<topic>`; pass `read` the part after the colon. A hit
@@ -227,9 +227,7 @@ relevant before you use it or rule it out.
     `read`. The hit is then the only record of what was written, so use it,
     saying it was recorded but never promoted to a memory. `grep` does not
     report when evidence was recorded, so for a question about what was known
-    by a past time, say such a hit is undated rather than counting it. `grep`
-    returns at most twenty matches by default; if it returns that many, narrow
-    the literal or raise `--limit` before treating them as all there is.
+    by a past time, say such a hit is undated rather than counting it.
   - `neighbors --depth 1` from the best topic you found, with `--kind` to
     narrow it. The default depth is two and nothing caps how many it returns,
     which on a well-connected topic can be most of the project. Without
@@ -245,11 +243,14 @@ relevant before you use it or rule it out.
   search, unreranked. But it returns twenty by default against `search`'s
   five, so a topic it shows that you have not seen is worth reading, as is any
   name match. It also shows what the workspace calls things.
-- **Stop and say what you tried once every probe has come back empty:**
+- **Stop and say what you tried once every probe has come back empty.** A
+  probe that returned as many results as its limit (twenty by default for
+  `grep` and `topics`) has not come back empty, whatever it held: narrow it or
+  raise `--limit` first.
   1. two searches;
-  2. a `grep` that found nothing usable: it returned fewer matches than its
-     limit and no hit backs the fact. Unless the casing is part of an
-     identifier, a miss counts only after a retry with `-i`;
+  2. a `grep` with no hit that backs the fact and no held hit you can use as
+     above. Unless the casing is part of an identifier, a miss counts only
+     after a retry with `-i`;
   3. `topics` for the same subject, reading any result you have not seen;
   4. a one-hop `neighbors` from the best topic, reading the neighbours that
      look relevant. Skip it only when no hit is related to the question.
