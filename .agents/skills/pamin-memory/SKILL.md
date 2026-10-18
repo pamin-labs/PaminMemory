@@ -195,6 +195,9 @@ timelines*):
   Step back with `read --version-offset` until `recorded_at` is at or before
   that time. Open validity bounds on the current version do not answer this.
 
+Walk versions with `read --json`: the plain output shows `recorded_at` but not
+`valid_from` or `valid_to`.
+
 A search hit carries its topic's full current content, so for a question about
 now there is nothing more to `read` when its validity covers now. When it does
 not, an earlier version may: step back with `read --version-offset`. `topics`
@@ -219,17 +222,21 @@ relevant before you use it or rule it out.
     checked like any other hit. For any other reason, no version took the
     content in, and if it was the topic's first write there is no topic to
     `read`. The hit is then the only record of what was written, so use it,
-    saying it was recorded but never promoted to a memory. `grep` returns at
+    saying it was recorded but never promoted to a memory. `grep` does not
+    report when evidence was recorded, so for a question about what was known
+    by a past time, say such a hit is undated rather than counting it. `grep` returns at
     most twenty matches by default; if it returns that many, narrow the
     literal or raise `--limit` before treating them as all there is.
   - `neighbors --depth 1` from the best topic you found, with `--kind` to
     narrow it. The default depth is two and nothing caps how many it returns,
-    which on a well-connected topic can be most of the project. For a question
-    about what held at a past time, add `--at <rfc3339>`; without it only edges
-    that still hold are followed. `--at` filters by when an edge was true, not
-    when it was recorded, so no flag rebuilds the graph as it was believed at a
-    past time. For a question about what was known then, run it without
-    `--at` and say in your report that it followed today's edges.
+    which on a well-connected topic can be most of the project. Without
+    `--at` it follows every edge not yet retracted, whatever its validity: the
+    graph as believed today. For a question about what holds or held at a
+    time, now included, pass `--at <rfc3339>` for that time. `--at` filters by
+    when an edge was true, not when it was recorded, so no flag rebuilds the
+    graph as it was believed at a past time; for a question about what was
+    known then, run it without `--at` and say in your report that it followed
+    today's edges.
 
   `topics` is not one of them: it merges name matches with the same ranked
   search, unreranked. But it returns twenty by default against `search`'s
