@@ -1110,7 +1110,7 @@ fn cpu_model(
     providers: impl Into<crate::inference::Target>,
 ) -> Result<Encoder> {
     let threads = settings.budget()?;
-    let max_tokens = settings.rerank.max_tokens;
+    let max_tokens = settings.rerank.max_tokens.get();
     let weights = repository.file(cache_dir, onnx(Device::Cpu));
     let path = crate::prepared::load_path(&weights, cache_dir, settings)?;
     let encoder = if crate::prepared::is_copy(&path, cache_dir) {
@@ -1129,7 +1129,7 @@ fn cpu_model(
 fn load_model(cache_dir: &Path, settings: &crate::InferenceSettings) -> Result<(Encoder, Device)> {
     std::fs::create_dir_all(cache_dir)?;
     let threads = settings.budget()?;
-    let max_tokens = settings.rerank.max_tokens;
+    let max_tokens = settings.rerank.max_tokens.get();
     let batch_tokens = settings.rerank.batch_tokens;
 
     let repository = Repository::open(cache_dir, REPOSITORY)?;
@@ -2604,7 +2604,7 @@ mod tests {
             std::env::var_os("PAMIN_EVAL_MODEL_CACHE").expect("set PAMIN_EVAL_MODEL_CACHE"),
         );
         let settings = crate::InferenceSettings::default();
-        let long = "harbour migration rollback policy ".repeat(settings.rerank.max_tokens);
+        let long = "harbour migration rollback policy ".repeat(settings.rerank.max_tokens.get());
         let documents: Vec<String> = (0..64)
             .map(|at| match at % 4 {
                 0 => format!("The harbour pilot boards ship {at} at the outer buoy."),
