@@ -236,9 +236,13 @@ impl Line {
     }
 }
 
-/// The open record, and what has been written to it.
+/// The open record, and what has been written to it. Lines go to a
+/// `.partial` file beside `path`, which [`finish`](Self::finish) renames to
+/// `path` only once every gate has passed, so a run that panics or stops
+/// part way leaves no file a replay could take for a whole corpus.
 pub struct Record {
     path: PathBuf,
+    partial: PathBuf,
     out: BufWriter<File>,
     /// The run's corpus digest, from its published shape or named by the
     /// harness ([`super::Priced::corpus`]).
@@ -254,10 +258,14 @@ impl Record {
     /// The record `REPLAY_OUT` names, or `None` when it is not asked for.
     pub fn from_env() -> Option<Self> {
         let path = PathBuf::from(std::env::var_os("REPLAY_OUT")?);
-        let file = File::create(&path)
-            .unwrap_or_else(|error| panic!("creating {}: {error}", path.display()));
+        let mut partial = path.clone().into_os_string();
+        partial.push(".partial");
+        let partial = PathBuf::from(partial);
+        let file = File::create(&partial)
+            .unwrap_or_else(|error| panic!("creating {}: {error}", partial.display()));
         Some(Self {
             path,
+            partial,
             out: BufWriter::new(file),
             corpus: crate::harness::shape::published_digest(),
             searches: 0,
@@ -278,6 +286,12 @@ impl Record {
         answers: &[Answers],
         shipped: &BTreeMap<String, f64>,
     ) {
+        assert!(
+            !replayed.fused.is_empty(),
+            "{:?}: the search found nothing, so its line would replay vacuously; is the \
+             project empty or the index stale?",
+            asked.query
+        );
         let by_name: HashMap<&str, &SearchHit> =
             hits.iter().map(|hit| (hit.topic.as_str(), hit)).collect();
         let mut candidates: Vec<Candidate> = replayed
@@ -308,6 +322,21 @@ impl Record {
                 .collect();
             let documents = super::shown(hits, &names);
             let borrowed: Vec<&str> = documents.iter().map(String::as_str).collect();
+            // Equal scores below do not show independence by themselves: an
+            // unchanged list can come back from the reranker's cache. The
+            // plan does: one pair a pass is what makes a pair's score its own.
+            let passes = engine
+                .rerank_passes(asked.query, &borrowed)
+                .expect("the engine's reranker scored this search, so it is loaded")
+                .expect("plan the superset");
+            assert!(
+                passes.iter().all(|pass| pass.len() == 1),
+                "{:?}: the reranker scores this superset in passes of {:?} pairs, so a \
+                 pair's score depends on its neighbours and no shortlist replays exactly; \
+                 record on the CPU, where it scores one pair a pass",
+                asked.query,
+                passes.iter().map(Vec::len).collect::<Vec<_>>()
+            );
             let scores = engine
                 .rerank_scores(asked.query, &borrowed)
                 .expect("the engine's reranker scored this search, so it is loaded")
@@ -395,7 +424,7 @@ impl Record {
         }
 
         writeln!(self.out, "{text}")
-            .unwrap_or_else(|error| panic!("writing {}: {error}", self.path.display()));
+            .unwrap_or_else(|error| panic!("writing {}: {error}", self.partial.display()));
         self.searches += 1;
         self.shown += replayed.movable.len();
         self.scored += back
@@ -405,18 +434,25 @@ impl Record {
             .count();
     }
 
-    /// Flushes the record, asserting the superset scored at least what the
-    /// shipped searches did.
+    /// Flushes the record, asserts the superset scored at least what the
+    /// shipped searches did, and only then publishes it under its path.
     pub fn finish(&mut self) {
         self.out
             .flush()
-            .unwrap_or_else(|error| panic!("flushing {}: {error}", self.path.display()));
+            .unwrap_or_else(|error| panic!("flushing {}: {error}", self.partial.display()));
         assert!(
             self.scored >= self.shown,
             "the record scored {} pairs against the shipped {}",
             self.scored,
             self.shown
         );
+        std::fs::rename(&self.partial, &self.path).unwrap_or_else(|error| {
+            panic!(
+                "publishing {} as {}: {error}",
+                self.partial.display(),
+                self.path.display()
+            )
+        });
         println!(
             "\n  replay record: {} searches, {} pairs scored for {} shipped, in {}",
             self.searches,
