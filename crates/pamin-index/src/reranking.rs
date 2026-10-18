@@ -692,12 +692,15 @@ impl Scores {
     /// Consult only fully planned batches. Nothing is committed until every
     /// missed batch succeeds, so a later model failure cannot leave partial
     /// scores, cache entries or lifetime counters behind.
+    ///
+    /// The missed batches go to `forward` together, in plan order, and come
+    /// back as each one's scores and the time all of them took.
     fn score(
         &self,
         planned: Vec<Batch>,
         keys: &[PairKey],
         characters: impl Fn(usize) -> usize,
-        mut forward: impl FnMut(Vec<Encoding>) -> Result<(Vec<f32>, u64)>,
+        forward: impl FnOnce(Vec<Vec<Encoding>>) -> Scored,
         memo: Option<ListKey>,
     ) -> Result<Attempt> {
         let mut attempt = Attempt {
@@ -711,6 +714,8 @@ impl Scores {
                 }),
             ..Attempt::default()
         };
+        let mut missed = Vec::new();
+        let mut encodings = Vec::new();
         for batch in planned {
             let count = batch.positions.len();
             let identities: Vec<_> = batch.positions.iter().map(|at| keys[*at]).collect();
@@ -743,14 +748,26 @@ impl Scores {
                 attempt.lengths.total += length as u64;
                 attempt.lengths.longest = attempt.lengths.longest.max(length);
             }
-            let (values, forward_us) = forward(batch.encodings)?;
-            attempt.work.forward_us += forward_us;
-            if values.len() != count {
+            missed.push((key, batch.positions));
+            encodings.push(batch.encodings);
+        }
+        if missed.is_empty() {
+            return Ok(attempt);
+        }
+        let (scored, forward_us) = forward(encodings)?;
+        attempt.work.forward_us += forward_us;
+        if scored.len() != missed.len() {
+            return Err(IndexError::Engine(
+                "reranker returned the wrong number of batches".into(),
+            ));
+        }
+        for ((key, positions), values) in missed.into_iter().zip(scored) {
+            if values.len() != positions.len() {
                 return Err(IndexError::Engine(
                     "reranker returned the wrong number of scores".into(),
                 ));
             }
-            for (position, value) in batch.positions.iter().zip(&values) {
+            for (position, value) in positions.iter().zip(&values) {
                 attempt.values[*position] = *value;
             }
             attempt.pending.push((key, values));
@@ -898,7 +915,9 @@ pub struct Reranked {
     /// Time spent encoding all offered pairs in successful calls, in microseconds.
     /// Changed inputs need tokenization; an identical complete cached plan does not.
     pub encode_us: u64,
-    /// Time spent padding and running those batches, in microseconds.
+    /// Time spent padding and running those batches, in microseconds: wall
+    /// time, so on the CPU, where a call's batches run at once, less than the
+    /// sum of its passes.
     pub forward_us: u64,
 }
 
@@ -978,7 +997,9 @@ impl Reranker {
     /// the active `PAMIN_RERANK_BATCH_TOKENS` and `PAMIN_RERANK_BATCH`, and
     /// the planner `rank` runs. For an evaluation replaying its passes; the
     /// pairs already in the score cache are still planned, as `rank` plans
-    /// them before it looks them up.
+    /// them before it looks them up. On the CPU, where the passes of a call
+    /// run side by side, they start longest first and overlap, so no order of
+    /// one after another is the one they ran in.
     pub fn plan(&self, lengths: &[usize]) -> Vec<Vec<usize>> {
         let (budget, most) = self.model.batch_limits(batch_tokens(), batch());
         plan_positions(lengths, budget, most, |length| {
@@ -1035,7 +1056,7 @@ impl Reranker {
                         planned,
                         &keys,
                         |at| documents[at].chars().count(),
-                        |batch| forward(model, batch),
+                        |batches| forward(model, batches),
                         Some(list),
                     )?;
                     Ok((attempt, encode_us))
@@ -1104,6 +1125,39 @@ impl Reranker {
     }
 }
 
+/// `tier` on the CPU.
+///
+/// The file the hub serves is copied onto the heap whole; the prepared copy
+/// is mapped instead -- see `crate::prepared` for what that saves -- and the
+/// download removed once the copy has loaded. Over the copy, loaded side by
+/// side, so that the batches of one call run at once (see [`forward`]). Over
+/// the download `prepared::load_path` falls back to, each single-threaded
+/// session would hold the weights on the heap again, so that loads the one
+/// session it did before side-by-side batches.
+fn cpu_model(
+    tier: Rerank,
+    repository: &Repository,
+    cache_dir: &Path,
+    providers: impl Into<crate::inference::Target>,
+) -> Result<Encoder> {
+    let weights = repository.file(cache_dir, tier.onnx(Device::Cpu));
+    let path = crate::prepared::load_path(&weights, cache_dir)?;
+    let encoder = if crate::prepared::is_copy(&path, cache_dir) {
+        let tokenizer = crate::tokenizer::load(repository, max_tokens())?;
+        Encoder::side_by_side(
+            path,
+            crate::inference::budget()?,
+            tokenizer,
+            repository.revision(),
+        )
+    } else {
+        Encoder::load(|| Ok(path), repository, max_tokens(), providers)
+    }
+    .map_err(|error| error.context("loading the reranker"))?;
+    crate::prepared::release(&weights, cache_dir);
+    Ok(encoder)
+}
+
 /// Keep the ordering proof first. Accurate also times long candidates, so
 /// maximum-length execution affects selection rather than only compatibility.
 fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
@@ -1112,13 +1166,10 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
     let repository = Repository::open(cache_dir, tier.repository())?;
 
     let session = |device: Device, providers, _validated: bool| -> Result<Encoder> {
-        let weights = repository.file(cache_dir, tier.onnx(device));
+        if device == Device::Cpu {
+            return cpu_model(tier, &repository, cache_dir, providers);
+        }
         let model = || match device {
-            // The file the hub serves is copied onto the heap whole; on
-            // the CPU, the prepared copy is mapped instead -- see
-            // `crate::prepared` for what that saves -- and the download
-            // removed once the copy has loaded.
-            Device::Cpu => crate::prepared::load_path(&weights, cache_dir),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             Device::CoreMl if tier == Rerank::Accurate => {
                 let source = repository.get(tier.onnx(device))?;
@@ -1139,9 +1190,6 @@ fn load_model(tier: Rerank, cache_dir: &Path) -> Result<(Encoder, Device)> {
         // the already resident product CPU reference. Do not allocate a
         // third FP16 CPU session while both plans are live.
         encoder.require_accelerator(device)?;
-        if device == Device::Cpu {
-            crate::prepared::release(&weights, cache_dir);
-        }
         Ok(encoder)
     };
 
@@ -1288,12 +1336,18 @@ fn score(
     let planned = model_batches(model, encodings, budget, most);
     let mut values = vec![f32::MIN; count];
     let mut work = Work::default();
+    let mut positions = Vec::with_capacity(planned.len());
+    let mut batches = Vec::with_capacity(planned.len());
     for batch in planned {
         work.batches += 1;
         work.padded_tokens += (batch.shape.0 * batch.shape.1) as u64;
-        let (scores, forward_us) = forward(model, batch.encodings)?;
-        work.forward_us += forward_us;
-        for (position, score) in batch.positions.iter().zip(scores) {
+        positions.push(batch.positions);
+        batches.push(batch.encodings);
+    }
+    let (scores, forward_us) = forward(model, batches)?;
+    work.forward_us = forward_us;
+    for (positions, scores) in positions.iter().zip(scores) {
+        for (position, score) in positions.iter().zip(scores) {
             values[*position] = score;
         }
     }
@@ -1391,13 +1445,52 @@ fn plan_positions(
         .collect()
 }
 
+/// Each batch's scores, in order, and the time their passes took together.
+type Scored = Result<(Vec<Vec<f32>>, u64)>;
+
 /// Actual Encoder kernel and unchanged first-column logit extraction,
-/// shared by fresh startup checks and production cached inference.
-fn forward(model: &mut Encoder, batch: Vec<Encoding>) -> Result<(Vec<f32>, u64)> {
-    let count = batch.len();
+/// shared by fresh startup checks and production cached inference: each of
+/// `batches`' scores, in order, and the time their passes took together.
+///
+/// Through [`Encoder::run_each`], so on the CPU the batches of one call run
+/// side by side, one thread a pass, longest first: the plan is shortest
+/// first, and the longest pass started last would be the one the others
+/// wait for. Run one after another -- on an accelerator, or at one thread --
+/// they keep the plan's order, the order [`Reranker::plan`] reports. The time
+/// is of the passes alone: the sessions they run on are loaded before it
+/// starts. Measured through `Reranker::rank` on four cores (ONNX Runtime
+/// 1.28, Xeon with AMX), 100 calls of 30 uncached pairs, two runs each:
+/// `accurate` from a median of 2,105 and 2,163 ms a call to 1,212 and 1,269,
+/// `fast` from 491 and 496 ms to 222 and 250, every score bit-identical. The
+/// cost is the passes' working memory, about 260 MB more for `accurate` and
+/// 115 MB for `fast`, in proportional set size.
+fn forward(model: &mut Encoder, batches: Vec<Vec<Encoding>>) -> Scored {
+    let counts: Vec<usize> = batches.iter().map(Vec::len).collect();
+    let longest_first = model.ready(batches.len())? > 1;
+    let batches = if longest_first {
+        batches.into_iter().rev().collect()
+    } else {
+        batches
+    };
     let start = Instant::now();
-    let outputs = model.run_encoded(batch)?;
+    let mut scores = model.run_each(batches, first_column)?;
     let forward_us = start.elapsed().as_micros() as u64;
+    if longest_first {
+        scores.reverse();
+    }
+    for (scores, count) in scores.iter().zip(counts) {
+        if scores.len() != count {
+            return Err(IndexError::Engine(format!(
+                "logits for {} pairs, {count} sent",
+                scores.len()
+            )));
+        }
+    }
+    Ok((scores, forward_us))
+}
+
+/// The first column of a pass's `logits`, one score a pair.
+fn first_column(outputs: ort::session::SessionOutputs<'_>) -> Result<Vec<f32>> {
     let logits = outputs
         .get("logits")
         .ok_or_else(|| IndexError::Engine("the reranker returned no logits".into()))?;
@@ -1405,17 +1498,12 @@ fn forward(model: &mut Encoder, batch: Vec<Encoding>) -> Result<(Vec<f32>, u64)>
         .try_extract_tensor::<f32>()
         .map_err(|error| IndexError::Engine(format!("reading the logits: {error}")))?;
     let labels = match **shape {
-        [rows, labels] if rows as usize == count && labels > 0 => labels as usize,
+        [_, labels] if labels > 0 => labels as usize,
         _ => {
-            return Err(IndexError::Engine(format!(
-                "logits of shape {shape:?} for {count} pairs"
-            )));
+            return Err(IndexError::Engine(format!("logits of shape {shape:?}")));
         }
     };
-    Ok((
-        values.chunks(labels).map(|row| row[0]).collect(),
-        forward_us,
-    ))
+    Ok(values.chunks(labels).map(|row| row[0]).collect())
 }
 
 /// How many pairs go in each batch, in order, for pairs of these `lengths`
@@ -1470,7 +1558,13 @@ mod tests {
         let mut work = Work::default();
         let mut lengths = Lengths::default();
         scores
-            .score(planned(&old, 4, 2), &identities(&old), |_| 2, context, None)
+            .score(
+                planned(&old, 4, 2),
+                &identities(&old),
+                |_| 2,
+                each(context),
+                None,
+            )
             .unwrap()
             .commit(&mut scores, &mut work, &mut lengths, 0);
         let replacement = |batch| {
@@ -1482,7 +1576,7 @@ mod tests {
                 planned(&rows, 4, 2),
                 &identities(&rows),
                 |_| 2,
-                replacement,
+                each(replacement),
                 None,
             )
             .unwrap();
@@ -1494,7 +1588,7 @@ mod tests {
                 planned(&rows, 4, 2),
                 &identities(&rows),
                 |_| 2,
-                replacement,
+                each(replacement),
                 None,
             )
             .unwrap();
@@ -1518,7 +1612,13 @@ mod tests {
         let mut work = Work::default();
         let mut lengths = Lengths::default();
         scores
-            .score(planned(&rows, 4, 2), &keys, |_| 2, context, Some(list))
+            .score(
+                planned(&rows, 4, 2),
+                &keys,
+                |_| 2,
+                each(context),
+                Some(list),
+            )
             .unwrap()
             .commit(&mut scores, &mut work, &mut lengths, 0);
         assert!(scores.replay(list, rows.len()).is_some());
@@ -1543,7 +1643,7 @@ mod tests {
                 planned(&old, 4, 2),
                 &old_keys,
                 |_| 2,
-                context,
+                each(context),
                 Some(old_list),
             )
             .unwrap()
@@ -1561,12 +1661,12 @@ mod tests {
                 planned(&rows, 4, 2),
                 &keys,
                 |_| 2,
-                |batch| {
+                each(|batch| {
                     forwards += 1;
                     context(batch).map(|(values, us)| {
                         (values.into_iter().map(|value| value + 1000.0).collect(), us)
                     })
-                },
+                }),
                 Some(list),
             )
             .unwrap();
@@ -1595,7 +1695,7 @@ mod tests {
                 planned(&old, 4, 2),
                 &old_keys,
                 |_| 2,
-                context,
+                each(context),
                 Some(old_list),
             )
             .unwrap()
@@ -1611,13 +1711,13 @@ mod tests {
             planned(&rows, 4, 2),
             &keys,
             |_| 2,
-            |batch| {
+            each(|batch| {
                 forwards += 1;
                 if forwards == 2 {
                     return Err(IndexError::Engine("replacement second batch failed".into()));
                 }
                 context(batch)
-            },
+            }),
             Some(ListKey::of(&keys, (4, 2))),
         );
         assert!(failed.is_err());
@@ -1694,6 +1794,22 @@ mod tests {
             .collect()
     }
 
+    /// `forward` run on each batch in turn, as [`Scores::score`] takes it.
+    fn each(
+        mut forward: impl FnMut(Vec<Encoding>) -> Result<(Vec<f32>, u64)>,
+    ) -> impl FnOnce(Vec<Vec<Encoding>>) -> Scored {
+        move |batches| {
+            let mut took = 0;
+            let mut scores = Vec::with_capacity(batches.len());
+            for batch in batches {
+                let (values, us) = forward(batch)?;
+                took += us;
+                scores.push(values);
+            }
+            Ok((scores, took))
+        }
+    }
+
     // Deliberately context-sensitive: neighbours, order and longest row
     // affect every logit. A pair-only cache fails these history assertions.
     fn context(rows: Vec<Encoding>) -> Result<(Vec<f32>, u64)> {
@@ -1724,7 +1840,7 @@ mod tests {
                 planned(rows, budget, most),
                 &identities(rows),
                 |at| at + 3,
-                context,
+                each(context),
                 None,
             )
             .unwrap();
@@ -1803,7 +1919,7 @@ mod tests {
                 planned(&rows, 16, 2),
                 &identities(&rows),
                 |_| panic!("hit counted as model character work"),
-                |_| panic!("hot batch went through the model"),
+                each(|_| panic!("hot batch went through the model")),
                 None,
             )
             .unwrap()
@@ -1852,7 +1968,7 @@ mod tests {
                 planned(rows, limits.0, limits.1),
                 &keys,
                 |at| at + 3,
-                context,
+                each(context),
                 Some(key),
             )
             .unwrap()
@@ -1989,7 +2105,7 @@ mod tests {
                     planned(&rows, 64, 2),
                     &identities(&rows),
                     |_| 3,
-                    context,
+                    each(context),
                     Some(key),
                 );
                 assert!(
@@ -2104,7 +2220,7 @@ mod tests {
             planned(&a, 64, 2),
             &identities(&a),
             |_| 3,
-            |rows| {
+            each(|rows| {
                 forwards += 1;
                 if forwards == 2 {
                     Err(IndexError::Engine(
@@ -2113,7 +2229,7 @@ mod tests {
                 } else {
                     context(rows)
                 }
-            },
+            }),
             Some(key),
         );
         assert!(failed.is_err());
@@ -2174,7 +2290,7 @@ mod tests {
                 planned(&rows, rows.len(), rows.len()),
                 &identities(&rows),
                 |_| 1,
-                |rows| Ok((vec![1.0; rows.len()], 7)),
+                each(|rows| Ok((vec![1.0; rows.len()], 7))),
                 Some(ListKey::of(&identities(&rows), (rows.len(), rows.len()))),
             )
             .unwrap();
@@ -2300,14 +2416,14 @@ mod tests {
             planned(&b, 64, 2),
             &identities(&b),
             |_| 10,
-            |rows| {
+            each(|rows| {
                 calls += 1;
                 if calls == 2 {
                     Err(IndexError::Engine("late batch failure".into()))
                 } else {
                     context(rows)
                 }
-            },
+            }),
             None,
         );
         assert!(failed.is_err());
@@ -2495,7 +2611,7 @@ mod tests {
             planned(&rows, 64, 4),
             &identities(&rows),
             |_| 3,
-            |_| Ok((vec![1.0], 7)),
+            each(|_| Ok((vec![1.0], 7))),
             None,
         );
         assert!(failed.is_err());
@@ -2520,6 +2636,81 @@ mod tests {
             }
         }
         assert_eq!(restored, vec![3, 1, 4, 2, 5]);
+    }
+
+    /// The batches of one call, scored side by side, are the logits each gets
+    /// in a pass of its own on the model's session, bit for bit and in order.
+    ///
+    /// Alone is the product's sequential path, one pass of every core at a
+    /// time; side by side is as many one-threaded passes at once as there are
+    /// cores, longest first. A fixed list of pairs from a few tokens to the
+    /// truncation limit, in more batches than cores. The models are read
+    /// from, or downloaded into, `PAMIN_TEST_MODEL_CACHE`.
+    #[test]
+    #[ignore = "downloads reranker model weights; set PAMIN_TEST_MODEL_CACHE"]
+    fn side_by_side_batches_are_each_batch_alone() {
+        let cache = PathBuf::from(
+            std::env::var_os("PAMIN_TEST_MODEL_CACHE").expect("set PAMIN_TEST_MODEL_CACHE"),
+        );
+        let long = "harbour migration rollback policy ".repeat(max_tokens());
+        let documents: Vec<String> = (0..64)
+            .map(|at| match at % 4 {
+                0 => format!("The harbour pilot boards ship {at} at the outer buoy."),
+                1 => format!("部署流水线 {at} 运行在持续集成服务器上。"),
+                2 => format!(
+                    "{at} {}",
+                    "Chocolate cake is baked with flour and cocoa. ".repeat(at)
+                ),
+                _ => long.clone(),
+            })
+            .collect();
+        for tier in [Rerank::Fast, Rerank::Accurate] {
+            // On the CPU directly: `load_model` may calibrate onto an
+            // accelerator, which runs no batches side by side.
+            std::fs::create_dir_all(&cache).expect("create the model cache");
+            let repository =
+                Repository::open(&cache, tier.repository()).expect("open the repository");
+            let mut model = cpu_model(tier, &repository, &cache, vec![crate::inference::cpu()])
+                .expect("load the reranker");
+            let encodings = model
+                .encode(
+                    documents
+                        .iter()
+                        .map(|document| {
+                            (
+                                "Where does the harbour pilot board ships?",
+                                document.as_str(),
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap();
+            let batches: Vec<Vec<Encoding>> =
+                model_batches(&model, encodings, batch_tokens(), batch())
+                    .into_iter()
+                    .map(|batch| batch.encodings)
+                    .collect();
+            assert!(batches.len() > 4, "{} batches", batches.len());
+            let alone: Vec<Vec<u32>> = batches
+                .iter()
+                .map(|batch| bits(&forward(&mut model, vec![batch.clone()]).unwrap().0[0]))
+                .collect();
+            let together: Vec<Vec<u32>> = forward(&mut model, batches)
+                .unwrap()
+                .0
+                .iter()
+                .map(|scores| bits(scores))
+                .collect();
+            assert!(
+                model.side_by_side_sessions() > 1,
+                "nothing ran side by side; this needs more than one core"
+            );
+            assert!(
+                alone == together,
+                "{} logits changed side by side",
+                tier.name()
+            );
+        }
     }
 
     /// Whatever a tier parses from, it round-trips through its own name.
