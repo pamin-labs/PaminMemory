@@ -189,6 +189,10 @@ fn settings() -> pamin_engine::Settings {
     pamin_engine::Settings {
         inference: support::inference(),
         store: store(),
+        unindexed_budget: support::eval::parsed::<std::num::NonZeroU64>(
+            "PAMIN_EVAL_UNINDEXED_BUDGET",
+        )
+        .unwrap_or(pamin_engine::Settings::default().unindexed_budget),
         ..pamin_engine::Settings::default()
     }
 }
