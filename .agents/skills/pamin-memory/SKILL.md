@@ -317,8 +317,10 @@ than that the claim was wrong.
 - **The first command is slow and the rest are not.** It starts a server holding
   the database, the index and the model. You do not need to start or stop it;
   `pamin stop` exists but running it between commands throws away the thing that
-  makes the rest fast. A few later commands are slow too: the first write, which
-  downloads BGE-M3 and writes its mapped copy; the first search, which downloads
+  makes the rest fast. It also starts loading BGE-M3 in the background --
+  downloading it and writing its mapped copy on a fresh cache -- whatever the
+  command is, so the first write may wait on that. A few later commands are slow
+  too: the first search, which downloads
   and prepares the reranker; the first search after the server has given its
   models back (30 idle minutes, `--model-idle`); and the first search after an
   upgrade, which measures the reranker's execution plan again.
