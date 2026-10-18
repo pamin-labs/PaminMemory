@@ -418,7 +418,7 @@ fn score(into: &mut Scores, query: &Query, ranked: &[String]) {
 /// comparison.
 async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
     /// Past four times the channel depth, so `take(limit)` cannot bite.
-    const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
+    const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
 
     const CHANNELS: &[Channel] = &[
         Channel::LexicalSegmented,

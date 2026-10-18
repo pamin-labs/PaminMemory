@@ -32,8 +32,9 @@ pub struct Depths {
     /// Candidates each channel contributes.
     ///
     /// Deep enough for rank fusion to find agreement between channels, shallow
-    /// enough that reranking stays cheap.
-    pub channel: u32,
+    /// enough that reranking stays cheap. Never zero, which would leave
+    /// every channel, and so the search, empty.
+    pub channel: std::num::NonZeroU32,
     /// Edges the graph channel walks out from its seeds.
     ///
     /// Two hops reaches a topic's neighbours and their neighbours, which is
@@ -42,19 +43,21 @@ pub struct Depths {
     pub graph: u8,
     /// How many of the fused results the reranker is shown as its head; see
     /// [`pamin_index::reranking::DEPTH`] for what settled the default.
-    pub rerank: usize,
+    /// Never zero, which would rerank nothing while calling it reranked.
+    pub rerank: std::num::NonZeroUsize,
     /// How wide the in-memory vector graph is searched; see
-    /// [`pamin_index::projection::SEARCH_EFFORT`].
-    pub effort: u32,
+    /// [`pamin_index::projection::SEARCH_EFFORT`]. Never zero, which is no
+    /// width for a graph search to have.
+    pub effort: std::num::NonZeroU32,
 }
 
 impl Depths {
     /// What the product searches with.
     pub const DEFAULT: Self = Self {
-        channel: 50,
+        channel: std::num::NonZeroU32::new(50).unwrap(),
         graph: 2,
-        rerank: pamin_index::reranking::DEPTH,
-        effort: pamin_index::projection::SEARCH_EFFORT,
+        rerank: std::num::NonZeroUsize::new(pamin_index::reranking::DEPTH).unwrap(),
+        effort: std::num::NonZeroU32::new(pamin_index::projection::SEARCH_EFFORT).unwrap(),
     };
 }
 
@@ -740,7 +743,7 @@ impl Models {
         };
 
         let idle = loaded.as_ref().is_some_and(|(last_used, embedder)| {
-            is_idle(*last_used, Instant::now(), self.settings.model_idle)
+            is_idle(*last_used, Instant::now(), self.settings.idle())
                 && Arc::strong_count(embedder) == 1
         });
         if idle {
@@ -769,7 +772,7 @@ impl Models {
         };
 
         let idle = held.as_ref().is_some_and(|(last_used, reranker)| {
-            is_idle(*last_used, Instant::now(), self.settings.model_idle)
+            is_idle(*last_used, Instant::now(), self.settings.idle())
                 && Arc::strong_count(reranker) == 1
         });
         if idle {
@@ -1860,7 +1863,7 @@ impl Engine {
             .iter()
             .map(|result| result.why.as_slice())
             .collect();
-        let unlexical = rerankable(&traces, depths.rerank);
+        let unlexical = rerankable(&traces, depths.rerank.get());
         if !can_be_seen(&unlexical, limit) {
             return Ok(fused.hits(limit));
         }
@@ -1911,7 +1914,7 @@ impl Engine {
         fused.results = place(
             std::mem::take(&mut fused.results),
             &unlexical,
-            depths.rerank,
+            depths.rerank.get(),
             &best_first,
         );
         Ok(fused.hits(limit))
@@ -1951,15 +1954,19 @@ impl Engine {
             let lists = vec![
                 ChannelResults::new(
                     Channel::LexicalSegmented,
-                    index.recall_segmented(query, depths.channel)?,
+                    index.recall_segmented(query, depths.channel.get())?,
                 ),
                 ChannelResults::new(
                     Channel::LexicalNgram,
-                    index.recall_ngram(query, depths.channel)?,
+                    index.recall_ngram(query, depths.channel.get())?,
                 ),
                 ChannelResults::new(
                     Channel::Vector,
-                    index.recall_vector_at(&embedding, depths.channel, depths.effort)?,
+                    index.recall_vector_at(
+                        &embedding,
+                        depths.channel.get(),
+                        depths.effort.get(),
+                    )?,
                 ),
             ];
             Ok::<_, pamin_index::IndexError>(lists)
@@ -2149,7 +2156,7 @@ impl Engine {
         // second bound is checked rather than trusted -- the walk says what it
         // left unread, `strongest` says whether any of that could have ranked
         // here, and when it could the walk is made again reading everything.
-        let keep = options.depths.channel as usize;
+        let keep = options.depths.channel.get() as usize;
         let expansion = Expansion::to_depth(options.depths.graph).keeping(keep);
         let neighbors = match graph::expand_reading(
             &mut *connection,

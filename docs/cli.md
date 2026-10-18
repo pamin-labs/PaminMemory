@@ -627,7 +627,8 @@ fusion (default 50) and `--graph-depth` how many edges the graph walks out
 (default 2). Two hidden flags go with them: `--rerank-depth`, how many fused
 candidates the reranker reads (default 30), and `--search-effort`, how wide the
 vector graph is searched (default 700). All four are per search: a server
-answers each search at the depths that search asks for.
+answers each search at the depths that search asks for. Every one but
+`--graph-depth`, where 0 turns the walk off, is refused at 0.
 
 These exist for the evaluation harness, which is what settles them. They are
 not a tuning surface for ordinary use: raising the depth costs latency for

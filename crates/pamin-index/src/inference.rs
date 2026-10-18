@@ -2835,7 +2835,7 @@ mod tests {
         let reranking = crate::InferenceSettings {
             rerank: crate::RerankSettings {
                 batch: NonZeroUsize::new(8),
-                batch_tokens: 4096,
+                batch_tokens: NonZeroUsize::new(4096).unwrap(),
                 max_tokens: NonZeroUsize::new(192).unwrap(),
             },
             ..crate::InferenceSettings::default()

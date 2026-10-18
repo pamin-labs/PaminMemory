@@ -51,8 +51,9 @@ pub struct RerankSettings {
     /// The most pairs a pass takes, or `None` for the measured rule: one pair
     /// a pass where CPU passes overlap, four otherwise.
     pub batch: Option<NonZeroUsize>,
-    /// How many padded tokens one pass may hold.
-    pub batch_tokens: usize,
+    /// How many padded tokens one pass may hold. Never zero: a pass that
+    /// may hold nothing would take no pair at all.
+    pub batch_tokens: NonZeroUsize,
     /// The longest candidate the model reads, in tokens. Never zero: a
     /// reranker that reads nothing of a candidate scores none of them.
     pub max_tokens: NonZeroUsize,
@@ -62,7 +63,8 @@ impl Default for RerankSettings {
     fn default() -> Self {
         Self {
             batch: None,
-            batch_tokens: crate::reranking::BATCH_TOKENS,
+            batch_tokens: NonZeroUsize::new(crate::reranking::BATCH_TOKENS)
+                .expect("a pass holds at least one token"),
             max_tokens: NonZeroUsize::new(crate::reranking::MAX_TOKENS)
                 .expect("the reranker reads at least one token"),
         }

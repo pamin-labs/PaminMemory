@@ -9,8 +9,6 @@
 //! the graph and the reranker reach, how wide the vector graph is searched --
 //! is [`crate::Depths`], passed with the search.
 
-use std::time::Duration;
-
 use pamin_index::InferenceSettings;
 use pamin_store::StoreSettings;
 
@@ -22,8 +20,10 @@ pub struct Settings {
     /// How the workspace's PostgreSQL cluster is installed and configured.
     pub store: StoreSettings,
     /// How long a model, and the indexes pinning it, may sit unused before a
-    /// resident process gives them back. See `MODEL_IDLE` in `engine.rs`.
-    pub model_idle: Duration,
+    /// resident process gives them back, in seconds. See `MODEL_IDLE` in
+    /// `engine.rs`. Never zero, which would give a model back the tick after
+    /// it loaded and make every search a model load.
+    pub model_idle: std::num::NonZeroU64,
     /// How many documents may sit outside the vector graph before upkeep
     /// builds it; [`pamin_index::projection::UNINDEXED_BUDGET`] in the
     /// product, lowered by a test that has to reach the case. Never zero,
@@ -31,12 +31,20 @@ pub struct Settings {
     pub unindexed_budget: std::num::NonZeroU64,
 }
 
+impl Settings {
+    /// [`Self::model_idle`] as a duration.
+    pub fn idle(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.model_idle.get())
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
             inference: InferenceSettings::default(),
             store: StoreSettings::default(),
-            model_idle: crate::engine::MODEL_IDLE,
+            model_idle: std::num::NonZeroU64::new(crate::engine::MODEL_IDLE.as_secs())
+                .expect("a model may sit idle for at least a second"),
             unindexed_budget: pamin_index::projection::UNINDEXED_BUDGET,
         }
     }

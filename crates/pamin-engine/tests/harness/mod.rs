@@ -220,9 +220,7 @@ pub fn settings() -> pamin_engine::Settings {
         inference: support::inference(),
         store: store(),
         model_idle: eval::parsed::<std::num::NonZeroU64>("PAMIN_EVAL_MODEL_IDLE")
-            .map_or(default.model_idle, |seconds| {
-                std::time::Duration::from_secs(seconds.get())
-            }),
+            .unwrap_or(default.model_idle),
         unindexed_budget: eval::parsed::<std::num::NonZeroU64>("PAMIN_EVAL_UNINDEXED_BUDGET")
             .unwrap_or(default.unindexed_budget),
     }
@@ -247,9 +245,9 @@ pub fn depths() -> Depths {
     eval::check();
     Depths {
         rerank: eval::parsed::<std::num::NonZeroUsize>("PAMIN_EVAL_RERANK_DEPTH")
-            .map_or(Depths::DEFAULT.rerank, std::num::NonZeroUsize::get),
+            .unwrap_or(Depths::DEFAULT.rerank),
         effort: eval::parsed::<std::num::NonZeroU32>("PAMIN_EVAL_SEARCH_EFFORT")
-            .map_or(Depths::DEFAULT.effort, std::num::NonZeroU32::get),
+            .unwrap_or(Depths::DEFAULT.effort),
         ..Depths::DEFAULT
     }
 }
