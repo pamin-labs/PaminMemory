@@ -42,15 +42,21 @@
 //! `benchmarks/datasets/locomo.py`). Rewarding retrieval of that turn would
 //! score the trap as the key.
 //!
-//! Questions whose evidence is miscited are left out too. The locomo-audit
-//! project checked every non-adversarial question of this pinned file and
-//! lists 57 (`WRONG_CITATION`) whose answer is right but whose cited turns do
-//! not hold it -- often the line asking rather than the one answering, or
-//! the turn beside the right one. Grading those would reward retrieving the
-//! wrong turn and penalise the right one. Its list is fetched pinned to a
-//! commit and checked against its SHA-256, and each entry must name the
-//! question the dataset asks at that position. Every excluded question is
-//! recorded in the run's shape with its reason.
+//! Questions whose cited evidence the audit replaces are left out too. The
+//! locomo-audit project checked every non-adversarial question of this
+//! pinned file and, for each error it finds, gives the evidence it cites and
+//! the evidence that is correct. Where those two differ as sets of dialogue
+//! ids, the cited turns are the wrong key for retrieval: grading against
+//! them would reward retrieving the wrong turn, or penalise a right one. So
+//! every such question is left out, whatever the error's type -- 94 of them:
+//! 55 `WRONG_CITATION`, 18 `HALLUCINATION`, 7 `ATTRIBUTION_ERROR`, 7
+//! `AMBIGUOUS`, 5 `TEMPORAL_ERROR` and 2 `INCOMPLETE`. The audit's other 62
+//! errors keep the cited evidence -- they fault the answer or the question,
+//! not which turn holds it, or, in two, only the way an id is written, which
+//! [`evidence_ids`] already recovers -- so those questions stay. Its list is
+//! fetched pinned to a commit and checked against its SHA-256, and each
+//! entry must name the question the dataset asks at that position. Every
+//! excluded question is recorded in the run's shape with its reason.
 //!
 //! **Significance is tested per conversation.** Every question of one
 //! conversation shares its corpus, index and graph, so the questions are not
@@ -74,6 +80,12 @@
 //! | `LOCOMO_CONVERSATIONS` | read only the first this many conversations |
 //! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
 //!
+//! Any other `PAMIN_` variable fails the run before it starts, unless it
+//! only says where something is or what to log, or chooses how a model
+//! executes or an index is built, which the record names
+//! (`harness::shape::shipped_path_only`): the rest are settings this
+//! harness does not honour as `pamin search` would, or sweeps.
+//!
 //! Projects are named after a digest of the records and links they hold, and
 //! of the execution plan and model revision that embedded them, so a reused
 //! `PAMIN_EVAL_HOME` never scores a corpus built by older code or data, or
@@ -87,7 +99,7 @@ mod reranking;
 mod scoring;
 mod statistics;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
 
@@ -111,8 +123,46 @@ const AUDIT: &str = "https://raw.githubusercontent.com/dial481/locomo-audit/9493
 /// SHA-256 of `errors.json` at that commit.
 const AUDIT_SHA256: &str = "f298ef46263fada20688a1d672be37d4f488c6da3b19343eea55ae5c1b5fe55e";
 
-/// How many questions of the whole file that list finds miscited.
-const MISCITED: usize = 57;
+/// Per error type, how many questions of the whole file the audit gives
+/// other evidence than the dataset cites, and the reason the run's shape
+/// records for them. Every audited question whose evidence changes is left
+/// out; a type missing here that changes evidence fails the load.
+const MISCITED: [(&str, usize, &str); 6] = [
+    (
+        "WRONG_CITATION",
+        55,
+        "miscited: locomo-audit finds its evidence does not hold the answer",
+    ),
+    (
+        "HALLUCINATION",
+        18,
+        "re-cited: locomo-audit corrects a hallucinated answer and its evidence",
+    ),
+    (
+        "ATTRIBUTION_ERROR",
+        7,
+        "re-cited: locomo-audit corrects a misattributed answer and its evidence",
+    ),
+    (
+        "AMBIGUOUS",
+        7,
+        "re-cited: locomo-audit finds the question ambiguous and its evidence other",
+    ),
+    (
+        "TEMPORAL_ERROR",
+        5,
+        "re-cited: locomo-audit corrects a misdated answer and its evidence",
+    ),
+    (
+        "INCOMPLETE",
+        2,
+        "re-cited: locomo-audit finds its answer and evidence leave out turns",
+    ),
+];
+
+/// How many of the audit's errors keep the evidence the dataset cites, and
+/// so leave their question scored.
+const RECITED_UNCHANGED: usize = 62;
 
 /// What the product's `pamin search` asks for by default. A constant because
 /// the rule replay sizes a constant from it; the test asserts it still equals
@@ -121,15 +171,6 @@ const DEPTHS: Depths = Depths {
     channel: 50,
     graph: 2,
 };
-
-/// Runtime overrides the product reads on every search, outside `Depths`:
-/// the rerank shortlist, its token cap, and the vector search's width. A run
-/// with one set is a sweep, not the search `pamin search` ships.
-const TUNING: [&str; 3] = [
-    "PAMIN_RERANK_DEPTH",
-    "PAMIN_RERANK_MAX_TOKENS",
-    "PAMIN_SEARCH_EFFORT",
-];
 
 /// LOCOMO's adversarial category, whose evidence is the trap.
 const ADVERSARIAL: usize = 5;
@@ -305,8 +346,8 @@ fn load() -> Loaded {
                     exclude("adversarial: its evidence is the trap, and abstaining is the answer");
                     continue;
                 }
-                if miscited.contains(&(position, at)) {
-                    exclude("miscited: locomo-audit finds its evidence does not hold the answer");
+                if let Some(reason) = miscited.get(&(position, at)) {
+                    exclude(*reason);
                     continue;
                 }
                 // A question none of whose evidence names a turn that
@@ -353,20 +394,32 @@ fn load() -> Loaded {
     }
 }
 
-/// The questions locomo-audit's list at `path` finds miscited
-/// (`WRONG_CITATION`), as (conversation, question) positions in the file.
-/// Each entry must name the question `samples` asks at its position, so a
-/// list that does not describe this file fails rather than excluding the
-/// wrong questions.
-fn miscited(path: &Path, samples: &[serde_json::Value]) -> HashSet<(usize, usize)> {
+/// The questions locomo-audit's list at `path` gives other evidence than the
+/// dataset cites -- its `correct_evidence` and `cited_evidence` differ as
+/// sets of dialogue ids, read through [`evidence_ids`] -- as (conversation,
+/// question) positions in the file with the reason, by error type, they are
+/// left out. Each entry must name the question `samples` asks at its
+/// position, so a list that does not describe this file fails rather than
+/// excluding the wrong questions.
+fn miscited(path: &Path, samples: &[serde_json::Value]) -> HashMap<(usize, usize), &'static str> {
     let text = std::fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
     let errors: Vec<serde_json::Value> = serde_json::from_str(&text)
         .unwrap_or_else(|error| panic!("parsing {}: {error}", path.display()));
-    let found: HashSet<(usize, usize)> = errors
+    let ids = |error: &serde_json::Value, field: &str| -> HashSet<String> {
+        error[field]
+            .as_array()
+            .unwrap_or_else(|| panic!("audit entry {} has no {field}", error["question_id"]))
+            .iter()
+            .map(|id| id.as_str().expect("a dialogue id"))
+            .flat_map(evidence_ids)
+            .collect()
+    };
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut unchanged = 0;
+    let found: HashMap<(usize, usize), &'static str> = errors
         .iter()
-        .filter(|error| error["error_type"] == "WRONG_CITATION")
-        .map(|error| {
+        .filter_map(|error| {
             let id = error["question_id"].as_str().expect("an audit entry's id");
             let (conversation, at) = id
                 .strip_prefix("locomo_")
@@ -387,13 +440,39 @@ fn miscited(path: &Path, samples: &[serde_json::Value]) -> HashSet<(usize, usize
                 error["question"].as_str(),
                 "audit entry {id} is not the question the dataset asks there"
             );
-            (conversation, at)
+            if ids(error, "cited_evidence") == ids(error, "correct_evidence") {
+                unchanged += 1;
+                return None;
+            }
+            let kind = error["error_type"].as_str().expect("an audit entry's type");
+            let (kind, _, reason) = MISCITED
+                .iter()
+                .find(|(name, _, _)| *name == kind)
+                .unwrap_or_else(|| panic!("audit entry {id} changes evidence under {kind}"));
+            *counts.entry(kind).or_default() += 1;
+            Some(((conversation, at), *reason))
         })
         .collect();
+    let expected: BTreeMap<&str, usize> = MISCITED
+        .iter()
+        .map(|(kind, count, _)| (*kind, *count))
+        .collect();
+    assert_eq!(
+        counts,
+        expected,
+        "{} is not the pinned audit",
+        path.display()
+    );
+    assert_eq!(
+        unchanged,
+        RECITED_UNCHANGED,
+        "{} is not the pinned audit",
+        path.display()
+    );
     assert_eq!(
         found.len(),
-        MISCITED,
-        "{} is not the pinned audit",
+        expected.values().sum::<usize>(),
+        "{} names a question twice",
         path.display()
     );
     found
@@ -589,18 +668,17 @@ async fn locomo_evidence_with_and_without_links() {
         (shipped.channel, shipped.graph),
         "DEPTHS must be what `pamin search` ships"
     );
-    for name in TUNING {
-        assert!(
-            std::env::var_os(name).is_none(),
-            "{name} is set, so this would not be the shipped search path; unset it"
-        );
-    }
+    harness::shape::shipped_path_only();
     let loaded = load();
     let (named, profile) = harness::profile();
     // Published before anything is indexed, so a run that dies still said
     // what it was asked.
     let mut shape = shape(&loaded);
     shape.publish("locomo_evidence_with_and_without_links", &named);
+    // Before the probe loads the first model, so the record says whether
+    // this run fetched or prepared models, and a cold run is not named as a
+    // warm one.
+    shape.observe_models();
     let conversations = &loaded.conversations;
     let home = std::env::var("PAMIN_EVAL_HOME").ok();
     let scratch = home
