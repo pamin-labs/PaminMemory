@@ -42,15 +42,22 @@
 //! `benchmarks/datasets/locomo.py`). Rewarding retrieval of that turn would
 //! score the trap as the key.
 //!
-//! Questions whose evidence is miscited are left out too. The locomo-audit
-//! project checked every non-adversarial question of this pinned file and
-//! lists 57 (`WRONG_CITATION`) whose answer is right but whose cited turns do
-//! not hold it -- often the line asking rather than the one answering, or
-//! the turn beside the right one. Grading those would reward retrieving the
-//! wrong turn and penalise the right one. Its list is fetched pinned to a
-//! commit and checked against its SHA-256, and each entry must name the
-//! question the dataset asks at that position. Every excluded question is
-//! recorded in the run's shape with its reason.
+//! Questions whose cited evidence is wrong for retrieval are left out too.
+//! The locomo-audit project checked every non-adversarial question of this
+//! pinned file, and three of its error types make the cited turns the wrong
+//! key. It lists 57 (`WRONG_CITATION`) whose answer is right but whose cited
+//! turns do not hold it -- often the line asking rather than the one
+//! answering, or the turn beside the right one; 24 (`ATTRIBUTION_ERROR`)
+//! that ask about one speaker while the cited turn is the other's, which is
+//! the adversarial trap under another category; and 3 (`INCOMPLETE`) whose
+//! answer, and in two of them the cited turns, leave out part of what the
+//! question asks for. Grading those would reward retrieving the wrong turn,
+//! or penalise retrieving a right one. Its other types -- a hallucinated or
+//! misdated answer, an ambiguous question -- fault the answer, not which turn
+//! holds it, so those questions stay. Its list is fetched pinned to a commit
+//! and checked against its SHA-256, and each entry must name the question
+//! the dataset asks at that position. Every excluded question is recorded in
+//! the run's shape with its reason.
 //!
 //! **Significance is tested per conversation.** Every question of one
 //! conversation shares its corpus, index and graph, so the questions are not
@@ -85,7 +92,7 @@ mod harness;
 mod scoring;
 mod statistics;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
 
@@ -109,8 +116,26 @@ const AUDIT: &str = "https://raw.githubusercontent.com/dial481/locomo-audit/9493
 /// SHA-256 of `errors.json` at that commit.
 const AUDIT_SHA256: &str = "f298ef46263fada20688a1d672be37d4f488c6da3b19343eea55ae5c1b5fe55e";
 
-/// How many questions of the whole file that list finds miscited.
-const MISCITED: usize = 57;
+/// The audit's error types whose cited evidence is the wrong key for
+/// retrieval, how many questions of the whole file each names, and the
+/// reason the run's shape records for them.
+const MISCITED: [(&str, usize, &str); 3] = [
+    (
+        "WRONG_CITATION",
+        57,
+        "miscited: locomo-audit finds its evidence does not hold the answer",
+    ),
+    (
+        "ATTRIBUTION_ERROR",
+        24,
+        "misattributed: locomo-audit finds its evidence is the other speaker's turn",
+    ),
+    (
+        "INCOMPLETE",
+        3,
+        "incomplete: locomo-audit finds its answer leaves out turns that answer it",
+    ),
+];
 
 /// What the product's `pamin search` asks for by default. A constant because
 /// the rule replay sizes a constant from it; the test asserts it still equals
@@ -306,8 +331,8 @@ fn load() -> Loaded {
                     exclude("adversarial: its evidence is the trap, and abstaining is the answer");
                     continue;
                 }
-                if miscited.contains(&(position, at)) {
-                    exclude("miscited: locomo-audit finds its evidence does not hold the answer");
+                if let Some(reason) = miscited.get(&(position, at)) {
+                    exclude(*reason);
                     continue;
                 }
                 // A question none of whose evidence names a turn that
@@ -354,20 +379,26 @@ fn load() -> Loaded {
     }
 }
 
-/// The questions locomo-audit's list at `path` finds miscited
-/// (`WRONG_CITATION`), as (conversation, question) positions in the file.
-/// Each entry must name the question `samples` asks at its position, so a
-/// list that does not describe this file fails rather than excluding the
-/// wrong questions.
-fn miscited(path: &Path, samples: &[serde_json::Value]) -> HashSet<(usize, usize)> {
+/// The questions locomo-audit's list at `path` finds miscited, by one of the
+/// [`MISCITED`] error types, as (conversation, question) positions in the
+/// file with the reason they are left out. Each entry must name the question
+/// `samples` asks at its position, so a list that does not describe this
+/// file fails rather than excluding the wrong questions.
+fn miscited(path: &Path, samples: &[serde_json::Value]) -> HashMap<(usize, usize), &'static str> {
     let text = std::fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
     let errors: Vec<serde_json::Value> = serde_json::from_str(&text)
         .unwrap_or_else(|error| panic!("parsing {}: {error}", path.display()));
-    let found: HashSet<(usize, usize)> = errors
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    let found: HashMap<(usize, usize), &'static str> = errors
         .iter()
-        .filter(|error| error["error_type"] == "WRONG_CITATION")
-        .map(|error| {
+        .filter_map(|error| {
+            let kind = error["error_type"].as_str()?;
+            let (kind, _, reason) = MISCITED.iter().find(|(name, _, _)| *name == kind)?;
+            *counts.entry(kind).or_default() += 1;
+            Some((error, *reason))
+        })
+        .map(|(error, reason)| {
             let id = error["question_id"].as_str().expect("an audit entry's id");
             let (conversation, at) = id
                 .strip_prefix("locomo_")
@@ -388,13 +419,23 @@ fn miscited(path: &Path, samples: &[serde_json::Value]) -> HashSet<(usize, usize
                 error["question"].as_str(),
                 "audit entry {id} is not the question the dataset asks there"
             );
-            (conversation, at)
+            ((conversation, at), reason)
         })
         .collect();
+    let expected: BTreeMap<&str, usize> = MISCITED
+        .iter()
+        .map(|(kind, count, _)| (*kind, *count))
+        .collect();
+    assert_eq!(
+        counts,
+        expected,
+        "{} is not the pinned audit",
+        path.display()
+    );
     assert_eq!(
         found.len(),
-        MISCITED,
-        "{} is not the pinned audit",
+        expected.values().sum::<usize>(),
+        "{} names a question twice",
         path.display()
     );
     found
