@@ -121,11 +121,14 @@ const DEPTHS: Depths = Depths {
 };
 
 /// Runtime overrides the product reads on every search, outside `Depths`:
-/// the rerank shortlist, its token cap, and the vector search's width. A run
-/// with one set is a sweep, not the search `pamin search` ships.
-const TUNING: [&str; 3] = [
+/// the rerank shortlist, its token cap, its batch size and token budget, and
+/// the vector search's width. A run with one set is a sweep, not the search
+/// `pamin search` ships.
+const TUNING: [&str; 5] = [
     "PAMIN_RERANK_DEPTH",
     "PAMIN_RERANK_MAX_TOKENS",
+    "PAMIN_RERANK_BATCH",
+    "PAMIN_RERANK_BATCH_TOKENS",
     "PAMIN_SEARCH_EFFORT",
 ];
 
