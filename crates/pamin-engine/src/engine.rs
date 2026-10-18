@@ -214,7 +214,10 @@ impl PassageEncoder for Embedder {
 /// vectors and queries of the plan it moved to. So the plan is asked again
 /// after the read, and if it changed nothing is held; and the plan the pass
 /// ran under is compared with the one the check matched, and if they differ
-/// the skipped states are embedded after all.
+/// the whole batch is embedded again in one pass. Embedding only the skipped
+/// states would not do: the model can move again during that pass, leaving
+/// the two halves of the batch under two plans with no job left to reconcile
+/// them, while one pass names only a plan that produced all of it.
 ///
 /// `index` takes the index lock per call, so the pass runs without it and a
 /// search is not held up behind a forward pass.
@@ -238,7 +241,8 @@ where
     }
     let encoding = write_encoded(&index, encoder, wanted, passages, &fresh)?;
     if !held.is_empty() && encoding != reusable {
-        write_encoded(&index, encoder, wanted, passages, &held)?;
+        let every: Vec<usize> = (0..wanted.len()).collect();
+        write_encoded(&index, encoder, wanted, passages, &every)?;
     }
     Ok(())
 }
@@ -3601,9 +3605,10 @@ mod tests {
     struct Moving {
         /// What `reusable_encoding` answers, call by call; the last repeats.
         reusable: std::cell::RefCell<Vec<Option<String>>>,
-        /// The plan a pass runs under, and the one the next pass moves to.
+        /// The plan a pass runs under, and the plans the next passes move to,
+        /// one per pass.
         plan: String,
-        moves_to: Option<String>,
+        moves: Vec<String>,
         passes: Vec<Vec<String>>,
     }
 
@@ -3612,7 +3617,7 @@ mod tests {
             Self {
                 reusable: std::cell::RefCell::new(vec![Some(plan.to_string())]),
                 plan: plan.to_string(),
-                moves_to: None,
+                moves: Vec::new(),
                 passes: Vec::new(),
             }
         }
@@ -3632,8 +3637,8 @@ mod tests {
             &mut self,
             texts: &[&str],
         ) -> pamin_index::Result<(Vec<Vec<f32>>, Option<String>)> {
-            if let Some(next) = self.moves_to.take() {
-                self.plan = next;
+            if !self.moves.is_empty() {
+                self.plan = self.moves.remove(0);
             }
             self.passes
                 .push(texts.iter().map(|text| text.to_string()).collect());
@@ -3695,20 +3700,35 @@ mod tests {
             [Some("cpu:fallback".into()), Some("cpu:fallback".into())]
         );
 
-        // The pass moves the model: the held state is embedded after all, and
+        // The pass moves the model: the whole batch is embedded again, and
         // both documents name the plan that produced them.
         let (_dir, index, held, new) = setup();
         let wanted = [(held, "alpha"), (new, "beta")];
         let mut model = Moving::on("cpu:fallback");
-        model.moves_to = Some("npu:restored".into());
+        model.moves = vec!["npu:restored".into()];
         super::write_unheld(|| &index, &mut model, &wanted, &["alpha", "beta"]).expect("sync");
-        assert_eq!(
-            model.passes,
-            [vec!["beta".to_string()], vec!["alpha".to_string()]]
-        );
+        let again = vec!["alpha".to_string(), "beta".to_string()];
+        assert_eq!(model.passes, [vec!["beta".to_string()], again.clone()]);
         assert_eq!(
             encodings(&index, &[held, new]),
             [Some("npu:restored".into()), Some("npu:restored".into())]
+        );
+
+        // The model moves again during that second pass: both halves still
+        // name one plan, the one the second pass ran under, rather than the
+        // fresh half keeping the plan of a pass the batch moved off.
+        let (_dir, index, held, new) = setup();
+        let wanted = [(held, "alpha"), (new, "beta")];
+        let mut model = Moving::on("cpu:fallback");
+        model.moves = vec!["npu:restored".into(), "cpu:fallback-again".into()];
+        super::write_unheld(|| &index, &mut model, &wanted, &["alpha", "beta"]).expect("sync");
+        assert_eq!(model.passes, [vec!["beta".to_string()], again]);
+        assert_eq!(
+            encodings(&index, &[held, new]),
+            [
+                Some("cpu:fallback-again".into()),
+                Some("cpu:fallback-again".into())
+            ]
         );
 
         // The plan expires while the index is read: nothing is held, even in
@@ -3716,7 +3736,7 @@ mod tests {
         let (_dir, index, held, _) = setup();
         let mut model = Moving::on("cpu:fallback");
         model.reusable = std::cell::RefCell::new(vec![Some("cpu:fallback".into()), None]);
-        model.moves_to = Some("npu:restored".into());
+        model.moves = vec!["npu:restored".into()];
         super::write_unheld(|| &index, &mut model, &[(held, "alpha")], &["alpha"]).expect("sync");
         assert_eq!(model.passes, [vec!["alpha".to_string()]]);
         assert_eq!(encodings(&index, &[held]), [Some("npu:restored".into())]);
