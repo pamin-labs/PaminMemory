@@ -454,7 +454,7 @@ const INDEX_SETTINGS: [&str; 1] = ["PAMIN_EVAL_UNINDEXED_BUDGET"];
 
 /// The `PAMIN_EVAL_*` knobs off that path, with why: they name a run's record
 /// (see [`settings`]), not its vectors.
-const NOT_PRODUCER: [(&str, &str); 17] = [
+const NOT_PRODUCER: [(&str, &str); 16] = [
     (
         "PAMIN_EVAL_EXPECT_DEVICE",
         "the device a pamin-index child asserts it ran on",
@@ -468,7 +468,6 @@ const NOT_PRODUCER: [(&str, &str); 17] = [
         "PAMIN_EVAL_MODELS",
         "a model cache a pamin-index test copies",
     ),
-    ("PAMIN_EVAL_MODEL_IDLE", "when an idle model is released"),
     (
         "PAMIN_EVAL_NATIVE_MODEL_SOURCE",
         "a pamin-index test's cached export",

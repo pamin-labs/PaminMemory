@@ -58,10 +58,6 @@ pub const KNOBS: &[(&str, &str)] = &[
         "vector graph search width (`search --search-effort`)",
     ),
     (
-        "PAMIN_EVAL_MODEL_IDLE",
-        "seconds a model may sit unused (`--model-idle`)",
-    ),
-    (
         "PAMIN_EVAL_UNINDEXED_BUDGET",
         "documents outside the vector graph before upkeep builds it (no flag)",
     ),
