@@ -266,7 +266,7 @@ const NOT_IDENTITY: [(&str, &str); 6] = [
 /// that is set names the record, whichever harness reads it, so no harness
 /// keeps a list of its own that can miss one.
 /// `every_evaluation_read_is_classified` holds the tests to this.
-const EVAL_SETTINGS: [&str; 27] = [
+const EVAL_SETTINGS: [&str; 28] = [
     "AT_LIMIT",
     "CALIBRATE",
     "CHANNELS",
@@ -280,6 +280,7 @@ const EVAL_SETTINGS: [&str; 27] = [
     "GATE",
     "GRAPHS",
     "LABELS",
+    "LOCOMO_CONVERSATIONS",
     "MEMORY",
     "MIRACL_MAX_DOCS",
     "MUSIQUE_QUESTIONS",
@@ -298,7 +299,7 @@ const EVAL_SETTINGS: [&str; 27] = [
 
 /// Variables the evaluation tests read that change nothing a record is
 /// named by, with why.
-const EVAL_NOT_IDENTITY: [(&str, &str); 5] = [
+const EVAL_NOT_IDENTITY: [(&str, &str); 6] = [
     ("CHANNELS_OUT", "where a table is written"),
     (
         "ESCI_DIR",
@@ -306,6 +307,10 @@ const EVAL_NOT_IDENTITY: [(&str, &str); 5] = [
     ),
     (
         "LAREQA_DIR",
+        "where a dataset is; what it holds is the corpus digest",
+    ),
+    (
+        "LOCOMO_DIR",
         "where a dataset is; what it holds is the corpus digest",
     ),
     (
@@ -396,6 +401,42 @@ fn environment() -> impl Iterator<Item = (String, String)> {
             value.to_string_lossy().into_owned(),
         )
     })
+}
+
+/// Refuses a run in which a `PAMIN_` variable is set that a harness calling
+/// the product's engine on the shipped path does not honour as `pamin` would.
+///
+/// An allowlist: the variables that name no setting ([`NOT_SETTINGS`]), and
+/// those the product reads below the engine, on the path from a text to its
+/// vector and from the vectors to an index ([`producer_pamin`]), which reach
+/// a harness's engine as they reach `pamin`'s and which the record and the
+/// index stamp name. Every other one is refused. The CLI resolves some
+/// before the engine sees them -- `PAMIN_RERANK`, `PAMIN_CHANNEL_DEPTH`,
+/// `PAMIN_GRAPH_DEPTH`, `PAMIN_VECTOR_INDEX` -- and a harness that passes
+/// its own arguments never reads them, so the record would name a setting
+/// the run ignored. The engine does read the search's and the reranker's
+/// knobs, and a run with one set is a sweep, not the shipped path.
+pub fn shipped_path_only() {
+    let refused = unhonoured(environment().map(|(name, _)| name));
+    assert!(
+        refused.is_empty(),
+        "{refused:?} set, which this harness does not honour as the shipped \
+         search path would; unset them"
+    );
+}
+
+/// The names among `names` that [`shipped_path_only`] refuses, sorted.
+fn unhonoured(names: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut refused: Vec<String> = names
+        .into_iter()
+        .filter(|name| {
+            name.starts_with("PAMIN_")
+                && !NOT_SETTINGS.contains(&name.as_str())
+                && !producer_pamin(name)
+        })
+        .collect();
+    refused.sort();
+    refused
 }
 
 /// The `PAMIN_` variables the product reads on the path from a text to its
@@ -3533,6 +3574,38 @@ mod tests {
         assert_eq!(unresolved.len(), 2);
         assert!(unresolved.iter().all(|line| line.contains("unresolved")));
         assert_eq!(visible_cuda(None, Some("0"), None), ["cuda: unknown"]);
+    }
+
+    /// A harness on the shipped path refuses what the CLI resolves before the
+    /// engine and the search's knobs, and allows where things are, what is
+    /// logged, the build Cargo describes, and the producer's settings.
+    #[test]
+    fn the_shipped_path_refuses_what_it_does_not_honour() {
+        let refused = [
+            "PAMIN_CHANNEL_DEPTH",
+            "PAMIN_GRAPH_DEPTH",
+            "PAMIN_RERANK",
+            "PAMIN_RERANK_BATCH",
+            "PAMIN_RERANK_BATCH_TOKENS",
+            "PAMIN_RERANK_DEPTH",
+            "PAMIN_RERANK_MAX_TOKENS",
+            "PAMIN_SEARCH_EFFORT",
+            "PAMIN_VECTOR_INDEX",
+        ];
+        let allowed = [
+            "HOME",
+            "PAMIN_DEVICE",
+            "PAMIN_ENGINE_COMMIT",
+            "PAMIN_EVAL_HOME",
+            "PAMIN_HOME",
+            "PAMIN_LOG",
+            "PAMIN_PROFILE",
+            "PAMIN_UNINDEXED_BUDGET",
+        ];
+        assert_eq!(
+            unhonoured(refused.iter().chain(&allowed).map(|name| name.to_string())),
+            refused
+        );
     }
 
     /// The reranker's knobs and the search's effort name the record but not
