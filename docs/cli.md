@@ -113,7 +113,10 @@ vocabulary, which the embedder and every reranker share. It is now held in a
 compact layout: with both loaded, the two hold 47 MiB of anonymous memory after
 use, where the previous layout held 314 MiB in the same measurement (and
 582 MiB when each model built its own copy). The per-model figures above were taken
-with the previous layout. What it costs is disk. Each copy is larger than the
+with the previous layout, and with each model's one session: the first time
+passes run side by side, a model also loads one shared single-threaded session
+for them, which those figures leave out. [measured.md](measured.md) has what a
+whole server holds with it. What it costs is disk. Each copy is larger than the
 model it came from, because the weights are also stored in the layout the CPU's
 kernels use -- a data file of 874 MB for the 570 MB reranker, and about as
 much for the embedder -- and writing
@@ -241,8 +244,15 @@ reranker. There is nothing to choose between:
 
 | Role | Model | Width | Resident | Per query |
 | --- | --- | --- | --- | --- |
-| Embedding | BGE-M3, int8 weights (`gpahal/bge-m3-onnx-int8`) | 1024 | 560 MB | 35 ms |
-| Reranking | bge-reranker-v2-m3, int8 weights | | 571 MB loaded | see [`pamin search`](#pamin-search) |
+| Embedding | BGE-M3, int8 weights (`gpahal/bge-m3-onnx-int8`) | 1024 | 272 MiB live | 37.7 ms idle, 46–47 ms under load |
+| Reranking | bge-reranker-v2-m3, int8 weights | | 271 MiB live | see [`pamin search`](#pamin-search) |
+
+Resident is live anonymous memory with the model loaded from its mapped copy,
+taken before the vocabulary was shared and compacted and without the session
+side-by-side passes add; each download is about 570 MB. The query figures are
+a median on four cores, through `Embedder` with nothing else running and in a
+server at a load average of 5.6 to 7.2. [measured.md](measured.md) and
+[ADR 0001](adr/0001-tech-selection.md) have the runs.
 
 BGE-M3 was the `accuracy` profile while there were others. It was chosen
 because quantized weights make it a small download and because the gap it
@@ -258,8 +268,9 @@ Earlier versions had embedding profiles (`--profile`, `PAMIN_PROFILE`:
 `speed`, `balanced`, `accuracy`, `dual_accuracy`) and reranking tiers
 (`--rerank`, `PAMIN_RERANK`: `off`, `fast`, `accurate`). What shipped as
 `accuracy` and `accurate` is what every project now uses, so a workspace that
-kept the defaults needs nothing: its indexes open as they are, and plans
-measured for the two models are reused.
+kept the defaults needs nothing: its indexes open as they are, and the
+embedder's measured plans are reused. The reranker's are measured again once,
+because a CPU pass now takes one pair and its plan key changed with that.
 
 - `--profile` and `--rerank` are unknown arguments. Setting `PAMIN_PROFILE` or
   `PAMIN_RERANK`, to any value, fails with a message naming the setting, as
@@ -491,7 +502,7 @@ Reads a topic at a version. `--version-offset` counts back from the current one.
 
 ```console
 $ pamin read deployment_pipeline
-deployment_pipeline v2 (current, 0 of 2 versions, recorded 2026-03-04T09:12:44.325845Z)
+deployment_pipeline v2 (current, 0 of 2 versions, recorded 2026-10-17T02:23:17.362349Z)
 
 the deployment pipeline now runs on argo cd
 ```
@@ -507,9 +518,9 @@ $ pamin read deployment_pipeline --version-offset 1 --json
   "oldest_version": 1,
   "latest_version": 2,
   "available_versions": 2,
-  "recorded_at": "2026-03-04T09:12:44.098121Z",
-  "observed_at": "2026-03-04T09:12:44.092905Z",
-  "source_span": "4c570553-5eeb-4b4f-804c-339738c1a632"
+  "recorded_at": "2026-10-17T02:22:59.777239Z",
+  "observed_at": "2026-10-17T02:22:59.772516Z",
+  "source_span": "01a147ab-6ec1-78e2-8ccf-08a6924aa0f0"
 }
 ```
 
@@ -572,10 +583,12 @@ current comparison is tracked in [#121](https://github.com/pamin-labs/PaminMemor
 All three rows are one run over the same 1,190 queries, taken when a tier
 reranked twenty candidates; the reranker now sees thirty, which turned into
 +0.0063 more cross-lingual (`p = 0.0001`) for half again as many model pairs.
-At thirty a search has been timed only on a busy machine, where the batching
-that ships with it made one 0.83 of what it was on this corpus
-([measured.md](measured.md) has the figures), so read 1522 ms as the cost at
-twenty candidates rather than as today's. Paired bootstrap against `off`,
+At thirty, `pamin search` against a resident server over 3,230 memories, on a
+four-core 2.8 GHz Xeon with no other measurement running, had a median of
+3,207 ms (p95 5,128) when a pass took up to four pairs, and 2,675 ms (p95
+4,359) with the one pair a pass that now ships on a multi-core CPU -- 0.834 of
+it ([measured.md](measured.md) has the conditions). Read 1522 ms as the cost
+at twenty candidates rather than as today's. Paired bootstrap against `off`,
 10,000 resamples: cross-lingual `p = 0.0001` for both tiers; same-language
 `p = 0.0008` for `fast` and not significant for `accurate`. `recall@50` is
 0.8962 and 0.9571 in **every** arm, to four decimals — a reranker reorders a
@@ -617,8 +630,10 @@ It costs memory while it is loaded, and more than its download suggests. On a
 13,014-document project a server that had not reranked was 1,625 MB resident,
 and one search with the since-removed 130 MB `fast` model took it to 2,007 or
 2,271 MB -- the difference being the inference runtime's arenas rather than
-the weights. `accurate`'s model is 571 MB against 119, and its resident cost
-has not been taken on its own. `pamin serve` gives it back after
+the weights. `accurate`'s model is 571 MB against 119. Its own resident cost
+has since been taken: 271 MiB of live memory loaded from its mapped copy and
+822 MiB from the download, and on MIRACL, loading it from the download added
+911 MB of anonymous memory to a server (see [measured.md](measured.md)). `pamin serve` gives it back after
 `PAMIN_MODEL_IDLE` with nothing asking for it; the arena growth above that
 stays.
 
@@ -636,7 +651,9 @@ verified current headline measurement.
 
 The resident server caches logits for complete ordered batches within one
 loaded model and tokenizer. With the INT8 export, a pair's score can depend on
-its neighbours and padding, so the cache includes every query/memory pair in
+its neighbours and padding when a pass holds more than one pair -- on an
+accelerator, or on a CPU with an inference budget of one thread; on a
+multi-core CPU a pass is one pair, so a score is the pair's own. The cache includes every query/memory pair in
 order, including duplicates, and both the logical and physical batch shapes.
 Changed contexts are scored again, so earlier searches do not change the
 result of scoring the same final candidate list. An identical batch avoids a
@@ -661,18 +678,18 @@ named by name ahead of the ones the lexical and vector channels supplied.
 
 ```console
 $ pamin search "how do we deploy" --limit 3
-0.1970  deployment_pipeline v2  the deployment pipeline now runs on argo cd
-        lexical_ngram#1 vector#1 graph#2 oncall_rota --depends_on-> deployment_pipeline (1hop)
-0.1871  oncall_rota v1  the oncall rota rotates every monday morning
-        lexical_ngram#3 vector#3 graph#1 oncall_rota --depends_on-> deployment_pipeline (1hop)
-0.1811  rollback_plan v1  a rollback reverts the deployment pipeline to the previous tag
-        lexical_ngram#2 vector#2 graph#3 rollback_plan --mentions-> deployment_pipeline (1hop)
+0.1289  deployment_pipeline v2  the deployment pipeline now runs on argo cd
+        lexical_ngram#1 vector#1 graph#2 oncall_rota --depends_on-> deployment_pipeline (1hop) reranked
+0.1214  rollback_plan v1  a rollback reverts the deployment pipeline to the previous tag
+        lexical_ngram#2 vector#2 graph#3 rollback_plan --mentions-> deployment_pipeline (1hop) reranked
+0.1138  oncall_rota v1  the oncall rota rotates every monday morning
+        lexical_ngram#3 vector#3 graph#1 oncall_rota --depends_on-> deployment_pipeline (1hop) reranked
 ```
 
 The JSON carries the same trace, shown here with `--pretty` because it is being
-read by a person. Without it the same result is one line and 151 tokens against
-249, which is what indentation costs on a hit this size -- roughly a third off,
-and more on a fuller result because the saving is per line:
+read by a person. Without it the same result is one line of 551 bytes against
+934, which is what indentation costs on a hit this size -- about two fifths
+off, and more on a fuller result because the saving is per line:
 
 ```console
 $ pamin search "how do we deploy" --limit 1 --json --pretty
@@ -683,7 +700,7 @@ $ pamin search "how do we deploy" --limit 1 --json --pretty
       "topic": "deployment_pipeline",
       "version": 2,
       "content": "the deployment pipeline now runs on argo cd",
-      "score": 0.1969697,
+      "score": 0.12889996,
       "why": [
         {
           "kind": "channel",
@@ -709,9 +726,12 @@ $ pamin search "how do we deploy" --limit 1 --json --pretty
           "asserted_to": "deployment_pipeline",
           "edge": "depends_on",
           "derivation": "explicit"
+        },
+        {
+          "kind": "reranked"
         }
       ],
-      "recorded_at": "2026-03-04T09:12:44.325845Z"
+      "recorded_at": "2026-10-17T02:23:17.362349Z"
     }
   ]
 }
@@ -774,7 +794,7 @@ instead spans a factor of infinity inside one channel, which inverts that — an
 measurably so. A plain weighted sum of standardised scores scores higher on
 nDCG@10 in three of four groups and takes XQuAD-R's cross-lingual `recall@50`
 from 0.8960 to 0.7765. Nothing recovers a memory that was never returned, so
-that trade is declined; `[ADR 0001](adr/0001-tech-selection.md)` has both
+that trade is declined; [ADR 0001](adr/0001-tech-selection.md) has both
 tables.
 
 The two lexical channels carry an eighth of a weight each because at full
@@ -846,7 +866,7 @@ the walk started from. For `depends_on`, `supersedes`, `contradicts`,
 rather than left to be inferred.
 
 **`reranked`** — the cross-encoder scored this result. Its position comes
-from its model score blended with fusion. A result without this entry was not
+from its model score blended with fusion's. A result without this entry was not
 shown to the model. The entry carries no score on the wire: a cross-encoder's
 score is calibrated against nothing, so it
 separates the candidates of one shortlist and means nothing between two
@@ -855,9 +875,11 @@ support.
 
 The entry distinguishes scored from unscored results; it does not claim that
 the model alone set the final order or that the position changed. A line
-reading `vector#12 reranked` says the model scored that candidate. A line
-without `reranked` was not scored, whether it came from a lexical channel or
-fell below the selected depth.
+reading `vector#12 reranked` says the model scored that candidate. When fusion
+returns two or more candidates, every result in the fused top thirty is scored,
+whichever channel found it, so a line without `reranked` sat below that head
+and was not among the strongest candidates only the graph found. When fusion
+returns fewer than two, nothing is reranked and no hit carries `reranked`.
 
 There is no fourth kind. There used to be a `modifier`, a post-fusion
 adjustment that lifted a result by its recorded `importance` and by the balance
@@ -1006,6 +1028,8 @@ both      deployment_pipeline
 content   oncall_rota
 content   secret_rotation
 content   rollback_plan
+
+Showing 4 of 12 topics
 ```
 
 **`name`** — the topic is called that. Exact on the segmenter's whole tokens, so
@@ -1243,7 +1267,7 @@ command does not pay for it:
 
 ```console
 $ pamin read deployment_pipeline    # first call, starts a server
-deployment_pipeline v2 (current, 0 of 2 versions)
+deployment_pipeline v2 (current, 0 of 2 versions, recorded 2026-10-17T02:23:17.362349Z)
 
 the deployment pipeline now runs on argo cd
 ```
@@ -1330,3 +1354,10 @@ measurement can choose a new accelerator or CPU winner and clears temporary
 recovery state. Transient or numerical qualification failures retain a bounded
 retry interval; configured exclusions and incompatible plans do not by
 themselves require repeated selection.
+
+**Known issue.** An accelerator provider that is built in but cannot register
+on the host -- CUDA without its libraries, for example -- is currently treated
+as a transient failure, so a resident server repeats this recovery every five
+minutes on such a host: it reloads its models and clears its query and score
+caches each time, and a search that overlaps a reload is slower. A change that
+probes whether a provider can register before reloading is in progress.
