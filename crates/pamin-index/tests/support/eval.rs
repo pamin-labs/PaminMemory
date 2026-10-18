@@ -12,7 +12,7 @@
 #![allow(dead_code)]
 
 use std::fmt::Display;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 /// Every knob a harness or test reads, with what it sets. A `PAMIN_EVAL_*`
@@ -56,10 +56,6 @@ pub const KNOBS: &[(&str, &str)] = &[
     (
         "PAMIN_EVAL_SEARCH_EFFORT",
         "vector graph search width (`search --search-effort`)",
-    ),
-    (
-        "PAMIN_EVAL_MODEL_IDLE",
-        "seconds a model may sit unused (`--model-idle`)",
     ),
     (
         "PAMIN_EVAL_UNINDEXED_BUDGET",
@@ -190,6 +186,15 @@ pub fn path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name).map(PathBuf::from)
 }
 
+/// A path knob that must be absolute, for a path a record is named by: a
+/// relative one names different files from different working directories
+/// under one spelling.
+pub fn absolute_path(name: &str) -> Option<PathBuf> {
+    let path = path(name)?;
+    absolute(name, &path);
+    Some(path)
+}
+
 /// A knob holding a list of absolute paths, split as `PATH` is.
 ///
 /// Refuses a relative one: the product registers only absolute libraries and
@@ -198,10 +203,18 @@ pub fn paths(name: &str) -> Vec<PathBuf> {
     let paths: Vec<PathBuf> = std::env::var_os(name)
         .map(|paths| std::env::split_paths(&paths).collect())
         .unwrap_or_default();
-    if let Some(relative) = paths.iter().find(|path| !path.is_absolute()) {
-        panic!("{name}: {} is not an absolute path", relative.display());
+    for path in &paths {
+        absolute(name, path);
     }
     paths
+}
+
+fn absolute(name: &str, path: &Path) {
+    assert!(
+        path.is_absolute(),
+        "{name}: {} is not an absolute path",
+        path.display()
+    );
 }
 
 fn text(name: &str) -> Option<String> {
