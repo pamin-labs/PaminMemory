@@ -183,7 +183,13 @@ impl Source {
 #[derive(Clone, Debug, Serialize)]
 pub struct Entry {
     pub key: &'static str,
+    /// The value for a person or a program to read back.
     pub value: String,
+    /// The value a running server's is compared by: [`Self::value`], except
+    /// for a path, where it is [`pamin_index::spelled_path`]'s spelling, so two
+    /// paths cannot compare equal by reading alike.
+    #[serde(skip)]
+    pub compared: String,
     pub source: Source,
 }
 
@@ -220,7 +226,12 @@ impl Server {
                 (None, Some(config)) => (config, Source::Config),
                 (None, None) => (default, Source::Default),
             };
-            entries.push(Entry { key, value, source });
+            entries.push(Entry {
+                key,
+                compared: value.clone(),
+                value,
+                source,
+            });
         };
 
         let default = pamin_engine::Settings::default();
@@ -363,6 +374,10 @@ impl Server {
             file_postgres.as_deref().map(pamin_index::spelled_path),
             "none (installs its own)".to_string(),
         );
+        if let Some(prefix) = &postgres_dir {
+            let entry = entries.last_mut().expect("postgres_dir was just picked");
+            entry.value = pamin_index::shown_path(prefix);
+        }
 
         let settings = pamin_engine::Settings {
             inference: pamin_index::InferenceSettings {
@@ -391,7 +406,7 @@ impl Server {
             .iter()
             .map(|entry| {
                 let asked = Asked {
-                    value: entry.value.clone(),
+                    value: entry.compared.clone(),
                     chosen: entry.source != Source::Default,
                 };
                 (entry.key.to_string(), asked)
@@ -416,7 +431,7 @@ impl Server {
                 let wanted = asked.get(running.key)?;
                 let tolerated =
                     !wanted.chosen && matches!(running.source, Source::Flag | Source::Env);
-                (wanted.value != running.value && !tolerated).then(|| {
+                (wanted.value != running.compared && !tolerated).then(|| {
                     format!(
                         "{} = {} (running with {}, from {})",
                         running.key,
@@ -758,6 +773,26 @@ mod tests {
         installation(&half);
         let server = resolve(root.path(), &[]).unwrap();
         assert_eq!(server.settings.store.postgres_dir, Some(half));
+    }
+
+    /// A backslash in a PostgreSQL prefix is shown as written, while what a
+    /// running server is compared by stays the escaped spelling.
+    #[cfg(unix)]
+    #[test]
+    fn a_postgres_prefix_is_shown_as_written() {
+        let root = tempfile::tempdir().unwrap();
+        let prefix = root.path().join(r"pg\17");
+        installation(&prefix);
+        let server = resolve(root.path(), &["--postgres-dir", prefix.to_str().unwrap()]).unwrap();
+        let entry = server
+            .entries
+            .iter()
+            .find(|entry| entry.key == "postgres_dir")
+            .unwrap();
+        assert_eq!(entry.value, prefix.to_str().unwrap());
+        assert_eq!(entry.compared, pamin_index::spelled_path(&prefix));
+        assert_ne!(entry.value, entry.compared);
+        assert_eq!(server.asked()["postgres_dir"].value, entry.compared);
     }
 
     /// A comma in a library's path does not make it two libraries: a server
