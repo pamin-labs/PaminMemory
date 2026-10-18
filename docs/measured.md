@@ -1285,6 +1285,59 @@ and the conditions are retained for maintainers in the private submodule (see
 [internal-docs.md](internal-docs.md)), at
 `internal-docs/pamin-memory/research/2026-10-13/raw/t1-tokenizer-memory/`.
 
+**Where the rest of a search's memory was: glibc's heap arenas.** Since
+reranker passes run on threads of their own, glibc gave each contended thread
+an arena of its own (up to eight per core) and each arena kept what it freed.
+On four cores a server ended a search holding 31 to 35 arenas of 64 MiB and
+about a gigabyte of free heap. `pamin` now caps them at two
+(`mallopt(M_ARENA_MAX, 2)` in `main`, before the runtime starts its threads;
+glibc only). A process started with `MALLOC_ARENA_MAX` or
+`glibc.malloc.arena_max` in `GLIBC_TUNABLES` keeps that limit instead,
+higher or lower, and the figures below do not describe it. At the search entry point, before `d0b6b89` and after `7977b78`,
+same conditions as the tokenizer rows above but 4 runs per arm in the order
+CPPC PCCP, `inference_threads = 4` from `config.toml`, the resolved model
+revisions unchanged:
+
+| metric | before | after | change | ratio [95% CI] |
+| --- | ---: | ---: | ---: | ---: |
+| top-5 order, 120 queries, every run | identical | identical | none | N/A |
+| search p50 ms (pooled) | 1,203.1 | 1,159.5 | −43.6 (−3.6%) | 0.964 [0.893, 1.043] |
+| search p95 ms (pooled) | 1,913.2 | 1,734.4 | −178.9 (−9.3%) | 0.907 [0.845, 1.034] |
+| ingest wall s (import and drain) | 140.5 | 134.8 | −5.7 (−4.0%) | 0.960 [0.894, 1.065] |
+| ingest import wall s | 139.56 | 134.11 | −5.46 (−3.9%) | 0.961 [0.894, 1.063] |
+| ingest import server CPU user s | 471.93 | 455.30 | −16.63 (−3.5%) | 0.965 [0.887, 1.072] |
+| ingest import server CPU sys s | 6.19 | 4.76 | −1.43 (−23.0%) | 0.770 [0.644, 0.976] |
+| ingest drain wall s | 0.913 | 0.712 | −0.202 (−22.1%) | 0.779 [0.497, 1.654] |
+| ingest drain server CPU user s | 1.635 | 1.245 | −0.390 (−23.9%) | 0.761 [0.232, 3.458] |
+| ingest drain server CPU sys s | 0.130 | 0.075 | −0.055 (−42.3%) | 0.577 [0.231, 1.500] |
+| search server CPU user s per query | 4.422 | 4.257 | −0.166 (−3.7%) | 0.963 [0.890, 1.062] |
+| search server CPU sys s per query | 0.085 | 0.025 | −0.060 (−70.3%) | 0.297 [0.257, 0.335] |
+| search server peak RSS MB (VmHWM) | 2,451 | 1,322 | −1,129 (−46.1%) | 0.539 [0.523, 0.555] |
+| search server peak anonymous RSS MB | 1,527 | 418 | −1,109 (−72.6%) | 0.274 [0.262, 0.286] |
+| search server peak file-backed RSS MB | 915 | 915 | 0 (0.0%) | 1.000 [0.998, 1.003] |
+| ingest server peak RSS MB (VmHWM) | 1,918 | 1,129 | −789 (−41.1%) | 0.589 [0.557, 0.625] |
+| index directory MB allocated | 28.3 | 26.7 | −1.6 (−5.8%) | 0.942 [0.912, 1.044] |
+| model cache in use | unchanged | unchanged | N/A: no model path touched | N/A |
+
+**No speed change is claimed: every latency CI includes 1.0.** Import is
+`pamin import` writing the texts and indexing them as they arrive; drain is
+`pamin cascade drain` finishing the jobs left after it, under a second, whose
+CIs are wide. CPU is the server process's own; postgres and the clients are
+excluded. Memory is the server process only, sampled every 0.5 s, with no
+accelerator services. Disk is the project's index directory: postgres data,
+model caches and temporary files are not in it, and temporary files were not
+measured (N/A). The
+file-backed part is almost all the two prepared model copies (849 MB
+resident, each mapped once), which is what remains between this server and
+1 GB. The same cap set through `GLIBC_TUNABLES` on `d0b6b89` measured the
+same (search VmHWM 2,354 to 1,306 MB). The summaries, raw rows and harness
+are retained for maintainers in the private submodule (see
+[internal-docs.md](internal-docs.md)):
+[q52-arena-cap-in-code.md](../internal-docs/pamin-memory/research/2026-10-18/q52-arena-cap-in-code.md)
+with [raw/q52/](../internal-docs/pamin-memory/research/2026-10-18/raw/q52/), and
+[q51-memory-split-and-arena-cap.md](../internal-docs/pamin-memory/research/2026-10-18/q51-memory-split-and-arena-cap.md)
+with [raw/q51/](../internal-docs/pamin-memory/research/2026-10-18/raw/q51/).
+
 **What the database is made of**, which is a figure this page has never carried
 and which turned out to be worth carrying. Broken down by table on the
 evaluation workspace, 1.7 GB across its projects, before either change below:

@@ -118,8 +118,17 @@ enum Command {
     Config,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // Before the runtime starts its worker threads: glibc fixes how many heap
+    // arenas it will make the first time a thread needs one of its own.
+    server::cap_heap_arenas();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+async fn run() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("PAMIN_LOG")

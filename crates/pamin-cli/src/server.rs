@@ -590,6 +590,86 @@ fn trim_heap() {
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 fn trim_heap() {}
 
+/// How many heap arenas glibc may keep: [`cap_heap_arenas`].
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+const HEAP_ARENAS: i32 = 2;
+
+/// Caps how many heap arenas glibc keeps, at [`HEAP_ARENAS`].
+///
+/// glibc gives a thread that finds the main heap contended an arena of its
+/// own, up to eight per core, and an arena keeps what it has freed. A search
+/// runs its reranker passes on threads of their own, so a four-core server
+/// ended a search holding thirty-two arenas and about a gigabyte of free heap
+/// in them. Measured at the entry point (q51: `pamin serve` at d0b6b89, four
+/// Xeon cores, 3,230 texts, 120 timed searches, four rotated runs an arm,
+/// the same cap set through `GLIBC_TUNABLES`): search peak RSS 2,354 to
+/// 1,306 MB, its anonymous part 1,425 to 398 MB, ingest peak RSS 1,797 to
+/// 1,124 MB, search p50 0.958x [0.899, 1.020] and p95 0.967x [0.899, 1.035]
+/// of before, the same top five on every query.
+///
+/// Must run before a second thread allocates: glibc reads the cap when it
+/// first needs an arena beyond the main one, and keeps that figure. So
+/// `main` calls this before it starts the runtime.
+///
+/// An arena limit the process was started with -- `MALLOC_ARENA_MAX`, or
+/// `arena_max` in `GLIBC_TUNABLES` -- is left alone, whether it is lower or
+/// higher: `mallopt` replaces the limit rather than tightening it, and the
+/// operator who set one chose it.
+///
+/// glibc only, like [`trim_heap`]; elsewhere it does nothing.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub(crate) fn cap_heap_arenas() {
+    unsafe extern "C" {
+        /// glibc's own, declared here rather than through a crate for the
+        /// reason [`trim_heap`] gives.
+        fn mallopt(param: i32, value: i32) -> i32;
+    }
+    /// `M_ARENA_MAX` in glibc's `malloc.h`.
+    const M_ARENA_MAX: i32 = -8;
+
+    if arena_limit_given(
+        std::env::var_os("MALLOC_ARENA_MAX")
+            .as_deref()
+            .map(std::os::unix::ffi::OsStrExt::as_bytes),
+        std::env::var_os("GLIBC_TUNABLES")
+            .as_deref()
+            .map(std::os::unix::ffi::OsStrExt::as_bytes),
+    ) {
+        return;
+    }
+
+    // SAFETY: `mallopt` takes two integers by value and only changes a limit
+    // the allocator consults when it next makes an arena. Its flag is not
+    // read: this runs before logging starts, and a refused cap leaves glibc's
+    // default, which is the behaviour this had before.
+    unsafe { mallopt(M_ARENA_MAX, HEAP_ARENAS) };
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+pub(crate) fn cap_heap_arenas() {}
+
+/// Whether the process was started with its own glibc arena limit: a
+/// non-empty `MALLOC_ARENA_MAX`, or `glibc.malloc.arena_max` set to anything
+/// among the colon-separated `GLIBC_TUNABLES`, read as bytes as glibc reads
+/// them.
+///
+/// The value is not parsed. glibc has no call that reports the limit it
+/// took, and its parser's corners (signs, blanks, octal, overflow) are its
+/// own; a copy would drift from it. Any value an operator wrote is left to
+/// glibc: one it applies is never loosened, and one it ignores, which glibc
+/// warns about at start-up, costs only this cap.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn arena_limit_given(malloc_arena_max: Option<&[u8]>, tunables: Option<&[u8]>) -> bool {
+    malloc_arena_max.is_some_and(|value| !value.is_empty())
+        || tunables.is_some_and(|tunables| {
+            tunables.split(|byte| *byte == b':').any(|tunable| {
+                tunable
+                    .strip_prefix(b"glibc.malloc.arena_max=")
+                    .is_some_and(|value| !value.is_empty())
+            })
+        })
+}
+
 /// Whether the connection asked the server to stop.
 enum Shutdown {
     Requested,
@@ -768,4 +848,35 @@ fn json<T: serde::Serialize>(value: T) -> Result<Payload> {
 /// Where this workspace's socket lives.
 pub fn socket_path(workspace: &Workspace) -> PathBuf {
     workspace.root().join(SOCKET)
+}
+
+#[cfg(all(test, target_os = "linux", target_env = "gnu"))]
+mod tests {
+    use super::arena_limit_given;
+
+    #[test]
+    fn an_arena_limit_the_process_was_started_with_is_left_alone() {
+        let given = |env: Option<&str>, tunables: Option<&[u8]>| {
+            arena_limit_given(env.map(str::as_bytes), tunables)
+        };
+        assert!(given(Some("1"), None));
+        assert!(given(None, Some(b"glibc.malloc.arena_max=1")));
+        assert!(given(
+            None,
+            Some(b"glibc.malloc.trim_threshold=0:glibc.malloc.arena_max=8")
+        ));
+        assert!(given(None, Some(b"glibc.malloc.arena_max=1:glibc.\xff=0")));
+        // Whatever the operator wrote is glibc's to read.
+        for written in ["-1", "+1", "0x2", "010", "0", "two"] {
+            assert!(given(Some(written), None), "{written:?}");
+            let tunables = format!("glibc.malloc.arena_max={written}");
+            assert!(given(None, Some(tunables.as_bytes())), "{written:?}");
+        }
+
+        assert!(!given(None, None));
+        assert!(!given(Some(""), None));
+        assert!(!given(None, Some(b"glibc.malloc.arena_max=")));
+        assert!(!given(None, Some(b"glibc.malloc.trim_threshold=0")));
+        assert!(!given(None, Some(b"glibc.malloc.arena_test=2")));
+    }
 }
