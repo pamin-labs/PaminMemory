@@ -53,8 +53,9 @@ pub struct RerankSettings {
     pub batch: Option<NonZeroUsize>,
     /// How many padded tokens one pass may hold.
     pub batch_tokens: usize,
-    /// The longest candidate the model reads, in tokens.
-    pub max_tokens: usize,
+    /// The longest candidate the model reads, in tokens. Never zero: a
+    /// reranker that reads nothing of a candidate scores none of them.
+    pub max_tokens: NonZeroUsize,
 }
 
 impl Default for RerankSettings {
@@ -62,7 +63,8 @@ impl Default for RerankSettings {
         Self {
             batch: None,
             batch_tokens: crate::reranking::BATCH_TOKENS,
-            max_tokens: crate::reranking::MAX_TOKENS,
+            max_tokens: NonZeroUsize::new(crate::reranking::MAX_TOKENS)
+                .expect("the reranker reads at least one token"),
         }
     }
 }
@@ -285,7 +287,7 @@ mod tests {
             threads: NonZeroUsize::new(2),
             prepared: false,
             rerank: RerankSettings {
-                max_tokens: 192,
+                max_tokens: NonZeroUsize::new(192).unwrap(),
                 ..RerankSettings::default()
             },
             ..InferenceSettings::default()

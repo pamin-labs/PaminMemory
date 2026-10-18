@@ -2751,7 +2751,7 @@ mod tests {
             rerank: crate::RerankSettings {
                 batch: NonZeroUsize::new(8),
                 batch_tokens: 4096,
-                max_tokens: 192,
+                max_tokens: NonZeroUsize::new(192).unwrap(),
             },
             ..crate::InferenceSettings::default()
         };
