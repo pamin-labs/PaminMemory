@@ -666,7 +666,9 @@ arms cannot be re-run from the repository. With no arm eligible, the rule did
 not re-sweep the n-gram weight, and it stays at an eighth.
 
 **A learned fusion head was fitted and does not generalise.** The `FEATURES`
-arm (`pamin-engine/tests/features`) dumps every fused candidate with each
+arm (`pamin-engine/tests/features`, since replaced by the `REPLAY_OUT` record
+in `pamin-engine/tests/reranking/record.rs`, which holds the same per-candidate
+channel ranks and scores and, for the superset it scores, the model's) dumped every fused candidate with each
 channel's rank and score, and the shipped combiner rebuilt from the dump alone
 matches the engine bit for bit on all 3,537 question-groups of the own corpus,
 XQuAD-R and MuSiQue. The rule, written before any table was read: a head ships
