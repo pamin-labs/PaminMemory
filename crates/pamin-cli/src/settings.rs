@@ -487,9 +487,9 @@ pub fn forwarded(args: &ServerArgs) -> Vec<std::ffi::OsString> {
 /// What `pamin config` shows.
 #[derive(Serialize)]
 pub struct Shown {
-    /// The file read, whether or not it exists, spelled by
-    /// [`pamin_index::spelled_path`] so a workspace path that is not UTF-8
-    /// still serializes.
+    /// The file read, whether or not it exists, shown by
+    /// [`pamin_index::shown_path`]: as written, or spelled byte for byte when
+    /// a workspace path that is not UTF-8 could not otherwise serialize.
     pub file: String,
     pub exists: bool,
     pub settings: Vec<Entry>,
@@ -500,7 +500,7 @@ impl Shown {
         let file = workspace.root().join(CONFIG);
         Self {
             exists: file.is_file(),
-            file: pamin_index::spelled_path(&file),
+            file: pamin_index::shown_path(&file),
             settings: server.entries.clone(),
         }
     }
