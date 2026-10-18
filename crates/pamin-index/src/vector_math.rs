@@ -1,7 +1,10 @@
 //! The dot product used for exact rescoring after vector-index recall.
 //!
-//! One kernel per instruction set, chosen at run time on x86-64 so a single
-//! binary uses AVX-512 or AVX2 where the CPU has them. NEON is part of every
+//! One kernel per instruction set. On x86-64 a single binary checks at run time
+//! for AVX2 and FMA; there is no AVX-512 kernel, because on a 1024-dimension
+//! rescore it was no faster than AVX2. In a rotated screen on an AVX-512 Xeon,
+//! AVX2 was 0.2–2.0% ahead at pooled p50 in all three runs, with a slightly
+//! smaller error against an f64 sum. NEON is part of every
 //! aarch64 target, so it needs no detection; non-Apple aarch64 (Linux on
 //! Graviton, Ampere, a Raspberry Pi 5) uses it, because it has no Accelerate.
 //! Apple silicon keeps Accelerate's `cblas_sdot`: the library kernel stays the
@@ -18,7 +21,7 @@
 //! The SIMD kernels sum in a different order from a sequential loop, so a
 //! result can differ from one in the last bits, in either direction. On the
 //! rescore benchmark's sample of 100 candidates × 1024 dimensions, the largest
-//! cosine error against an f64 sum was 1.54e-8 for the AVX-512 kernel against
+//! cosine error against an f64 sum was 1.49e-8 for the AVX2 kernel against
 //! 7.75e-8 for the sequential loop, and 1.43e-8 for NEON against 1.18e-8 for
 //! Accelerate on an M4 (`benchmarks/results/inference/rescore-simd-2026-10-12`).
 //! The unit test holds every kernel within 1e-5 × √n of an f64 sum.
@@ -46,10 +49,6 @@ pub(crate) fn dot(left: &[f32], right: &[f32]) -> f32 {
     }
     #[cfg(target_arch = "x86_64")]
     {
-        if std::arch::is_x86_feature_detected!("avx512f") {
-            // SAFETY: the CPU reports AVX-512F.
-            return unsafe { x86::dot_avx512(left, right) };
-        }
         if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma")
         {
             // SAFETY: the CPU reports AVX2 and FMA.
@@ -79,54 +78,11 @@ fn lanes(left: &[f32], right: &[f32]) -> f32 {
     sums.iter().sum::<f32>() + tail
 }
 
-/// Both kernels take slices of equal length and keep four accumulators, so
-/// each fused multiply-add is independent of the previous three.
+/// Takes slices of equal length and keeps four accumulators, so each fused
+/// multiply-add is independent of the previous three.
 #[cfg(target_arch = "x86_64")]
 mod x86 {
     use std::arch::x86_64::*;
-
-    #[target_feature(enable = "avx512f")]
-    pub(super) unsafe fn dot_avx512(left: &[f32], right: &[f32]) -> f32 {
-        let count = left.len();
-        let (a, b) = (left.as_ptr(), right.as_ptr());
-        let mut sums = [_mm512_setzero_ps(); 4];
-        let mut at = 0;
-        // SAFETY (all loads): every full load reads 16 values starting below
-        // `count - 15`, and the masked load reads only the `count - at` left.
-        unsafe {
-            while at + 64 <= count {
-                for (lane, sum) in sums.iter_mut().enumerate() {
-                    let offset = at + 16 * lane;
-                    *sum = _mm512_fmadd_ps(
-                        _mm512_loadu_ps(a.add(offset)),
-                        _mm512_loadu_ps(b.add(offset)),
-                        *sum,
-                    );
-                }
-                at += 64;
-            }
-            while at + 16 <= count {
-                sums[0] = _mm512_fmadd_ps(
-                    _mm512_loadu_ps(a.add(at)),
-                    _mm512_loadu_ps(b.add(at)),
-                    sums[0],
-                );
-                at += 16;
-            }
-            if at < count {
-                let mask = (1u16 << (count - at)) - 1;
-                sums[1] = _mm512_fmadd_ps(
-                    _mm512_maskz_loadu_ps(mask, a.add(at)),
-                    _mm512_maskz_loadu_ps(mask, b.add(at)),
-                    sums[1],
-                );
-            }
-        }
-        _mm512_reduce_add_ps(_mm512_add_ps(
-            _mm512_add_ps(sums[0], sums[1]),
-            _mm512_add_ps(sums[2], sums[3]),
-        ))
-    }
 
     #[target_feature(enable = "avx2,fma")]
     pub(super) unsafe fn dot_avx2(left: &[f32], right: &[f32]) -> f32 {
@@ -238,7 +194,7 @@ mod tests {
 
     /// Every length around each kernel's block and tail boundaries, against a
     /// sum in f64. Each kernel this CPU can run is checked, not only the one
-    /// `dot` picks, so a machine with AVX-512 still tests the AVX2 path.
+    /// `dot` picks.
     #[test]
     fn every_kernel_matches_an_f64_sum() {
         for count in (0..=80).chain([255, 256, 257, 767, 768, 1023, 1024, 1025]) {
@@ -255,10 +211,6 @@ mod tests {
             let mut kernels = vec![("dot", dot(&left, &right)), ("lanes", lanes(&left, &right))];
             #[cfg(target_arch = "x86_64")]
             {
-                if std::arch::is_x86_feature_detected!("avx512f") {
-                    // SAFETY: the CPU reports AVX-512F.
-                    kernels.push(("avx512", unsafe { x86::dot_avx512(&left, &right) }));
-                }
                 if std::arch::is_x86_feature_detected!("avx2")
                     && std::arch::is_x86_feature_detected!("fma")
                 {
