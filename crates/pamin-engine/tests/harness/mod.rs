@@ -224,7 +224,7 @@ pub fn settings() -> pamin_engine::Settings {
                 std::time::Duration::from_secs(seconds.get())
             }),
         unindexed_budget: eval::parsed::<std::num::NonZeroU64>("PAMIN_EVAL_UNINDEXED_BUDGET")
-            .map_or(default.unindexed_budget, std::num::NonZeroU64::get),
+            .unwrap_or(default.unindexed_budget),
     }
 }
 

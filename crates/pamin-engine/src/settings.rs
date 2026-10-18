@@ -26,8 +26,9 @@ pub struct Settings {
     pub model_idle: Duration,
     /// How many documents may sit outside the vector graph before upkeep
     /// builds it; [`pamin_index::projection::UNINDEXED_BUDGET`] in the
-    /// product, lowered by a test that has to reach the case.
-    pub unindexed_budget: u64,
+    /// product, lowered by a test that has to reach the case. Never zero,
+    /// which would optimize the index on every drain.
+    pub unindexed_budget: std::num::NonZeroU64,
 }
 
 impl Default for Settings {

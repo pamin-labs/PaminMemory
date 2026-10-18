@@ -734,7 +734,7 @@ pub fn wastes_disk(blocks: u64, documents: u64) -> bool {
 /// point where scanning it stops being the cheaper thing, which is a cost
 /// rather than a size, and it is read off a measurement already in this file
 /// rather than chosen.
-pub const UNINDEXED_BUDGET: u64 = 25_000;
+pub const UNINDEXED_BUDGET: std::num::NonZeroU64 = std::num::NonZeroU64::new(25_000).unwrap();
 
 /// Whether enough documents sit outside the vector graph to be worth building.
 ///
@@ -745,9 +745,12 @@ pub const UNINDEXED_BUDGET: u64 = 25_000;
 /// argument so a test can lower it: the assertion worth having is that a
 /// drain leaves a graph behind, and asserting it at the shipped budget would
 /// mean writing and embedding twenty-five thousand memories to see it.
-pub fn vector_index_lags(documents: u64, completeness: f32, budget: u64) -> bool {
+///
+/// Never zero: a budget of none would find every drain lagging, so a
+/// project with anything queued would be optimized on every pass.
+pub fn vector_index_lags(documents: u64, completeness: f32, budget: std::num::NonZeroU64) -> bool {
     let covered = (documents as f64 * f64::from(completeness.clamp(0.0, 1.0))) as u64;
-    documents.saturating_sub(covered) >= budget
+    documents.saturating_sub(covered) >= budget.get()
 }
 
 /// What one document in this index stands for.
