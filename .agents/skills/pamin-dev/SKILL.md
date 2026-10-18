@@ -45,6 +45,14 @@ say in the same breath why, and do not let that figure escape into a README.
 A rewritten harness is not a measurement of the product. If a scratch program
 re-implements the pipeline to measure it, you are measuring the scratch program.
 
+A component result is not one either, even when it times the product's own
+code. Running a rerank's side-by-side passes on one shared session took a
+rerank timed alone to 0.81 of its predecessor. At `pamin search` the same
+change measured 1.044 [0.937, 1.157]: no significant change was detected, and
+its measured gain turned out to be memory, 47% off the search server's peak.
+Had the component figure been published, it would have claimed a speedup the
+entry point did not detect and missed the gain it did measure.
+
 ## Every measurement arm must assert its own premise
 
 A concurrency harness had a "cached" arm and a "fresh" arm. It warmed the query
@@ -283,7 +291,9 @@ retrieval. They were wrong about the box.
   starting a second measurement beside it. The reasoning was "quality scores do
   not depend on CPU contention, so these can share the machine", which is true
   and beside the point: each server holds a model and an index, 3.6 GB at
-  13,014 documents and 7.2 GB at 131,924, and two of them do not fit. Before
+  13,014 documents and 7.2 GB at 131,924 as measured then (with the
+  since-removed `fast` reranker loaded too, and before models were mapped from
+  a prepared copy), and two of them do not fit. Before
   running anything beside a measurement, price it in memory.
 - **Count the servers, and count them again after.** `pamin search` starts a
   server when none is listening. A harness that spawns `pamin serve` and then

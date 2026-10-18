@@ -878,21 +878,22 @@ The rule the batching was chosen by, written down before anything was timed,
 and the pilot of seven candidates are at `BATCH_TOKENS` in
 `crates/pamin-index/src/reranking.rs`.
 
-Both columns run a call's batches one after another, each pass with every
-core. On the CPU the batches of one call now run side by side, one thread a
-pass, so these milliseconds are the predecessor's and describe no search that
-ships; the paired ratio between the two batchings still stands. They have not
-been re-measured with batches side by side.
+Both columns run a call's passes one after another, each pass with every core
+and up to four pairs. On a multi-core CPU the passes of one rerank now run
+side by side, one thread and one pair each, so these milliseconds are the
+predecessor's and describe no search that ships; the paired ratio between the
+two batchings still stands. The entry-point figures for what ships are below.
 
 **On the CPU, one pair a pass.** Once the passes of one rerank ran side by
 side, one thread each, on one shared session, grouping pairs into a pass only
 padded them. Against four pairs on the same build, `pamin search` through a
 resident server (4 vCPU Xeon, three rotated runs of 120 warm queries an arm)
 took a p50 of 0.834 [0.757, 0.931] and a p95 of 0.850 [0.715, 0.997] as long,
-and through `Engine::search_reranked` over copies of one index no group's
-nDCG@10 moved significantly: XQuAD-R cross-lingual −0.0001, same-language
-−0.0012, single-target −0.0013 (1,190 queries each), MuSiQue 2-hop +0.0040
-(its first 200 questions). The table is at `CPU_BATCH` in
+and through `Engine::search_reranked` over copies of one index no significant
+nDCG@10 change was detected in any group (Holm-corrected p = 1.00 in each):
+XQuAD-R cross-lingual −0.0001 [−0.0020, +0.0016], same-language −0.0012
+[−0.0037, +0.0011], single-target −0.0013 [−0.0052, +0.0026] (1,190 queries
+each), MuSiQue 2-hop +0.0040 [−0.0029, +0.0113] (its first 200 questions). The table is at `CPU_BATCH` in
 `crates/pamin-index/src/reranking.rs`. Accelerators, and a CPU with an
 inference budget of one thread, where passes cannot overlap, still group up to
 four pairs within 512 padded tokens. The write-ups, raw rows, per-query dumps
@@ -902,6 +903,94 @@ and harnesses are retained for maintainers in the private submodule (see
 and `internal-docs/pamin-memory/research/2026-10-16/raw/q42/`, the accuracy at
 `internal-docs/pamin-memory/research/2026-10-16/q44-b1-entry-point-accuracy.md`
 and `internal-docs/pamin-memory/research/2026-10-16/raw/q44/`.
+
+**The shared session, and one pair a pass, step by step at the entry point.**
+The paragraph above gives the second step's ratios; these are both steps with
+their absolute figures. Each step is measured against its immediate
+predecessor on the same machine, in the same rotated runs:
+
+- **Builds.** Before the shared session: `ddf0800`, where each side-by-side
+  pass had a session of its own, with up to four pairs a pass. Shared session:
+  `710ceec`, one shared single-threaded session per model, still four pairs.
+  One pair a pass: `710ceec` with its rerank batch set to one pair, which is
+  what `b972ead` made the default on a multi-core CPU; `b972ead` itself was not
+  timed.
+- **Host.** 4 vCPU Xeon @ 2.8 GHz (AVX-512 VNNI, no AMX). ONNX Runtime 1.28,
+  statically linked, CPU execution provider, four inference threads.
+- **Models.** `gpahal/bge-m3-onnx-int8` @ `2b34e84d` and the int8
+  bge-reranker-v2-m3 @ `6f5ff652`, both loaded from their mapped copies.
+- **Workload.** `pamin import` of the same 3,230 texts in a fixed order, then
+  20 warm-up and 120 timed `pamin search` queries, against a fresh home and
+  server for each phase.
+- **Runs.** Twelve counted runs, three an arm, in rotated order (A S SB AB,
+  SB AB A S, S A AB SB, where A is before the shared session, S the shared
+  session, SB one pair a pass, and AB one pair a pass without the shared
+  session, a fourth arm not reported here). Each run asserted its binary,
+  environment, execution provider, session counts, and that no model or plan
+  changed; two runs that failed one of those, and one with load from another
+  process, were left out.
+- **Scope.** Memory is the `pamin serve` process alone: no PostgreSQL, no
+  accelerator service. Disk is the project's index directory and the model
+  cache the server loaded. CIs are 95% bootstrap over runs.
+- **Known exposure.** This host has the CUDA provider built in but cannot
+  register it, which a resident server retries every five minutes by
+  reloading its models (see [cli.md](cli.md#accelerator-plan-recovery)). Every
+  search phase had one such reload, in every arm, and the medians excluding
+  the queries that overlapped one moved the ratios by at most 0.004.
+
+The shared session, before `ddf0800` and after `710ceec`:
+
+| metric | before | after | absolute difference | % change | after/before, or difference [95% CI] |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| nDCG@10 | N/A: not measured | N/A | N/A | N/A | N/A |
+| top-5 results, 120 queries | reference | identical order on 120 of 120 | N/A: identity, not a difference | N/A | N/A |
+| search p50 ms (pooled) | 3,072.7 | 3,206.7 | +134.1 | +4.4% | 1.044 [0.937, 1.157] |
+| search p95 ms (pooled) | 5,135.0 | 5,128.4 | −6.6 | −0.1% | 0.999 [0.880, 1.191] |
+| search server CPU user s, 120 queries | 1,295.0 | 1,328.1 | +33.0 | +2.6% | 1.026 [0.951, 1.114] |
+| search server CPU system s, 120 queries | 38.3 | 42.5 | +4.3 | +11.1% | 1.111 [0.983, 1.253] |
+| search server peak RSS MB (VmHWM) | 5,656 | 3,021 | −2,636 | −46.6% | 0.534 [0.509, 0.556] |
+| search server Pss_Anon MB after 120 queries | 1,827 | 1,488 | −338 | −18.5% | 0.815 [0.627, 0.991] |
+| ingest wall s (import and drain) | 294.7 | 295.8 | +1.2 | +0.4% | 1.004 [0.941, 1.072] |
+| ingest server peak RSS MB (VmHWM) | 3,795 | 2,158 | −1,637 | −43.1% | 0.569 [0.480, 0.647] |
+| index directory MB allocated | 27.4 | 28.9 | +1.5 | +5.6% | 1.056 [0.946, 1.195] |
+| model cache in use MB | 2,788 | 2,788 | 0 | 0.0% | N/A: same model files |
+
+**For the shared session, no significant latency change was detected; its
+measured gain is memory.** The p50 ratio was 1.044 [0.937, 1.157] and the p95
+0.999 [0.880, 1.191], both including 1.0. A component measurement of the same change, a rerank timed alone, had
+come out at 0.81 of its predecessor; at `pamin search` that did not carry
+over. What it does carry is memory: one session per model in place of one a
+pass took the search server's peak from 5.7 GB to 3.0 GB.
+
+One pair a pass, before `710ceec` at four pairs and after at one:
+
+| metric | before | after | absolute difference | % change | after/before, or difference [95% CI] |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| nDCG@10, XQuAD-R cross-lingual, 1,190 queries | 0.7231 | 0.7229 | −0.0001 | −0.01% | [−0.0020, +0.0016], Holm p = 1.00 |
+| nDCG@10, XQuAD-R same-language, 1,190 queries | 0.8679 | 0.8667 | −0.0012 | −0.14% | [−0.0037, +0.0011], Holm p = 1.00 |
+| nDCG@10, XQuAD-R single-target, 1,190 queries | 0.6662 | 0.6649 | −0.0013 | −0.20% | [−0.0052, +0.0026], Holm p = 1.00 |
+| nDCG@10, MuSiQue 2-hop, first 200 | 0.7669 | 0.7709 | +0.0040 | +0.52% | [−0.0029, +0.0113], Holm p = 1.00 |
+| top-5 results, 120 queries | reference | same set on 82 of 120, same order on 38 | N/A: identity, not a difference | N/A | N/A |
+| search p50 ms (pooled) | 3,206.7 | 2,675.3 | −531.4 | −16.6% | 0.834 [0.757, 0.931] |
+| search p95 ms (pooled) | 5,128.4 | 4,359.3 | −769.1 | −15.0% | 0.850 [0.715, 0.997] |
+| search server CPU user s, 120 queries | 1,328.1 | 1,214.1 | −113.9 | −8.6% | 0.914 [0.842, 0.991] |
+| search server CPU system s, 120 queries | 42.5 | 19.3 | −23.2 | −54.6% | 0.454 [0.377, 0.540] |
+| search server peak RSS MB (VmHWM) | 3,021 | 2,671 | −350 | −11.6% | 0.884 [0.841, 0.930] |
+| search server Pss_Anon MB after 120 queries | 1,488 | 1,308 | −180 | −12.1% | 0.879 [0.726, 1.132] |
+| ingest wall s (import and drain) | 295.8 | 283.3 | −12.6 | −4.2% | 0.958 [0.904, 1.014] |
+| ingest server peak RSS MB (VmHWM) | 2,158 | 1,942 | −216 | −10.0% | 0.900 [0.876, 0.920] |
+| index directory MB allocated | 28.9 | 27.4 | −1.5 | −5.3% | 0.947 [0.837, 1.057] |
+| model cache in use MB | 2,788 | 2,788 | 0 | 0.0% | N/A: same model files |
+
+Against `ddf0800`, the two steps together took the search p50 to 0.871
+[0.796, 0.963] and the search server's peak to 0.472 of what it was. A CPU
+with an inference budget of one thread keeps four pairs a pass (`4ca4c6f`),
+and that path was not measured in either step. The nDCG@10 rows were taken
+through `Engine::search_reranked` over byte-identical copies of one index, as
+the paragraph above describes, not at `pamin search`; recall@50 was identical
+in every group. CPU time counts the server's worker threads, so it exceeds
+wall time; no accelerator ran. The raw rows, per-run premises and harnesses
+are in the private q42 and q44 folders named above.
 
 **Truncating at 192 or 384 tokens rather than 256 was measured, and neither
 ships.** In the same runs, each limit paired against 256 with the new batching:
@@ -922,7 +1011,7 @@ that saw another. Against reranking every query, nDCG@10:
 
 | route | XQuAD-R cross-lingual | MIRACL | MuSiQue |
 | --- | --- | --- | --- |
-| `fast` picks ten, `accurate` orders them | −0.0284, p = 0.0001 | | −0.0047, p = 0.0015 |
+| `fast` picks ten, `accurate` orders them (historical: `fast` has been removed) | −0.0284, p = 0.0001 | | −0.0047, p = 0.0015 |
 | best rule (skip when the top is first in both lexical channels) | −0.0133, p = 0.0001 | | ±0 (never fires) |
 | learned, reranking half the queries | −0.0085, p = 0.0001 | −0.0036, p = 0.014 | −0.0023, n.s. |
 | learned, reranking four in five | −0.0020, p = 0.0001 | +0.0001, n.s. | −0.0000, n.s. |
@@ -935,8 +1024,7 @@ Every cross-validated fold on every corpus chose to rerank every query. The
 literature says the same thing from the other side: query-performance
 predictors transfer badly between collections, and routers recover 60-80% of
 an oracle's saving at best. Accuracy is the axis this project will not trade,
-so every query is still reranked; the learned route is a candidate for the
-`speed` profile, not the default.
+so every query is still reranked, and the learned route does not ship.
 
 **Every latency table on this page was taken while idle inference threads
 spun, and they no longer do.** ONNX Runtime lets an intra-op thread that runs
@@ -1033,7 +1121,9 @@ the test prints it:
 | `fast` reranker | 385 | **268** | 133 |
 
 Every score and every vector is bit-identical, and the figures repeated to the
-megabyte across two runs. What the copy leaves is mostly not the weights: a
+megabyte across two runs. Each load is one session over the copy; the shared
+single-threaded session side-by-side passes add on first use is not in them,
+and the shared-session table above has what a whole server holds with it. What the copy leaves is mostly not the weights: a
 bare runtime session adds 139 MB loading the `fast` reranker's download and
 12 MB loading its copy, so most of the 268 is what a load holds besides its
 session. The data file is the price, on disk rather than in memory -- larger
@@ -1282,9 +1372,9 @@ more primary-key join, to `source_versions`, costs about 0.3 ms at the
 150-candidate ceiling, which is the price of storing each memory once. A
 search pays it in up to three lookups — the channels' candidates, any topic the
 query names that no channel returned, and the graph's arrivals, at most fifty
-at the default depth — so under a millisecond, against the 99 ms
-[the CLI reference](cli.md) gives a search with reranking off and 1,522 ms at
-the default tier. The results
+at the default depth — so under a millisecond, against the historical 99 ms
+[the CLI reference](cli.md) gives a fusion-only search and 1,522 ms for one
+reranking twenty candidates; a search today reranks thirty. The results
 themselves did not move: the before workspace, migrated by the after build,
 returned byte-identical top tens for forty questions through
 `Engine::search_reranked` at its defaults, scores to six decimals, and read
@@ -1449,7 +1539,7 @@ time under `disk` (medians 1,371 against 1,287 ms and 2,339 against 2,236),
 and rebuilding XQuAD-R's 13,014 documents took 424 s under `disk` and 30 s
 under `memory`.
 The table, the tuning and the write-path measurement are in
-[the ADR](adr/0001-tech-selection.md#two-vector-indexes-both-half-precision-disk-by-default).
+[the ADR](adr/0001-tech-selection.md#two-vector-indexes-both-half-precision-memory-by-default).
 
 **Above this, nothing is measured.** The largest corpus here is 131,924
 documents. A million and beyond is untested — not projected, not extrapolated,
@@ -1467,23 +1557,8 @@ could silently compare different vector spaces. Historical rows stay historical;
 the named product index remains revision-bound. Reintroduce the diagnostic only
 with a newly built and verified revision-bound content-only project.
 
-For `TIERS=fast`, `TIERS=1`, or `ROUTES`, the pinned preparation command must
-be run with that environment variable set before the scoring command. The
-[Fast tier manifest](../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json)
-checks the actual CPU export selected by this architecture and its tokenizer.
-The default Accurate-only preparation still fetches only its two models.
-
-To check only the Fast reranker export and tokenizer before a full corpus run:
-
-```sh
-env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_DEVICE=cpu cargo test -p pamin-engine --test crosslingual pinned_fast_reranker_loads_and_scores -- --exact --ignored --nocapture
-```
-
-This validates one real CPU load and two scored pairs; it is not a Fast-tier
-corpus-accuracy or accelerator-speed result.
-
-On Apple Silicon, the optional `pinned_fast_coreml_model_loads_and_scores`
-ignored test uses `PAMIN_DEVICE=auto` and verifies the pinned FP32 export plus
-actual model output on two pairs. Its provider assignment must be read from
-the run log; this small control cannot certify Fast-tier corpus accuracy or
-whole-search latency.
+`TIERS=1` and `ROUTES` need nothing beyond the default preparation, which
+fetches only the embedder and the reranker. The Fast tier's preparation and
+its two export checks were removed with that tier in `9cccff4`; its
+[manifest](../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json)
+stays as the record of what its historical rows ran.

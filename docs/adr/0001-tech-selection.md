@@ -2141,15 +2141,15 @@ One figure elsewhere looks like a contradiction and is not. [measured.md](../mea
 | own corpus, cross-lingual | +0.0151 | 16 / 11 / 16 | 0.37 |
 | own corpus, relational | +0.0096 | 3 / 1 / 16 | 0.63 |
 
-`accurate` is never behind, and significantly ahead wherever there are queries enough to say. `fast` is below no reranking at all on both same-language measurements — XQuAD-R −0.0060 (p = 0.0002) and MIRACL at the `speed` profile −0.0154 (35 / 58, p = 0.014) — so the tier that shipped was, for a query whose answer shares its language, worse than asking for nothing. The cost is paid in the order the project ranks things: 1522 ms against 359, a quarter of the throughput, 571 MB loaded against 119. `--rerank fast` and `--rerank off` buy it back for a workspace that has to.
+`accurate` is never behind, and significantly ahead wherever there are queries enough to say. `fast` is below no reranking at all on both same-language measurements — XQuAD-R −0.0060 (p = 0.0002) and MIRACL at the `speed` profile −0.0154 (35 / 58, p = 0.014) — so the tier that shipped was, for a query whose answer shares its language, worse than asking for nothing. The cost is paid in the order the project ranks things: 1522 ms against 359, a quarter of the throughput, 571 MB loaded against 119. `--rerank fast` and `--rerank off` bought it back for a workspace that had to, until both were removed on 2026-10-15.
 
-**Exempting graph-reached candidates from the pass was measured and dropped.** The relational group scores lower through the shipped path than through fusion alone, and the mechanism is specific: such an answer is relevant because *another* memory mentions it, which a cross-encoder reading the query and that one memory cannot see. The engine already exempts candidates with lexical evidence, so exempting candidates with graph evidence on the same terms was the obvious rule, priced at the `fast` tier from one shipped run by replaying both. It recovered relational (+0.0259, 4 / 0, p = 0.12) and cost cross-lingual (−0.0108, 0 / 10, p = 0.0018): it moved the loss rather than removing it.
+**Exempting graph-reached candidates from the pass was measured and dropped.** The relational group scores lower through the shipped path than through fusion alone, and the mechanism is specific: such an answer is relevant because *another* memory mentions it, which a cross-encoder reading the query and that one memory cannot see. The engine then exempted candidates with lexical evidence (it no longer does: every search now scores the whole fused head, lexical hits included), so exempting candidates with graph evidence on the same terms was the obvious rule, priced at the `fast` tier from one shipped run by replaying both. It recovered relational (+0.0259, 4 / 0, p = 0.12) and cost cross-lingual (−0.0108, 0 / 10, p = 0.0018): it moved the loss rather than removing it.
 
 The earlier pair cache reported 69.6 ms on the first pass and a rounded 0.0 ms on the repeat, for the same ordering, and was described as four thousand scores in about a quarter of a megabyte. Those are historical observations of that implementation, not timings or memory measurements of the current cache, and the rounded figure does not establish a zero-cost search.
 
 The current cache stores complete ordered batches' logits within one loaded model and tokenizer. The INT8 export quantizes activations across a batch, so a pair's score can depend on its neighbours and padding. Cache identity therefore includes every query/document pair in order, including duplicates, and the logical and physical batch shapes. A changed context is scored again; scoring the same final candidate list must produce the same result regardless of earlier searches. An identical batch avoids a model forward pass. A bounded memo of the most recent complete input list also skips tokenization and planning when its ordered raw pairs and effective limits match and every referenced batch remains cached. Changed inputs or evicted references require tokenizing all pairs and planning complete batches before lookup. Hashing, lookup and retrieval still cost work. The memo retains only references and positions, without texts, encodings or duplicate scores. Capacity is 4,096 logical score slots across complete batches, rather than independently reusable pair scores. Releasing the model or stopping the resident server releases the cache. Widening a limit or writing a memory can change batch context and require new inference; reusing individual pairs from an earlier context is incorrect.
 
-**There is no compilation trick left in the runtime.** Batching was the lever inside it, and it has been pulled twice. Sorting candidates by length before batching and using batches of eight rather than sixteen took the same work from 191 ms to 151, because a batch is padded to its longest member. Grouping pairs by their real length in tokens, each pass within 512 padded tokens and four pairs, then took a whole default search at a depth of thirty to 0.81 of what chunks of eight cost, paired over every query of XQuAD-R, MIRACL and MuSiQue, because on four cores a pair also costs more the more tokens share its pass; no group's nDCG@10 moved significantly, which had to be measured rather than assumed, since the int8 export quantizes a batch's activations together and so scores a pair by its company. The rule it was chosen by and the tables are at `BATCH_TOKENS` in `crates/pamin-index/src/reranking.rs`. Against that, the export format is worth at most 1.45x on identical weights, fp16 is slower than fp32 on a CPU, and the session already runs every core at the highest graph optimization level. The measured 9.75 ms a pair is what twelve transformer layers on four cores cost.
+**There is no compilation trick left in the runtime.** Batching was the lever inside it, and it has been pulled twice. Sorting candidates by length before batching and using batches of eight rather than sixteen took the same work from 191 ms to 151, because a batch is padded to its longest member. Grouping pairs by their real length in tokens, each pass within 512 padded tokens and four pairs, then took a whole default search at a depth of thirty to 0.81 of what chunks of eight cost, paired over every query of XQuAD-R, MIRACL and MuSiQue, because on four cores a pair also costs more the more tokens share its pass; no group's nDCG@10 moved significantly, which had to be measured rather than assumed, since the int8 export quantizes a batch's activations together and so scores a pair by its company. That still holds on an accelerator and on a CPU with a one-thread inference budget; on a multi-core CPU a pass has since become one pair ([2026-10-16](#2026-10-16-side-by-side-passes-one-shared-session-one-pair-a-cpu-pass)), so there a score is the pair's own. The rule it was chosen by and the tables are at `BATCH_TOKENS` in `crates/pamin-index/src/reranking.rs`. Against that, the export format is worth at most 1.45x on identical weights, fp16 is slower than fp32 on a CPU, and the session already runs every core at the highest graph optimization level. The measured 9.75 ms a pair is what twelve transformer layers on four cores cost.
 
 The published answers to this latency all change the architecture instead, and both are deferred on a missing export rather than on a licence or a doubt:
 
@@ -2328,12 +2328,12 @@ or a last-position logit and generates nothing — so the whole table follows:
 | `Qwen3-Reranker-0.6B` | ~440M | ~2.05 s | |
 | `openjev/openjev` | **27.4B** | **~128 s** | |
 
-The anchor's 1423 ms ran a call's batches one after another, each pass with
-every core, as the reranker did when it was measured. On the CPU the batches of
-one call now run side by side, one thread a pass, so 1423 ms is not what a
-search spends reranking today, and the 330 GFLOPS it gives is the sequential
-path's. Neither has been re-measured with batches side by side, and the
-predicted rows above are predictions of that sequential path.
+The anchor's 1423 ms ran a call's passes one after another, each with every
+core and up to four pairs, as the reranker did when it was measured. On a
+multi-core CPU the passes of one call now run side by side, one thread and one
+pair each, so 1423 ms is not what a search spends reranking today, and the
+330 GFLOPS it gives is the sequential path's. Neither has been re-measured
+that way, and the predicted rows above are predictions of that sequential path.
 
 The last row is why "just read a yes/no token" does not rescue a large decoder.
 Reading one position's logits still costs one full prefill over every weight, so
@@ -3087,6 +3087,13 @@ it was and the setting is documented instead: a deployment that knows it serves
 concurrent, mostly-distinct queries can take the quarter, and one serving a
 single agent should not.
 
+The setting has since taken on a second meaning, which this sweep predates: on
+the CPU it is also how many one-threaded passes run side by side for stored
+texts and for a rerank, and at one thread the reranker goes back to passes of
+up to four pairs
+([2026-10-16](#2026-10-16-side-by-side-passes-one-shared-session-one-pair-a-cpu-pass)).
+The table above was not re-measured under that meaning.
+
 **Idle inference threads block instead of spinning.** ONNX Runtime lets an
 intra-op thread that runs out of work spin before it sleeps, and nothing here
 had said otherwise, so every table above was taken with it spinning. The
@@ -3358,8 +3365,10 @@ stay true. Options nobody should choose cost that without buying anything.
 **What is kept exactly.** A workspace that ran the defaults must not notice:
 the index marker still records `gpahal/bge-m3-onnx-int8`; the embedder's plan
 key keeps its `embedding-query-v4:max512:joint-singleton:e5-cpu256-accelerator8:`
-prefix and the reranker's its `reranker-v3:accurate:` prefix, so measured plans
-are reused rather than re-measured; plans keep the provider label
+prefix and the reranker's kept its `reranker-v3:accurate:` prefix through this
+change, so measured plans were reused rather than re-measured (`b972ead` later
+moved the reranker's to `reranker-v4`, so each host measures that plan once
+more; see [2026-10-16](#2026-10-16-side-by-side-passes-one-shared-session-one-pair-a-cpu-pass)); plans keep the provider label
 `reranking accurate`; and evaluation records and cached projects keep the
 `accuracy` name. Each is pinned by a test. The change is meant to leave the
 default search path bit-identical, and the pull request that made it records
@@ -3384,3 +3393,58 @@ evaluations' comparison for what reranking is worth.
 
 Both defaults above -- refusing the removed settings, and removing the MiniLM
 evaluation arms -- were taken by the implementer and are open to the owner.
+
+## 2026-10-16: side-by-side passes, one shared session, one pair a CPU pass
+
+**Decision.** On the CPU, the passes of one rerank (`df70704`) and the stored
+texts BGE-M3 embeds (`d23acf9`) run side by side, one intra-op thread a pass,
+as many at once as the inference budget allows; a query still gets one pass of
+the whole budget. Those passes run on one shared single-threaded session per
+model, loaded the first time passes overlap (`710ceec`), rather than one
+session a pass. A CPU rerank pass holds one pair (`b972ead`). Accelerators keep
+up to four pairs within 512 padded tokens, under the
+[mixed accelerator policy](#mixed-accelerator-policy-2026-09-29), because one
+pair a pass has not been measured on any of them; so does a CPU with an
+inference budget of one thread, where passes cannot overlap (`4ca4c6f`). The
+reranker's plan key moved to `reranker-v4`, so each host measures its reranker
+plan once more.
+
+**Evidence.** Side by side was measured as a component: through
+`Reranker::rank`, 100 calls of 30 uncached pairs on four cores, the median
+call went from 2,105 and 2,163 ms to 1,212 and 1,269 ms in two runs, every
+score bit-identical; through `Embedder`, 500 texts stored 64 at a time went
+from 38.3 and 40.3 s to 18.7 and 17.3 s, every vector bit-identical. The
+shared session and one pair a pass were then measured at `pamin search`,
+each against its immediate predecessor, in three rotated runs an arm on a
+4 vCPU 2.8 GHz Xeon over 3,230 texts and 120 warm queries;
+[measured.md](../measured.md) has the conditions and every row:
+
+| step | metric | before | after | absolute difference | % change |
+| --- | --- | ---: | ---: | ---: | ---: |
+| shared session (`ddf0800` → `710ceec`) | search p50 ms | 3,072.7 | 3,206.7 | +134.1 | +4.4%, ratio 1.044 [0.937, 1.157] |
+| | search server peak RSS MB | 5,656 | 3,021 | −2,636 | −46.6% |
+| | ingest server peak RSS MB | 3,795 | 2,158 | −1,637 | −43.1% |
+| | top-5 results, 120 queries | reference | identical order on 120 | N/A: identity | N/A |
+| one pair a pass (`710ceec`, four pairs → one) | search p50 ms | 3,206.7 | 2,675.3 | −531.4 | −16.6%, ratio 0.834 [0.757, 0.931] |
+| | search p95 ms | 5,128.4 | 4,359.3 | −769.1 | −15.0%, ratio 0.850 [0.715, 0.997] |
+| | search server peak RSS MB | 3,021 | 2,671 | −350 | −11.6% |
+| | XQuAD-R cross-lingual nDCG@10 | 0.7231 | 0.7229 | −0.0001 | −0.01%, Holm p = 1.00 |
+| | MuSiQue 2-hop nDCG@10, first 200 | 0.7669 | 0.7709 | +0.0040 | +0.52%, Holm p = 1.00 |
+
+The one-pair arm set the rerank batch to one pair on `710ceec`, which is what
+`b972ead` made the default; the nDCG@10 rows were taken through
+`Engine::search_reranked` over copies of one index, and no significant change
+was detected in any of the four groups measured (Holm-corrected p = 1.00 in
+each; the 95% CIs of the differences run from [−0.0052, +0.0026] to
+[−0.0029, +0.0113], all including zero).
+
+**What it costs.** For the shared session, no significant latency change was
+detected at `pamin search` (p50 1.044 [0.937, 1.157], p95 0.999
+[0.880, 1.191]); a component result of 0.81 for it did not carry over, and its
+measured gain is memory. One pair a pass moves rankings, and no significant
+nDCG@10 change was detected in any group measured: the top-five set was the same on 82 of 120 timed queries and in the same order on
+38. Nothing here was measured with an inference budget of one thread or on an
+accelerator, and neither path changed. The host in these runs had a CUDA
+provider built in that could not register, so every arm saw one five-minute
+model reload in its search phase; excluding the queries that overlapped it
+moved no ratio by more than 0.004.
