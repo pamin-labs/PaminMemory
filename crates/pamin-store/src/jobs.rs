@@ -418,6 +418,28 @@ pub async fn pending(executor: impl PgExecutor<'_>, project: ProjectId) -> Resul
     Ok(waiting)
 }
 
+/// How many jobs are held under a claim whose lease has not run out.
+///
+/// What a drain that owes everything waits for once it can claim nothing:
+/// work another round has taken and not yet finished. A held job is due again
+/// when its lease lapses, so the wait is bounded by [`LEASE`]. A failed job is
+/// not held -- failing clears the claim -- so a job waiting out
+/// [`RETRY_AFTER`] is not waited for.
+pub async fn held(executor: impl PgExecutor<'_>, project: ProjectId) -> Result<i64> {
+    let (held,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM index_jobs
+          WHERE project_id = $1
+            AND claimed_at IS NOT NULL
+            AND available_at > $2",
+    )
+    .bind(project.0)
+    .bind(OffsetDateTime::now_utc())
+    .fetch_one(executor)
+    .await?;
+
+    Ok(held)
+}
+
 /// How many jobs are waiting, counted no further than `cap`.
 ///
 /// What a write asks, and it never needs more than this: whether anything is

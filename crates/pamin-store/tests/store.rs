@@ -85,6 +85,7 @@ async fn the_ledger_holds_its_promises() {
     the_projects_owing_work_are_the_ones_a_claim_would_take_from(&database).await;
     what_a_topic_says_now_is_one_lookup(&database).await;
     a_completion_names_the_claim_it_belongs_to(&database).await;
+    a_held_job_is_one_whose_lease_still_runs(&database).await;
     one_projects_worker_never_takes_anothers_work(&database).await;
     a_derived_edge_the_content_stopped_making_is_closed(&database).await;
     several_topics_restate_their_mentions_at_once(&database).await;
@@ -3305,6 +3306,63 @@ async fn a_completion_names_the_claim_it_belongs_to(database: &Database) {
             .expect("complete"),
         vec![second[0].id],
         "the claim that still holds the job could not complete it"
+    );
+}
+
+/// A job is held while a claim's lease runs, and not after the claim is
+/// recorded, fails, or lapses.
+///
+/// What a drain owing everything waits on, so each way a claim ends has to end
+/// the wait: a held count that kept a failed job would hold the drain for the
+/// hour the job waits to retry.
+async fn a_held_job_is_one_whose_lease_still_runs(database: &Database) {
+    let project = repository::ensure_project(database.pool(), "held")
+        .await
+        .expect("ensure project");
+    let held = || jobs::held(database.pool(), project.id);
+    let topics: Vec<uuid::Uuid> = (1..=3).map(uuid::Uuid::from_u128).collect();
+    for topic in &topics {
+        jobs::enqueue(
+            database.pool(),
+            project.id,
+            JobKind::SyncTopicIndex,
+            Some(*topic),
+        )
+        .await
+        .expect("enqueue");
+    }
+    assert_eq!(held().await.expect("held"), 0, "owed is not held");
+
+    const WORKER: &str = "the-holding-worker";
+    let claimed = jobs::claim(database.pool(), project.id, WORKER, 3, &JobKind::ALL)
+        .await
+        .expect("claim");
+    assert_eq!(claimed.len(), 3);
+    assert_eq!(held().await.expect("held"), 3, "a claimed job is held");
+
+    jobs::complete(database.pool(), &[&claimed[0]], WORKER)
+        .await
+        .expect("complete");
+    jobs::fail(database.pool(), &claimed[1], WORKER, "the premise")
+        .await
+        .expect("fail");
+    assert_eq!(
+        held().await.expect("held"),
+        1,
+        "a completed or failed job is still held"
+    );
+
+    // The lease running out, as in the test above.
+    sqlx::query("UPDATE index_jobs SET available_at = $1 WHERE id = $2")
+        .bind(time::OffsetDateTime::now_utc() - std::time::Duration::from_secs(1))
+        .bind(claimed[2].id.0)
+        .execute(database.pool())
+        .await
+        .expect("expire the lease");
+    assert_eq!(
+        held().await.expect("held"),
+        0,
+        "a lapsed claim is still held"
     );
 }
 
