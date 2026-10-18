@@ -611,6 +611,11 @@ const HEAP_ARENAS: i32 = 2;
 /// first needs an arena beyond the main one, and keeps that figure. So
 /// `main` calls this before it starts the runtime.
 ///
+/// An arena limit the process was started with -- `MALLOC_ARENA_MAX`, or
+/// `arena_max` in `GLIBC_TUNABLES` -- is left alone, whether it is lower or
+/// higher: `mallopt` replaces the limit rather than tightening it, and the
+/// operator who set one chose it.
+///
 /// glibc only, like [`trim_heap`]; elsewhere it does nothing.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub(crate) fn cap_heap_arenas() {
@@ -622,6 +627,13 @@ pub(crate) fn cap_heap_arenas() {
     /// `M_ARENA_MAX` in glibc's `malloc.h`.
     const M_ARENA_MAX: i32 = -8;
 
+    if arena_limit_given(
+        std::env::var_os("MALLOC_ARENA_MAX").is_some(),
+        std::env::var("GLIBC_TUNABLES").ok().as_deref(),
+    ) {
+        return;
+    }
+
     // SAFETY: `mallopt` takes two integers by value and only changes a limit
     // the allocator consults when it next makes an arena. Its flag is not
     // read: this runs before logging starts, and a refused cap leaves glibc's
@@ -631,6 +643,19 @@ pub(crate) fn cap_heap_arenas() {
 
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 pub(crate) fn cap_heap_arenas() {}
+
+/// Whether the process was started with its own glibc arena limit: through
+/// `MALLOC_ARENA_MAX`, or as `glibc.malloc.arena_max` among the
+/// colon-separated `GLIBC_TUNABLES`.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn arena_limit_given(malloc_arena_max: bool, tunables: Option<&str>) -> bool {
+    malloc_arena_max
+        || tunables.is_some_and(|tunables| {
+            tunables
+                .split(':')
+                .any(|tunable| tunable.starts_with("glibc.malloc.arena_max="))
+        })
+}
 
 /// Whether the connection asked the server to stop.
 enum Shutdown {
@@ -810,4 +835,25 @@ fn json<T: serde::Serialize>(value: T) -> Result<Payload> {
 /// Where this workspace's socket lives.
 pub fn socket_path(workspace: &Workspace) -> PathBuf {
     workspace.root().join(SOCKET)
+}
+
+#[cfg(all(test, target_os = "linux", target_env = "gnu"))]
+mod tests {
+    use super::arena_limit_given;
+
+    #[test]
+    fn an_arena_limit_the_process_was_started_with_is_left_alone() {
+        assert!(arena_limit_given(true, None));
+        assert!(arena_limit_given(false, Some("glibc.malloc.arena_max=1")));
+        assert!(arena_limit_given(
+            false,
+            Some("glibc.malloc.trim_threshold=0:glibc.malloc.arena_max=8")
+        ));
+        assert!(!arena_limit_given(false, None));
+        assert!(!arena_limit_given(
+            false,
+            Some("glibc.malloc.trim_threshold=0")
+        ));
+        assert!(!arena_limit_given(false, Some("glibc.malloc.arena_test=2")));
+    }
 }
