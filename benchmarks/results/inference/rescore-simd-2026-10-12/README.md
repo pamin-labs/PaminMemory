@@ -1,56 +1,56 @@
 # Host rescore kernels: SIMD dot product and fp16 conversion
 
-**Status: provisional.** All three passes below ran beside unrelated Cargo
-builds on the same host. A clean rerun is pending: no competing jobs, p50 and
-p95 pooled over every pass, and forced AVX2 and AVX-512 arms rotated against
-each other. Until it lands, treat these figures as a screen, not a validated
-result.
-
 A component screen of the host-side part of `recall_dense`
 (`crates/pamin-index/src/projection.rs`). For each candidate, that code widens
-the stored fp16 vector and takes two dot products (its norm, and its dot with
-the query). The screen does **not** run `Engine::search_reranked`, query zvec,
+the stored fp16 vector and takes two dot products: its norm, and its dot with
+the query. The screen does **not** run `Engine::search_reranked`, query zvec,
 iterate documents or sort, so it says nothing about whole-search latency (see
 the last section).
 
 ## Arms
 
 Each arm is one commit's implementation of the same work: 1 query norm, then
-100 candidates × 1024 dimensions.
+100 candidates × 1024 dimensions. The harness holds a copy of each commit's
+kernels; the x86 kernels are identical to this PR's (checked with `diff`).
 
 | Arm | Commit | fp16 → f32 | Dot product |
 | --- | --- | --- | --- |
 | `main` | `ad33d2d` | scalar `decode`, one code at a time | sequential f32 sum |
-| `dot` | `255fbe1` | scalar `decode` | runtime-dispatched kernel (`crates/pamin-index/src/vector_math.rs`); AVX-512F on this host |
-| `convert` | `01614fb` | `half` 2.7.1 slice conversion (F16C on this host) | as `dot` |
+| `dot-avx2` | `255fbe1` | scalar `decode` | AVX2+FMA kernel (`crates/pamin-index/src/vector_math.rs`), forced |
+| `dot-avx512` | `255fbe1` | scalar `decode` | AVX-512F kernel, forced (removed from the product, see below) |
+| `convert-avx2` | `01614fb` | `half` 2.7.1 slice conversion (F16C) | AVX2+FMA, forced; **what this PR ships on x86-64** |
+| `convert-avx512` | `01614fb` | as `convert-avx2` | AVX-512F, forced |
 
-## Results
+## Results (x86-64)
 
-The `main` and `dot` columns compare `dot` with its predecessor `main`. The
-`dot` and `convert` columns compare `convert` with its predecessor `dot`. The
-`main` and `convert` columns compare the stack with `main`.
-
-- Host: Intel Xeon @ 2.10 GHz (AVX-512F/BW/VL/VNNI/BF16/FP16, F16C), 4 vCPUs, shared.
-- Build: Rust 1.98.1, `--release`, one thread.
-- Load: during all three passes the 1-minute load average was about 5.6, from
-  another agent's Cargo builds on this host. That is the main source of the p95
-  spread.
-- Method: 16 rounds, with the arm order rotated and reversed between rounds,
-  100 calls per arm per round. The figures below are the median of each pass's
-  p50, over three passes ([raw output](result.txt)).
+- Host: Intel Xeon @ 2.10 GHz, 4 vCPUs (AVX-512F/VNNI/FP16, AMX, F16C), no GPU.
+- Build: rustc 1.97.0, `--release`, one thread, pinned to one CPU with `taskset`.
+- Quiet host: before each run the queue waited for 60 s of 1-minute load
+  below 0.5, with no Cargo, rustc, `pamin serve` or model job running. The
+  load before and after each run is in [`x86-raw/conditions.txt`](x86-raw/conditions.txt).
+- Method: three runs, each of three passes. Every pass has 20 rounds, with the
+  arm order rotated and reversed between rounds, 100 calls per arm per round.
+  Each figure is the median over the three runs of each run's p50 or p95,
+  pooled over its 6000 calls ([raw output](x86-raw/)).
 - Clock: every µs figure in this README, on both hosts, is **elapsed (wall)
   time** for one call. The harness reads `std::time::Instant` (a monotonic
   clock) around one rescore. The work runs on one thread, with no child process
   and no GPU or NPU. Neither harness captured CPU user or system time, so CPU
   time is N/A in every table. On one thread, CPU time could not exceed the wall
   figure, but nobody measured how far below it the CPU time sits.
+- Premise: every run aborts before timing unless each arm is within 1e-6 of an
+  f64 oracle in cosine and keeps the oracle's top 10. All three runs passed.
 
-| Metric | `main` | `dot` | Δ vs `main` | `convert` | Δ vs `dot` | Stack Δ vs `main` |
+The `main` and `dot-avx2` columns compare `dot` with its predecessor `main`.
+The `dot-avx2` and `convert-avx2` columns compare `convert` with its
+predecessor `dot`. The last column compares the stack with `main`.
+
+| Metric | `main` | `dot-avx2` | Δ vs `main` | `convert-avx2` | Δ vs `dot-avx2` | Stack Δ vs `main` |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Max abs cosine error vs f64 oracle | 7.75e-8 | 1.54e-8 | −6.21e-8 (−80%) | 1.54e-8 | 0 (0%) | −6.21e-8 (−80%) |
+| Max abs cosine error vs f64 oracle | 7.749e-8 | 1.487e-8 | −6.262e-8 (−80.8%) | 1.487e-8 | 0 (0%) | −6.262e-8 (−80.8%) |
 | Top-10 overlap with oracle (of 10) | 10 | 10 | 0 | 10 | 0 | 0 |
-| p50 µs per 100×1024 rescore, elapsed | 241.72 | 131.32 | −110.40 (−45.7%) | 36.67 | −94.65 (−72.1%) | −205.05 (−84.8%) |
-| p95 µs, elapsed | N/A | N/A | N/A | N/A | N/A | N/A |
+| p50 µs per 100×1024 rescore, elapsed | 258.95 | 130.06 | −128.89 (−49.8%) | 38.59 | −91.47 (−70.3%) | −220.36 (−85.1%) |
+| p95 µs, elapsed | 286.45 | 149.44 | −137.01 (−47.8%) | 48.90 | −100.54 (−67.3%) | −237.55 (−82.9%) |
 | CPU user / system time | N/A | N/A | N/A | N/A | N/A | N/A |
 | Memory | N/A | N/A | N/A | N/A | N/A | N/A |
 | Disk | N/A | N/A | N/A | N/A | N/A | N/A |
@@ -58,26 +58,47 @@ The `main` and `dot` columns compare `dot` with its predecessor `main`. The
 - **Memory:** not measured. Neither change adds a buffer or keeps one alive:
   both arms allocate one 1024-wide `Vec<f32>` per candidate, as `main` does.
 - **Disk:** not measured as a size. The release binary gains the `half`
-  crate's code. `half` lists `crunchy` only for targets this project does not
-  build: `cargo tree -e normal -i crunchy` prints nothing for
-  `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin` or
+  crate's code and loses the AVX-512 kernel. `half` lists `crunchy` only for
+  targets this project does not build: `cargo tree -e normal -i crunchy` prints
+  nothing for `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin` or
   `aarch64-unknown-linux-gnu`.
-- **p95:** not reported. The per-pass p95 ranged from 247 to 631 µs for `main`
-  under the competing builds. It waits for the clean rerun, pooled over all
-  passes.
 - **Exactness:** a unit test checks the fp16 conversion bit-for-bit against
   `decode` for all 65536 codes. A second unit test checks every dot kernel the
   CPU can run against an f64 sum.
+
+### AVX2 against AVX-512
+
+The product used to pick AVX-512 whenever the CPU had it. Forced against each
+other in the same rotated rounds, AVX2 was no slower:
+
+| Metric | AVX-512 | AVX2 | Δ AVX2 vs AVX-512 |
+| --- | ---: | ---: | ---: |
+| Max abs cosine error vs f64 oracle | 1.544e-8 | 1.487e-8 | −5.7e-10 (−3.7%) |
+| p50 µs, with `half` conversion | 39.22 | 38.59 | −0.63 (−1.6%) |
+| p95 µs, with `half` conversion | 50.25 | 48.90 | −1.35 (−2.7%) |
+| p50 µs, with scalar `decode` | 130.45 | 130.06 | −0.39 (−0.3%) |
+| p95 µs, with scalar `decode` | 150.80 | 149.44 | −1.36 (−0.9%) |
+
+AVX2 was ahead at pooled p50 in all three runs for both conversions, and in 16
+of the 18 per-pass comparisons. The per-pass p95 went either way. So this PR
+removes the AVX-512 kernel, and every x86-64 CPU with AVX2 and FMA runs the
+AVX2 kernel. Only one CPU was measured: other AVX-512 CPUs (AMD Zen 4/5,
+older Intel parts that lower their clock under AVX-512) are N/A, and no gain is
+claimed for them; the measured CPU gives no reason to expect AVX-512 to win.
+
+An earlier screen of the same arms ran beside unrelated Cargo builds (1-minute
+load about 5.6) and is superseded by this one; its output is kept as
+[`result.txt`](result.txt).
 
 ## Other platforms
 
 | Platform | Dot product | fp16 → f32 | Status |
 | --- | --- | --- | --- |
-| x86-64 with AVX-512F (Intel Skylake-SP and later, AMD Zen 4/5) | AVX-512F | F16C | Timed above |
-| x86-64 with AVX2+FMA only (most other Intel and AMD) | AVX2 | F16C | Tested for correctness here. Not timed: dispatch picks AVX-512 on this host. A provisional unrotated screen of the same kernel ran 10.99 µs (AVX2) vs 10.45 µs (AVX-512) per 100 dot-only rows |
+| x86-64 with AVX2+FMA (Intel Haswell and later, AMD Zen and later) | AVX2 | F16C | Timed above on one AVX-512 Xeon. Other CPUs: N/A |
+| x86-64 without AVX2 or FMA | portable eight-lane reduction | F16C if present, else scalar | Tested for correctness through the portable kernel's unit test. Timing N/A |
 | Linux aarch64 (Graviton, Ampere, Raspberry Pi 5) | NEON | `fcvtl` when `fp16` is detected | Unit tests pass under `qemu-aarch64-static`. Timing N/A: emulation is not timing |
 | macOS on Apple silicon | Accelerate `cblas_sdot`, as on `main` ([2026-09-30 screen](../vector-rescore-accelerate-2026-09-30.md)). The NEON kernel compiles and its tests run here, but `dot` does not call it | `fcvtl` | fp16 step timed on an M4: see [Apple M4](#apple-m4). NEON vs Accelerate: N/A, not measured cleanly (the M4 screen is provisional and covers no M1–M3) |
-| macOS on Intel | as x86-64 (AVX-512/AVX2), replacing Accelerate, by maintainer decision so every x86-64 host runs one implementation | F16C | Compile-checked. Timing N/A: no Intel Mac available. The x86 kernels are timed above on Linux; they have not been timed against Accelerate, so no speed change is claimed for Intel Macs |
+| macOS on Intel | as x86-64 (AVX2), replacing Accelerate, by maintainer decision so every x86-64 host runs one implementation | F16C | Compile-checked. Timing N/A: no Intel Mac available. The x86 kernels are timed above on Linux; they have not been timed against Accelerate, so no speed change is claimed for Intel Macs |
 | Windows x86-64 | as x86-64 | as x86-64 | Compile-checked |
 
 ## Apple M4
@@ -146,8 +167,9 @@ measurement says otherwise.
 
 ## Libraries considered
 
-- **`simsimd`:** in the same unrotated dot-only screen, the hand kernel ran
-  10.45 µs and `simsimd` 6.x ran 13.83 µs per 100 rows. The hand kernel adds no
+- **`simsimd`:** in an earlier unrotated dot-only screen, the hand kernels ran
+  10.45 µs (AVX-512) and 10.99 µs (AVX2) and `simsimd` 6.x ran 13.83 µs per
+  100 rows. The hand kernel adds no
   C build step.
 - **`half`:** used for the fp16 conversion rather than hand-written
   intrinsics. On aarch64 it needs inline assembly, because stable Rust has no
@@ -167,8 +189,9 @@ The harness only produces numbers, so it is kept out of this tree.
 
 - Location: `pamin-memory/research/2026-10-12/raw/rescore-simd/` in the
   `internal-docs` submodule. Its README explains how to run it.
-- Arms: the rerun forces each x86 kernel, so AVX2 and AVX-512 are timed
-  against each other.
+- Arms: it forces each x86 kernel, so AVX2 and AVX-512 are timed against each
+  other.
 - Premise: it aborts before timing if any arm misses the f64 oracle by more
   than 1e-6 in cosine or changes the top 10.
-- Raw output: [`result.txt`](result.txt) is this provisional run's output.
+- Raw output: [`x86-raw/`](x86-raw/) holds the three runs above, the load
+  before and after each run, and `SHA256SUMS`.
