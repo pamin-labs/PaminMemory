@@ -144,7 +144,7 @@ a bill.
 
 ## Quickstart
 
-No Docker. No API key. No configuration. `init` provisions a local PostgreSQL for you, and the embedding model downloads the first time you search.
+No Docker. No API key. No configuration. `init` provisions a local PostgreSQL and starts the server, which begins fetching the embedding model in the background; a write that arrives before it is ready waits for it. The reranker downloads on the first search.
 
 ```bash
 cargo install --path crates/pamin-cli
@@ -273,6 +273,13 @@ The since-removed `fast` tier took a different route on Apple Silicon: its
 found no significant quality loss for ARM INT8 CPU versus CoreML FP32, and
 CPU was faster on all 1,190 paired searches. The reranker above still uses its
 measured CoreML route.
+
+On the CPU, `pamin search` through a resident server over 3,230 memories, on a
+four-core 2.8 GHz Xeon with no other measurement running, had a p50 of
+2,675 ms and a p95 of 4,359 ms with the reranker's passes side by side, one
+pair each, as ships on a multi-core CPU. Three rotated runs of 120 warm
+queries; [the measurement page](docs/measured.md) has the conditions and the
+before/after figures.
 
 The existing MIRACL full-head run is described in [docs/cli.md](docs/cli.md).
 It is outside this headline table until its code, device and raw-run evidence
@@ -412,17 +419,24 @@ filesystem. Dropping a column and deleting rows stop a database growing and let
 it reuse what it holds; only `VACUUM FULL` makes an existing file smaller, and
 nothing here runs one.
 
-**Write latency has never been attributed.** Retrieval is divided into four
-stages and published; the write path is a single number, so there is nothing
-to say about which part of it a round trip would remove.
+**Write latency has not been attributed.** Retrieval is divided into four
+stages and published. The write path has two unrelated figures: a historical
+30.1 ms for a whole `pamin write`, taken on an earlier build, and a component
+figure of about 1.9 ms for one `Engine::remember` driven by a scratch harness
+([measured.md](docs/measured.md)). They come from different builds and layers,
+so they are not a breakdown of each other, and nothing here says which part of
+a write a round trip would remove.
 
-**Resident memory is measured but not attributed.** 3.6 GB and 7.2 GB are
-published for two corpus sizes and neither is broken down, so nothing here can
-say what a reduction would have to target. Attribution is the first job on that
-axis rather than optimisation — model weights against index against vector
-graph against connection pools — because optimising the visible part rather
-than the large part is a mistake this project has already made once and
-recorded.
+**Resident memory has been attributed once, by stage.** On MIRACL's 131,924
+passages, [measured.md](docs/measured.md) puts the index first, at 3,283 MB of
+anonymous memory, ahead of the embedder and a first search (1,080 MB) and the
+reranker (911 MB), and breaks down separately what the mapped model copies and
+the shared vocabulary saved. That attribution predates the mapped copies and
+the shared session side-by-side passes now run on, so it says where memory went
+then; re-taking it is the first job on that axis rather than optimisation —
+model weights against index against vector graph against connection pools —
+because optimising the visible part rather than the large part is a mistake
+this project has already made once and recorded.
 
 ## Development
 

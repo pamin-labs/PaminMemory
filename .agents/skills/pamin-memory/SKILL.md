@@ -6,8 +6,8 @@ description: "Use the `pamin` CLI as durable memory — record what you learn, r
 # Using Påmin Memory
 
 `pamin` is a local memory store. It keeps what you write as evidence, promotes
-what is durable into versioned memories, indexes those four ways, and can
-explain why any result came back.
+what is durable into versioned memories, indexes them three ways, connects
+them through a graph, and can explain why any result came back.
 
 You do not need a server, a key, or a config file. The first command provisions
 everything and leaves it running.
@@ -19,7 +19,7 @@ Three layers, and confusing them causes almost every wrong answer:
 ```
 evidence    everything ever written, verbatim, never altered  →  pamin grep
 memories    the durable claims promoted out of evidence       →  pamin read
-index       those memories, made findable four ways           →  pamin search
+index       those memories, findable three ways plus a graph  →  pamin search
 ```
 
 A write always reaches evidence. It reaches the other two **only if the filter
@@ -28,6 +28,7 @@ promotes it**. So "I wrote it and `search` cannot find it" is usually not a bug:
 ```console
 $ pamin write --topic oncall "ok"
 Held in evidence only: content was too short to carry a durable claim
+Stored as oncall source version 1
 ```
 
 That content is still recoverable with `grep`. It is not a memory.
@@ -91,8 +92,8 @@ identifiers never become memories. Write the sentence a future reader would need
 pamin import --from memories.ndjson
 ```
 
-Getting a memory into the ledger costs about **3.2 ms this way against 30.1 ms
-through repeated `pamin write`** — one process, one open engine, and the index
+Getting a memory into the ledger cost about **3.2 ms this way against 30.1 ms
+through repeated `pamin write`**, measured on an earlier build — one process, one open engine, and the index
 catching up in rounds instead of after each memory. The file is parsed in full
 before anything is recorded, so a malformed last line refuses the import rather
 than leaving it half done. Re-importing the same file is safe: unchanged
@@ -130,7 +131,10 @@ tells you how much to trust the hit:
   { "kind": "channel", "channel": "lexical_ngram", "rank": 1 },
   { "kind": "channel", "channel": "vector", "rank": 1 },
   { "kind": "channel", "channel": "graph", "rank": 2 },
-  { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1, "edge": "depends_on", "derivation": "explicit" }
+  { "kind": "path", "from": "oncall_rota", "via": "oncall_rota", "hops": 1,
+    "asserted_from": "oncall_rota", "asserted_to": "deployment_pipeline",
+    "edge": "depends_on", "derivation": "explicit" },
+  { "kind": "reranked" }
 ]
 ```
 
@@ -141,7 +145,14 @@ tells you how much to trust the hit:
   near-miss in meaning — worth a second look before you rely on it.
 - **`graph` alone** means nothing matched at all and it came back because it is
   connected to something that did. Read the `path` entry to see the route, then
-  judge whether that route is relevant to what you asked.
+  judge whether that route is relevant to what you asked. `asserted_from` and
+  `asserted_to` say which way the edge itself runs, which the walk ignores.
+- **`reranked`** means the cross-encoder read the query and this memory
+  together; its place blends that score with fusion's. When the search found
+  two or more candidates, every hit in the fused top thirty carries it,
+  lexical matches included, and a hit without it sat below that head and was
+  not one of the strongest finds only the graph made. With fewer than two
+  candidates nothing is reranked, so no hit carries it.
 
 Ranks travel between channels; scores do not, which is why fusion combines
 ranks. A `path` entry is verifiable in a way a rank is not — anyone can check
@@ -151,8 +162,11 @@ that two topics really are related the way it claims.
 
 Every search reranks with one cross-encoder, and there is no flag for it:
 `--rerank` and `PAMIN_RERANK` were removed, and setting `PAMIN_RERANK` is an
-error. A search against a warm server on four cores costs more than a second,
-most of it the reranker (`docs/cli.md`).
+error. An uncached search against a warm server costs two to three seconds,
+most of it the reranker -- measured on four cores over 3,230 memories and 120
+queries; `docs/measured.md` has the figures. A repeated identical candidate set
+is answered from the reranker's score cache, and fewer than two candidates skip
+reranking.
 
 **Leave `--channel-depth` and `--graph-depth` alone.** They exist for the
 evaluation harness. Raising them costs latency for recall you have no way to
@@ -161,12 +175,11 @@ measure from outside. If you want more control over retrieval, use `grep`,
 
 ### When to stop searching
 
-Every `search` costs a reranking pass and a page of results in your context.
-On a four-core CPU that is more than a second: the 1522 ms `docs/cli.md`
-records was measured when the reranker saw twenty candidates, it now sees a
-head of thirty plus up to thirty more that only the graph found, and
-`docs/measured.md` records slower medians on busier machines. On Apple
-silicon, where the reranker runs on CoreML, `docs/measured.md` records a
+Every uncached `search` costs two to three seconds on four cores and a page of results
+in your context. The reranker reads the top thirty fused results, and up to
+thirty more that only the graph found; `docs/measured.md` records a median of
+about 2.7 s at `pamin search` over 3,230 memories on a four-core machine. On
+Apple silicon, where the reranker runs on CoreML, `docs/measured.md` records a
 whole-search p50 of 0.48 s and p95 of 0.81 s. A second search pays off only when
 it can find something the first could not. The rules below are a heuristic for
 spending that cost; no agent-task measurement yet shows how often a repeat
@@ -306,8 +319,10 @@ than that the claim was wrong.
   makes the rest fast.
 - **Projects are namespaces, not tags.** `--project` (or `PAMIN_PROJECT`) picks
   one; nothing crosses between them.
-- **Results are stable for stable inputs**, ties broken on identifier, so an
-  assembled context can be cached rather than rebuilt.
+- **Results are stable for stable inputs** on one machine and execution plan,
+  ties broken on identifier, so an assembled context can be cached rather than
+  rebuilt. A requalified or different accelerator plan can reorder close
+  results.
 - **`cascade` in a write's JSON** says whether the index caught up before the
   command returned. `applied` means yes; `queued` means the index still owes
   work, which the server runs within seconds and `pamin cascade drain` runs at
