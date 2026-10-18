@@ -190,11 +190,18 @@ pub fn path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name).map(PathBuf::from)
 }
 
-/// A knob holding a list of paths, split as `PATH` is.
+/// A knob holding a list of absolute paths, split as `PATH` is.
+///
+/// Refuses a relative one: the product registers only absolute libraries and
+/// warns past the rest, so an arm given one would run without it.
 pub fn paths(name: &str) -> Vec<PathBuf> {
-    std::env::var_os(name)
+    let paths: Vec<PathBuf> = std::env::var_os(name)
         .map(|paths| std::env::split_paths(&paths).collect())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if let Some(relative) = paths.iter().find(|path| !path.is_absolute()) {
+        panic!("{name}: {} is not an absolute path", relative.display());
+    }
+    paths
 }
 
 fn text(name: &str) -> Option<String> {
