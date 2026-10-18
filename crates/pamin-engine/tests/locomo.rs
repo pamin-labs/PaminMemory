@@ -673,6 +673,10 @@ async fn locomo_evidence_with_and_without_links() {
     // what it was asked.
     let mut shape = shape(&loaded);
     shape.publish("locomo_evidence_with_and_without_links", &named);
+    // Before the probe loads the first model, so the record says whether
+    // this run fetched or prepared models, and a cold run is not named as a
+    // warm one.
+    shape.observe_models();
     let conversations = &loaded.conversations;
     let home = std::env::var("PAMIN_EVAL_HOME").ok();
     let scratch = home
