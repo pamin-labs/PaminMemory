@@ -3682,6 +3682,20 @@ mod tests {
         assert!(gone.is_empty(), "placed but no longer read: {gone:?}");
     }
 
+    /// `source` up to its test module: `mod tests`, or a `pub(crate) mod
+    /// tests` whose helpers other modules' tests share. What follows it is
+    /// compiled for tests only.
+    fn product_source(source: &str) -> &str {
+        [
+            "#[cfg(test)]\nmod tests",
+            "#[cfg(test)]\npub(crate) mod tests",
+        ]
+        .iter()
+        .filter_map(|module| source.find(module))
+        .min()
+        .map_or(source, |at| &source[..at])
+    }
+
     /// The quoted `PAMIN_` literals in every `.rs` file under `dir`, outside
     /// comment lines and the file's test module.
     fn pamin_literals(dir: &Path, into: &mut BTreeSet<String>) {
@@ -3695,9 +3709,7 @@ mod tests {
                 continue;
             }
             let source = std::fs::read_to_string(&path).expect("read a source file");
-            let product = source
-                .find("#[cfg(test)]\nmod tests")
-                .map_or(source.as_str(), |at| &source[..at]);
+            let product = product_source(&source);
             for line in product.lines() {
                 if line.trim_start().starts_with("//") {
                     continue;
@@ -3888,9 +3900,7 @@ mod tests {
             {
                 continue;
             }
-            let product = source
-                .find("#[cfg(test)]\nmod tests")
-                .map_or(source.as_str(), |at| &source[..at]);
+            let product = product_source(&source);
             for (at, _) in product.match_indices('"') {
                 let rest = &product[at + 1..];
                 let Some(end) = rest.find('"') else { continue };
