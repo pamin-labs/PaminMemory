@@ -197,10 +197,7 @@ pub(crate) fn options(target: impl Into<Target>) -> Result<SessionBuilder> {
     };
     let unready =
         |error: &dyn std::fmt::Display| IndexError::Engine(format!("preparing a session: {error}"));
-    let threads = match threads() {
-        Some(threads) => threads,
-        None => std::thread::available_parallelism()?.get(),
-    };
+    let threads = budget()?;
     let builder = Session::builder().map_err(|error| unready(&error))?;
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     let builder = if providers
@@ -413,6 +410,28 @@ fn coreml_cache(model: &std::path::Path, rows: usize, tokens: usize) -> Result<P
 /// working.
 pub(crate) fn threads() -> Option<usize> {
     pamin_core::env::positive("PAMIN_INFERENCE_THREADS")
+}
+
+/// How many threads inference may keep busy: [`threads`], or one per core.
+///
+/// The intra-op threads of one pass, or the number of single-threaded passes
+/// a model that runs them side by side runs at once (`Encoder::run_each`).
+pub(crate) fn budget() -> Result<usize> {
+    Ok(match threads() {
+        Some(threads) => threads,
+        None => std::thread::available_parallelism()?.get(),
+    })
+}
+
+/// A CPU session over `model` with `threads` intra-op threads in place of the
+/// [`budget`], otherwise built as [`session`] builds one.
+pub(crate) fn cpu_session(model: &Path, threads: usize) -> Result<Session> {
+    let mut builder = options(vec![cpu()])?
+        .with_intra_threads(threads)
+        .map_err(|error| IndexError::Engine(format!("preparing a session: {error}")))?;
+    let session = commit(&mut builder, model)?;
+    report_model(&session, model);
+    Ok(session)
 }
 
 /// The execution provider selected for a model's forward passes.
