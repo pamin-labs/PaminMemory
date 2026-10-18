@@ -39,7 +39,7 @@ pub use router::Router;
 /// Whether the run asked for the rules arm: `RERANK_RULES`, or `REPLAY_OUT`,
 /// which records that arm's searches.
 pub fn rules_asked() -> bool {
-    std::env::var("RERANK_RULES").is_ok() || std::env::var("REPLAY_OUT").is_ok()
+    std::env::var_os("RERANK_RULES").is_some() || std::env::var_os("REPLAY_OUT").is_some()
 }
 
 /// How the two scores are put on one scale before they are summed.
