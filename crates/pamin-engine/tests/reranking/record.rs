@@ -371,10 +371,7 @@ impl Record {
                 "REPLAY_OUT needs the corpus digest: publish a shape, or name it with \
                  `Priced::corpus`",
             ),
-            run: self
-                .run
-                .get_or_insert_with(|| crate::harness::shape::run(&[("primary", engine)]))
-                .clone(),
+            run: self.run(engine, asked.query),
             search: self.searches,
             group: asked.group.to_string(),
             question: asked.question.to_string(),
@@ -441,6 +438,29 @@ impl Record {
             .iter()
             .filter(|candidate| candidate.model.is_some())
             .count();
+    }
+
+    /// The run this search belongs to: read at the first search, and at
+    /// every later one checked against the plans the engine has used since,
+    /// so a fallback part way through fails the run rather than leaving lines
+    /// that name plans their scores did not come from.
+    fn run(&mut self, engine: &pamin_engine::Engine, query: &str) -> crate::harness::shape::Run {
+        let engines = [("primary", engine)];
+        let Some(run) = &self.run else {
+            return self
+                .run
+                .insert(crate::harness::shape::run(&engines))
+                .clone();
+        };
+        let (models, providers) = crate::harness::shape::loaded(&engines);
+        assert!(
+            models == run.models && providers == run.providers,
+            "{query:?}: the engine now names models {models:?} on {providers:?}, where the \
+             record's first search named {:?} on {:?}; one record holds one run's plans",
+            run.models,
+            run.providers
+        );
+        run.clone()
     }
 
     /// Flushes the record, asserts the superset scored at least what the
