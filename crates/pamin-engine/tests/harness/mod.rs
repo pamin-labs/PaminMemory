@@ -234,7 +234,7 @@ pub fn store() -> pamin_store::StoreSettings {
     let default = pamin_store::StoreSettings::default();
     pamin_store::StoreSettings {
         jit: eval::switch("PAMIN_EVAL_JIT").unwrap_or(default.jit),
-        postgres_dir: eval::path("PAMIN_EVAL_POSTGRES_DIR").or(default.postgres_dir),
+        postgres_dir: eval::absolute_path("PAMIN_EVAL_POSTGRES_DIR").or(default.postgres_dir),
     }
 }
 
