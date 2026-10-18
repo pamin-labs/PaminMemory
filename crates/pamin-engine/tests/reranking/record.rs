@@ -463,12 +463,17 @@ impl Record {
         run.clone()
     }
 
-    /// Flushes the record, asserts the superset scored at least what the
-    /// shipped searches did, and only then publishes it under its path.
+    /// Flushes the record, asserts it holds a search and that the superset
+    /// scored at least what the shipped searches did, and only then publishes
+    /// it under its path.
     pub fn finish(&mut self) {
         self.out
             .flush()
             .unwrap_or_else(|error| panic!("flushing {}: {error}", self.partial.display()));
+        assert!(
+            self.searches > 0,
+            "the record holds no search; a sample of none measures nothing"
+        );
         assert!(
             self.scored >= self.shown,
             "the record scored {} pairs against the shipped {}",
