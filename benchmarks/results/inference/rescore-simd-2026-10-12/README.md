@@ -38,10 +38,12 @@ runtime dispatcher.
   0.5 with no Cargo or rustc running; an unrelated accuracy job on the host was
   paused (SIGSTOP) for the duration. The load before and after each run is in
   [`x86-raw/conditions.txt`](x86-raw/conditions.txt).
-- Method: three runs, each of three passes. Every pass has 20 rounds, with the
+- Method: ten runs, each of three passes. Every pass has 20 rounds, with the
   arm order rotated and reversed between rounds, 100 calls per arm per round.
-  Each figure is the median over the three runs of each run's p50 or p95,
-  pooled over its 6000 calls ([raw output](x86-raw/)).
+  Each figure is the median over the ten runs of each run's p50 or p95,
+  pooled over its 6000 calls ([raw output](x86-raw/)). Runs 1–3 and 4–10 used
+  the same binary; runs 4–10 were added because three runs left p95 unsettled
+  (see [Spread](#spread)).
 - Clock: every µs figure in this README, on both hosts, is **elapsed (wall)
   time** for one call. The harness reads `std::time::Instant` (a monotonic
   clock) around one rescore. The work runs on one thread, with no child process
@@ -49,7 +51,7 @@ runtime dispatcher.
   time is N/A in every table. On one thread, CPU time could not exceed the wall
   figure, but nobody measured how far below it the CPU time sits.
 - Premise: every run aborts before timing unless each arm is within 1e-6 of an
-  f64 oracle in cosine and keeps the oracle's top 10. All three runs passed.
+  f64 oracle in cosine and keeps the oracle's top 10. All ten runs passed.
 
 The `main` and `dot-avx2` columns compare `dot` with its predecessor `main`.
 The `dot-avx2` and `convert-avx2` columns compare `convert` with its
@@ -59,16 +61,17 @@ predecessor `dot`. The last two columns compare what ships with `main`.
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Max abs cosine error vs f64 oracle | 7.749e-8 | 1.487e-8 | −6.262e-8 (−80.8%) | 1.487e-8 | 0 (0%) | 1.487e-8 | −6.262e-8 (−80.8%) |
 | Top-10 overlap with oracle (of 10) | 10 | 10 | 0 | 10 | 0 | 10 | 0 |
-| p50 µs per 100×1024 rescore, elapsed | 261.49 | 130.49 | −131.00 (−50.1%) | 38.25 | −92.24 (−70.7%) | 38.85 | −222.64 (−85.1%) |
-| p95 µs, elapsed | 340.13 | 164.19 | −175.94 (−51.7%) | 50.08 | −114.11 (−69.5%) | 52.48 | −287.65 (−84.6%) |
+| p50 µs per 100×1024 rescore, elapsed | 260.64 | 130.06 | −130.57 (−50.1%) | 37.71 | −92.36 (−71.0%) | 37.98 | −222.65 (−85.4%) |
+| p95 µs, elapsed | 310.82 | 161.32 | −149.50 (−48.1%) | 50.11 | −111.21 (−68.9%) | 49.40 | −261.43 (−84.1%) |
 | CPU user / system time | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 | Memory | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 | Disk | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 
-- **Dispatch:** `shipped` is 0.60 µs (+1.6%) slower than the forced
-  `convert-avx2` at p50 and 2.40 µs (+4.8%) at p95. That is the cost of the
-  run-time feature check on each of the 201 `dot` calls, plus noise between
-  arms.
+- **Dispatch:** `shipped` against the forced `convert-avx2` is +0.28 µs
+  (+0.7%) at p50 and −0.71 µs (−1.4%) at p95. Paired within each run, the
+  ratio is 1.003 [0.998, 1.021] at p50 and 1.000 [0.950, 1.048] at p95. So the
+  run-time feature check on each of the 201 `dot` calls is not resolved from
+  noise between arms.
 - **Memory:** not measured. Neither change adds a buffer or keeps one alive:
   both arms allocate one 1024-wide `Vec<f32>` per candidate, as `main` does.
 - **Disk:** not measured as a size. The release binary gains the `half`
@@ -80,6 +83,26 @@ predecessor `dot`. The last two columns compare what ships with `main`.
   `decode` for all 65536 codes. A second unit test checks every dot kernel the
   CPU can run against an f64 sum.
 
+### Spread
+
+Across runs, p50 is stable: max − min is under 5% of the median for every arm.
+Absolute p95 is not: max − min is 23–26% of the median for every arm, and ten
+runs did not narrow it (three runs gave 17–25%). The p95 medians above are
+therefore **provisional as absolute figures**. The slow runs are slow for every
+arm at once, so the comparisons are made within each run, where that shared
+noise cancels:
+
+| Ratio, within each run | p50: median [min, max] over 10 runs | p95: median [min, max] | Runs below 1 (p95) |
+| --- | ---: | ---: | ---: |
+| `dot-avx2` / `main` | 0.499 [0.496, 0.505] | 0.511 [0.458, 0.552] | 10 of 10 |
+| `convert-avx2` / `dot-avx2` | 0.290 [0.287, 0.299] | 0.319 [0.301, 0.338] | 10 of 10 |
+| `shipped` / `main` | 0.145 [0.144, 0.149] | 0.161 [0.146, 0.173] | 10 of 10 |
+| `shipped` / `convert-avx2` | 1.003 [0.998, 1.021] | 1.000 [0.950, 1.048] | 5 of 10 |
+
+Every claimed p95 reduction holds in all ten runs. The smallest per-run p95
+reduction for what ships against `main` is −82.7% (ratio 0.173). The
+per-run p50/p95 values are in `x86-raw/run1.txt`–`run10.txt`.
+
 ### AVX2 against AVX-512
 
 The product used to pick AVX-512 whenever the CPU had it. Forced against each
@@ -88,15 +111,19 @@ other in the same rotated rounds, AVX2 was no slower:
 | Metric | AVX-512 | AVX2 | Δ AVX2 vs AVX-512 |
 | --- | ---: | ---: | ---: |
 | Max abs cosine error vs f64 oracle | 1.544e-8 | 1.487e-8 | −5.7e-10 (−3.7%) |
-| p50 µs, with `half` conversion | 39.37 | 38.25 | −1.12 (−2.8%) |
-| p95 µs, with `half` conversion | 51.89 | 50.08 | −1.81 (−3.5%) |
-| p50 µs, with scalar `decode` | 130.96 | 130.49 | −0.47 (−0.4%) |
-| p95 µs, with scalar `decode` | 164.38 | 164.19 | −0.19 (−0.1%) |
+| p50 µs, with `half` conversion | 39.25 | 37.71 | −1.55 (−3.9%) |
+| p95 µs, with `half` conversion | 50.75 | 50.11 | −0.64 (−1.3%) |
+| p50 µs, with scalar `decode` | 130.70 | 130.06 | −0.63 (−0.5%) |
+| p95 µs, with scalar `decode` | 159.31 | 161.32 | +2.01 (+1.3%) |
 
-AVX2 was ahead at pooled p50 in all three runs for both conversions, and in 17
-of the 18 per-pass p50 comparisons. An earlier set of three runs without the
-`shipped` arm ([`x86-raw/five-arm/`](x86-raw/five-arm/)) agrees: AVX2 ahead
-at pooled p50 in all three runs, by 0.2–2.0%. So this PR removes the AVX-512
+AVX2 was ahead at pooled p50 in all ten runs for both conversions, and in 58
+of the 60 per-pass p50 comparisons. At p95 the two are not told apart: paired
+within each run, AVX2/AVX-512 is 1.000 [0.948, 1.035] with `half` and 0.998
+[0.921, 1.026] with `decode`, below 1 in 5 and 6 of 10 runs. An earlier set
+of three runs without the `shipped` arm
+([`x86-raw/five-arm/`](x86-raw/five-arm/)) agrees: AVX2 ahead at pooled p50 in
+all three runs, by 0.2–2.0%. AVX2 is faster at p50 and ties at p95, so this
+PR removes the AVX-512
 kernel, and every x86-64 CPU with AVX2 and FMA runs the AVX2 kernel. Only one
 CPU was measured: other AVX-512 CPUs (AMD Zen 4/5, older Intel parts that
 lower their clock under AVX-512) are N/A, and no gain is claimed for them; the
@@ -209,6 +236,6 @@ The harness only produces numbers, so it is kept out of this tree.
   other.
 - Premise: it aborts before timing if any arm misses the f64 oracle by more
   than 1e-6 in cosine or changes the top 10.
-- Raw output: [`x86-raw/`](x86-raw/) holds the three runs above, the load
+- Raw output: [`x86-raw/`](x86-raw/) holds the ten runs above, the load
   before and after each run, the binary's sha256 and compiler, and
   `SHA256SUMS`; `x86-raw/five-arm/` holds the earlier runs without `shipped`.
