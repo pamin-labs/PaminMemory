@@ -161,7 +161,14 @@ impl Engine {
                 // are writes this drain settled, and a batch of them can be
                 // what crosses the index's budget.
                 if owed == Owed::Everything {
-                    drained.completed += self.flush_what_is_applied().await?;
+                    let flushed = self.flush_what_is_applied().await?;
+                    drained.completed += flushed;
+                    // Writes that landed after this drain tidied reopen the
+                    // question. Bounded: each reopening needs fresh writes
+                    // from another round, and the tidy-up itself is not one.
+                    if flushed > 0 {
+                        tidied = false;
+                    }
                 }
                 // A drain that wrote anything ends by asking whether the index
                 // has spread across more files than it should have. Queued
@@ -192,7 +199,7 @@ impl Engine {
                 // the claim above looked. Without this a drain reported work
                 // owed that was done and only waiting to be recorded.
                 if owed == Owed::Everything
-                    && jobs::claimed(self.database.pool(), self.project).await? > 0
+                    && jobs::any_claimed(self.database.pool(), self.project).await?
                 {
                     tokio::time::sleep(CLAIMED_POLL).await;
                     continue;

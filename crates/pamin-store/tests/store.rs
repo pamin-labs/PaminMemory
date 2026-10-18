@@ -3319,7 +3319,7 @@ async fn a_claimed_job_counts_until_it_settles(database: &Database) {
     let project = repository::ensure_project(database.pool(), "claimed")
         .await
         .expect("ensure project");
-    let claimed_count = || jobs::claimed(database.pool(), project.id);
+    let any_claimed = || jobs::any_claimed(database.pool(), project.id);
     let topics: Vec<uuid::Uuid> = (1..=3).map(uuid::Uuid::from_u128).collect();
     for topic in &topics {
         jobs::enqueue(
@@ -3331,22 +3331,14 @@ async fn a_claimed_job_counts_until_it_settles(database: &Database) {
         .await
         .expect("enqueue");
     }
-    assert_eq!(
-        claimed_count().await.expect("count"),
-        0,
-        "owed is not claimed"
-    );
+    assert!(!any_claimed().await.expect("probe"), "owed is not claimed");
 
     const WORKER: &str = "the-claiming-worker";
     let claimed = jobs::claim(database.pool(), project.id, WORKER, 3, &JobKind::ALL)
         .await
         .expect("claim");
     assert_eq!(claimed.len(), 3);
-    assert_eq!(
-        claimed_count().await.expect("count"),
-        3,
-        "a claimed job counts"
-    );
+    assert!(any_claimed().await.expect("probe"), "a claimed job counts");
 
     jobs::complete(database.pool(), &[&claimed[0]], WORKER)
         .await
@@ -3354,38 +3346,43 @@ async fn a_claimed_job_counts_until_it_settles(database: &Database) {
     jobs::fail(database.pool(), &claimed[1], WORKER, "the premise")
         .await
         .expect("fail");
-    assert_eq!(
-        claimed_count().await.expect("count"),
-        1,
-        "a completed or failed job still counts"
+    // The last claim lapsed on its last attempt: nothing takes it again. With
+    // it, nothing left counts, so the completed and the failed job do not.
+    let set = |attempts: i32, available_at: time::OffsetDateTime| {
+        sqlx::query("UPDATE index_jobs SET attempts = $1, available_at = $2 WHERE id = $3")
+            .bind(attempts)
+            .bind(available_at)
+            .bind(claimed[2].id.0)
+            .execute(database.pool())
+    };
+    let lapsed = time::OffsetDateTime::now_utc() - std::time::Duration::from_secs(1);
+    set(pamin_core::MAX_ATTEMPTS, lapsed)
+        .await
+        .expect("lapse the last attempt");
+    assert!(
+        !any_claimed().await.expect("probe"),
+        "a completed job, a failed one or a lapsed last attempt counts"
     );
 
-    // The lease running out, as in the test above. A claim will take the job
-    // again, so it still counts: the claim that missed it and this count are
-    // two reads, and the lease can lapse between them.
-    sqlx::query("UPDATE index_jobs SET available_at = $1 WHERE id = $2")
-        .bind(time::OffsetDateTime::now_utc() - std::time::Duration::from_secs(1))
-        .bind(claimed[2].id.0)
-        .execute(database.pool())
-        .await
-        .expect("expire the lease");
-    assert_eq!(
-        claimed_count().await.expect("count"),
-        1,
+    // Lapsed with attempts left, a claim takes it again, so it counts: the
+    // claim that missed it and this probe are two reads, and the lease can
+    // lapse between them.
+    set(1, lapsed).await.expect("lapse an earlier attempt");
+    assert!(
+        any_claimed().await.expect("probe"),
         "a lapsed claim a claim will take again does not count"
     );
 
-    // On its last attempt, though, nothing takes it again.
-    sqlx::query("UPDATE index_jobs SET attempts = $1 WHERE id = $2")
-        .bind(pamin_core::MAX_ATTEMPTS)
-        .bind(claimed[2].id.0)
-        .execute(database.pool())
-        .await
-        .expect("use the attempts");
-    assert_eq!(
-        claimed_count().await.expect("count"),
-        0,
-        "a lapsed claim nobody will take again still counts"
+    // And on its last attempt with the lease still running, it is held.
+    set(
+        pamin_core::MAX_ATTEMPTS,
+        time::OffsetDateTime::now_utc() + std::time::Duration::from_secs(60),
+    )
+    .await
+    .expect("hold the last attempt");
+    assert!(
+        any_claimed().await.expect("probe"),
+        "a held last attempt does not count"
     );
 }
 
