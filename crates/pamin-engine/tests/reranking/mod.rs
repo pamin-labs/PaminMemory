@@ -448,12 +448,25 @@ impl Priced {
         let rescored = self.rescore.as_ref().map(|rescore| {
             let other = rescore.get(at).expect("a rescored search for every search");
             assert_eq!(other.query, query, "rescored searches are out of step");
+            assert!(
+                other.documents.len() == other.names.len()
+                    && other.scores.len() == other.names.len(),
+                "{query:?}: the rescore names {} candidates with {} documents and {} scores",
+                other.names.len(),
+                other.documents.len(),
+                other.scores.len()
+            );
             let by_name: HashMap<&str, (&String, f64)> = other
                 .names
                 .iter()
                 .map(String::as_str)
                 .zip(other.documents.iter().zip(other.scores.iter().copied()))
                 .collect();
+            assert_eq!(
+                by_name.len(),
+                other.names.len(),
+                "{query:?}: the rescore names a candidate twice"
+            );
             let scores = names
                 .iter()
                 .zip(&documents)
