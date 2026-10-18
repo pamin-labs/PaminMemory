@@ -91,7 +91,10 @@ async fn a_drain_owing_everything_settles_what_another_round_applied() {
         "the premise: a round owing less left applied writes holding their claims"
     );
     assert!(
-        jobs::held(database.pool(), project.id).await.expect("held") > 0,
+        jobs::claimed(database.pool(), project.id)
+            .await
+            .expect("claimed")
+            > 0,
         "the premise: those claims are held"
     );
 

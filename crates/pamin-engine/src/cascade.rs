@@ -46,11 +46,11 @@ const BATCH: i32 = 64;
 const AWAITING_DURABILITY: usize = 128;
 
 /// How often a drain that owes everything looks again at work another round
-/// holds.
+/// has claimed.
 ///
 /// A round is a couple of seconds and a flush less, so a tenth of one is
 /// short against the wait and long against the question, one count.
-const HELD_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+const CLAIMED_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// What a drain did.
 #[derive(Clone, Copy, Debug, Default)]
@@ -90,7 +90,7 @@ pub enum Owed {
     /// Everything. What `pamin cascade` means, and what a process with nothing
     /// behind it has to do for itself. That includes work other rounds on the
     /// project hold: it is flushed, or waited for until its claim is
-    /// recorded or lapses.
+    /// recorded, or lapses and this drain claims it again.
     Everything,
     /// What a memory needs before it can be found, and nothing that only makes
     /// finding it quicker.
@@ -155,6 +155,14 @@ impl Engine {
             )
             .await?;
             if claimed.is_empty() {
+                // Everything includes what other rounds on this project left:
+                // writes a drain owing less applied and left for a flush.
+                // Recorded first, so the question below counts them -- they
+                // are writes this drain settled, and a batch of them can be
+                // what crosses the index's budget.
+                if owed == Owed::Everything {
+                    drained.completed += self.flush_what_is_applied().await?;
+                }
                 // A drain that wrote anything ends by asking whether the index
                 // has spread across more files than it should have. Queued
                 // rather than called: maintenance is per-project work, and the
@@ -180,16 +188,14 @@ impl Engine {
                         continue;
                     }
                 }
-                // Everything includes what other rounds on this project hold:
-                // writes a drain owing less applied and left for a flush, and
-                // a round still running. Without this a drain reported work
+                // And a round still running, or one whose lease lapsed after
+                // the claim above looked. Without this a drain reported work
                 // owed that was done and only waiting to be recorded.
-                if owed == Owed::Everything {
-                    drained.completed += self.flush_what_is_applied().await?;
-                    if jobs::held(self.database.pool(), self.project).await? > 0 {
-                        tokio::time::sleep(HELD_POLL).await;
-                        continue;
-                    }
+                if owed == Owed::Everything
+                    && jobs::claimed(self.database.pool(), self.project).await? > 0
+                {
+                    tokio::time::sleep(CLAIMED_POLL).await;
+                    continue;
                 }
                 break;
             }
