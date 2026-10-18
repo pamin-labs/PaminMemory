@@ -139,11 +139,27 @@ async fn main() -> Result<()> {
         Some(path) => Workspace::at(path),
         None => Workspace::discover()?,
     };
-    // Resolved by every command, server or not: a client asks the running
+    let format = output::Format::from_flags(cli.json, cli.pretty);
+
+    // Before the settings are resolved: `stop` runs with none of them, and
+    // it is what a workspace whose `config.toml` no longer parses, or whose
+    // PostgreSQL prefix is gone, still needs to get its server down.
+    if let Command::Stop = cli.command {
+        let request = protocol::Request {
+            version: protocol::version(),
+            project: cli.project.clone(),
+            profile: String::new(),
+            vector_index: cli.vector_index.clone(),
+            server: Default::default(),
+            call: protocol::Call::Stop,
+        };
+        return send(&workspace, &request, &[], format).await;
+    }
+
+    // Resolved by every other command, server or not: a client asks the running
     // server for these, and a bad `config.toml` is refused here, before a
     // server is started that would refuse it in a log nobody reads.
     let server = settings::Server::resolve(workspace.root(), &cli.server, &matches)?;
-    let format = output::Format::from_flags(cli.json, cli.pretty);
     // Checked here although the server parses it again, so that a misspelled
     // vector index is refused before a server is started for it.
     VectorIndex::parse(&cli.vector_index)
@@ -175,7 +191,7 @@ async fn main() -> Result<()> {
     let project = cli.project.clone();
 
     let call = match cli.command {
-        Command::Serve | Command::Config => unreachable!("handled above"),
+        Command::Serve | Command::Config | Command::Stop => unreachable!("handled above"),
         Command::Init => protocol::Call::Init,
         Command::Write(args) => protocol::Call::Write(args),
         Command::Import(args) => protocol::Call::Import(args),
@@ -188,7 +204,6 @@ async fn main() -> Result<()> {
         Command::Topics(args) => protocol::Call::Topics(args),
         Command::Reindex(args) => protocol::Call::Reindex(args),
         Command::Cascade(args) => protocol::Call::Cascade(args),
-        Command::Stop => protocol::Call::Stop,
     };
 
     // Content on standard input is read here rather than server-side: the
@@ -205,14 +220,25 @@ async fn main() -> Result<()> {
         call,
     };
     let serve = settings::forwarded(&cli.server);
-    if let Some(value) = client::ask(&workspace, &request, &serve).await? {
+    send(&workspace, &request, &serve, format).await
+}
+
+/// Sends `request` to the workspace's server, starting one with `serve` if
+/// the call wants one, and prints the answer.
+async fn send(
+    workspace: &Workspace,
+    request: &protocol::Request,
+    serve: &[std::ffi::OsString],
+    format: output::Format,
+) -> Result<()> {
+    if let Some(value) = client::ask(workspace, request, serve).await? {
         return render(&request.call, &value, format);
     }
 
     // Only `stop` reaches here: there was no server, so there is nothing to
     // ask, and the database still needs stopping. Without opening a session,
     // because opening one starts the database.
-    let result = command::stop::execute(&workspace).await?;
+    let result = command::stop::execute(workspace).await?;
     format.emit(&result, || command::stop::render(&result));
     Ok(())
 }
@@ -632,6 +658,32 @@ mod tests {
             settings::forwarded(&cli.server),
             ["--model-idle", "5"].map(std::ffi::OsString::from)
         );
+    }
+
+    /// `stop` gets a workspace's server down without its settings, so a
+    /// `config.toml` that no longer parses does not keep it running.
+    #[tokio::test]
+    async fn stop_needs_no_server_settings() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(settings::CONFIG), "[serve\n").unwrap();
+        let matches = Cli::command()
+            .try_get_matches_from(["pamin", "stop"])
+            .unwrap();
+        let cli = Cli::from_arg_matches(&matches).unwrap();
+        assert!(settings::Server::resolve(root.path(), &cli.server, &matches).is_err());
+
+        let request = protocol::Request {
+            version: protocol::version(),
+            project: cli.project.clone(),
+            profile: String::new(),
+            vector_index: cli.vector_index.clone(),
+            server: Default::default(),
+            call: protocol::Call::Stop,
+        };
+        let workspace = Workspace::at(root.path());
+        send(&workspace, &request, &[], output::Format::Text)
+            .await
+            .unwrap();
     }
 
     /// The vector index a command gets when nobody names one.
