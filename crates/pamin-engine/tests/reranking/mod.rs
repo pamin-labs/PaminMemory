@@ -17,6 +17,10 @@
 //! [`replay`] first asserts that the shipped rule, replayed, reproduces the
 //! engine's order position for position; only then is another rule's figure a
 //! comparison rather than a reconstruction error.
+//!
+//! `REPLAY_OUT` also writes those searches down, with the model's scores for
+//! more candidates than shipped, so a rule that shows the model other
+//! candidates can be priced without the model; see [`record`].
 
 // Included by harnesses that use only some of it, like the other shared
 // modules here.
@@ -27,8 +31,16 @@ use std::collections::{BTreeMap, HashMap};
 use pamin_core::{Channel, Fusion, Why};
 use pamin_engine::SearchHit;
 
+mod record;
 mod router;
+pub use record::{Answers, Asked};
 pub use router::Router;
+
+/// Whether the run asked for the rules arm: `RERANK_RULES`, or `REPLAY_OUT`,
+/// which records that arm's searches.
+pub fn rules_asked() -> bool {
+    std::env::var("RERANK_RULES").is_ok() || std::env::var("REPLAY_OUT").is_ok()
+}
 
 /// How the two scores are put on one scale before they are summed.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -308,14 +320,8 @@ impl Routes {
 /// Every rule in [`rules`], measured over shipped searches one at a time, with
 /// what each costs in model pairs.
 ///
-/// With `SUFFICIENCY_OUT` set, also writes one row a query and answer key --
-/// the search's group, the group it was scored under (an XQuAD-R search is
-/// scored under three answer keys, other corpora's under one), whether the
-/// shipped first result is relevant under that key, the model's best score
-/// and its lead over the second -- to that file, for asking whether those two numbers
-/// predict a right first answer before anything exposes them. The scores are
-/// the ones the product computed in its own batches, which is the condition
-/// the withdrawn abstention experiment did not hold.
+/// With `REPLAY_OUT` set, also writes every search to that file; see
+/// [`record`].
 pub struct Priced {
     rules: Vec<(String, Rule)>,
     measured: Vec<BTreeMap<String, crate::scoring::Scores>>,
@@ -324,57 +330,26 @@ pub struct Priced {
     /// How many of `rules` price the shipped model's own scores; the rest
     /// price `rescore`'s.
     firsts: usize,
-    sufficiency: Option<std::io::BufWriter<std::fs::File>>,
-    /// `SHORTLIST_OUT`: one JSON line a search with what the model was shown,
-    /// for scoring the same shortlists with another model offline.
-    shortlist: Option<std::io::BufWriter<std::fs::File>>,
-    /// `RESCORE_IN`: another model's scores for those shortlists, one line a
-    /// search in the order they were written, priced as extra rows.
+    /// `REPLAY_OUT`: one line a search, for pricing other rules offline.
+    record: Option<record::Record>,
+    /// `RESCORE_IN`: another model's scores for what `REPLAY_OUT` recorded,
+    /// one line a search in the order they were written, priced as extra
+    /// rows.
     rescore: Option<Vec<Rescored>>,
     /// Per group, the unit each scored query belongs to, in `per_query`
     /// order, for the cross-validated choice and its paired test.
     clusters: BTreeMap<String, Vec<String>>,
 }
 
-/// One `SUFFICIENCY_OUT` row for each answer key the shipped first result was
-/// scored under (`first`, scored from a one-result list), each labelled with
-/// that key: one search scored under several keys can have its first result
-/// relevant under one and not another.
-fn sufficiency_rows(
-    group: &str,
-    first: &BTreeMap<String, crate::scoring::Scores>,
-    model: &[f64],
-) -> Vec<String> {
-    let mut model = model.to_vec();
-    model.sort_by(|left, right| right.total_cmp(left));
-    let (best, gap) = match model.as_slice() {
-        [best, second, ..] => (*best, best - second),
-        [best] => (*best, 0.0),
-        [] => (f64::NAN, f64::NAN),
-    };
-    first
-        .iter()
-        .map(|(key, scores)| {
-            format!(
-                "{group}\t{key}\t{}\t{best}\t{gap}\t{}",
-                u8::from(scores.ndcg > 0.0),
-                u8::from(!model.is_empty())
-            )
-        })
-        .collect()
-}
-
-/// The shape table `SUFFICIENCY_OUT`'s first-result check is scored into.
-const SUFFICIENCY_TABLE: &str = "sufficiency: shipped first result";
-
-/// Another model's scores for one dumped shortlist.
+/// Another model's scores for one recorded search: for the candidates the
+/// record scored, or any part of them holding what shipped.
 #[derive(serde::Deserialize)]
 pub struct Rescored {
     /// Which model scored it, with revision and precision; one per file.
     model: String,
     query: String,
     names: Vec<String>,
-    /// The texts the other model scored, as dumped, so a stale file whose
+    /// The texts the other model scored, as recorded, so a stale file whose
     /// names still match cannot be priced against changed documents.
     documents: Vec<String>,
     scores: Vec<f64>,
@@ -394,11 +369,6 @@ fn rescored_rules(model: &str) -> Vec<(String, Rule)> {
 impl Default for Priced {
     fn default() -> Self {
         let mut rules = rules();
-        let shortlist = std::env::var("SHORTLIST_OUT").ok().map(|path| {
-            std::io::BufWriter::new(
-                std::fs::File::create(path).expect("create the shortlist output"),
-            )
-        });
         let rescore = std::env::var("RESCORE_IN").ok().map(|path| {
             let text = std::fs::read_to_string(path).expect("read the rescored shortlists");
             text.lines()
@@ -414,27 +384,14 @@ impl Default for Priced {
             );
             rules.extend(rescored_rules(model));
         }
-        let sufficiency = std::env::var("SUFFICIENCY_OUT").ok().map(|path| {
-            let mut file = std::io::BufWriter::new(
-                std::fs::File::create(path).expect("create the sufficiency output"),
-            );
-            use std::io::Write;
-            writeln!(file, "group\tkey\tfirst_relevant\tbest\tgap\tscored")
-                .expect("write the header");
-            file
-        });
         crate::harness::shape::tables(rules.iter().map(|(label, _)| label));
-        if sufficiency.is_some() {
-            crate::harness::shape::tables([SUFFICIENCY_TABLE]);
-        }
         Self {
             measured: vec![BTreeMap::new(); rules.len()],
             pairs: vec![0; rules.len()],
             queries: 0,
             rules,
             firsts,
-            sufficiency,
-            shortlist,
+            record: record::Record::from_env(),
             rescore,
             clusters: BTreeMap::new(),
         }
@@ -442,9 +399,19 @@ impl Default for Priced {
 }
 
 impl Priced {
-    /// One shipped search, which `engine` ran. `score`
-    /// scores one ranking into its group or groups; `group` only labels the
-    /// sufficiency row.
+    /// Names the corpus digest `REPLAY_OUT`'s lines carry, for a harness
+    /// that publishes no shape to take it from.
+    pub fn corpus(mut self, digest: String) -> Self {
+        if let Some(record) = &mut self.record {
+            record.corpus = Some(digest);
+        }
+        self
+    }
+
+    /// One shipped search, which `engine` ran. `score` scores one ranking
+    /// into its group or groups; `answers` is how each of those groups judges
+    /// the search, asked only when `REPLAY_OUT` records it, and must agree
+    /// with `score` (the record asserts it does).
     ///
     /// [`Rule::Patience`] replays the passes `engine`'s own reranker plans
     /// for the shortlist ([`pamin_engine::Engine::rerank_passes`]), at the
@@ -453,61 +420,56 @@ impl Priced {
     /// new target. So the replay plans as the engine did without loading a
     /// second copy of the model for its planner.
     ///
-    /// `cluster` names the unit the search belongs to: searches that share
-    /// one share a fold, and the paired test runs over each unit's mean. A
-    /// LOCOMO conversation is one, since its questions share a corpus, index
-    /// and graph. `None` makes the search its own unit, which also keeps the
-    /// answer keys one search is scored under together.
-    #[allow(clippy::too_many_arguments)]
+    /// `asked.cluster` names the unit the search belongs to: searches that
+    /// share one share a fold, and the paired test runs over each unit's
+    /// mean. A LOCOMO conversation is one, since its questions share a
+    /// corpus, index and graph. `None` makes the search its own unit, which
+    /// also keeps the answer keys one search is scored under together.
     pub fn observe(
         &mut self,
         engine: &pamin_engine::Engine,
-        group: &str,
-        query: &str,
+        asked: &Asked<'_>,
         hits: &[SearchHit],
         replayed: &Replayed,
-        cluster: Option<&str>,
+        answers: impl FnOnce() -> Vec<Answers>,
         score: impl Fn(&mut BTreeMap<String, crate::scoring::Scores>, &[String]),
     ) {
-        let at = self.queries as usize;
-        let cluster = cluster.map_or_else(|| format!("search {at}"), str::to_string);
+        let (query, at) = (asked.query, self.queries as usize);
+        let cluster = asked
+            .cluster
+            .map_or_else(|| format!("search {at}"), str::to_string);
         let before: BTreeMap<String, usize> = self.measured[0]
             .iter()
             .map(|(group, scores)| (group.clone(), scores.per_query.len()))
             .collect();
         self.queries += 1;
-        if let Some(file) = &mut self.shortlist {
-            use std::io::Write;
-            let names = replayed.movable();
-            let documents = shown(hits, &names);
-            let line = serde_json::json!({
-                "group": group,
-                "query": query,
-                "names": names,
-                "documents": documents,
-                "model": replayed.model(),
-            });
-            writeln!(file, "{line}").expect("write a shortlist");
-        }
-        let rescored = self.rescore.as_ref().map(|rescore| {
-            let other = rescore
-                .get(at)
-                .expect("a rescored shortlist for every search");
-            assert_eq!(other.query, query, "rescored shortlists are out of step");
-            assert_eq!(
-                other.names,
-                replayed.movable(),
-                "the rescored shortlist is not the one this search showed the model"
-            );
-            assert_eq!(
-                other.documents,
-                shown(hits, &replayed.movable()),
-                "the rescored documents are not the ones this search showed the model"
-            );
-            replayed.rescored(other.scores.clone())
-        });
         let names = replayed.movable();
         let documents = shown(hits, &names);
+        let rescored = self.rescore.as_ref().map(|rescore| {
+            let other = rescore.get(at).expect("a rescored search for every search");
+            assert_eq!(other.query, query, "rescored searches are out of step");
+            let by_name: HashMap<&str, (&String, f64)> = other
+                .names
+                .iter()
+                .map(String::as_str)
+                .zip(other.documents.iter().zip(other.scores.iter().copied()))
+                .collect();
+            let scores = names
+                .iter()
+                .zip(&documents)
+                .map(|(name, document)| {
+                    let (theirs, score) = by_name.get(name).unwrap_or_else(|| {
+                        panic!("{name} was shown the model and is not rescored for {query:?}")
+                    });
+                    assert_eq!(
+                        *theirs, document,
+                        "the rescored document is not the one this search showed the model"
+                    );
+                    *score
+                })
+                .collect();
+            replayed.rescored(scores)
+        });
         let documents: Vec<&str> = documents.iter().map(String::as_str).collect();
         // A search the engine declined to rerank ran no pass, and its
         // reranker may still be loading: there is nothing to plan.
@@ -538,6 +500,8 @@ impl Priced {
             score(into, &replayed.order(*rule));
             *pairs += replayed.pairs(*rule) as u64;
         }
+        let ship = shipped(&self.rules).expect("the shipped rule is priced");
+        let mut shipped_ndcg = BTreeMap::new();
         // Every row scores the same groups, so the first says which grew.
         for (group, scores) in &self.measured[0] {
             let grown = scores.per_query.len() - before.get(group).copied().unwrap_or(0);
@@ -545,30 +509,21 @@ impl Priced {
                 .entry(group.clone())
                 .or_default()
                 .extend(std::iter::repeat_n(cluster.clone(), grown));
-        }
-        if let Some(file) = &mut self.sufficiency {
-            use std::io::Write;
-            let shipped = replayed.order(shipped_rule());
-            // A one-result list scores above zero exactly when that result is
-            // relevant, whatever the corpus's own judgements are.
-            let mut first = BTreeMap::new();
-            crate::harness::shape::table(SUFFICIENCY_TABLE);
-            score(&mut first, &shipped[..shipped.len().min(1)]);
-            for row in sufficiency_rows(group, &first, replayed.model()) {
-                writeln!(file, "{row}").expect("write a sufficiency row");
+            if grown > 0 {
+                let ndcg = self.measured[ship][group].per_query.last();
+                shipped_ndcg.insert(group.clone(), *ndcg.expect("scored just now"));
             }
+        }
+        if let Some(record) = &mut self.record {
+            record.observe(engine, asked, hits, replayed, &answers(), &shipped_ndcg);
         }
     }
 
     pub fn report(&mut self, title: &str) {
-        // Flushed with errors checked, so a truncated artifact fails the run
-        // instead of being dropped silently with its writer.
-        for file in [&mut self.sufficiency, &mut self.shortlist]
-            .into_iter()
-            .flatten()
-        {
-            use std::io::Write;
-            file.flush().expect("flush a raw artifact");
+        // Finished first, so a truncated record fails the run instead of
+        // being dropped silently with its writer.
+        if let Some(record) = &mut self.record {
+            record.finish();
         }
         report(
             title,
@@ -1183,28 +1138,6 @@ mod tests {
             assert_eq!(scores.order(rule), scores.fused, "{rule:?}");
             assert_eq!(scores.pairs(rule), 0, "{rule:?}");
         }
-    }
-
-    /// A search scored under several answer keys gets a row for each, so
-    /// a first result relevant under one key and not another is not merged
-    /// into one row for the search.
-    #[test]
-    fn sufficiency_has_a_row_for_each_answer_key() {
-        let mut first: BTreeMap<String, crate::scoring::Scores> = BTreeMap::new();
-        let shown = ["a".to_string()];
-        for (key, relevant) in [("cross_lingual", false), ("same_language", true)] {
-            first
-                .entry(key.to_string())
-                .or_default()
-                .add(&shown, 1, |_| relevant);
-        }
-        assert_eq!(
-            sufficiency_rows("de", &first, &[0.5, 2.0]),
-            [
-                "de\tcross_lingual\t0\t2\t1.5\t1",
-                "de\tsame_language\t1\t2\t1.5\t1"
-            ]
-        );
     }
 
     #[test]

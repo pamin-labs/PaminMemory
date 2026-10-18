@@ -72,6 +72,8 @@
 //! |---|---|
 //! | `LOCOMO_DIR` | where `locomo10.json` and `locomo-audit-errors.json` are cached, instead of fetching them |
 //! | `LOCOMO_CONVERSATIONS` | read only the first this many conversations |
+//! | `RERANK_RULES` | the shipped searches, with the graph, priced under every rule for using the reranker's scores |
+//! | `REPLAY_OUT` | a path: run `RERANK_RULES` and write each search down, fused list, labels and the model's scores past the shipped shortlist, for pricing other shortlists offline |
 //!
 //! Projects are named after a digest of the records and links they hold, and
 //! of the execution plan and model revision that embedded them, so a reused
@@ -623,10 +625,9 @@ async fn locomo_evidence_with_and_without_links() {
     // nDCG, the unit the paired test is run over.
     let mut by_conversation: [BTreeMap<String, Vec<f64>>; 2] = Default::default();
     // `RERANK_RULES`: the shipped searches, with the graph, replayed under
-    // every rule for using the reranker's scores. See `reranking`.
-    let mut rules = std::env::var("RERANK_RULES")
-        .is_ok()
-        .then(reranking::Priced::default);
+    // every rule for using the reranker's scores; `REPLAY_OUT` records them.
+    // See `reranking`.
+    let mut rules = reranking::rules_asked().then(reranking::Priced::default);
     let mut questions = 0usize;
     let mut linked_edges = 0usize;
     const TABLES: [&str; 2] = ["without the graph", "with the graph"];
@@ -690,13 +691,27 @@ async fn locomo_evidence_with_and_without_links() {
                 let replayed = reranking::replay(&hits);
                 rules.observe(
                     &engine,
-                    &question.category,
-                    &question.text,
+                    &reranking::Asked {
+                        group: &question.category,
+                        question: &question.id,
+                        query: &question.text,
+                        // What `write` labels every turn with.
+                        language: Some("eng"),
+                        // The conversation's questions share its corpus,
+                        // index and graph: one unit for the folds and the
+                        // paired test.
+                        cluster: Some(conversation.id.as_str()),
+                    },
                     &hits,
                     &replayed,
-                    // The conversation's questions share its corpus, index
-                    // and graph: one unit for the folds and the paired test.
-                    Some(conversation.id.as_str()),
+                    || {
+                        vec![reranking::Answers {
+                            key: question.category.clone(),
+                            judged: question.evidence.len(),
+                            relevant: question.evidence.clone(),
+                            dropped: HashSet::new(),
+                        }]
+                    },
                     |into, ranking| {
                         harness::shape::tally(&question.category, &question.id);
                         into.entry(question.category.clone()).or_default().add(

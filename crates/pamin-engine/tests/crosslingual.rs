@@ -206,7 +206,6 @@
 //! profile, arm, digest and query order.
 
 mod channels;
-mod features;
 mod harness;
 mod reranking;
 mod scoring;
@@ -378,6 +377,11 @@ impl Query<'_> {
     /// table the arm last named with `harness::shape::table`.
     fn relevant(&self, group: &str) -> (HashSet<&str>, HashSet<&str>) {
         harness::shape::tally(group, &self.id());
+        self.answer_key(group)
+    }
+
+    /// [`relevant`](Self::relevant), read without counting it as scored.
+    fn answer_key(&self, group: &str) -> (HashSet<&str>, HashSet<&str>) {
         let own = self.question.answers[self.language].as_str();
         let translations: HashSet<&str> = self
             .question
@@ -1869,38 +1873,6 @@ async fn search_reaches_across_languages() {
         return;
     }
 
-    // `FEATURES_OUT`: every candidate fusion saw, one row each, for fitting a
-    // fusion offline. See `features`. Each query is written once in each of
-    // `GROUPS` -- three rows per query, 3,570 question-group pairs on a full
-    // run -- and its question id is the dataset's, so every asking of one
-    // question can be kept in one fold.
-    if let Some(mut dump) = features::Features::from_env("xquad-r") {
-        const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
-        harness::shape::tables(["features"]);
-        harness::shape::table("features");
-        for query in &queries {
-            let hits = engine
-                .search_fused(query.text(), WIDE, harness::depths(), Fusion::default())
-                .await
-                .expect("search");
-            for group in GROUPS {
-                let (relevant, drop) = query.relevant(group);
-                let asked = features::Asked {
-                    group,
-                    question: &format!("{}/{}", query.question.id, query.language),
-                    text: query.text(),
-                    language: Some(query.language),
-                    judged: relevant.len(),
-                };
-                dump.observe(&asked, &hits, WIDE, |topic| {
-                    (!drop.contains(topic)).then(|| f64::from(relevant.contains(topic)))
-                });
-            }
-        }
-        dump.finish(queries.len() * GROUPS.len());
-        return;
-    }
-
     // `CHANNELS` reports what each channel is worth on its own, what the fused
     // list looks like with each one taken away, how far the two lexical
     // channels agree with each other, and whether the reranker keeps a query's
@@ -1943,8 +1915,8 @@ async fn search_reaches_across_languages() {
 
     // `RERANK_RULES` prices other rules for using the shipped tier's scores
     // -- blending them with fusion's rather than substituting -- from one
-    // shipped run. See `reranking`.
-    if std::env::var("RERANK_RULES").is_ok() {
+    // shipped run; `REPLAY_OUT` records that run. See `reranking`.
+    if reranking::rules_asked() {
         rerank_rules(&engine, &queries, &named).await;
         return;
     }
@@ -3272,12 +3244,30 @@ async fn rerank_rules(engine: &Engine, queries: &[Query<'_>], named: &str) {
         let replayed = reranking::replay(&hits);
         priced.observe(
             engine,
-            query.language,
-            query.text(),
+            &reranking::Asked {
+                group: query.language,
+                question: &format!("{}/{}", query.question.id, query.language),
+                query: query.text(),
+                language: Some(query.language),
+                // One search, scored under every answer key: one unit.
+                cluster: None,
+            },
             &hits,
             &replayed,
-            // One search, scored under both answer keys: one unit.
-            None,
+            || {
+                GROUPS
+                    .iter()
+                    .map(|group| {
+                        let (relevant, dropped) = query.answer_key(group);
+                        reranking::Answers {
+                            key: group.to_string(),
+                            judged: relevant.len(),
+                            relevant: relevant.into_iter().map(str::to_string).collect(),
+                            dropped: dropped.into_iter().map(str::to_string).collect(),
+                        }
+                    })
+                    .collect()
+            },
             |into, ranking| score(into, query, ranking),
         );
     }
