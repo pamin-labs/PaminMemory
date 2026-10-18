@@ -192,12 +192,11 @@ fn open_tally() {
 }
 
 /// `PAMIN_` variables that say only where something is, or what to log, and
-/// change no result -- plus `PAMIN_PROFILE`, which the record names already,
-/// and the four `PAMIN_ENGINE_` variables `build.rs` sets with
-/// `cargo:rustc-env`, which Cargo also sets on every test it runs: they
+/// change no result -- and the four `PAMIN_ENGINE_` variables `build.rs` sets
+/// with `cargo:rustc-env`, which Cargo also sets on every test it runs: they
 /// describe the build, which the record names as its source and build.
 /// Every other `PAMIN_` variable is taken to change what is measured.
-const NOT_SETTINGS: [&str; 16] = [
+const NOT_SETTINGS: [&str; 15] = [
     "PAMIN_EMBEDDING_TEST_OUTPUT",
     "PAMIN_ENGINE_BUILD_ENVIRONMENT",
     "PAMIN_ENGINE_COMMIT",
@@ -210,7 +209,6 @@ const NOT_SETTINGS: [&str; 16] = [
     "PAMIN_NATIVE_TEST_CACHE",
     "PAMIN_POSTGRES_DIR",
     "PAMIN_PREPARED_CACHE",
-    "PAMIN_PROFILE",
     "PAMIN_RERANK_TEST_OUTPUT",
     "PAMIN_SHARED_CACHE",
     "PAMIN_TEST_MODEL_CACHE",
@@ -3583,13 +3581,15 @@ mod tests {
     }
 
     /// A harness on the shipped path refuses what the CLI resolves before the
-    /// engine and the search's knobs, and allows where things are, what is
-    /// logged, the build Cargo describes, and the producer's settings.
+    /// engine, the search's knobs and the removed profile, and allows where
+    /// things are, what is logged, the build Cargo describes, and the
+    /// producer's settings.
     #[test]
     fn the_shipped_path_refuses_what_it_does_not_honour() {
         let refused = [
             "PAMIN_CHANNEL_DEPTH",
             "PAMIN_GRAPH_DEPTH",
+            "PAMIN_PROFILE",
             "PAMIN_RERANK",
             "PAMIN_RERANK_BATCH",
             "PAMIN_RERANK_BATCH_TOKENS",
@@ -3605,7 +3605,6 @@ mod tests {
             "PAMIN_EVAL_HOME",
             "PAMIN_HOME",
             "PAMIN_LOG",
-            "PAMIN_PROFILE",
             "PAMIN_UNINDEXED_BUDGET",
         ];
         assert_eq!(
@@ -3954,11 +3953,7 @@ mod tests {
                 .map(|(name, value)| (name.to_string(), value.to_string()));
             arm(&settings(set))
         };
-        let shipped = named(&[
-            ("PAMIN_EVAL_HOME", "/data"),
-            ("PAMIN_PROFILE", "fast"),
-            ("HOME", "/root"),
-        ]);
+        let shipped = named(&[("PAMIN_EVAL_HOME", "/data"), ("HOME", "/root")]);
         assert_eq!(shipped, "shipped");
         // What `cargo test` puts in every test's environment from `build.rs`.
         let built = named(&[

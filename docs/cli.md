@@ -15,15 +15,14 @@ The examples below are real output from a workspace built by the writes in
 | --- | --- | --- | --- |
 | `--home <path>` | `PAMIN_HOME` | `~/.pamin` | Where the database, index, and downloaded models live |
 | `--project <name>` | `PAMIN_PROJECT` | `default` | The memory namespace to operate on |
-| `--profile <name>` | `PAMIN_PROFILE` | `accuracy` | Embedding profile: `speed`, `balanced`, `accuracy`, or experimental `dual_accuracy` |
 | `--vector-index <name>` | `PAMIN_VECTOR_INDEX` | `memory` | Vector index a project is built with: `disk` or `memory` |
 | `--json` | | off | Emit JSON instead of text, on one line |
 | `--pretty` | | off | Indent that JSON. Requires `--json` |
 | | `PAMIN_POSTGRES_DIR` | unset | Use a PostgreSQL already on this machine instead of installing one |
 | | `PAMIN_JIT` | `off` | Let PostgreSQL compile query expressions with LLVM |
 | | `PAMIN_MODEL_IDLE` | `1800` | Seconds a resident server holds a model nothing is asking for |
-| | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use, or on the CPU, for the batches of a rerank and stored texts of the `accuracy` and `dual_accuracy` (BGE-M3) profiles, how many single-threaded passes run at once |
-| | `PAMIN_DEVICE` | automatic shared model route | `cpu` forces optimized CPU; Apple `fast` already selects it by default |
+| | `PAMIN_INFERENCE_THREADS` | one per core | Threads one forward pass may use, or on the CPU, for the batches of a rerank and stored texts of the embedding model (BGE-M3), how many single-threaded passes run at once |
+| | `PAMIN_DEVICE` | automatic shared model route | `cpu` forces optimized CPU |
 | | `PAMIN_EP_LIBRARIES` | none | Platform-separated absolute paths to installed, ABI-compatible NPU plugin EP libraries; only discovered NPU devices participate in automatic plugin routing. Unavailable/incompatible libraries retain ordinary GPU/CPU fallback |
 | | `PAMIN_PREPARED` | on | `off` loads a model from its download rather than from a mapped copy, fetching the download again if it was removed |
 
@@ -64,7 +63,7 @@ does not keep the 25 MB of LLVM bitcode that only inlining reads.
 `PAMIN_MODEL_IDLE` is how long `pamin serve` keeps a model and the indexes
 pinning it after nothing has asked for them. It is a memory setting and the
 trade is measured on both sides: on a 13,014-document project a server holding
-the embedder and the `fast` reranker is 2,263 MB resident and 88-101 MB once it
+the embedder and the since-removed `fast` reranker was 2,263 MB resident and 88-101 MB once it
 has given them back, so half an hour of quiet returns about 2.2 GB -- and the
 first search afterwards takes 4,528 ms instead of 116, which is 88% of what a
 server starting from nothing costs. Thirty minutes is where that stops being a
@@ -111,8 +110,8 @@ use, where the previous layout held 314 MiB in the same measurement (and
 582 MiB when each model built its own copy). The per-model figures above were taken
 with the previous layout. What it costs is disk. Each copy is larger than the
 model it came from, because the weights are also stored in the layout the CPU's
-kernels use -- a data file of 874 MB for the 570 MB `accurate` reranker, about
-as much for the embedder, 140 MB for the 119 MB `fast` reranker -- and writing
+kernels use -- a data file of 874 MB for the 570 MB reranker, and about as
+much for the embedder -- and writing
 it makes that first load slower, 5.1 s for `accurate`.
 
 Once a copy has loaded, the download it was written from is removed, since
@@ -136,8 +135,9 @@ has since replaced -- is removed once no running process has it loaded and none
 has loaded it for two weeks. So a directory shared by two versions keeps both
 copies while both are in use, and a version that goes two weeks without running
 while the other does writes its copies again when it next runs -- fetching the
-model first, if its download was removed. A model nothing loads any more -- a
-reranker tier switched off -- keeps its copy until it is deleted. Delete
+model first, if its download was removed. A model nothing loads any more --
+one of the retired profiles or the `fast` reranker -- keeps its copy until it is
+deleted; see [Upgrading from profiles and tiers](#upgrading-from-profiles-and-tiers). Delete
 `models/prepared/` only after every process using that model directory has
 stopped; the next load downloads the model
 again. The download is kept when `HF_HOME` is set -- that cache is shared with
@@ -182,14 +182,12 @@ differ.
 
 The `accurate` reranker calibrates viable shared accelerator plans against optimized CPU:
 Eligible registered NPU devices are considered first, followed by CUDA on x86-64 Linux, Core ML `ALL` on Apple silicon, or DirectML on Windows, with optimized CPU/SIMD subgraph fallback. The qualified fastest complete-call plan wins; provider order alone does not determine it.
-The `fast` tier does the same except on Apple silicon, where its measured ARM
-INT8 CPU export is both faster and no less accurate on the complete XQuAD-R
-comparison than its CoreML FP32 export. Provider selection is logged when a
+Provider selection is logged when a
 model loads; Core ML may itself use CPU, GPU or ANE, and its internal placement
 is not established by the provider label. The different weight exports can
 produce different scores. `PAMIN_DEVICE=cpu` forces CPU for comparable tests
 or when another job needs the accelerator. Embedding also tries shared
-accelerator plans using the same export, tokenizer, prefixes and indexed model
+accelerator plans using the same export, tokenizer and indexed model
 identity. Compatibility checks compare vectors with the CPU export; a rejected
 plan falls back. The finite startup fixtures are a smoke check, not full-corpus
 retrieval certification. With automatic dispatch, a bounded complete model-call
@@ -197,9 +195,7 @@ query fixture compares viable plans against interleaved optimized-CPU controls.
 Maximum batch/length conformance is checked separately from singleton query
 timing, so bulk ingest throughput does not decide the search plan. Its
 validated winner is reused for idle reloads. Identified CUDA and Apple CoreML choices can also persist across fresh CLI processes for up to one day; numerical rejects are retried after five minutes. Keys include model snapshot, actual application source/compiler configuration and mapped running-image identity, device inventory and runtime settings. Opaque DirectML/NPU choices remain process-local until stable hardware/driver identity is available. Cache-hit sessions are output-checked, not retimed; starting a new process alone does not establish a cold calibration arm. This estimates the fastest
-plan for that fixture; it is not universal per-query autotuning. E5 accelerator
-batches are capped at eight (CPU retains 256), including maximum-token startup
-fixtures, so a 64/256-passage request is split into those bounded shapes.
+plan for that fixture; it is not universal per-query autotuning.
 Broader retrieval and resource validation remain under review. Changing a model/export or encoding contract needs paired quality
 and reindex validation.
 
@@ -218,8 +214,8 @@ needs, in which case the reranker quietly stays on the CPU. On Apple silicon
 nothing needs copying: Core ML is linked into the binary from the system.
 
 Apple CoreML has been measured on the full XQuAD-R product path: it wins for
-`accurate` with static buckets and loses for `fast` against optimized CPU on
-this machine. [Full Fast conditions and rows](../benchmarks/results/inference/fast-apple-backend-2026-09-30.md).
+the reranker with static buckets on this machine. (It lost to optimized CPU for
+the since-removed `fast` reranker: [conditions and rows](../benchmarks/results/inference/fast-apple-backend-2026-09-30.md).)
 CUDA and DirectML still require their own device-specific timing and precision
 checks. The `every_device_orders_like_the_cpu` test in
 `crates/pamin-index/tests/reranking.rs` checks clearly separated pairs; it is
@@ -235,22 +231,49 @@ excluded.
 `PAMIN_LOG` sets the log filter (`PAMIN_LOG=debug`). Logs go to stderr, so they
 never contaminate the JSON on stdout.
 
-Changing `--profile` changes the vector space. The index records the profile it
-was built with and refuses to open under a different one, naming `reindex` in
-the error rather than silently mixing two spaces.
+Every project embeds with one model, and every search reranks with one
+reranker. There is nothing to choose between:
 
-| Profile | Model | Width | Resident | Per query |
+| Role | Model | Width | Resident | Per query |
 | --- | --- | --- | --- | --- |
-| `speed` | multilingual-e5-small | 384 | 465 MB | 13 ms |
-| `balanced` | multilingual-e5-base | 768 | 1.1 GB | 26 ms |
-| `accuracy` (default) | BGE-M3, int8 weights | 1024 | 560 MB | 35 ms |
+| Embedding | BGE-M3, int8 weights (`gpahal/bge-m3-onnx-int8`) | 1024 | 560 MB | 35 ms |
+| Reranking | bge-reranker-v2-m3, int8 weights | | 571 MB loaded | see [`pamin search`](#pamin-search) |
 
-The default is the largest model because quantized weights make it the smallest
-download and because the gap it closes is the one Påmin Memory is about: on the
-evaluation corpus it roughly doubles cross-lingual retrieval against
-`balanced`, matches it on same-language queries, and costs nine milliseconds.
-`balanced` is kept for those nine milliseconds and for projects already indexed
-under it; there is no other reason left to choose it.
+BGE-M3 was the `accuracy` profile while there were others. It was chosen
+because quantized weights make it a small download and because the gap it
+closes is the one Påmin Memory is about: on the evaluation corpus it roughly
+doubled cross-lingual retrieval against multilingual-e5-base (`balanced`),
+matched it on same-language queries, and cost nine milliseconds more. The index
+records the model it was built with and refuses to open under another, naming
+`reindex` in the error rather than silently mixing two vector spaces.
+
+### Upgrading from profiles and tiers
+
+Earlier versions had embedding profiles (`--profile`, `PAMIN_PROFILE`:
+`speed`, `balanced`, `accuracy`, `dual_accuracy`) and reranking tiers
+(`--rerank`, `PAMIN_RERANK`: `off`, `fast`, `accurate`). What shipped as
+`accuracy` and `accurate` is what every project now uses, so a workspace that
+kept the defaults needs nothing: its indexes open as they are, and plans
+measured for the two models are reused.
+
+- `--profile` and `--rerank` are unknown arguments. Setting `PAMIN_PROFILE` or
+  `PAMIN_RERANK`, to any value, fails with a message naming the setting, as
+  `PAMIN_NO_SERVER` does; unset it.
+- A project indexed under `speed`, `balanced` or `dual_accuracy` no longer
+  opens. The error names the profile it was built with and `pamin reindex`,
+  which rebuilds it with BGE-M3 from PostgreSQL. Until then the server does not
+  catch up that project's owed work, and says so in its log.
+- The retired models' downloads are not deleted, because the model directory
+  may be shared. Once no older version of `pamin` uses this model directory,
+  you can remove them by hand from `models/` (or `HF_HOME`, if set), as
+  whichever of these exist: `models--intfloat--multilingual-e5-small` and
+  `models--intfloat--multilingual-e5-base` (`speed`, `balanced`),
+  `models--perplexity-ai--pplx-embed-v1-0.6b` and `pplx-int8-v1`
+  (`dual_accuracy`), and `models--cross-encoder--mmarco-mMiniLMv2-L12-H384-v1`
+  (the `fast` reranker). Their prepared copies are not named by model; with
+  every process using the directory stopped, deleting `models/prepared/` as a
+  whole removes them, and the next load of the two current models fetches and
+  prepares them again.
 
 `--vector-index` chooses how a project's vectors are indexed. Both choices
 store every vector in half precision and search the same way -- the index
@@ -281,15 +304,13 @@ all the time, and wherever resident memory is not what is scarce.
 
 The index records which one it was built with, and changing the setting
 changes nothing about an index that exists: opening it as the other one is
-refused, naming `reindex`, as a profile change is. `pamin reindex` rebuilds it
+refused, naming `reindex`. `pamin reindex` rebuilds it
 the new way and reuses every vector it holds. An index built before this
 choice existed stored full-precision vectors under an in-memory graph; it is
 refused the same way and moved the same way.
 
 Projects are namespaces, not tags. Each has its own index directory, so nothing
-crosses between them and a rebuild of one leaves the others alone. That also
-means each project carries its own embedding profile: changing `--profile` for
-one is a rebuild of that one.
+crosses between them and a rebuild of one leaves the others alone.
 
 Every command exits non-zero on failure with the reason on stderr:
 
@@ -525,11 +546,15 @@ recall you cannot measure from outside, and an agent that wants control over
 retrieval should reach for `grep`, `read`, and `neighbors` rather than adjust
 ranking internals it has no way to evaluate.
 
-`--rerank` chooses how much to spend reordering the results, and takes
-`PAMIN_RERANK`:
+Every search reranks: bge-reranker-v2-m3, with int8 weights, reads the query
+and each candidate together and reorders what fusion found. There is no
+setting for it. Earlier versions chose a tier with `--rerank` and
+`PAMIN_RERANK` -- `off`, `fast` (a 119 MB MiniLM cross-encoder) or `accurate`,
+which is the one kept; see
+[Upgrading from profiles and tiers](#upgrading-from-profiles-and-tiers).
 
-The table below is a historical comparison, measured before the corrected
-XQuAD-R same-language key and the current full-head `accurate` pass. Its
+The comparison that chose it is below. It is historical, measured before the
+corrected XQuAD-R same-language key and the current full-head pass, and its
 same-language and latency figures do not describe the current path. The
 current comparison is tracked in [#121](https://github.com/pamin-labs/PaminMemory/pull/121).
 
@@ -539,27 +564,20 @@ current comparison is tracked in [#121](https://github.com/pamin-labs/PaminMemor
 | `fast` | 119 MB | 359 ms | **+0.0397** | **−0.0060** |
 | `accurate` | 571 MB | 1522 ms | **+0.0482** | +0.0006 |
 
-The current Apple Silicon `fast` route uses optimized CPU. On the complete
-XQuAD-R product path it scored cross-language nDCG@10 0.657172 at a 0.330 s
-whole-search p50, versus CoreML FP32's 0.656096 and stitched 1.630 s p50;
-the CoreML latency came from two processes after a disk-guard interruption.
-These [current backend measurements](../benchmarks/results/inference/fast-apple-backend-2026-09-30.md)
-must not be substituted into the historical table's different setup.
-
 All three rows are one run over the same 1,190 queries, taken when a tier
-reranked twenty candidates; it now reranks thirty, which the `accurate` tier
-turns into +0.0063 more cross-lingual (`p = 0.0001`) for half again as many
-model pairs. At thirty a search has been timed only on a busy machine, where
-the batching that ships with it made one 0.83 of what it was on this corpus
-([measured.md](measured.md) has the figures), so read 1522 ms as the cost
-at twenty candidates rather than as today's. The
-rows can be read against each other; none of them can be read against a figure published before
-this table, and the `off` and `fast` rows moved when the fusion layer changed
-underneath them. Paired bootstrap against `off`, 10,000 resamples: cross-lingual
-`p = 0.0001` for both tiers; same-language `p = 0.0008` for `fast` and not
-significant for `accurate`. `recall@50` is 0.8962 and 0.9571 in **every** arm,
-to four decimals — a reranker reorders a shortlist and never changes what is in
-it.
+reranked twenty candidates; the reranker now sees thirty, which turned into
++0.0063 more cross-lingual (`p = 0.0001`) for half again as many model pairs.
+At thirty a search has been timed only on a busy machine, where the batching
+that ships with it made one 0.83 of what it was on this corpus
+([measured.md](measured.md) has the figures), so read 1522 ms as the cost at
+twenty candidates rather than as today's. Paired bootstrap against `off`,
+10,000 resamples: cross-lingual `p = 0.0001` for both tiers; same-language
+`p = 0.0008` for `fast` and not significant for `accurate`. `recall@50` is
+0.8962 and 0.9571 in **every** arm, to four decimals — a reranker reorders a
+shortlist and never changes what is in it. Query by query against `fast`,
+`accurate` was ahead by 0.0086 cross-lingual (`p = 0.0015`) and 0.0066
+same-language (`p = 0.0001`) on XQuAD-R, and by 0.0411 on MIRACL Swahili (83
+queries better, 12 worse, `p = 0.0001`).
 
 Measured on XQuAD-R's 13,014 sentences in eleven languages, through
 `Engine::search_reranked` — the call this command makes, one layer below the
@@ -568,71 +586,48 @@ tiers as whole CLI invocations, 77/251/1241 ms, and the difference between the
 two sets of figures is the invocation; neither is wrong and they are not
 interchangeable.
 
-What the `off` row is is worth knowing before reading the other two as
+What the `off` row is is worth knowing before reading the reranker as
 overhead. Most of it is not retrieval either: the four channels, fusion and
 reading the states back are about 16 ms of it, and the rest is the forward
-pass that turns your query into a vector — 68 ms on this profile's model, on
+pass that turns your query into a vector — 68 ms for the embedding model, on
 four cores, for a query the server has not been asked before. A resident
 server remembers a query's vector, so asking the same thing twice costs the
 16 ms alone. [ADR 0001](adr/0001-tech-selection.md) divides all four stages.
 
-`accurate` is the default, on accuracy. In the historical comparison above,
-query by query against `fast` it was ahead by 0.0086 cross-lingual
-(`p = 0.0015`) and 0.0066 same-language (`p = 0.0001`) on XQuAD-R, and by
-0.0411 on MIRACL Swahili (83 queries better, 12 worse, `p = 0.0001`). What that
-costs is the latency column: 1522 ms against `fast`'s 359, about a quarter of
-the throughput, and 571 MB loaded against 119.
+The same-language column above comes from parallel text, where it is *the same
+1,190 queries* as the cross-lingual column scored against a different answer
+key — so every query in it still has correct answers in ten other languages
+sitting in the index, which a real single-language workspace does not. On the
+one genuinely single-language corpus measured, the pass **gains** 0.0496 nDCG@10
+over fusion alone.
 
-`fast` was the default until it was measured against that order. Under the
-historical same-language key, it lost −0.0060 at
-`p = 0.0008`, nineteen queries worse against three better, and on MIRACL at the
-`speed` profile −0.0154 against no reranking at all (35 better, 58 worse,
-`p = 0.014`). Ask for it when a search has to stay under half a second and the
-workspace is mostly cross-lingual, which is where it still earns its place.
-
-**That is not a reason to set `off` on a single-language workspace, and this
-page used to say it was.** The same-language column above comes from parallel
-text, where it is *the same 1,190 queries* as the cross-lingual column scored
-against a different answer key — so every query in it still has correct answers
-in ten other languages sitting in the index, which a real single-language
-workspace does not. On the one genuinely single-language corpus measured, at
-this profile, the pass **gains** 0.0201 at `fast` and 0.0496 at `accurate`. Set
-`off` to buy back the time if you want the latency; do not set it expecting
-better ranking.
-
-The same run measured two more tiers, `balanced` and `noncommercial`, and both
-were removed: `fast` beat each of them cross-lingual at under half the latency.
-[ADR 0001](adr/0001-tech-selection.md) keeps their rows. Every tier left is
-permissively licensed; [NOTICE](../NOTICE) lists what each one downloads and the
-chain behind it.
+[ADR 0001](adr/0001-tech-selection.md) keeps the rows of the tiers removed
+earlier, `balanced` and `noncommercial`. The reranker is permissively licensed;
+[NOTICE](../NOTICE) lists what it downloads and the chain behind it.
 
 The model is fetched the first time a search asks for one, into the same cache
 as the embedding model.
 
-It costs memory while it is loaded, and more than its download suggests: on a
-13,014-document project a server serving `off` is 1,625 MB resident, and one
-`fast` search takes it to 2,007 or 2,271 MB -- so between 380 MB and 645 MB for
-a 130 MB model, the difference being the inference runtime's arenas rather than
-the weights. `pamin serve` gives it back after five minutes with nothing asking
-for that tier, which returns 368 to 380 MB of it to the operating system; the
-arena growth above that stays. A workspace that sets `off` never pays it at
-all. Those figures are for `fast`; `accurate`'s model is 571 MB against 119,
-and its resident cost has not been taken on its own.
+It costs memory while it is loaded, and more than its download suggests. On a
+13,014-document project a server that had not reranked was 1,625 MB resident,
+and one search with the since-removed 130 MB `fast` model took it to 2,007 or
+2,271 MB -- the difference being the inference runtime's arenas rather than
+the weights. `accurate`'s model is 571 MB against 119, and its resident cost
+has not been taken on its own. `pamin serve` gives it back after
+`PAMIN_MODEL_IDLE` with nothing asking for it; the arena growth above that
+stays.
 
 A reranker reads the query and a memory together, which lets it correct an
 order the channels got wrong and costs a forward pass for every candidate it
-sees. `accurate` scores the entire fused head, including lexical hits, then
-blends its scores with fusion's. `fast` still reorders only candidates that no
-lexical channel found. Both tiers can also see strong graph-only candidates
+sees. This one scores the entire fused head, including lexical hits, then
+blends its scores with fusion's. It can also see strong graph-only candidates
 below the head.
 
 On MIRACL Swahili dev's full 131,924 passages and 482 judged queries, the
-recorded `accuracy` profile's full-head `accurate` pass scored nDCG@10 0.8193
-and recall@50 0.9568 through `search_reranked`; replay reproduced every
-returned order. The earlier confined pass's +0.0257 over `off` was measured
-on the `speed` profile and is historical, not a paired comparison with this run.
-The raw run's complete code/device provenance is not yet archived, so this
-record is not a verified current headline measurement.
+recorded full-head pass scored nDCG@10 0.8193 and recall@50 0.9568 through
+`search_reranked`; replay reproduced every returned order. The raw run's
+complete code/device provenance is not yet archived, so this record is not a
+verified current headline measurement.
 
 The resident server caches logits for complete ordered batches within one
 loaded model and tokenizer. With the INT8 export, a pair's score can depend on
@@ -651,8 +646,7 @@ server stops. The older pair-cache timings are historical, as recorded in the
 
 The latencies are from four cores. Published figures for a reranker of this
 size are a few milliseconds per candidate rather than the ten measured here,
-and the difference is the core count; on an ordinary server `fast` is tens of
-milliseconds.
+and the difference is the core count.
 
 `--graph-depth` accepts 0 to 4 and refuses anything larger. A topic's
 neighbourhood grows multiplicatively with each hop and hub topics reach five
@@ -846,9 +840,8 @@ the walk started from. For `depends_on`, `supersedes`, `contradicts`,
 `derived_from` and `part_of` the direction *is* the claim, so it is stated
 rather than left to be inferred.
 
-**`reranked`** — the cross-encoder scored this result. With `accurate`, the
-result's position comes from its model score blended with fusion; with `fast`,
-the model orders the selected candidates. A result without this entry was not
+**`reranked`** — the cross-encoder scored this result. Its position comes
+from its model score blended with fusion. A result without this entry was not
 shown to the model. The entry carries no score on the wire: a cross-encoder's
 score is calibrated against nothing, so it
 separates the candidates of one shortlist and means nothing between two
@@ -859,7 +852,7 @@ The entry distinguishes scored from unscored results; it does not claim that
 the model alone set the final order or that the position changed. A line
 reading `vector#12 reranked` says the model scored that candidate. A line
 without `reranked` was not scored, whether it came from a lexical channel or
-fell below the selected depth. `--rerank off` produces no such entries.
+fell below the selected depth.
 
 There is no fourth kind. There used to be a `modifier`, a post-fusion
 adjustment that lifted a result by its recorded `importance` and by the balance
@@ -1138,8 +1131,8 @@ retrieval engine replaceable and makes a breaking engine upgrade a rebuild
 rather than a migration. Relationships are unaffected: they live in the
 authority store, not the index.
 
-Run it after changing `--profile` or `--vector-index`, or after deleting the
-index directory. It rebuilds one project — the one named by `--project` — and
+Run it after changing `--vector-index`, on a project indexed under a retired
+profile, or after deleting the index directory. It rebuilds one project — the one named by `--project` — and
 leaves the rest alone. An index built before the vector indexes existed stored
 fp32 vectors under an in-memory graph; it is refused with a message naming
 this command, and rebuilding it reuses every vector it holds.
@@ -1272,8 +1265,7 @@ One server serves many projects, and it keeps the sixteen most recently used
 indexes open; the seventeenth closes the one nobody has touched for longest.
 Sixteen is a count of file descriptors, which is what the bound was built for,
 and not a budget in bytes, which is what actually runs out: an open index costs
-about 100 MB on `speed` and about 205 MB on the default `accuracy`, so sixteen
-of them is 1.6 GB or 3.3 GB depending on a flag. On a machine where that is too
+about 205 MB with BGE-M3, so sixteen of them is 3.3 GB. On a machine where that is too
 much, `PAMIN_OPEN_INDEXES` sets a smaller number. Lowering it costs nothing but
 a reopen when a query lands on a project that has fallen out.
 
@@ -1321,9 +1313,7 @@ row and paying startup once.
 - Evidence is never translated and never rewritten. Anything a memory lost in
   summarizing is still in the source it came from, and `pamin grep` reaches it.
 
-### Experimental dual-space profile
-
-`dual_accuracy` uses pinned BGE-M3 INT8 plus a pinned complementary PPLX 0.6B singleton/int8-pooled encoding. It is opt-in; the default remains `accuracy`. Its marker identity is distinct, so changing to it requires `reindex`. Both vectors are written atomically, retained during same-profile rebuild/reshape, and included in recall. The two streams split the existing semantic candidate/vote budget equally; adding a model does not silently double either budget. Full product precision and resource comparisons are required before considering it a default.
+### Accelerator plan recovery
 
 Registered plugin libraries participate in automatic routing only for discovered NPU devices; arbitrary non-NPU plugins are not automatically selected. Runtime execution failure quarantines the affected qualified model/revision, runtime/build, target and configured shape scope for five minutes, requalifies the remaining accelerator/optimized CPU plans and retries the complete operation. A replacement becomes visible only after that operation succeeds. Resident models check the recovery deadline before query/score-cache lookups and requalify on the next request after expiry; failed revalidation retains the qualified fallback and reserves another five-minute interval. Successful replacements clear query/score entries while preserving lifetime counters, so cached results from different targets or export scales are not mixed. Completed all-plan measurements use the normal plan lifetime; only incomplete/transient qualification keeps the five-minute retry interval.
 

@@ -27,7 +27,7 @@
 //! here read the same index and the same ids.
 //!
 //! **What it calls, and at what limit.** `Engine::search_reranked_with`, the
-//! function `pamin search` reaches, at the shipped depths, reranker tier and
+//! function `pamin search` reaches, at the shipped depths, reranker and
 //! fusion, but asked for [`RECALL_AT`] results rather than the CLI's default
 //! `--limit 5`, so that recall at that depth can be read. The limit is more
 //! than a cut: the rerank pass runs only when a candidate it may move sits
@@ -78,7 +78,6 @@
 //! |---|---|
 //! | `LOCOMO_DIR` | where `locomo10.json` and `locomo-audit-errors.json` are cached, instead of fetching them |
 //! | `LOCOMO_CONVERSATIONS` | read only the first this many conversations |
-//! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
 //!
 //! Any other `PAMIN_` variable fails the run before it starts, unless it
 //! only says where something is or what to log, or chooses how a model
@@ -105,7 +104,7 @@ use std::process::Command;
 
 use pamin_core::{Channel, EdgeKind, Fusion};
 use pamin_engine::{Depths, Engine, Models};
-use pamin_index::{Access, Profile, Rerank, VectorIndex};
+use pamin_index::{Access, VectorIndex};
 use pamin_store::graph::{self, EdgeClaim};
 use pamin_store::{Connections, Database, Workspace};
 use scoring::{NDCG_AT, RECALL_AT, Scores};
@@ -575,14 +574,12 @@ async fn embedded_by(
     models: &Models,
     workspace: &Workspace,
     named: &str,
-    profile: Profile,
 ) -> String {
     let probe = Engine::attached(
         database.clone(),
         models,
         workspace,
         &format!("locomo-{named}-models"),
-        profile,
         VectorIndex::default(),
         Access::ReadWrite,
     )
@@ -670,7 +667,7 @@ async fn locomo_evidence_with_and_without_links() {
     );
     harness::shape::shipped_path_only();
     let loaded = load();
-    let (named, profile) = harness::profile();
+    let named = harness::profile();
     // Published before anything is indexed, so a run that dies still said
     // what it was asked.
     let mut shape = shape(&loaded);
@@ -696,7 +693,7 @@ async fn locomo_evidence_with_and_without_links() {
         .await
         .expect("open the database");
     let models = Models::in_workspace(&workspace);
-    let by = embedded_by(&database, &models, &workspace, &named, profile).await;
+    let by = embedded_by(&database, &models, &workspace, &named).await;
 
     // [without the graph, with it], by category; each question in the same
     // order on both.
@@ -726,7 +723,6 @@ async fn locomo_evidence_with_and_without_links() {
                 "locomo-{named}-{}-{digest}-{by}",
                 conversation.id.to_lowercase()
             ),
-            profile,
             VectorIndex::default(),
             Access::ReadWrite,
         )
@@ -765,13 +761,12 @@ async fn locomo_evidence_with_and_without_links() {
             questions += 1;
             if let Some(rules) = &mut rules {
                 const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
-                let tier = Rerank::default();
                 let hits = engine
-                    .search_reranked(&question.text, WIDE, DEPTHS, tier)
+                    .search_reranked(&question.text, WIDE, DEPTHS)
                     .await
                     .expect("search");
                 channels::enough_room(&hits, WIDE);
-                let replayed = reranking::replay(&hits, tier);
+                let replayed = reranking::replay(&hits);
                 rules.observe(
                     &engine,
                     &question.category,
@@ -805,13 +800,7 @@ async fn locomo_evidence_with_and_without_links() {
             for (side, (depths, fusion)) in arms.into_iter().enumerate() {
                 harness::shape::table(TABLES[side]);
                 let hits = engine
-                    .search_reranked_with(
-                        &question.text,
-                        RECALL_AT as u32,
-                        depths,
-                        Rerank::default(),
-                        fusion,
-                    )
+                    .search_reranked_with(&question.text, RECALL_AT as u32, depths, fusion)
                     .await
                     .expect("search");
                 assert!(

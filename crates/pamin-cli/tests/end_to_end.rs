@@ -16,10 +16,6 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-/// The smallest embedding profile. This test is about the pipeline, not about
-/// which model is most accurate.
-const PROFILE: &str = "speed";
-
 struct Cli {
     home: tempfile::TempDir,
 }
@@ -39,7 +35,6 @@ impl Cli {
         let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
             .args(args)
             .env("PAMIN_HOME", self.home())
-            .env("PAMIN_PROFILE", PROFILE)
             .output()
             .expect("running pamin");
 
@@ -83,7 +78,6 @@ impl Cli {
         let child = Command::new(env!("CARGO_BIN_EXE_pamin"))
             .args(["serve"])
             .env("PAMIN_HOME", self.home())
-            .env("PAMIN_PROFILE", PROFILE)
             .env("PAMIN_LOG", filter)
             .envs(env.iter().copied())
             .stdout(log.try_clone().expect("a second handle on the log"))
@@ -110,7 +104,6 @@ impl Cli {
         let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
             .args(args)
             .env("PAMIN_HOME", self.home())
-            .env("PAMIN_PROFILE", PROFILE)
             .output()
             .expect("running pamin");
         assert!(!output.status.success(), "expected {args:?} to fail");
@@ -163,184 +156,6 @@ const QUERIES: &[(&str, &str)] = &[
     ("развёртывания", "конвейер развёртывания"),
 ];
 
-/// Reranking moves what the lexical channels missed and leaves the rest.
-///
-/// The second pass is confined to candidates no lexical channel found, because
-/// every cross-encoder measured improves cross-lingual ranking and damages
-/// same-language ranking by about as much. Confining it makes the damage
-/// impossible rather than unlikely, and that is the property worth holding to:
-/// a candidate a lexical channel ranked comes back where fusion put it,
-/// whatever the reranker thought of it.
-///
-/// Reverting the restriction -- reranking the whole head -- reorders those too,
-/// and this fails.
-#[test]
-#[ignore = "provisions postgres, and downloads an embedding model and a reranker"]
-fn reranking_moves_what_the_lexical_channels_missed() {
-    let cli = Cli::new();
-    cli.run(&["init"]);
-
-    // Several memories sharing the query's words, so there is an order among
-    // them for a reranker to disturb, and several sharing none, so there is
-    // something for it to do.
-    for (topic, content) in [
-        (
-            "deploy_en",
-            "the deployment pipeline publishes signed artifacts",
-        ),
-        (
-            "deploy_en2",
-            "deployment happens after every merge to the trunk",
-        ),
-        (
-            "deploy_en3",
-            "a failed deployment rolls back to the previous tag",
-        ),
-        ("rota_en", "the oncall rota rotates every monday morning"),
-        ("deploy_zh", "部署流水线在每次合并到主干后自动触发"),
-        (
-            "deploy_fr",
-            "le pipeline de déploiement publie des artefacts signés",
-        ),
-        (
-            "deploy_ja",
-            "デプロイは主幹へのマージごとに自動で実行される",
-        ),
-        (
-            "deploy_ar",
-            "يتم تشغيل خط النشر تلقائيا بعد كل دمج في الفرع الرئيسي",
-        ),
-    ] {
-        cli.run(&["write", "--topic", topic, content]);
-    }
-
-    // Each hit, and whether a lexical channel is among the reasons it is here.
-    let ranked = |tier: &str| -> Vec<(String, bool)> {
-        cli.json(&[
-            "search",
-            "how does deployment work",
-            "--limit",
-            "8",
-            "--rerank",
-            tier,
-        ])["hits"]
-            .as_array()
-            .expect("hits")
-            .iter()
-            .map(|hit| {
-                let lexical = hit["why"].as_array().expect("why").iter().any(|why| {
-                    why["channel"]
-                        .as_str()
-                        .is_some_and(|channel| channel.starts_with("lexical"))
-                });
-                (hit["topic"].as_str().expect("a topic").to_string(), lexical)
-            })
-            .collect()
-    };
-
-    let plain = ranked("off");
-    let reranked = ranked("fast");
-
-    let lexical = |hits: &[(String, bool)]| -> Vec<String> {
-        hits.iter()
-            .filter(|(_, lexical)| *lexical)
-            .map(|(topic, _)| topic.clone())
-            .collect()
-    };
-    assert!(
-        !lexical(&plain).is_empty(),
-        "no candidate came from a lexical channel, so this proves nothing"
-    );
-    assert_eq!(
-        lexical(&plain),
-        lexical(&reranked),
-        "reranking moved a candidate a lexical channel had already ranked"
-    );
-
-    let order = |hits: &[(String, bool)]| -> Vec<String> {
-        hits.iter().map(|(topic, _)| topic.clone()).collect()
-    };
-    assert_ne!(
-        order(&plain),
-        order(&reranked),
-        "reranking changed nothing at all, so this proves nothing"
-    );
-}
-
-#[test]
-#[ignore = "provisions postgres, and downloads an embedding model and a reranker"]
-fn reranking_reorders_other_languages_and_leaves_this_one_alone() {
-    let cli = Cli::new();
-    cli.run(&["init"]);
-
-    // Several memories about one subject in the query's language, so there is
-    // an order among them for a reranker to disturb, and several in others, so
-    // there is something for it to do.
-    for (topic, content) in [
-        (
-            "deploy_en",
-            "the deployment pipeline publishes signed artifacts",
-        ),
-        (
-            "deploy_en2",
-            "deployment happens after every merge to the trunk",
-        ),
-        (
-            "deploy_en3",
-            "a failed deployment rolls back to the previous tag",
-        ),
-        ("rota_en", "the oncall rota rotates every monday morning"),
-        ("deploy_zh", "部署流水线在每次合并到主干后自动触发"),
-        (
-            "deploy_fr",
-            "le pipeline de déploiement publie des artefacts signés",
-        ),
-        (
-            "deploy_ja",
-            "デプロイは主幹へのマージごとに自動で実行される",
-        ),
-    ] {
-        cli.run(&["write", "--topic", topic, content]);
-    }
-
-    let ranked = |tier: &str| -> Vec<String> {
-        cli.json(&[
-            "search",
-            "how does deployment work",
-            "--limit",
-            "7",
-            "--rerank",
-            tier,
-        ])["hits"]
-            .as_array()
-            .expect("hits")
-            .iter()
-            .map(|hit| hit["topic"].as_str().expect("a topic").to_string())
-            .collect()
-    };
-
-    let plain = ranked("off");
-    let reranked = ranked("fast");
-
-    let english = |hits: &[String]| -> Vec<String> {
-        hits.iter()
-            .filter(|topic| {
-                topic.ends_with("_en") || topic.ends_with("_en2") || topic.ends_with("_en3")
-            })
-            .cloned()
-            .collect()
-    };
-    assert_eq!(
-        english(&plain),
-        english(&reranked),
-        "reranking moved memories written in the query's own language"
-    );
-    assert_ne!(
-        plain, reranked,
-        "reranking changed nothing at all, so this proves nothing"
-    );
-}
-
 #[test]
 #[ignore = "provisions postgres and downloads model weights"]
 fn a_workspace_serves_memories_in_any_language() {
@@ -360,7 +175,6 @@ fn a_workspace_serves_memories_in_any_language() {
     a_write_can_state_when_its_claim_holds(&cli);
     topics_are_findable_before_you_know_their_names(&cli);
     the_index_rebuilds_from_postgres(&cli);
-    a_profile_change_is_refused_rather_than_silently_wrong(&cli);
 }
 
 #[test]
@@ -820,8 +634,6 @@ fn a_named_topic_seeds_the_walk_when_no_channel_found_it() {
         "8",
         "--channel-depth",
         "1",
-        "--rerank",
-        "off",
     ]);
 
     // The premise: no index channel returned the named topic, so only its
@@ -1313,27 +1125,14 @@ fn the_index_rebuilds_from_postgres(cli: &Cli) {
     );
 }
 
-fn a_profile_change_is_refused_rather_than_silently_wrong(cli: &Cli) {
-    let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
-        .args(["--profile", "balanced", "search", "流水线"])
-        .env("PAMIN_HOME", cli.home())
-        .output()
-        .expect("running pamin");
-
-    assert!(!output.status.success());
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        error.contains("reindex"),
-        "a profile mismatch should say how to fix it, got {error:?}"
-    );
-}
-
 /// A setting that was removed is refused, not quietly ignored.
 ///
 /// `PAMIN_NO_SERVER=1` ran a command in the calling process. It was removed
 /// when every command came to go through the server, and for a release it was
 /// simply no longer read -- so whoever set it, to debug the server or to get
 /// one process to reason about, got the server anyway and nothing said so.
+/// `PAMIN_RERANK` chose a reranking tier until there was one reranker; set to
+/// `off`, ignoring it would charge a reranker to somebody who turned it off.
 ///
 /// Not ignored, and it needs no workspace: the refusal comes before anything
 /// is provisioned, which is also asserted, and before a server is started.
@@ -1341,23 +1140,26 @@ fn a_profile_change_is_refused_rather_than_silently_wrong(cli: &Cli) {
 fn a_removed_setting_is_refused_rather_than_ignored() {
     let home = tempfile::tempdir().expect("temp home");
 
-    for value in ["1", "0"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
-            .args(["read", "deploy"])
-            .env("PAMIN_HOME", home.path())
-            .env("PAMIN_NO_SERVER", value)
-            .output()
-            .expect("running pamin");
+    for (name, values) in [
+        ("PAMIN_NO_SERVER", ["1", "0"]),
+        ("PAMIN_PROFILE", ["accuracy", "speed"]),
+        ("PAMIN_RERANK", ["off", "accurate"]),
+    ] {
+        for value in values {
+            let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
+                .args(["read", "deploy"])
+                .env("PAMIN_HOME", home.path())
+                .env(name, value)
+                .output()
+                .expect("running pamin");
 
-        assert!(
-            !output.status.success(),
-            "PAMIN_NO_SERVER={value} should be refused"
-        );
-        let error = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            error.contains("PAMIN_NO_SERVER") && error.contains("removed"),
-            "PAMIN_NO_SERVER={value} refused without saying why: {error:?}"
-        );
+            assert!(!output.status.success(), "{name}={value} should be refused");
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                error.contains(name) && error.contains("removed"),
+                "{name}={value} refused without saying why: {error:?}"
+            );
+        }
     }
 
     assert!(
@@ -1409,14 +1211,6 @@ fn a_walk_deeper_than_the_graph_channel_goes_is_refused() {
             .is_none(),
         "a refused argument should not have provisioned a workspace"
     );
-}
-
-#[test]
-#[ignore = "provisions postgres and downloads model weights"]
-fn an_unknown_profile_is_rejected_before_anything_is_provisioned() {
-    let cli = Cli::new();
-    let error = cli.fails(&["--profile", "enormous", "init"]);
-    assert!(error.contains("enormous"), "got {error:?}");
 }
 
 #[test]
@@ -1829,7 +1623,7 @@ fn a_deferred_write_is_found_without_anything_else_being_run() {
 ///
 /// Catching up runs a model nobody asked for, and the searches it is doing the
 /// work for share that model: a forward pass holds it, and a search on any
-/// project on the same profile queues behind the pass. So the server only
+/// project queues behind the pass. So the server only
 /// starts a round when nothing is being answered, stops between rounds when a
 /// request arrives, and keeps a round small -- and what a search can pay is
 /// what is left of the round it arrived during.
@@ -2424,7 +2218,6 @@ fn an_import_records_the_whole_file_or_none_of_it() {
         .args(["import", "--from"])
         .arg(&broken)
         .env("PAMIN_HOME", cli.home())
-        .env("PAMIN_PROFILE", PROFILE)
         .output()
         .expect("running import");
     assert!(
@@ -2526,7 +2319,7 @@ fn recorded_vector_indexes(cli: &Cli) -> Vec<String> {
 /// rebuilding it -- which reuses every vector rather than embedding again.
 ///
 /// Asking an index built one way to answer as the other is refused and names
-/// `pamin reindex`, as a profile change is: searched with the other index's
+/// `pamin reindex`: searched with the other index's
 /// parameters it would answer, plausibly and wrongly.
 #[test]
 #[ignore = "provisions postgres and downloads model weights"]

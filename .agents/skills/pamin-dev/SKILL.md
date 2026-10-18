@@ -27,14 +27,14 @@ it was re-measured through the real entry point:
 | same-language effect | "unchanged, by construction" | −0.0062 and +0.0022 |
 
 Gains overstated by about 1.6×, latency by 3.8×, and one claim that was not
-merely imprecise but false. A separate figure was taken at `PAMIN_PROFILE=speed`
-while the product defaults to `accuracy` — 21.8 ms against the real 32.1.
+merely imprecise but false. A separate figure was taken on the `speed` profile
+while the product defaulted to `accuracy` — 21.8 ms against the real 32.1. (The
+profiles and the `fast` tier have since been removed; the lesson stands.)
 
 So, before running anything, answer one question: **what does the user's command
 actually call?** Trace it. `pamin search` → `Engine::search_reranked`;
 `pamin write` → the full write path including the filter and the transaction.
-Measure that function, with the defaults the product ships, on the profile the
-product defaults to.
+Measure that function, with the defaults the product ships.
 
 The exception is deliberate and worth stating when you take it: a *sweep* over a
 tunable has to call the layer that accepts the tunable. Sweeping fusion weights
@@ -321,7 +321,7 @@ retrieval. They were wrong about the box.
 
 ## A number without its corpus is a claim, not a measurement
 
-Every figure carries the corpus it came from, the profile, and the hardware when
+Every figure carries the corpus it came from, the configuration, and the hardware when
 that matters. `0.7359 nDCG@10` means nothing; `0.7359 nDCG@10 on MIRACL's
 Swahili dev split, 131,924 passages, at the shipped defaults` can be checked
 and can be reproduced.

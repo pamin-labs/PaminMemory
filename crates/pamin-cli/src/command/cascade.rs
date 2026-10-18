@@ -9,7 +9,7 @@
 
 use anyhow::Result;
 use pamin_engine::Owed;
-use pamin_index::{Profile, VectorIndex};
+use pamin_index::VectorIndex;
 use pamin_store::jobs;
 use serde::{Deserialize, Serialize};
 
@@ -90,14 +90,11 @@ pub struct Moved {
 pub async fn answer(
     session: &Session,
     project: &str,
-    profile: Profile,
     vector_index: VectorIndex,
     args: Args,
 ) -> Result<serde_json::Value> {
     let value = match args.command {
-        Command::Drain => {
-            serde_json::to_value(drain(session, project, profile, vector_index).await?)?
-        }
+        Command::Drain => serde_json::to_value(drain(session, project, vector_index).await?)?,
         Command::Failed => serde_json::to_value(failed(session, project).await?)?,
         Command::Replay => serde_json::to_value(replay(session, project).await?)?,
         Command::Discard => serde_json::to_value(discard(session, project).await?)?,
@@ -160,13 +157,8 @@ fn render_drained(result: &Drained) -> String {
     rendered
 }
 
-pub async fn drain(
-    session: &Session,
-    project: &str,
-    profile: Profile,
-    vector_index: VectorIndex,
-) -> Result<Drained> {
-    let engine = session.engine(project, profile, vector_index).await?;
+pub async fn drain(session: &Session, project: &str, vector_index: VectorIndex) -> Result<Drained> {
+    let engine = session.engine(project, vector_index).await?;
     let drained = engine.drain_cascade(Owed::Everything).await?;
 
     let shape = engine.segmentation()?;
