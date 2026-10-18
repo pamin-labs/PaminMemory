@@ -38,10 +38,8 @@ pub struct Embedded {
 /// Who embeds with `embedder` now: its plans, the build and the settings
 /// it runs under, one per line.
 pub fn producer(embedder: &Embedder) -> String {
-    let secondary = embedder.secondary_plans().unwrap_or_default();
     lines(
         &embedder.plans(),
-        &secondary,
         &shape::embedding_settings(),
         &harness_digest(),
     )
@@ -72,25 +70,17 @@ pub fn index_producer(engine: &pamin_engine::Engine) -> Option<String> {
             .collect()
     };
     let primary = plans("embedding");
-    (!primary.is_empty()).then(|| {
-        lines(
-            &primary,
-            &plans("embedding secondary"),
-            &shape::index_settings(),
-            &harness_digest(),
-        )
-    })
+    (!primary.is_empty()).then(|| lines(&primary, &shape::index_settings(), &harness_digest()))
 }
 
-/// [`producer`]'s lines for these primary and secondary plans: each plan
+/// [`producer`]'s lines for these plans: each plan
 /// with the model revision it ran, then the build, then each setting, then
 /// the harness code that transformed the vectors.
-fn lines(plans: &[PlanUse], secondary: &[PlanUse], settings: &[String], harness: &str) -> String {
+fn lines(plans: &[PlanUse], settings: &[String], harness: &str) -> String {
     let line = |kind: &str, plan: &PlanUse| {
         format!("{kind}={} model={}", shape::provider(plan), plan.revision)
     };
     let mut lines: Vec<String> = plans.iter().map(|plan| line("plan", plan)).collect();
-    lines.extend(secondary.iter().map(|plan| line("secondary", plan)));
     lines.push(format!("build={}", shape::build_digest()));
     lines.extend(settings.iter().map(|setting| format!("setting={setting}")));
     lines.push(format!("harness={harness}"));
@@ -606,22 +596,8 @@ mod tests {
             revision: revision.into(),
             origin: pamin_index::PlanOrigin::CalibratedNow,
         };
-        let old = lines(&[plan("someone/model@c0ffee")], &[], &[], "");
-        assert_ne!(old, lines(&[plan("someone/model@decaf")], &[], &[], ""));
-        assert_ne!(
-            lines(
-                &[plan("someone/model@c0ffee")],
-                &[plan("other/model@1")],
-                &[],
-                "",
-            ),
-            lines(
-                &[plan("someone/model@c0ffee")],
-                &[plan("other/model@2")],
-                &[],
-                "",
-            )
-        );
+        let old = lines(&[plan("someone/model@c0ffee")], &[], "");
+        assert_ne!(old, lines(&[plan("someone/model@decaf")], &[], ""));
         assert!(old.contains("model=someone/model@c0ffee"), "{old}");
     }
 
@@ -636,7 +612,7 @@ mod tests {
             revision: "someone/model@c0ffee".into(),
             origin: pamin_index::PlanOrigin::CalibratedNow,
         };
-        let with = |harness: &str| lines(std::slice::from_ref(&plan), &[], &[], harness);
+        let with = |harness: &str| lines(std::slice::from_ref(&plan), &[], harness);
         assert_ne!(with("0123"), with("4567"));
         let digest = harness_digest();
         assert_eq!(digest.len(), 64);
@@ -656,18 +632,8 @@ mod tests {
             origin,
         };
         assert_eq!(
-            lines(
-                &[plan(pamin_index::PlanOrigin::PersistedRecord)],
-                &[],
-                &[],
-                ""
-            ),
-            lines(
-                &[plan(pamin_index::PlanOrigin::CalibratedNow)],
-                &[],
-                &[],
-                ""
-            )
+            lines(&[plan(pamin_index::PlanOrigin::PersistedRecord)], &[], ""),
+            lines(&[plan(pamin_index::PlanOrigin::CalibratedNow)], &[], "")
         );
     }
 
@@ -682,11 +648,11 @@ mod tests {
             revision: "someone/model@c0ffee".into(),
             origin: pamin_index::PlanOrigin::CalibratedNow,
         };
-        let with = |setting: &str| lines(std::slice::from_ref(&plan), &[], &[setting.into()], "");
+        let with = |setting: &str| lines(std::slice::from_ref(&plan), &[setting.into()], "");
         assert_ne!(with("OMP_NUM_THREADS=1"), with("OMP_NUM_THREADS=4"));
         assert_ne!(
             with("OMP_NUM_THREADS=1"),
-            lines(std::slice::from_ref(&plan), &[], &[], "")
+            lines(std::slice::from_ref(&plan), &[], "")
         );
         assert!(with("MKL_NUM_THREADS=2").contains("setting=MKL_NUM_THREADS=2"));
     }

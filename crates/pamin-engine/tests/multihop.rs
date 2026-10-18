@@ -46,7 +46,6 @@
 //! | `MUSIQUE_QUESTIONS` | read only the first this many questions -- the split is ordered by hop count, so a short prefix is all two-hop; kept so a run can be paired with a project built on a prefix |
 //! | `MUSIQUE_SAMPLE` | ask this many, drawn from the whole split by a seeded hash, stratified by hop count |
 //! | `EVAL_SEED` | the seed `MUSIQUE_SAMPLE` draws with, default `harness::shape::SEED` |
-//! | `PAMIN_PROFILE` | which embedding profile, default `accuracy` |
 //! | `CHANNELS` | the channel diagnostic and the offline fusion sweep |
 //! | `FEATURES_OUT` | a path: every candidate fusion saw, one row each, for fitting a fusion offline |
 //! | `CONTEXT` | price what the reranker is shown, from one run |
@@ -68,7 +67,7 @@ use std::process::Command;
 
 use pamin_core::Fusion;
 use pamin_engine::{Depths, Engine};
-use pamin_index::{Access, Profile, Rerank, VectorIndex};
+use pamin_index::{Access, VectorIndex};
 use pamin_store::Workspace;
 
 use harness::shape::Shape;
@@ -127,8 +126,6 @@ const DEPTHS: Depths = Depths {
 
 /// Past four times the channel depth, so a trace is never truncated.
 const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
-
-const DEFAULT_PROFILE: &str = "accuracy";
 
 /// A paragraph longer than this is cut, on a character boundary, at about what
 /// the embedders' window holds; joined same-title paragraphs can run long.
@@ -556,8 +553,7 @@ fn score(into: &mut Scores, query: &Query, ranked: &[String]) {
 #[ignore = "provisions postgres, downloads the dataset and model weights, and embeds the corpus"]
 async fn search_answers_questions_that_take_several_steps() {
     let corpus = Corpus::load();
-    let named = std::env::var("PAMIN_PROFILE").unwrap_or_else(|_| DEFAULT_PROFILE.into());
-    let profile = Profile::parse(&named).unwrap_or_else(|| panic!("unknown profile {named}"));
+    let named = harness::profile();
     let mut shape = corpus.shape();
     // Published before anything is printed, so a failed write to stdout
     // still leaves the in-progress record.
@@ -587,7 +583,6 @@ async fn search_answers_questions_that_take_several_steps() {
     let engine = Engine::open(
         &workspace,
         &project,
-        profile,
         VectorIndex::default(),
         Access::ReadWrite,
     )
@@ -621,7 +616,6 @@ async fn search_answers_questions_that_take_several_steps() {
         let other = Engine::open(
             &workspace,
             &format!("{project}-named"),
-            profile,
             VectorIndex::default(),
             Access::ReadWrite,
         )
@@ -662,41 +656,31 @@ async fn search_answers_questions_that_take_several_steps() {
         return;
     }
 
-    // `ROUTES`: spending less on the reranker -- a cascade, and gates that
-    // skip it -- priced against the shipped pass. See `reranking::Routes`.
+    // `ROUTES`: spending less on the reranker -- gates that skip it, and a
+    // learned router -- priced against the shipped pass. See
+    // `reranking::Routes`.
     if std::env::var("ROUTES").is_ok() {
         const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
-        let tier = Rerank::default();
-        let small = harness::shape::owned(
-            pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
-                .expect("load the small reranker"),
-        );
-        shape.also_ran(
-            "routes small reranker",
-            &small,
-            pamin_index::Reranker::plans,
-        );
         let mut routes = reranking::Routes::default();
         for query in &corpus.queries {
             let hits = engine
-                .search_reranked(&query.text, WIDE, DEPTHS, tier)
+                .search_reranked(&query.text, WIDE, DEPTHS)
                 .await
                 .expect("search");
             channels::enough_room(&hits, WIDE);
-            let replayed = reranking::replay(&hits, tier);
+            let replayed = reranking::replay(&hits);
             routes.observe(
                 &query.group,
                 &query.text,
                 &hits,
                 &replayed,
-                &mut harness::shape::lock(&small),
                 &query.text,
                 |into, ranking| score(into, query, ranking),
             );
         }
         routes.report(&format!(
             "spending less on the {} reranker, MuSiQue, {named}",
-            tier.name()
+            pamin_index::reranking::TIER
         ));
         return;
     }
@@ -704,15 +688,14 @@ async fn search_answers_questions_that_take_several_steps() {
     // `RERANK_RULES`: every rule for using the reranker's scores, priced
     // against the shipped one from a single shipped run. See `reranking`.
     if std::env::var("RERANK_RULES").is_ok() {
-        let tier = Rerank::default();
         let mut priced = reranking::Priced::default();
         for query in &corpus.queries {
             let hits = engine
-                .search_reranked(&query.text, WIDE, DEPTHS, tier)
+                .search_reranked(&query.text, WIDE, DEPTHS)
                 .await
                 .expect("search");
             channels::enough_room(&hits, WIDE);
-            let replayed = reranking::replay(&hits, tier);
+            let replayed = reranking::replay(&hits);
             priced.observe(
                 &engine,
                 &query.group,
@@ -725,7 +708,7 @@ async fn search_answers_questions_that_take_several_steps() {
         }
         priced.report(&format!(
             "rules for the {} reranker's scores, MuSiQue, {named}",
-            tier.name()
+            pamin_index::reranking::TIER
         ));
         return;
     }
@@ -736,7 +719,6 @@ async fn search_answers_questions_that_take_several_steps() {
         let entities = Engine::open(
             &workspace,
             &format!("{project}-entities"),
-            profile,
             VectorIndex::default(),
             Access::ReadOnly,
         )
@@ -759,10 +741,7 @@ async fn search_answers_questions_that_take_several_steps() {
     }
 
     if std::env::var("ENTITIES").is_ok() {
-        entities(
-            &engine, &mut shape, &workspace, &corpus, &project, profile, &named,
-        )
-        .await;
+        entities(&engine, &mut shape, &workspace, &corpus, &project, &named).await;
         return;
     }
 
@@ -832,9 +811,8 @@ async fn search_answers_questions_that_take_several_steps() {
     }
 
     if std::env::var("CONTEXT").is_ok() {
-        let tier = Rerank::default();
         let model = harness::shape::owned(
-            pamin_index::Reranker::load(tier, &workspace.root().join("models"))
+            pamin_index::Reranker::load(&workspace.root().join("models"))
                 .expect("load the reranker"),
         );
         shape.also_ran("context reranker", &model, pamin_index::Reranker::plans);
@@ -844,11 +822,11 @@ async fn search_answers_questions_that_take_several_steps() {
         let mut seeded = 0usize;
         for query in &corpus.queries {
             let hits = engine
-                .search_reranked(&query.text, WIDE, DEPTHS, tier)
+                .search_reranked(&query.text, WIDE, DEPTHS)
                 .await
                 .expect("search");
             channels::enough_room(&hits, WIDE);
-            let replayed = reranking::replay(&hits, tier);
+            let replayed = reranking::replay(&hits);
             let (orders, shown) = reranking::in_context(
                 &hits,
                 &replayed,
@@ -864,7 +842,7 @@ async fn search_answers_questions_that_take_several_steps() {
         reranking::report(
             &format!(
                 "what the {} reranker is shown, MuSiQue, {named}; {seeded} candidates shown a seed",
-                tier.name()
+                pamin_index::reranking::TIER
             ),
             &labels,
             reranking::shipped_context(),
@@ -891,7 +869,7 @@ async fn search_answers_questions_that_take_several_steps() {
         ] {
             harness::shape::table(table);
             let hits = engine
-                .search_reranked_with(&query.text, DEPTH as u32, DEPTHS, Rerank::default(), fusion)
+                .search_reranked_with(&query.text, DEPTH as u32, DEPTHS, fusion)
                 .await
                 .expect("search");
             let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
@@ -910,7 +888,7 @@ async fn search_answers_questions_that_take_several_steps() {
             statistics::compare(&scores.per_query, &graphless[group].per_query)
         );
     }
-    if let Some(work) = engine.reranked(Rerank::default()) {
+    if let Some(work) = engine.reranked() {
         println!(
             "  loaded reranker truncation: {} tokens",
             work.maximum_tokens
@@ -1029,7 +1007,6 @@ async fn entities(
     workspace: &Workspace,
     corpus: &Corpus,
     project: &str,
-    profile: Profile,
     named: &str,
 ) {
     use pamin_core::{Derivation, EdgeKind, Validity};
@@ -1044,7 +1021,6 @@ async fn entities(
     let engine = Engine::open(
         workspace,
         &format!("{project}-entities"),
-        profile,
         VectorIndex::default(),
         Access::ReadWrite,
     )
@@ -1274,7 +1250,7 @@ fn proper_names_are_runs_of_capitals_across_particles() {
 /// Where the supporting titles the fused list ranks badly actually are.
 ///
 /// The question it answers decides what to change next. The reranker reads
-/// the fused head -- the first `Rerank::default().depth()` -- and nothing
+/// the fused head -- the first `pamin_index::reranking::depth()` -- and nothing
 /// below it, so a supporting title that only the graph found helps a user only
 /// if fusion puts it inside that head. If the graph finds such titles and
 /// fusion leaves them below it, the bottleneck is the handoff to the reranker
@@ -1282,7 +1258,7 @@ fn proper_names_are_runs_of_capitals_across_particles() {
 async fn reach(engine: &Engine, corpus: &Corpus, label: &str) {
     use pamin_core::{Channel, Why};
 
-    let head = Rerank::default().depth();
+    let head = pamin_index::reranking::depth();
     let mut missed = 0usize;
     let mut graph_only = 0usize;
     let mut graph_only_in_head = 0usize;

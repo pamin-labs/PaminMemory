@@ -16,8 +16,8 @@
 //! Spanish one would be grading memory, not prediction. The caller names the
 //! question, and a question's rows share a fold.
 //!
-//! Two feature sets: what the list already says, which costs nothing, and that
-//! plus the small reranker's opinion, which costs its pass on every query.
+//! One feature set: what the list already says, which costs nothing. (A second
+//! set added the small MiniLM reranker's opinion; it went with that model.)
 
 use std::collections::BTreeMap;
 
@@ -43,12 +43,6 @@ const FREE: [&str; 10] = [
     "a language could not be told",
 ];
 
-/// What the small model adds, at the price of its pass.
-const SMALL: [&str; 2] = [
-    "small model's first is fusion's first movable",
-    "small model's first-to-second margin",
-];
-
 /// The share of queries the router would rerank, as targets. The rate
 /// actually reached is reported, because it comes from a threshold chosen on
 /// other folds.
@@ -62,7 +56,6 @@ struct Seen {
     group: String,
     fold: u64,
     free: [f64; FREE.len()],
-    small: [f64; SMALL.len()],
 }
 
 #[derive(Default)]
@@ -72,8 +65,7 @@ pub struct Router {
 
 impl Router {
     /// Records one query. `question` names what the query asks, so every
-    /// asking of one question is held out together; `cheap` is the small
-    /// model's score for each of `replayed.movable`.
+    /// asking of one question is held out together.
     pub fn observe(
         &mut self,
         group: &str,
@@ -81,7 +73,6 @@ impl Router {
         query: &str,
         hits: &[SearchHit],
         replayed: &Replayed,
-        cheap: &[f32],
     ) {
         let by_name: BTreeMap<&str, &SearchHit> =
             hits.iter().map(|hit| (hit.topic.as_str(), hit)).collect();
@@ -178,23 +169,10 @@ impl Router {
             unknown,
         ];
 
-        // `movable` is in fused order, so its first is fusion's first movable.
-        let mut order: Vec<usize> = (0..cheap.len()).collect();
-        order.sort_by(|left, right| cheap[*right].total_cmp(&cheap[*left]).then(left.cmp(right)));
-        let small = match order.as_slice() {
-            [] => [1.0, 0.0],
-            [only] => [f64::from(*only == 0), 0.0],
-            [first, second, ..] => [
-                f64::from(*first == 0),
-                f64::from(cheap[*first] - cheap[*second]),
-            ],
-        };
-
         self.seen.push(Seen {
             group: group.to_string(),
             fold: fold_of(question),
             free,
-            small,
         });
     }
 
@@ -245,12 +223,7 @@ impl Router {
             );
         }
 
-        let variants: [(&str, Features); 2] = [
-            ("free", |seen| seen.free.to_vec()),
-            ("+ small model", |seen| {
-                [seen.free.as_slice(), seen.small.as_slice()].concat()
-            }),
-        ];
+        let variants: [(&str, Features); 1] = [("free", |seen| seen.free.to_vec())];
         let mut oracle: Vec<usize> = (0..n).collect();
         oracle.sort_by(|left, right| gain[*right].total_cmp(&gain[*left]));
 

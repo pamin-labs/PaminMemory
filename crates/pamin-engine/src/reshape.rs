@@ -65,9 +65,7 @@ impl Engine {
         let Ok(_exclusive) = exclusive(&self.dir).try_lock_owned() else {
             return Ok(None);
         };
-        let Some(mut reshape) =
-            off_the_runtime(|| Reshape::begin(&self.index, &self.dir, self.profile))?
-        else {
+        let Some(mut reshape) = off_the_runtime(|| Reshape::begin(&self.index, &self.dir))? else {
             return Ok(None);
         };
 

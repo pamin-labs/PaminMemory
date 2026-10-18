@@ -13,164 +13,72 @@
 //!
 //! Vectors leave here as float32 and the index stores them as half precision
 //! (see `projection::VectorIndex`). Weights are quantized where a quantized export
-//! exists: BGE-M3 runs int8 weights, and the E5 pair runs full precision
-//! because the model registry publishes no quantized variant for that family.
-
-use fastembed::{EmbeddingModel, OutputKey, Pooling, SingleBatchOutput, TextEmbedding};
-use ndarray::Array2;
-use serde::{Deserialize, Serialize};
+//! exists: BGE-M3 runs int8 weights.
 
 use crate::encoder::Encoder;
 use crate::error::{IndexError, Result};
 use crate::hub::Repository;
 
-/// Which embedding model to run.
+/// The identifier recorded alongside every stored vector, so a later read can
+/// tell which space a vector belongs to: BGE-M3's int8 export.
 ///
-/// Profiles rather than a single constant, because the right trade differs
-/// between bulk ingestion on a laptop and answering one query well. All three
-/// are permissively licensed. EmbeddingGemma scores well and would otherwise be
-/// a candidate, but it carries usage restrictions that must be passed on to
-/// downstream users, which is not a burden to attach to an open-source default.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Profile {
-    /// Opt-in complementary dense spaces; primary BGE-M3 plus pinned PPLX.
-    DualAccuracy,
-    /// 384 dimensions. Bulk ingestion and low-spec machines.
-    ///
-    /// 384 dimensions is generally held to be enough only alongside a
-    /// cross-encoder reranker. There is one now -- `accurate` by default --
-    /// but it reorders what the channels found and cannot add what this
-    /// narrower space missed, so this stays the profile for machines that
-    /// cannot afford the others.
-    Speed,
-    /// 768 dimensions, full-precision weights.
-    ///
-    /// No longer the middle rung it was named for. The quantized BGE-M3 export
-    /// beats it on retrieval by a factor of two, is half its size in memory,
-    /// and costs nine milliseconds more per query -- so the only reason left
-    /// to choose this is those nine milliseconds. Kept because a project
-    /// indexed under it should not have to rebuild to keep working.
-    Balanced,
-    /// 1024 dimensions, int8 weights, and by a distance the best cross-lingual
-    /// recall of the three. The default.
-    ///
-    /// Run through the joint BGE-M3 export, which produces dense, sparse and
-    /// ColBERT representations in one forward pass. Only the dense one is
-    /// kept. The sparse arm duplicates the two lexical channels already in
-    /// place and is worth 0.2 points of cross-lingual nDCG by its own authors'
-    /// ablation; the ColBERT arm is one 1024-wide vector per token, which for
-    /// a project of seven million documents is terabytes.
-    ///
-    /// The default because it is not the trade its name implies. Against
-    /// `balanced` it doubles cross-lingual nDCG@10, matches it monolingually,
-    /// occupies 560 MB against 1.1 GB, and costs 35 ms per query against 26.
-    /// The int8 export is what makes all of that true at once; the
-    /// full-precision one is 2.2 GB and was the reason this profile used to be
-    /// described as an order of magnitude more expensive.
-    #[default]
-    Accuracy,
+/// The quantized export rather than the base model: int8 weights produce
+/// vectors close to the full-precision ones and not equal to them, and the
+/// recorded identity is what stops two encodings sharing one index.
+///
+/// The one embedding model. It was the `accuracy` profile while there were
+/// others: the multilingual E5 pair (`speed`, `balanced`) and a dual space
+/// with PPLX beside it (`dual_accuracy`), all retired. Against `balanced` it
+/// doubled cross-lingual nDCG@10, matched it monolingually, occupied 560 MB
+/// against 1.1 GB, and cost 35 ms per query against 26. It is permissively
+/// licensed. EmbeddingGemma scores well and would otherwise be a candidate,
+/// but it carries usage restrictions that must be passed on to downstream
+/// users, which is not a burden to attach to an open-source default.
+///
+/// Run through the joint BGE-M3 export, which produces dense, sparse and
+/// ColBERT representations in one forward pass. Only the dense one is kept.
+/// The sparse arm duplicates the two lexical channels already in place and is
+/// worth 0.2 points of cross-lingual nDCG by its own authors' ablation; the
+/// ColBERT arm is one 1024-wide vector per token, which for a project of seven
+/// million documents is terabytes.
+pub const MODEL_ID: &str = "gpahal/bge-m3-onnx-int8";
+
+/// The embedding models earlier builds recorded in an index's marker, and the
+/// profile each shipped as.
+///
+/// Only for saying what an index that will no longer open was built with: a
+/// user chose `speed`, not `intfloat/multilingual-e5-small+p1`.
+const RETIRED: [(&str, &str); 3] = [
+    ("intfloat/multilingual-e5-small+p1", "speed"),
+    ("intfloat/multilingual-e5-base+p1", "balanced"),
+    (
+        "bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4",
+        "dual_accuracy",
+    ),
+];
+
+/// The retired profile that recorded `model`, if one did.
+pub(crate) fn retired_profile(model: &str) -> Option<&'static str> {
+    RETIRED
+        .iter()
+        .find(|(retired, _)| *retired == model)
+        .map(|(_, profile)| *profile)
 }
 
-impl Profile {
-    /// Which E5 model this profile runs, for the two that run one.
-    fn model(self) -> EmbeddingModel {
-        match self {
-            Self::Speed => EmbeddingModel::MultilingualE5Small,
-            Self::Balanced => EmbeddingModel::MultilingualE5Base,
-            Self::Accuracy | Self::DualAccuracy => {
-                unreachable!("the accuracy profile runs the joint BGE-M3 export")
-            }
-        }
-    }
-
-    /// The prefixes this model expects on queries and on stored passages.
-    ///
-    /// E5 is an asymmetric retrieval family: it was trained with `query: ` and
-    /// `passage: ` in front of the text, and omitting them degrades recall
-    /// without failing. The embedding library does not add them, so we do.
-    /// BGE-M3 uses none, which is why this belongs to the profile rather than
-    /// to the embedder.
-    fn prefixes(self) -> Option<(&'static str, &'static str)> {
-        match self {
-            Self::Speed | Self::Balanced => Some(("query: ", "passage: ")),
-            Self::Accuracy | Self::DualAccuracy => None,
-        }
-    }
-
-    /// The vector width this profile produces.
-    ///
-    /// The index is built for one width. Mixing embedding spaces yields
-    /// distances that mean nothing, so changing profile reindexes.
-    pub fn dimensions(self) -> u32 {
-        match self {
-            Self::Speed => 384,
-            Self::Balanced => 768,
-            Self::Accuracy | Self::DualAccuracy => 1024,
-        }
-    }
-
-    /// The identifier recorded alongside every stored vector, so a later read
-    /// can tell which space a vector belongs to.
-    pub fn model_id(self) -> &'static str {
-        match self {
-            // The suffix is an encoding revision, not part of the model name.
-            // Vectors written before the E5 prefixes existed are in a different
-            // space, and nothing about the resulting rankings would look wrong,
-            // so the recorded identity has to change with the encoding.
-            Self::Speed => "intfloat/multilingual-e5-small+p1",
-            Self::Balanced => "intfloat/multilingual-e5-base+p1",
-            // The quantized export rather than the base model: int8 weights
-            // produce vectors close to the full-precision ones and not equal
-            // to them, and the recorded identity is what stops two encodings
-            // sharing one index.
-            Self::Accuracy => "gpahal/bge-m3-onnx-int8",
-            Self::DualAccuracy => {
-                "bge-m3-int8@2b34e84df040034d4b9eabb62383a87c18955822+pplx-0.6b@2c4d510dd4a732063c31a0f70193e35067b51fd8:pool-int8-single-v2-level4"
-            }
-        }
-    }
-
-    pub fn secondary_dimensions(self) -> Option<u32> {
-        (self == Self::DualAccuracy).then_some(1024)
-    }
-
-    pub const ALL: [Self; 4] = [
-        Self::Speed,
-        Self::Balanced,
-        Self::Accuracy,
-        Self::DualAccuracy,
-    ];
-
-    /// Parses a profile name.
-    pub fn parse(name: &str) -> Option<Self> {
-        match name {
-            "speed" => Some(Self::Speed),
-            "balanced" => Some(Self::Balanced),
-            "accuracy" => Some(Self::Accuracy),
-            "dual_accuracy" => Some(Self::DualAccuracy),
-            _ => None,
-        }
-    }
-}
-
-/// All dense fields for one document/query; schema decides which are required.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Encoded {
-    pub primary: Vec<f32>,
-    pub secondary: Option<Vec<f32>>,
-}
+/// The vector width the model produces.
+///
+/// The index is built for one width. Mixing embedding spaces yields distances
+/// that mean nothing, so a different model reindexes.
+pub const DIMENSIONS: u32 = 1024;
 
 /// Turns text into vectors.
 pub struct Embedder {
     cache_dir: std::path::PathBuf,
     model: Box<Encoder>,
-    profile: Profile,
     device: crate::inference::Device,
-    secondary: Option<(Box<Encoder>, crate::inference::Device)>,
     /// Query vectors already computed.
     ///
-    /// Shared with every project on this profile, because the vector depends on
+    /// Shared with every project, because the vector depends on
     /// the model and the text and on nothing else.
     remembered: Queries,
 }
@@ -181,25 +89,13 @@ impl Embedder {
     /// The model is fetched lazily rather than bundled: it is larger than the
     /// binary by an order of magnitude, and a user who never searches should
     /// not pay for it.
-    pub fn load(profile: Profile, cache_dir: &std::path::Path) -> Result<Self> {
-        let (model, device) = primary_model(profile, cache_dir)?;
-        let secondary = if profile == Profile::DualAccuracy {
-            let (model, device) = complementary(cache_dir)?;
-            Some((Box::new(model), device))
-        } else {
-            None
-        };
-        tracing::info!(
-            model = profile.model_id(),
-            device = device.name(),
-            "embedder loaded"
-        );
+    pub fn load(cache_dir: &std::path::Path) -> Result<Self> {
+        let (model, device) = primary_model(cache_dir)?;
+        tracing::info!(model = MODEL_ID, device = device.name(), "embedder loaded");
         Ok(Self {
             cache_dir: cache_dir.to_path_buf(),
             model: Box::new(model),
-            profile,
             device,
-            secondary,
             remembered: Queries::default(),
         })
     }
@@ -222,21 +118,14 @@ impl Embedder {
         crate::inference::plans_of(&self.model, self.device)
     }
 
-    /// The second vector model's plans, as [`Embedder::plans`].
-    pub fn secondary_plans(&self) -> Option<Vec<crate::PlanUse>> {
-        self.secondary
-            .as_ref()
-            .map(|(model, device)| crate::inference::plans_of(model, *device))
-    }
-
     /// What produces the vectors this embeds now, for an index to record
-    /// beside each one: every model's current execution plan, as its
+    /// beside each one: the model's current execution plan, as its
     /// [`crate::PlanUse`] names it -- the target and the hash of the full plan
     /// key it was selected under.
     ///
     /// Two vectors of one text are interchangeable only when this is the
     /// same for both: the CPU runs the int8 export and an accelerator another,
-    /// and their outputs are not bit-identical. `None` when a model runs on no
+    /// and their outputs are not bit-identical. `None` when the model runs on no
     /// plan, whose identity would name a device and nothing that produced the
     /// numbers, so nothing can be shown to match it -- and when a model runs
     /// on a plan that is not stable across processes, a DirectML adapter
@@ -247,7 +136,7 @@ impl Embedder {
     }
 
     /// [`Embedder::encoding`], for a caller deciding whether a vector already
-    /// stored can stand in for the one this would embed now: `None` while any
+    /// stored can stand in for the one this would embed now: `None` while the
     /// model runs on a fallback past its retry deadline.
     ///
     /// The next pass revalidates such a fallback and may move to the
@@ -265,112 +154,53 @@ impl Embedder {
         plan: impl Fn(&Encoder, crate::inference::Device) -> Option<crate::PlanUse>,
     ) -> Option<String> {
         let primary = plan(self.model.as_ref(), self.device)?;
-        Some(match &self.secondary {
-            None => format!("{}:{}", primary.target, primary.plan),
-            Some((model, device)) => {
-                let secondary = plan(model.as_ref(), *device)?;
-                format!(
-                    "{}:{}+{}:{}",
-                    primary.target, primary.plan, secondary.target, secondary.plan
-                )
-            }
-        })
-    }
-
-    pub fn profile(&self) -> Profile {
-        self.profile
+        Some(format!("{}:{}", primary.target, primary.plan))
     }
 
     /// Embeds one passage for storage.
     pub fn embed_passage(&mut self, text: &str) -> Result<Vec<f32>> {
-        match self.profile.prefixes() {
-            Some((_, passage)) => self.embed_one(&format!("{passage}{text}")),
-            None => self.embed_one(text),
-        }
+        self.embed_one(text)
     }
 
     /// Embeds one query.
     ///
-    /// Queries and passages take different prefixes, so this is not the same
-    /// call as `embed_passage` even though both end in one forward pass.
-    ///
     /// Remembered, because the pass is the most expensive thing a search does
-    /// -- 16.9 ms of a search at the shipping profile -- and a query is a pure
+    /// -- 16.9 ms of a search -- and a query is a pure
     /// function of the model and the text. What makes it worth remembering is
     /// the same thing that makes the reranker remember its scores: an agent
     /// retries, widens a limit, and asks again after writing something. Only
     /// queries. A passage is embedded once in its life, so a cache of those
     /// would hold the corpus and never be read.
     pub fn embed_query(&mut self, text: &str) -> Result<Vec<f32>> {
-        Ok(self.encode_query(text)?.primary)
-    }
-
-    pub fn encode_query(&mut self, text: &str) -> Result<Encoded> {
         self.revalidate();
         if let Some(known) = self.remembered.get(text) {
             return Ok(known);
         }
-        let primary = match self.profile.prefixes() {
-            Some((query, _)) => self.embed_one(&format!("{query}{text}")),
-            None => self.embed_one(text),
-        }?;
-        let secondary = self.secondary_vector(text)?;
-        let encoded = Encoded { primary, secondary };
-        self.remembered.put(text, &encoded);
-        Ok(encoded)
-    }
-
-    pub fn encode_passage(&mut self, text: &str) -> Result<Encoded> {
-        let primary = self.embed_passage(text)?;
-        let secondary = self.secondary_vector(text)?;
-        Ok(Encoded { primary, secondary })
+        let vector = self.embed_one(text)?;
+        self.remembered.put(text, &vector);
+        Ok(vector)
     }
 
     /// Embeds many passages for storage, and names the plan that produced
     /// every one of them ([`Embedder::encoding`]): `None` when no one plan did.
     ///
-    /// The primary vectors come from one forward pass, which a fallback
-    /// reruns whole, so one plan produces them all. The complementary model
-    /// runs once per text, and a failure or a revalidation can move it to
-    /// another plan partway through the batch. So the plan is read after
-    /// every text; if it moved, every complementary vector is embedded again
-    /// under the plan it moved to, and if it moves again during that, the
-    /// batch is recorded as produced by no one plan, which nothing later
-    /// mistakes for a match.
-    pub fn encode_passages(&mut self, texts: &[&str]) -> Result<(Vec<Encoded>, Option<String>)> {
-        let primary = self.embed_passages(texts)?;
-        let (secondary, encoding) = under_one_plan(
-            self,
-            texts.len(),
-            |embedder, at| embedder.secondary_vector(texts[at]),
-            Embedder::encoding,
-        )?;
-        let encoded = primary
-            .into_iter()
-            .zip(secondary)
-            .map(|(primary, secondary)| Encoded { primary, secondary })
-            .collect();
-        Ok((encoded, encoding))
-    }
-
-    pub fn secondary_device(&self) -> Option<crate::inference::Device> {
-        self.secondary.as_ref().map(|(_, device)| *device)
+    /// The vectors come from one forward pass, which a fallback reruns whole,
+    /// so one plan produces them all and the plan read right after it is
+    /// that plan.
+    pub fn encode_passages(&mut self, texts: &[&str]) -> Result<(Vec<Vec<f32>>, Option<String>)> {
+        let vectors = self.embed_passages(texts)?;
+        Ok((vectors, self.encoding()))
     }
 
     /// Embeds many passages in one forward pass.
     pub fn embed_passages(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        let prefixed: Vec<String> = match self.profile.prefixes() {
-            Some((_, passage)) => texts.iter().map(|t| format!("{passage}{t}")).collect(),
-            None => texts.iter().map(|t| (*t).to_string()).collect(),
-        };
-        self.run(prefixed)
+        self.run(texts.iter().map(|text| (*text).to_string()).collect())
     }
 
-    /// How many queries this remembers, per profile.
+    /// How many queries this remembers.
     ///
-    /// A single space is at most four kilobytes of float payload per query;
-    /// the dual profile keeps both 1024-dimensional vectors (eight kilobytes).
-    /// At 256 entries that is up to one/two MiB of vector payload. Per process,
+    /// A vector is at most four kilobytes of float payload per query, so at
+    /// 256 entries that is up to one MiB of vector payload. Per process,
     /// like the reranker's, so it is `pamin serve` that makes it worth
     /// anything.
     const REMEMBERED_QUERIES: usize = 256;
@@ -383,7 +213,7 @@ impl Embedder {
             .ok_or_else(|| IndexError::Engine("embedding produced no vector".into()))
     }
 
-    /// One forward pass, whichever model this profile loaded.
+    /// One forward pass.
     ///
     /// The joint export runs one text at a time, and that is a correctness
     /// choice rather than an oversight. Measured on this export: a text's
@@ -403,219 +233,103 @@ impl Embedder {
     /// both return byte-identical vectors batched or alone -- which is why
     /// this is scoped to the joint model.
     ///
-    /// What it costs is the batching win on this profile: thirty-two texts
+    /// What it costs is the batching win: thirty-two texts
     /// together take 190 ms against 409 ms one at a time, so `reindex` is
     /// roughly twice the wall clock here. What it buys is that a document's
     /// vector does not depend on which other documents happened to be in
     /// flight beside it -- so `reindex` and the cascade agree, and the same
     /// corpus written twice indexes to the same thing.
     fn revalidate(&mut self) {
-        if crate::inference::needs_revalidation(&self.model)
-            || self
-                .secondary
-                .as_ref()
-                .is_some_and(|(model, _)| crate::inference::needs_revalidation(model))
-        {
+        if crate::inference::needs_revalidation(&self.model) {
             self.remembered = Queries::default();
         }
     }
 
     fn run(&mut self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
         self.revalidate();
-        let profile = self.profile;
         let cache = &self.cache_dir;
         let (vectors, replaced) = crate::inference::retry_model(
             &mut self.model,
             &mut self.device,
             cache,
-            |model, device| profile_vectors(profile, model, device, &texts),
-            || primary_model(profile, cache).map(|(model, device)| (Box::new(model), device)),
+            |model, _| vectors_of(model, &texts),
+            || primary_model(cache).map(|(model, device)| (Box::new(model), device)),
         )?;
         if replaced {
             self.remembered = Queries::default();
         }
         Ok(vectors)
     }
-
-    fn secondary_vector(&mut self, text: &str) -> Result<Option<Vec<f32>>> {
-        let Some((model, device)) = &mut self.secondary else {
-            return Ok(None);
-        };
-        let cache = &self.cache_dir;
-        let (vector, replaced) = crate::inference::retry_model(
-            model,
-            device,
-            cache,
-            |model, _| complementary_vector(model, text),
-            || complementary(cache).map(|(model, device)| (Box::new(model), device)),
-        )?;
-        if replaced {
-            self.remembered = Queries::default();
-        }
-        Ok(Some(vector))
-    }
 }
 
-/// Produces `count` outputs with `produce`, and the plan every one of them
-/// was produced under, as `encoding` reads it after each.
-///
-/// When the plan moved partway, everything is produced once more, now under
-/// the plan it moved to; when it moves again during that, the outputs are
-/// returned with `None`, since no one plan produced them.
-fn under_one_plan<S: ?Sized, T>(
-    state: &mut S,
-    count: usize,
-    mut produce: impl FnMut(&mut S, usize) -> Result<T>,
-    encoding: impl Fn(&S) -> Option<String>,
-) -> Result<(Vec<T>, Option<String>)> {
-    let mut outputs = Vec::with_capacity(count);
-    for _ in 0..2 {
-        outputs.clear();
-        let mut plans = Vec::with_capacity(count);
-        for at in 0..count {
-            outputs.push(produce(state, at)?);
-            plans.push(encoding(state));
-        }
-        let last = encoding(state);
-        if plans.iter().all(|plan| *plan == last) {
-            return Ok((outputs, last));
-        }
-    }
-    Ok((outputs, None))
-}
-
-fn primary_model(
-    profile: Profile,
-    cache_dir: &std::path::Path,
-) -> Result<(Encoder, crate::inference::Device)> {
+fn primary_model(cache_dir: &std::path::Path) -> Result<(Encoder, crate::inference::Device)> {
     std::fs::create_dir_all(cache_dir)?;
-    let repository = if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
-        Repository::open_at(
-            cache_dir,
-            JOINT_REPOSITORY,
-            if profile == Profile::DualAccuracy {
-                "2b34e84df040034d4b9eabb62383a87c18955822"
-            } else {
-                "main"
-            },
-        )?
-    } else {
-        let model = profile.model();
-        let info = TextEmbedding::get_model_info(&model)
-            .map_err(|error| IndexError::Engine(format!("finding embedding model: {error}")))?;
-        Repository::open(cache_dir, &info.model_code)?
-    };
-    let identity = format!(
-        "embedding-query-v4:max512:joint-singleton:e5-cpu256-accelerator8:{}:{}",
-        profile.model_id(),
-        repository.identity(cache_dir)
-    );
+    let repository = Repository::open_at(cache_dir, JOINT_REPOSITORY, "main")?;
+    let identity = plan_key(MODEL_ID, &repository.identity(cache_dir));
     let references = std::cell::RefCell::new(crate::inference::References::default());
     let long = "migration ".repeat(600);
-    let fixtures: Vec<String> = if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
-        vec![
-            "deployment rollback".into(),
-            "数据库迁移失败后如何回滚？".into(),
-            long,
-        ]
-    } else {
-        // The accelerator's actual batch cap and token limit: large
-        // cascade/reindex inputs are split into these validated chunks.
-        (0..8)
-            .map(|i| {
-                if i % 2 == 0 {
-                    long.clone()
-                } else {
-                    "数据库迁移失败后如何回滚？".into()
-                }
-            })
-            .collect()
-    };
+    let fixtures: Vec<String> = vec![
+        "deployment rollback".into(),
+        "数据库迁移失败后如何回滚？".into(),
+        long,
+    ];
     let (model, device) = crate::inference::measured(
         &identity,
         cache_dir,
         &references,
         crate::inference::ReferenceShape {
-            vectors: Some((fixtures.len(), profile.dimensions() as usize)),
-            queries: Some((2, profile.dimensions() as usize)),
+            vectors: Some((fixtures.len(), DIMENSIONS as usize)),
+            queries: Some((2, DIMENSIONS as usize)),
             scores: None,
         },
-        |device, target, _validated| load_on(profile, &repository, cache_dir, device, target),
-        |model, device| {
+        |device, target, _validated| load_on(&repository, cache_dir, device, target),
+        |model, _device| {
             let mut reference = references.borrow_mut();
             // Reject an already incompatible short query before compiling
             // or allocating the much larger maximum-token/batch shape.
             let elapsed = crate::inference::time_calls(|| {
                 let mut vectors = Vec::new();
                 for query in ["deployment rollback", "数据库迁移失败后如何回滚？"] {
-                    let input = match profile.prefixes() {
-                        Some((prefix, _)) => format!("{prefix}{query}"),
-                        None => query.to_string(),
-                    };
-                    vectors.extend(profile_vectors(profile, model, device, &[input])?);
+                    vectors.extend(vectors_of(model, &[query.to_string()])?);
                 }
-                check_vectors(
-                    vectors,
-                    &mut reference.queries,
-                    profile.dimensions() as usize,
-                )
+                check_vectors(vectors, &mut reference.queries, DIMENSIONS as usize)
             })?;
             // BGE-M3 runs one text a pass, so its fixtures go one at a time on
             // the query's session: through `run_each` together they would load
             // its side sessions on a model that may only ever answer queries.
-            let vectors = if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
-                let mut vectors = Vec::new();
-                for fixture in &fixtures {
-                    vectors.extend(profile_vectors(
-                        profile,
-                        model,
-                        device,
-                        std::slice::from_ref(fixture),
-                    )?);
-                }
-                vectors
-            } else {
-                profile_vectors(profile, model, device, &fixtures)?
-            };
-            check_vectors(
-                vectors,
-                &mut reference.vectors,
-                profile.dimensions() as usize,
-            )?;
+            let mut vectors = Vec::new();
+            for fixture in &fixtures {
+                vectors.extend(vectors_of(model, std::slice::from_ref(fixture))?);
+            }
+            check_vectors(vectors, &mut reference.vectors, DIMENSIONS as usize)?;
             Ok(elapsed)
         },
     )?;
 
-    if device == crate::inference::Device::Cpu
-        && matches!(profile, Profile::Accuracy | Profile::DualAccuracy)
-    {
+    if device == crate::inference::Device::Cpu {
         crate::prepared::release(&repository.file(cache_dir, JOINT_FILE), cache_dir);
     }
     Ok((model, device))
 }
 
-fn profile_vectors(
-    profile: Profile,
-    model: &mut Encoder,
-    device: crate::inference::Device,
-    texts: &[String],
-) -> Result<Vec<Vec<f32>>> {
-    match profile {
-        Profile::Accuracy | Profile::DualAccuracy => model.run_each(alone(model, texts)?, dense),
-        _ => e5_vectors(
-            model,
-            texts,
-            if device == crate::inference::Device::Cpu {
-                256
-            } else {
-                8
-            },
-        ),
-    }
+/// The key the embedder's execution plans are measured and cached under.
+///
+/// `e5-cpu256-accelerator8` names how the retired E5 profiles batched. It
+/// stays in the key, because every host's measured plan for this model is
+/// cached under it and a new spelling would measure them all again.
+fn plan_key(model_id: &str, repository: &str) -> String {
+    format!(
+        "embedding-query-v4:max512:joint-singleton:e5-cpu256-accelerator8:{model_id}:{repository}"
+    )
 }
 
-/// Each of `texts` tokenized as a batch of its own, for the profiles that run
-/// one text per pass -- see [`Embedder::run`].
+/// One vector per text, each text run as a pass of its own -- see
+/// [`Embedder::run`].
+fn vectors_of(model: &mut Encoder, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+    model.run_each(alone(model, texts)?, dense)
+}
+
+/// Each of `texts` tokenized as a batch of its own -- see [`Embedder::run`].
 fn alone(model: &Encoder, texts: &[String]) -> Result<Vec<Vec<tokenizers::Encoding>>> {
     Ok(model
         .encode(texts.iter().map(String::as_str).collect())?
@@ -631,7 +345,7 @@ const JOINT_FILE: &str = "model_quantized.onnx";
 /// The longest text BGE-M3 reads, in tokens.
 ///
 /// What `fastembed` truncated it at when it loaded this model, and so what
-/// every vector stored under this profile was made with. A passage past it
+/// every vector stored under this model was made with. A passage past it
 /// embeds as its first 512 tokens; changing it would change the vectors of
 /// exactly those passages and nothing would say so, so it is kept.
 const JOINT_MAX_TOKENS: usize = 512;
@@ -670,33 +384,15 @@ fn check_vectors(
     Ok(())
 }
 
-/// Load an E5 model through the same scoring-session owner as BGE-M3.
-/// FastEmbed still supplies its model registry and pooling implementation;
-/// its private session cannot report which execution provider ran the graph.
+/// Loads the joint BGE-M3 export for `device`.
 fn load_on(
-    profile: Profile,
     repository: &Repository,
     cache_dir: &std::path::Path,
     device: crate::inference::Device,
     target: crate::inference::Target,
 ) -> Result<Encoder> {
-    if matches!(profile, Profile::Accuracy | Profile::DualAccuracy) {
-        let weights = repository.file(cache_dir, JOINT_FILE);
-        let encoder = joint_session(repository, &weights, cache_dir, device, target)?;
-        return Ok(encoder);
-    }
-    let model = profile.model();
-    let info = TextEmbedding::get_model_info(&model)
-        .map_err(|error| IndexError::Engine(format!("finding embedding model: {error}")))?;
-    let encoder = Encoder::load(
-        || repository.get(&info.model_file),
-        repository,
-        JOINT_MAX_TOKENS,
-        target,
-    )
-    .map_err(|error| error.context("loading embedding model"))?;
-    encoder.require_accelerator(device)?;
-    Ok(encoder)
+    let weights = repository.file(cache_dir, JOINT_FILE);
+    joint_session(repository, &weights, cache_dir, device, target)
 }
 
 /// Numerical compatibility with an already indexed CPU export. This is the
@@ -748,53 +444,6 @@ fn preserves_fixture_retrieval(actual: &[Vec<f32>], cpu: &[Vec<f32>]) -> bool {
         .iter()
         .zip(cpu)
         .all(|(query, reference)| nearest(query) == nearest(reference))
-}
-
-/// E5's FastEmbed 6.1 contract: batches of 256, attention-masked mean pooling,
-/// then an f32 L2 normalization. Use its pooling owner rather than another
-/// implementation of the numerical reduction.
-fn e5_vectors(model: &mut Encoder, texts: &[String], batch_size: usize) -> Result<Vec<Vec<f32>>> {
-    let mut vectors = Vec::with_capacity(texts.len());
-    let precedence: &[OutputKey] = &[
-        OutputKey::OnlyOne,
-        OutputKey::ByName("text_embeds"),
-        OutputKey::ByName("last_hidden_state"),
-        OutputKey::ByName("sentence_embedding"),
-    ];
-    for batch in texts.chunks(batch_size) {
-        let encoded = model.encode(batch.iter().map(String::as_str).collect())?;
-        let (padded, outputs) = model.run_padded(encoded)?;
-        let tokens = padded[0].len();
-        let masks = padded
-            .iter()
-            .flat_map(|encoding| {
-                encoding
-                    .get_attention_mask()
-                    .iter()
-                    .map(|value| i64::from(*value))
-            })
-            .collect();
-        let attention_mask_array = Array2::from_shape_vec((padded.len(), tokens), masks)
-            .map_err(|error| IndexError::Engine(format!("embedding mask: {error}")))?;
-        let output = SingleBatchOutput {
-            outputs: outputs
-                .into_iter()
-                .map(|(name, value)| (name.to_string(), value))
-                .collect(),
-            attention_mask_array,
-        };
-        let pooled = output
-            .select_and_pool_output(&precedence, Some(Pooling::Mean))
-            .map_err(|error| IndexError::Engine(format!("pooling embedding: {error}")))?;
-        for row in pooled.rows() {
-            let values = row
-                .as_slice()
-                .ok_or_else(|| IndexError::Engine("embedding row is not contiguous".into()))?;
-            let norm = values.iter().map(|value| value * value).sum::<f32>().sqrt();
-            vectors.push(values.iter().map(|value| value / (norm + 1e-12)).collect());
-        }
-    }
-    Ok(vectors)
 }
 
 /// Loads the same joint export through the shared provider policy.
@@ -875,199 +524,6 @@ fn dense(outputs: ort::session::SessionOutputs<'_>) -> Result<Vec<f32>> {
     }
 }
 
-fn complementary(cache: &std::path::Path) -> Result<(Encoder, crate::inference::Device)> {
-    let repository = Repository::open_at(
-        cache,
-        "perplexity-ai/pplx-embed-v1-0.6b",
-        "2c4d510dd4a732063c31a0f70193e35067b51fd8",
-    )?;
-    let load = |device, target| -> Result<Encoder> {
-        let model = Encoder::load(
-            || {
-                repository.get("onnx/model_quantized.onnx_data")?;
-                crate::pplx::prepare(&repository.get("onnx/model_quantized.onnx")?, cache)
-            },
-            &repository,
-            JOINT_MAX_TOKENS,
-            target,
-        )?;
-        model.require_accelerator(device)?;
-        Ok(model)
-    };
-    let references = std::cell::RefCell::new(crate::inference::References::default());
-    crate::inference::measured(
-        &format!(
-            "complementary-query-v4:max512:singleton:2c4d510dd4a732063c31a0f70193e35067b51fd8:{}",
-            repository.identity(cache)
-        ),
-        cache,
-        &references,
-        crate::inference::ReferenceShape {
-            vectors: Some((6, 1024)),
-            ..Default::default()
-        },
-        |device, target, _validated| load(device, target),
-        |model, _device| {
-            let mut reference = references.borrow_mut();
-            let elapsed = crate::inference::time_calls(|| {
-                for query in ["deployment rollback", "数据库迁移失败后如何回滚？"] {
-                    let vector = complementary_vector(model, query)?;
-                    valid_complementary_vectors(&[vector])?;
-                }
-                Ok(())
-            })?;
-            let vectors = [
-                "deployment rollback".to_string(),
-                "数据库迁移失败后如何回滚？".to_string(),
-                "Roll back a failed deployment to the previous application version.".to_string(),
-                "数据库迁移失败后，回滚事务并恢复之前的数据库版本。".to_string(),
-                "Bake a chocolate cake and serve it with fresh strawberries.".to_string(),
-                "migration ".repeat(600),
-            ]
-            .iter()
-            .map(|text| complementary_vector(model, text))
-            .collect::<Result<Vec<_>>>()?;
-            check_complementary_retrieval(vectors, &mut reference.vectors)?;
-            Ok(elapsed)
-        },
-    )
-}
-
-fn valid_complementary_vectors(vectors: &[Vec<f32>]) -> Result<()> {
-    if vectors.iter().any(|vector| {
-        vector.len() != 1024
-            || !vector.iter().all(|value| value.is_finite())
-            || !vector.iter().any(|value| *value != 0.0)
-    }) {
-        return Err(IndexError::Numerical(
-            "invalid complementary fixture vector".into(),
-        ));
-    }
-    Ok(())
-}
-
-/// A predefined same-export retrieval gate, including queries against stored
-/// CPU documents and CPU queries against new accelerator documents. Numerical
-/// drift alone does not quarantine a plan; changed non-tied rankings do.
-fn check_complementary_retrieval(
-    vectors: Vec<Vec<f32>>,
-    expected: &mut Option<Vec<Vec<f32>>>,
-) -> Result<()> {
-    valid_complementary_vectors(&vectors)?;
-    if vectors.len() != 6 {
-        return Err(IndexError::Numerical(
-            "incomplete complementary retrieval fixture".into(),
-        ));
-    }
-    let reference = expected.as_ref().unwrap_or(&vectors);
-    valid_complementary_vectors(reference)?;
-    if reference.len() != vectors.len() {
-        return Err(IndexError::Numerical(
-            "incomplete CPU retrieval fixture".into(),
-        ));
-    }
-    // The product stores documents as FP16 and exactly rescores recalled
-    // documents against the raw query. Reuse that conversion and dot kernel;
-    // this fixture covers the scorer contract, not ANN recall or corpus quality.
-    let stored_reference: Vec<_> = reference[2..]
-        .iter()
-        .map(|v| crate::half::as_stored(v))
-        .collect();
-    let stored_candidate: Vec<_> = vectors[2..]
-        .iter()
-        .map(|v| crate::half::as_stored(v))
-        .collect();
-    let dot = crate::vector_math::dot;
-    let similarity = |query: &[f32], document: &[f32]| {
-        let lengths = dot(query, query).sqrt() * dot(document, document).sqrt();
-        if lengths > 0.0 {
-            dot(query, document) / lengths
-        } else {
-            0.0
-        }
-    };
-    for (actual, expected) in vectors.iter().zip(reference) {
-        tracing::debug!(
-            similarity = similarity(actual, expected),
-            "complementary fixture numerical drift"
-        );
-    }
-    for query in 0..2 {
-        // Predeclared premise: each query must rank its corresponding rollback
-        // document above the unrelated cake document. A 1e-4 cosine gap defines
-        // a meaningful fixture comparison, independently of benchmark results;
-        // no tolerance is applied to an observed reversal of that comparison.
-        let premise = similarity(&reference[query], &stored_reference[query])
-            - similarity(&reference[query], &stored_reference[2]);
-        if !premise.is_finite() || premise <= 1e-4 {
-            return Err(IndexError::Numerical(
-                "CPU complementary retrieval fixture is not informative".into(),
-            ));
-        }
-        for left in 0..stored_reference.len() {
-            for right in left + 1..stored_reference.len() {
-                let control = similarity(&reference[query], &stored_reference[left])
-                    - similarity(&reference[query], &stored_reference[right]);
-                if !control.is_finite() {
-                    return Err(IndexError::Numerical(
-                        "invalid stored CPU retrieval fixture".into(),
-                    ));
-                }
-                if control.abs() <= 1e-4 {
-                    continue;
-                }
-                for (queries, documents) in [
-                    (&vectors, &stored_reference),
-                    (reference, &stored_candidate),
-                    (&vectors, &stored_candidate),
-                ] {
-                    let observed = similarity(&queries[query], &documents[left])
-                        - similarity(&queries[query], &documents[right]);
-                    if !observed.is_finite() || observed * control <= 0.0 {
-                        return Err(IndexError::Numerical(
-                            "complementary plan failed the startup retrieval ordering fixture"
-                                .into(),
-                        ));
-                    }
-                }
-            }
-        }
-    }
-    if expected.is_none() {
-        *expected = Some(vectors);
-    }
-    Ok(())
-}
-
-fn complementary_vector(model: &mut Encoder, text: &str) -> Result<Vec<f32>> {
-    let outputs = model.run(vec![text])?;
-    let output = outputs.get("pooler_output_int8").ok_or_else(|| {
-        IndexError::Engine("complementary export has no int8 pooled output".into())
-    })?;
-    let (shape, values) = output
-        .try_extract_tensor::<i8>()
-        .map_err(|e| IndexError::Engine(format!("complementary vector: {e}")))?;
-    if **shape != [1, 1024] {
-        return Err(IndexError::Engine(format!(
-            "complementary vector shape {shape:?}"
-        )));
-    }
-    normalized_pooled(values.try_into().expect("validated pooled shape"))
-}
-
-fn normalized_pooled(values: &[i8; 1024]) -> Result<Vec<f32>> {
-    // Every squared i8 is an exact integer. The complete sum is at most
-    // 1024 * 128^2 = 2^24, exact in f32 too. Integer reduction allows LLVM's
-    // portable SIMD vectorization without reassociating floating additions
-    // or changing the encoding's normalization.
-    let squared: i32 = values.iter().map(|v| i32::from(*v).pow(2)).sum();
-    if squared == 0 {
-        return Err(IndexError::Engine("zero complementary vector".into()));
-    }
-    let norm = (squared as f32).sqrt();
-    Ok(values.iter().map(|v| f32::from(*v) / norm).collect())
-}
-
 /// Query vectors already computed, oldest first.
 ///
 /// Keyed by the query itself rather than by a hash of it. The reranker's cache
@@ -1078,12 +534,12 @@ fn normalized_pooled(values: &[i8; 1024]) -> Result<Vec<f32>> {
 /// guards.
 #[derive(Default)]
 struct Queries {
-    known: std::collections::HashMap<String, Encoded>,
+    known: std::collections::HashMap<String, Vec<f32>>,
     order: std::collections::VecDeque<String>,
 }
 
 impl Queries {
-    fn get(&self, query: &str) -> Option<Encoded> {
+    fn get(&self, query: &str) -> Option<Vec<f32>> {
         self.known.get(query).cloned()
     }
 
@@ -1092,10 +548,10 @@ impl Queries {
     /// Insertion order rather than use order, for the reason the reranker's is:
     /// keeping a true LRU means writing on every hit, and a query asked twice
     /// is asked twice close together.
-    fn put(&mut self, query: &str, vector: &Encoded) {
+    fn put(&mut self, query: &str, vector: &[f32]) {
         if self
             .known
-            .insert(query.to_string(), vector.clone())
+            .insert(query.to_string(), vector.to_vec())
             .is_some()
         {
             return;
@@ -1110,211 +566,7 @@ impl Queries {
 }
 
 #[cfg(test)]
-mod pooled_tests {
-    use super::{check_complementary_retrieval, compatible_vectors, normalized_pooled};
-
-    #[test]
-    fn complementary_retrieval_rejects_tied_or_wrong_cpu_fixture_premises() {
-        let mut vector = vec![0.0; 1024];
-        vector[0] = 1.0;
-        let tied = vec![vector; 6];
-        let mut absent = None;
-        assert!(check_complementary_retrieval(tied.clone(), &mut absent).is_err());
-        assert!(absent.is_none(), "invalid CPU control was published");
-        let mut cached = Some(tied.clone());
-        assert!(check_complementary_retrieval(tied, &mut cached).is_err());
-        let mut vector = vec![0.0; 1024];
-        vector[1] = 1.0;
-        let mut wrong = cached.unwrap();
-        wrong[2] = vector;
-        // Finite and distinct is insufficient: the related document must beat
-        // the unrelated document before this control can validate a candidate.
-        assert!(check_complementary_retrieval(wrong, &mut None).is_err());
-    }
-
-    #[test]
-    fn complementary_retrieval_accepts_drift_but_rejects_changed_rankings() {
-        let vector = |x, y| {
-            let mut v = vec![0.0; 1024];
-            v[0] = x;
-            v[1] = y;
-            v
-        };
-        let reference = vec![
-            vector(1.0, 0.0),
-            vector(0.0, 1.0),
-            vector(1.0, 0.0),
-            vector(0.0, 1.0),
-            vector(-1.0, -1.0),
-            vector(0.2, 0.3),
-        ];
-        let mut expected = Some(reference.clone());
-        let mut drifted = reference.clone();
-        drifted[0] = vector(0.99998, 0.0063245);
-        assert!(compatible_vectors(&drifted[0], &reference[0], 1024));
-        assert!(check_complementary_retrieval(drifted, &mut expected).is_ok());
-        let mut reversed = reference.clone();
-        reversed.swap(2, 3);
-        assert!(check_complementary_retrieval(reversed, &mut expected).is_err());
-        let mut invalid = reference;
-        invalid[0][0] = f32::NAN;
-        assert!(check_complementary_retrieval(invalid, &mut expected).is_err());
-        assert!(check_complementary_retrieval(vec![], &mut expected).is_err());
-    }
-
-    #[test]
-    fn signed_pooled_normalization_matches_scalar_encoding_exactly() {
-        for values in [
-            [-128i8; 1024],
-            [127i8; 1024],
-            std::array::from_fn(|i| (i % 256) as u8 as i8),
-        ] {
-            let norm = values
-                .iter()
-                .map(|v| f32::from(*v).powi(2))
-                .sum::<f32>()
-                .sqrt();
-            let expected: Vec<_> = values.iter().map(|v| f32::from(*v) / norm).collect();
-            assert_eq!(normalized_pooled(&values).unwrap(), expected);
-        }
-        assert!(normalized_pooled(&[0; 1024]).is_err());
-    }
-}
-
-#[cfg(test)]
 mod tests {
-    /// A plan that moves partway through a batch is never recorded for the
-    /// batch: the outputs are produced again under the plan it moved to, and
-    /// when it keeps moving, no plan is named. Reading the plan once after the
-    /// batch would label every output with the last plan.
-    #[test]
-    fn a_batch_names_only_a_plan_that_produced_all_of_it() {
-        struct Moving {
-            plan: u32,
-            /// The call on which the plan moves, counting every output.
-            moves_at: Vec<u32>,
-            calls: u32,
-        }
-        let produce = |state: &mut Moving, at: usize| {
-            state.calls += 1;
-            if state.moves_at.contains(&state.calls) {
-                state.plan += 1;
-            }
-            Ok((at, state.plan))
-        };
-        let encoding = |state: &Moving| Some(format!("plan:{}", state.plan));
-
-        let mut steady = Moving {
-            plan: 0,
-            moves_at: vec![],
-            calls: 0,
-        };
-        let (outputs, plan) = under_one_plan(&mut steady, 3, produce, encoding).unwrap();
-        assert_eq!(outputs, [(0, 0), (1, 0), (2, 0)]);
-        assert_eq!(plan.as_deref(), Some("plan:0"));
-        assert_eq!(steady.calls, 3);
-
-        // Moves on the second output: the first came from plan 0, so all
-        // three are produced again under plan 1.
-        let mut once = Moving {
-            plan: 0,
-            moves_at: vec![2],
-            calls: 0,
-        };
-        let (outputs, plan) = under_one_plan(&mut once, 3, produce, encoding).unwrap();
-        assert_eq!(outputs, [(0, 1), (1, 1), (2, 1)]);
-        assert_eq!(plan.as_deref(), Some("plan:1"));
-        assert_eq!(once.calls, 6);
-
-        // Moving on the first output is a revalidation before anything was
-        // produced: one plan produced everything.
-        let mut first = Moving {
-            plan: 0,
-            moves_at: vec![1],
-            calls: 0,
-        };
-        let (_, plan) = under_one_plan(&mut first, 3, produce, encoding).unwrap();
-        assert_eq!(plan.as_deref(), Some("plan:1"));
-        assert_eq!(first.calls, 3);
-
-        let mut twice = Moving {
-            plan: 0,
-            moves_at: vec![2, 5],
-            calls: 0,
-        };
-        let (outputs, plan) = under_one_plan(&mut twice, 3, produce, encoding).unwrap();
-        assert_eq!(outputs.len(), 3);
-        assert_eq!(plan, None);
-    }
-
-    /// Changing an indexed embedding space silently corrupts retrieval, so
-    /// both E5 profiles must retain FastEmbed's exact bytes on CPU.
-    fn matches_fastembed(profile: Profile) {
-        use fastembed::TextInitOptions;
-
-        let _ = tracing_subscriber::fmt()
-            .with_writer(std::io::stdout)
-            .try_init();
-        let models =
-            std::path::PathBuf::from(std::env::var("PAMIN_EVAL_HOME").unwrap()).join("models");
-        let options = TextInitOptions::new(profile.model())
-            .with_cache_dir(models.clone())
-            .with_show_download_progress(false)
-            .with_execution_providers(vec![crate::inference::cpu()]);
-        let mut old = TextEmbedding::try_new(options).unwrap();
-        let mut current = Embedder::load(profile, &models).unwrap();
-        let long = "migration rollback ".repeat(300);
-        let texts = [
-            "the deployment pipeline runs on continuous integration",
-            "部署流水线运行在持续集成上",
-            "the office coffee machine needs descaling",
-            long.as_str(),
-        ];
-        let prefixed: Vec<String> = texts
-            .iter()
-            .map(|text| format!("passage: {text}"))
-            .collect();
-        let together = current.embed_passages(&texts).unwrap();
-        let old_together = old.embed(prefixed.clone(), None).unwrap();
-        assert!(
-            together == old_together,
-            "{profile:?}: batched output changed"
-        );
-        for (index, text) in texts.iter().enumerate() {
-            let single = current.embed_passage(text).unwrap();
-            let old_single = old.embed(vec![prefixed[index].as_str()], None).unwrap();
-            assert!(
-                single == old_single[0],
-                "{profile:?}: single output changed at {index}"
-            );
-            if single != together[index] {
-                let maximum = single
-                    .iter()
-                    .zip(&together[index])
-                    .map(|(left, right)| (left - right).abs())
-                    .fold(0.0f32, f32::max);
-                println!("{profile:?} batch-versus-single at {index}: max {maximum}");
-            }
-        }
-        let query = "how does deployment work";
-        assert_eq!(
-            current.embed_query(query).unwrap(),
-            old.embed(vec![format!("query: {query}")], None).unwrap()[0],
-        );
-    }
-
-    #[test]
-    #[ignore = "loads the real multilingual E5 small model"]
-    fn speed_shared_session_matches_fastembed() {
-        matches_fastembed(Profile::Speed);
-    }
-
-    #[test]
-    #[ignore = "loads the real multilingual E5 base model"]
-    fn balanced_shared_session_matches_fastembed() {
-        matches_fastembed(Profile::Balanced);
-    }
-
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     #[ignore = "isolates same-export BGE-M3 CoreML compute units against CPU"]
@@ -1344,9 +596,7 @@ mod tests {
             let mut embedder = Embedder {
                 cache_dir: cache.clone(),
                 model: Box::new(model),
-                profile: Profile::Accuracy,
                 device,
-                secondary: None,
                 remembered: Queries::default(),
             };
             inputs
@@ -1368,9 +618,7 @@ mod tests {
         let mut control = Embedder {
             cache_dir: cache.clone(),
             model: Box::new(model),
-            profile: Profile::Accuracy,
             device: crate::inference::Device::Cpu,
-            secondary: None,
             remembered: Queries::default(),
         };
         for (index, text) in inputs.iter().enumerate() {
@@ -1435,7 +683,7 @@ mod tests {
             cosines.iter().any(|c| *c < 0.99999),
             "control must exercise the known incompatible CoreML graph"
         );
-        let mut accepted = Embedder::load(Profile::Accuracy, &cache).unwrap();
+        let mut accepted = Embedder::load(&cache).unwrap();
         assert_eq!(
             accepted.device(),
             crate::inference::Device::Cpu,
@@ -1462,7 +710,7 @@ mod tests {
         let cache = std::path::PathBuf::from(
             std::env::var_os("PAMIN_TEST_MODEL_CACHE").expect("set PAMIN_TEST_MODEL_CACHE"),
         );
-        let mut embedder = Embedder::load(Profile::Accuracy, &cache).expect("load the model");
+        let mut embedder = Embedder::load(&cache).expect("load the model");
         assert_eq!(embedder.device(), crate::inference::Device::Cpu);
         assert_eq!(
             embedder.model.side_by_side_sessions(),
@@ -1541,34 +789,16 @@ mod tests {
         let mut queries = super::Queries::default();
         assert!(queries.get("how does deployment work").is_none());
 
-        queries.put(
-            "how does deployment work",
-            &Encoded {
-                primary: vec![1.0, 2.0, 3.0],
-                secondary: None,
-            },
-        );
-        queries.put(
-            "how does deployment fail",
-            &Encoded {
-                primary: vec![4.0, 5.0, 6.0],
-                secondary: None,
-            },
-        );
+        queries.put("how does deployment work", &[1.0, 2.0, 3.0]);
+        queries.put("how does deployment fail", &[4.0, 5.0, 6.0]);
 
         assert_eq!(
             queries.get("how does deployment work"),
-            Some(Encoded {
-                primary: vec![1.0, 2.0, 3.0],
-                secondary: None
-            })
+            Some(vec![1.0, 2.0, 3.0])
         );
         assert_eq!(
             queries.get("how does deployment fail"),
-            Some(Encoded {
-                primary: vec![4.0, 5.0, 6.0],
-                secondary: None
-            })
+            Some(vec![4.0, 5.0, 6.0])
         );
         assert!(queries.get("how does deployment").is_none());
     }
@@ -1579,22 +809,13 @@ mod tests {
         let mut queries = super::Queries::default();
         let cap = super::Embedder::REMEMBERED_QUERIES;
         for i in 0..cap + 10 {
-            queries.put(
-                &format!("query {i}"),
-                &Encoded {
-                    primary: vec![i as f32],
-                    secondary: None,
-                },
-            );
+            queries.put(&format!("query {i}"), &[i as f32]);
         }
         assert_eq!(queries.known.len(), cap);
         assert!(queries.get("query 0").is_none(), "the oldest survived");
         assert_eq!(
             queries.get(&format!("query {}", cap + 9)),
-            Some(Encoded {
-                primary: vec![(cap + 9) as f32],
-                secondary: None
-            }),
+            Some(vec![(cap + 9) as f32]),
             "the newest was lost"
         );
     }
@@ -1604,54 +825,25 @@ mod tests {
     fn remembering_a_query_twice_does_not_shorten_the_cache() {
         let mut queries = super::Queries::default();
         for _ in 0..super::Embedder::REMEMBERED_QUERIES * 2 {
-            queries.put(
-                "the same question",
-                &Encoded {
-                    primary: vec![1.0],
-                    secondary: None,
-                },
-            );
+            queries.put("the same question", &[1.0]);
         }
         assert_eq!(queries.order.len(), 1);
-        assert_eq!(
-            queries.get("the same question"),
-            Some(Encoded {
-                primary: vec![1.0],
-                secondary: None
-            })
-        );
+        assert_eq!(queries.get("the same question"), Some(vec![1.0]));
     }
 
     use super::*;
 
+    /// The recorded identity and the plan key stay what they were when the
+    /// model was the `accuracy` profile: every existing index is tagged with
+    /// the first,
+    /// and every host's measured execution plan is cached under the second.
     #[test]
-    fn profile_names_round_trip() {
-        for (name, profile) in [
-            ("speed", Profile::Speed),
-            ("balanced", Profile::Balanced),
-            ("accuracy", Profile::Accuracy),
-            ("dual_accuracy", Profile::DualAccuracy),
-        ] {
-            assert_eq!(Profile::parse(name), Some(profile));
-        }
-        assert_eq!(Profile::parse("enormous"), None);
-    }
-
-    #[test]
-    fn each_profile_declares_a_distinct_encoding_identity() {
-        // The width is what the index is built for and the identity is what a
-        // stored vector is tagged with, so two profiles sharing either would
-        // let incompatible vectors sit in one space undetected.
-        let profiles = Profile::ALL;
-        for (index, left) in profiles.iter().enumerate() {
-            for right in &profiles[index + 1..] {
-                assert_ne!(left.model_id(), right.model_id());
-            }
-        }
-    }
-
-    #[test]
-    fn the_default_profile_is_accuracy() {
-        assert_eq!(Profile::default(), Profile::Accuracy);
+    fn the_model_keeps_its_recorded_identity_and_plan_key() {
+        assert_eq!(MODEL_ID, "gpahal/bge-m3-onnx-int8");
+        assert_eq!(
+            plan_key(MODEL_ID, "gpahal/bge-m3-onnx-int8@abc"),
+            "embedding-query-v4:max512:joint-singleton:e5-cpu256-accelerator8:\
+             gpahal/bge-m3-onnx-int8:gpahal/bge-m3-onnx-int8@abc"
+        );
     }
 }

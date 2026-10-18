@@ -178,7 +178,7 @@
 //!
 //! ```text
 //! env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p pamin-engine --test crosslingual prepare_pinned_xquad_models -- --exact --ignored
-//! env -u HF_HOME -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_SEARCH_EFFORT -u PAMIN_PREPARED -u PAMIN_FUSED_ATTENTION PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_PROFILE=accuracy PAMIN_DEVICE=cpu cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
+//! env -u HF_HOME -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_SEARCH_EFFORT -u PAMIN_PREPARED -u PAMIN_FUSED_ATTENTION PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_DEVICE=cpu cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
 //! ```
 //!
 //! The dataset is fetched with `curl` into `$PAMIN_EVAL_HOME/xquad-r`, or into
@@ -210,9 +210,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
 
+use harness::Rerank;
 use pamin_core::{Channel, Fusion, Why};
 use pamin_engine::{Depths, Engine};
-use pamin_index::{Access, Embedder, Rerank, VectorIndex};
+use pamin_index::{Access, Embedder, VectorIndex};
 use pamin_store::Workspace;
 use sha2::{Digest, Sha256};
 
@@ -229,7 +230,7 @@ const LANGUAGES: [&str; 11] = [
 const SOURCE: &str = "https://raw.githubusercontent.com/google-research-datasets/lareqa/9bc8c7fb6dd8d01d72a05a93c2cb96882b0d299c/xquad-r";
 
 use harness::shape::Shape;
-use harness::{DEFAULT_PROFILE, eval_home, profile};
+use harness::{eval_home, profile};
 use scoring::{NDCG_AT, RECALL_AT, Scores};
 /// How deep to retrieve.
 ///
@@ -804,65 +805,21 @@ fn pinned_embedding_id(models: &Path) -> String {
     pinned_model_id(models, "embedder")
 }
 
-fn fast_reranker_requested() -> bool {
-    std::env::var_os("ROUTES").is_some()
-        || std::env::var("TIERS")
-            .is_ok_and(|tiers| tiers == "1" || tiers.split(',').any(|tier| tier.trim() == "fast"))
-}
-
 fn pinned_source(model: &serde_json::Value) -> (&str, &str) {
-    let source = &model["source_onnx"];
-    let digest = &model["source_onnx_sha256"];
-    let variant = if source.is_object() {
-        #[cfg(target_arch = "aarch64")]
-        let variant = "aarch64";
-        #[cfg(target_arch = "x86_64")]
-        let variant = if std::arch::is_x86_feature_detected!("avx512vnni") {
-            "x86_vnni"
-        } else {
-            "x86_avx2"
-        };
-        #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-        let variant = "other";
-        Some(variant)
-    } else {
-        None
-    };
-    let (source, digest) = match variant {
-        Some(variant) => (&source[variant], &digest[variant]),
-        None => (source, digest),
-    };
     (
-        source.as_str().expect("pinned ONNX path"),
-        digest.as_str().expect("pinned ONNX SHA256"),
+        model["source_onnx"].as_str().expect("pinned ONNX path"),
+        model["source_onnx_sha256"]
+            .as_str()
+            .expect("pinned ONNX SHA256"),
     )
-}
-
-#[test]
-#[should_panic(expected = "XQuAD-R reranker_fast revision differs")]
-fn stale_fast_reranker_revision_is_rejected_before_scoring() {
-    let models = tempfile::tempdir().unwrap();
-    let refs = models
-        .path()
-        .join("models--cross-encoder--mmarco-mMiniLMv2-L12-H384-v1/refs");
-    std::fs::create_dir_all(&refs).unwrap();
-    std::fs::write(refs.join("main"), "stale").unwrap();
-    pinned_model_id(models.path(), "reranker_fast");
 }
 
 /// Validate every pinned role before opening or scoring a project.
 fn pinned_model_id(models: &Path, role: &str) -> String {
-    let manifest: serde_json::Value = if role == "reranker_fast" {
-        serde_json::from_str(include_str!(
-            "../../../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json"
-        ))
-        .unwrap()
-    } else {
-        serde_json::from_str(include_str!(
-            "../../../benchmarks/results/retrieval/xquad-r-model-artifacts.json"
-        ))
-        .unwrap()
-    };
+    let manifest: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../benchmarks/results/retrieval/xquad-r-model-artifacts.json"
+    ))
+    .unwrap();
     let model = manifest["models"]
         .as_array()
         .unwrap()
@@ -1079,85 +1036,6 @@ fn prepare_pinned_model(api: &hf_hub::api::sync::Api, models: &Path, model: &ser
     println!("  prepared {name} at {revision}");
 }
 
-/// Load the architecture-selected Fast export and rank two unambiguous pairs.
-/// This tests the manifest against the actual product loader, without a corpus.
-#[test]
-#[ignore = "downloads a pinned Fast reranker into PAMIN_EVAL_HOME"]
-fn pinned_fast_reranker_loads_and_scores() {
-    // Loads models: one test at a time (see `harness::ModelsTurn`).
-    let _turn = harness::load_models();
-    let Some(home) = pinned_benchmark_home("pinned_fast_reranker_loads_and_scores") else {
-        return;
-    };
-    assert_eq!(std::env::var("PAMIN_DEVICE").as_deref(), Ok("cpu"));
-    assert!(std::env::var_os("HF_HOME").is_none());
-    let models = Path::new(&home).join("models");
-    let fast: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json"
-    ))
-    .unwrap();
-    prepare_pinned_model(&pinned_model_api(&models), &models, &fast["models"][0]);
-    let identity = pinned_model_id(&models, "reranker_fast");
-    report_loaded_graphs();
-    let mut reranker =
-        pamin_index::Reranker::load(Rerank::Fast, &models).expect("load pinned Fast tier");
-    assert_eq!(reranker.device(), pamin_index::Device::Cpu);
-    let ranked = reranker
-        .rank(
-            "Where does the harbour pilot board ships?",
-            &[
-                "The harbour pilot boards ships at the outer buoy.",
-                "Chocolate cake is baked with flour and cocoa.",
-            ],
-        )
-        .expect("score the pinned Fast tier");
-    assert_eq!(ranked.len(), 2);
-    assert!(ranked.iter().all(|item| item.score.is_finite()));
-    assert_eq!(ranked[0].position, 0);
-    assert_eq!(
-        pinned_model_id(&models, "reranker_fast"),
-        identity,
-        "release changed the pinned source identity"
-    );
-}
-
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-#[test]
-#[ignore = "downloads a pinned Fast INT8 export and checks the Apple auto route"]
-fn pinned_fast_auto_prefers_cpu_model() {
-    // Loads models: one test at a time (see `harness::ModelsTurn`).
-    let _turn = harness::load_models();
-    let Some(home) = pinned_benchmark_home("pinned_fast_auto_prefers_cpu_model") else {
-        return;
-    };
-    assert_eq!(std::env::var("PAMIN_DEVICE").as_deref(), Ok("auto"));
-    assert!(std::env::var_os("HF_HOME").is_none());
-    let models = Path::new(&home).join("models");
-    let fast: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json"
-    ))
-    .unwrap();
-    prepare_pinned_model(&pinned_model_api(&models), &models, &fast["models"][0]);
-    let identity = pinned_model_id(&models, "reranker_fast");
-    report_loaded_graphs();
-    let mut reranker =
-        pamin_index::Reranker::load(Rerank::Fast, &models).expect("load pinned Fast tier");
-    assert_eq!(reranker.device(), pamin_index::Device::Cpu);
-    let ranked = reranker
-        .rank(
-            "Where does the harbour pilot board ships?",
-            &[
-                "The harbour pilot boards ships at the outer buoy.",
-                "Chocolate cake is baked with flour and cocoa.",
-            ],
-        )
-        .expect("score on optimized CPU");
-    assert_eq!(ranked.len(), 2);
-    assert!(ranked.iter().all(|item| item.score.is_finite()));
-    assert_eq!(ranked[0].position, 0);
-    assert_eq!(pinned_model_id(&models, "reranker_fast"), identity);
-}
-
 /// A cheap real-loader check for the reproduction log and verifier, without
 /// indexing or scoring a corpus. The Python verifier consumes its stdout.
 #[test]
@@ -1174,10 +1052,8 @@ fn pinned_model_loads_report_actual_graph_paths() {
     pinned_embedding_id(&models);
     pinned_model_id(&models, "reranker");
     report_loaded_graphs();
-    let _embedder = pamin_index::Embedder::load(pamin_index::Profile::Accuracy, &models)
-        .expect("load pinned embedding model");
-    let reranker = pamin_index::Reranker::load(Rerank::Accurate, &models)
-        .expect("load pinned reranking model");
+    let _embedder = pamin_index::Embedder::load(&models).expect("load pinned embedding model");
+    let reranker = pamin_index::Reranker::load(&models).expect("load pinned reranking model");
     assert_eq!(reranker.device(), pamin_index::Device::Cpu);
 }
 
@@ -1199,21 +1075,7 @@ fn prepare_pinned_xquad_models() {
         "../../../benchmarks/results/retrieval/xquad-r-model-artifacts.json"
     ))
     .unwrap();
-    let fast: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../benchmarks/results/retrieval/xquad-r-fast-model-artifacts.json"
-    ))
-    .unwrap();
-    let selected_fast = fast["models"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|_| fast_reranker_requested());
-    for model in manifest["models"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .chain(selected_fast)
-    {
+    for model in manifest["models"].as_array().unwrap() {
         prepare_pinned_model(&api, &models, model);
     }
 }
@@ -1308,10 +1170,7 @@ async fn report_channels(
             score(alone.entry(channel).or_default(), query, ranking);
         }
         for missing in channels::CHANNELS {
-            let ranking = channels::as_if_effective(
-                &hits,
-                &channels::effective_fusion(&hits, &Fusion::default()).without(missing),
-            );
+            let ranking = channels::as_if(&hits, &Fusion::default().without(missing));
             harness::shape::table(channels::without_table(&missing));
             score(without.entry(missing).or_default(), query, &ranking);
         }
@@ -1547,7 +1406,7 @@ fn report(title: &str, groups: &BTreeMap<String, Scores>, per_query_ms: f64) {
 /// recurring documents to be scored again. Hot-set or document-precomputation
 /// decisions need a separate recurrence measurement and storage/cost comparison.
 fn report_reranking(engine: &Engine, tier: Rerank, queries: usize) {
-    let Some(counted) = engine.reranked(tier) else {
+    let Some(counted) = engine.reranked() else {
         println!("  the {} tier was never loaded\n", tier.name());
         return;
     };
@@ -1581,13 +1440,8 @@ fn report_reranking(engine: &Engine, tier: Rerank, queries: usize) {
     );
 }
 
-/// Asserts the floors, unless this is a run of some other profile.
-fn assert_floors(named: &str, groups: &BTreeMap<String, Scores>, floors: &[(&str, f64, f64)]) {
-    if named != DEFAULT_PROFILE {
-        println!("  {named} is not the default profile, so the floors are not asserted\n");
-        return;
-    }
-
+/// Asserts the floors.
+fn assert_floors(groups: &BTreeMap<String, Scores>, floors: &[(&str, f64, f64)]) {
     for (group, floor_ndcg, floor_recall) in floors {
         let scores = groups
             .get(*group)
@@ -1663,7 +1517,7 @@ fn fusion(setting: Option<(f32, f32)>) -> Fusion {
 fn the_model_reaches_across_languages() {
     let corpus = Corpus::load();
     let queries = corpus.queries();
-    let (named, profile) = profile();
+    let named = profile();
     let mut shape = corpus.shape(&queries);
     shape.publish("the_model_reaches_across_languages", &named);
     println!(
@@ -1676,18 +1530,15 @@ fn the_model_reaches_across_languages() {
     let home = eval_home();
     shape.observe_models();
     let embedder = harness::shape::owned(
-        Embedder::load(profile, &home.join("models")).expect("load the embedding model"),
+        Embedder::load(&home.join("models")).expect("load the embedding model"),
     );
     // No engine: the record's providers are the harness's own models,
     // read once the run is over.
     shape.ran_on(Vec::new);
     shape.also_ran("embedding", &embedder, Embedder::plans);
-    shape.also_ran("embedding secondary", &embedder, |embedder| {
-        embedder.secondary_plans().unwrap_or_default()
-    });
     let mut embedder = harness::shape::lock(&embedder);
 
-    let width = profile.dimensions() as usize;
+    let width = pamin_index::DIMENSIONS as usize;
     let vectors = embed_corpus(&mut embedder, &corpus, &home, width, &mut shape);
 
     let mut groups = BTreeMap::new();
@@ -1725,7 +1576,7 @@ fn the_model_reaches_across_languages() {
         &groups,
         started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64,
     );
-    assert_floors(&named, &groups, MODEL_FLOORS);
+    assert_floors(&groups, MODEL_FLOORS);
 }
 
 /// Embeds every sentence through the shared vector cache (see
@@ -1743,7 +1594,7 @@ fn embed_corpus(
 
     let file = format!(
         "xquad-{}-{}.f32",
-        embedder.profile().model_id().replace('/', "-"),
+        pamin_index::MODEL_ID.replace('/', "-"),
         corpus.fingerprint()
     );
     let texts: Vec<&str> = corpus
@@ -1822,21 +1673,20 @@ async fn search_reaches_across_languages() {
     let commit = String::from_utf8(git.stdout).expect("git prints a UTF-8 commit hash");
     let corpus = Corpus::load();
     let queries = corpus.queries();
-    let (named, profile) = profile();
+    let named = profile();
     let mut shape = corpus.shape(&queries);
     // Published before anything is printed, so a failed write to stdout
     // still leaves the in-progress record.
     shape.publish("search_reaches_across_languages", &named);
     println!("  benchmark code commit: {}", commit.trim());
     println!("  reranker device: cpu; export: onnx/model_int8.onnx");
-    // The default profile ends on a significance gate for what reranking is
-    // worth cross-lingually; a sample too small to ever pass it fails here,
-    // before the corpus is indexed.
-    let gated = named == DEFAULT_PROFILE
-        && statistics::gate(
-            "XQuAD-R cross-lingual, what reranking is worth",
-            queries.len(),
-        );
+    // The run ends on a significance gate for what reranking is worth
+    // cross-lingually; a sample too small to ever pass it fails here, before
+    // the corpus is indexed.
+    let gated = statistics::gate(
+        "XQuAD-R cross-lingual, what reranking is worth",
+        queries.len(),
+    );
 
     // A named workspace is reused; an unnamed one is thrown away. Indexing
     // thirteen thousand sentences is minutes, and a harness that pays that on
@@ -1853,18 +1703,7 @@ async fn search_reaches_across_languages() {
 
     let reranker_id = pinned_model_id(&workspace.root().join("models"), "reranker");
     println!("  pinned reranker identity: {reranker_id}");
-    if fast_reranker_requested() {
-        let fast_id = pinned_model_id(&workspace.root().join("models"), "reranker_fast");
-        println!("  pinned fast reranker identity: {fast_id}");
-    }
 
-    // The profile is part of the workspace identity: an index records the
-    // profile it was built with and refuses to open under another.
-    assert_eq!(
-        profile,
-        pamin_index::Profile::Accuracy,
-        "the pinned XQuAD-R search benchmark uses the accuracy profile"
-    );
     let embedding_id = pinned_embedding_id(&workspace.root().join("models"));
     println!("  index embedding identity: {embedding_id}");
     let project = xquad_project_name(&named, &corpus.fingerprint(), &embedding_id);
@@ -1873,7 +1712,6 @@ async fn search_reaches_across_languages() {
     let engine = Engine::open(
         &workspace,
         &project,
-        profile,
         VectorIndex::default(),
         Access::ReadWrite,
     )
@@ -2048,35 +1886,26 @@ async fn search_reaches_across_languages() {
         return;
     }
 
-    // `ROUTES`: spending less on the reranker -- a cascade, and gates that
-    // skip it -- priced against the shipped pass. See `reranking::Routes`.
+    // `ROUTES`: spending less on the reranker -- gates that skip it, and a
+    // learned router -- priced against the shipped pass. See
+    // `reranking::Routes`.
     if std::env::var("ROUTES").is_ok() {
         const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
         let tier = Rerank::default();
-        let small = harness::shape::owned(
-            pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
-                .expect("load the small reranker"),
-        );
-        shape.also_ran(
-            "routes small reranker",
-            &small,
-            pamin_index::Reranker::plans,
-        );
         let mut routes = reranking::Routes::default();
         for query in &queries {
-            let hits = engine
-                .search_reranked(query.text(), WIDE, DEPTHS, tier)
+            let hits = tier
+                .search(&engine, query.text(), WIDE, DEPTHS)
                 .await
                 .expect("search");
             channels::enough_room(&hits, WIDE);
-            let replayed = reranking::replay(&hits, tier);
+            let replayed = reranking::replay(&hits);
             for group in GROUPS {
                 routes.observe(
                     group,
                     &query.question.answers["en"],
                     &hits,
                     &replayed,
-                    &mut harness::shape::lock(&small),
                     query.text(),
                     |into, ranking| score_group(into, query, group, ranking),
                 );
@@ -2157,12 +1986,12 @@ async fn search_reaches_across_languages() {
     // same pipeline that produced the ordering.
     if std::env::var("TIERS").is_ok() {
         // Every tier that loads a model, plus `off` as the baseline the others
-        // are read against. `TIERS=1` runs every tier; `TIERS=fast` runs the
-        // ones named, with `off` always first because every row is also priced
-        // against it.
+        // are read against. `TIERS=1` runs every tier; `TIERS=accurate` runs
+        // the ones named, with `off` always first because every row is also
+        // priced against it.
         let wanted = std::env::var("TIERS").expect("checked above");
         let tiers: Vec<Rerank> = if wanted == "1" {
-            vec![Rerank::Off, Rerank::Fast, Rerank::Accurate]
+            vec![Rerank::Off, Rerank::Accurate]
         } else {
             // Each tier is one table of every query: naming `off`, or a tier
             // twice, would score every query twice into one table and fail
@@ -2253,9 +2082,8 @@ async fn search_reaches_across_languages() {
     }
 
     harness::shape::tables(["shipped"]);
-    if named == DEFAULT_PROFILE {
-        harness::shape::tables(["fusion alone"]);
-    }
+    harness::shape::tables(["fusion alone"]);
+
     harness::shape::table("shipped");
     let started = std::time::Instant::now();
     let groups = run(&engine, &queries, Route::Shipped(Rerank::default())).await;
@@ -2265,50 +2093,48 @@ async fn search_reaches_across_languages() {
         started.elapsed().as_secs_f64() * 1000.0 / queries.len() as f64,
     );
     report_reranking(&engine, Rerank::default(), queries.len());
-    assert_floors(&named, &groups, SEARCH_FLOORS);
+    assert_floors(&groups, SEARCH_FLOORS);
 
     // Fusion alone, to price the reranker. Forty seconds against the four
     // minutes above, and without it nothing here notices the reranker going
     // missing -- see `RERANK_IS_WORTH`.
-    if named == DEFAULT_PROFILE {
-        harness::shape::table("fusion alone");
-        let alone = run(&engine, &queries, Route::Shipped(Rerank::Off)).await;
-        let (with, without) = (
-            groups["cross_lingual"].mean_ndcg(),
-            alone["cross_lingual"].mean_ndcg(),
-        );
-        // Query by query as well as mean against mean. A mean cannot tell the
-        // two cases apart -- every query moving a little, and one query moving
-        // a lot -- and this project has been reading differences of this size
-        // as findings without ever checking which case it was in. See
-        // `statistics`.
-        let paired = statistics::compare(
-            &alone["cross_lingual"].per_query,
-            &groups["cross_lingual"].per_query,
-        );
-        println!("  reranking is worth, in nDCG@{NDCG_AT}:");
-        for group in GROUPS {
-            println!(
-                "    {group:<13} {}",
-                statistics::compare(&alone[group].per_query, &groups[group].per_query)
-            );
-        }
-        println!();
-
-        assert!(
-            !gated || paired.is_significant(),
-            "reranking moved cross-lingual nDCG@{NDCG_AT} by {paired} -- a \
-             difference of means with nothing under it. The tier is supposed to \
-             be worth something, not to be indistinguishable from leaving it off"
-        );
-        assert!(
-            with - without >= RERANK_IS_WORTH,
-            "reranking moved cross-lingual nDCG@{NDCG_AT} by {:+.4}, under the \
-             {RERANK_IS_WORTH:.4} it is supposed to be worth: {without:.4} without it, \
-             {with:.4} with",
-            with - without
+    harness::shape::table("fusion alone");
+    let alone = run(&engine, &queries, Route::Shipped(Rerank::Off)).await;
+    let (with, without) = (
+        groups["cross_lingual"].mean_ndcg(),
+        alone["cross_lingual"].mean_ndcg(),
+    );
+    // Query by query as well as mean against mean. A mean cannot tell the
+    // two cases apart -- every query moving a little, and one query moving
+    // a lot -- and this project has been reading differences of this size
+    // as findings without ever checking which case it was in. See
+    // `statistics`.
+    let paired = statistics::compare(
+        &alone["cross_lingual"].per_query,
+        &groups["cross_lingual"].per_query,
+    );
+    println!("  reranking is worth, in nDCG@{NDCG_AT}:");
+    for group in GROUPS {
+        println!(
+            "    {group:<13} {}",
+            statistics::compare(&alone[group].per_query, &groups[group].per_query)
         );
     }
+    println!();
+
+    assert!(
+        !gated || paired.is_significant(),
+        "reranking moved cross-lingual nDCG@{NDCG_AT} by {paired} -- a \
+         difference of means with nothing under it. The tier is supposed to \
+         be worth something, not to be indistinguishable from leaving it off"
+    );
+    assert!(
+        with - without >= RERANK_IS_WORTH,
+        "reranking moved cross-lingual nDCG@{NDCG_AT} by {:+.4}, under the \
+         {RERANK_IS_WORTH:.4} it is supposed to be worth: {without:.4} without it, \
+         {with:.4} with",
+        with - without
+    );
 }
 
 /// Which of the engine's two search entry points a scoring run drives.
@@ -2355,11 +2181,11 @@ enum Route {
 /// label and then asks, feature by feature, whether anything available *before*
 /// the pass predicts it.
 ///
-/// **Three tiers, not six, and that is a narrowing rather than a shortcut.**
-/// `typed` measured *below* `off` and is closed; `balanced` cost four times
-/// `fast`'s parameters for a quarter of its gain and has been removed. What
-/// is left — nothing, cheap, expensive — is what a shipped router would choose
-/// between, and is the same triple the published router used.
+/// **Two tiers, not six.** `typed` measured *below* `off` and is closed;
+/// `balanced` cost four times `fast`'s parameters for a quarter of its gain
+/// and was removed, and `fast` itself went with the single-tier decision.
+/// What is left — nothing, or the reranker — is what a shipped gate would
+/// choose between.
 ///
 /// Every feature here is read from the **`off`** search, because that is all a
 /// router can see: it runs before the pass it is deciding about.
@@ -2370,7 +2196,7 @@ async fn labels(engine: &Engine, queries: &[Query<'_>], named: &str) {
 
     /// The tiers a router would choose between, cheapest first, so the first
     /// sufficient one is the cheapest sufficient one.
-    const LADDER: [Rerank; 3] = [Rerank::Off, Rerank::Fast, Rerank::Accurate];
+    const LADDER: [Rerank; 2] = [Rerank::Off, Rerank::Accurate];
 
     /// What a feature is measured against: whether the pass was needed at all.
     /// Binary rather than three-way because that is the decision worth most --
@@ -2393,7 +2219,7 @@ async fn labels(engine: &Engine, queries: &[Query<'_>], named: &str) {
         "query tokens",
     ];
 
-    let head = Rerank::default().depth();
+    let head = pamin_index::reranking::depth();
     let mut samples: Vec<Sample> = Vec::new();
     let mut per_tier: Vec<BTreeMap<String, Scores>> =
         LADDER.iter().map(|_| BTreeMap::new()).collect();
@@ -2416,8 +2242,8 @@ async fn labels(engine: &Engine, queries: &[Query<'_>], named: &str) {
     // The features, from one more pass at `off` -- which is the cheap tier, and
     // the only ordering a router gets to look at.
     for (index, query) in queries.iter().enumerate() {
-        let hits = engine
-            .search_reranked(query.text(), DEPTH as u32, DEPTHS, Rerank::Off)
+        let hits = Rerank::Off
+            .search(engine, query.text(), DEPTH as u32, DEPTHS)
             .await
             .expect("search with the reranker off");
 
@@ -2596,8 +2422,8 @@ async fn calibration(engine: &Engine, queries: &[Query<'_>], named: &str) {
     harness::shape::tables(["calibration"]);
     harness::shape::table("calibration");
     for (at, query) in queries.iter().enumerate() {
-        let hits = engine
-            .search_reranked(query.text(), DEPTH as u32, DEPTHS, tier)
+        let hits = tier
+            .search(engine, query.text(), DEPTH as u32, DEPTHS)
             .await
             .expect("search at the default tier");
 
@@ -2982,12 +2808,12 @@ async fn gate_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
             .chain((0..RELATIVE.len()).map(by_relative_table)),
     );
     for query in queries {
-        let off = engine
-            .search_reranked(query.text(), DEPTH as u32, DEPTHS, Rerank::Off)
+        let off = Rerank::Off
+            .search(engine, query.text(), DEPTH as u32, DEPTHS)
             .await
             .expect("search with the reranker off");
-        let on = engine
-            .search_reranked(query.text(), DEPTH as u32, DEPTHS, tier)
+        let on = tier
+            .search(engine, query.text(), DEPTH as u32, DEPTHS)
             .await
             .expect("search at the default tier");
 
@@ -3183,7 +3009,7 @@ async fn pairs_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
     const CAPS: [usize; 8] = [0, 2, 4, 6, 8, 10, 12, usize::MAX];
 
     let tier = Rerank::default();
-    let head = tier.depth();
+    let head = pamin_index::reranking::depth();
 
     let mut shipped: BTreeMap<String, Scores> = BTreeMap::new();
     let mut fused_only: BTreeMap<String, Scores> = BTreeMap::new();
@@ -3199,12 +3025,12 @@ async fn pairs_sweep(engine: &Engine, queries: &[Query<'_>], named: &str) {
             .chain((0..CAPS.len()).map(capped_table)),
     );
     for query in queries {
-        let off = engine
-            .search_reranked(query.text(), DEPTH as u32, DEPTHS, Rerank::Off)
+        let off = Rerank::Off
+            .search(engine, query.text(), DEPTH as u32, DEPTHS)
             .await
             .expect("search with the reranker off");
-        let on = engine
-            .search_reranked(query.text(), DEPTH as u32, DEPTHS, tier)
+        let on = tier
+            .search(engine, query.text(), DEPTH as u32, DEPTHS)
             .await
             .expect("search at the default tier");
 
@@ -3342,14 +3168,12 @@ async fn run<'a>(engine: &Engine, queries: &[Query<'a>], route: Route) -> BTreeM
             // way and only the ordering moves, which is what the tier claims
             // to change.
             Route::Shipped(rerank) => {
-                engine
-                    .search_reranked(query.text(), DEPTH as u32, DEPTHS, *rerank)
+                rerank
+                    .search(engine, query.text(), DEPTH as u32, DEPTHS)
                     .await
             }
             Route::AtLimit(rerank, limit) => {
-                engine
-                    .search_reranked(query.text(), *limit, DEPTHS, *rerank)
-                    .await
+                rerank.search(engine, query.text(), *limit, DEPTHS).await
             }
             Route::Fused(fusion) => {
                 engine
@@ -3370,12 +3194,12 @@ async fn rerank_rules(engine: &Engine, queries: &[Query<'_>], named: &str) {
     let tier = Rerank::default();
     let mut priced = reranking::Priced::default();
     for query in queries {
-        let hits = engine
-            .search_reranked(query.text(), WIDE, DEPTHS, tier)
+        let hits = tier
+            .search(engine, query.text(), WIDE, DEPTHS)
             .await
             .expect("search");
         channels::enough_room(&hits, WIDE);
-        let replayed = reranking::replay(&hits, tier);
+        let replayed = reranking::replay(&hits);
         priced.observe(
             engine,
             query.language,
@@ -3409,20 +3233,19 @@ async fn context(
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
     let model = harness::shape::owned(
-        pamin_index::Reranker::load(tier, &workspace.root().join("models"))
-            .expect("load the reranker"),
+        pamin_index::Reranker::load(&workspace.root().join("models")).expect("load the reranker"),
     );
     shape.also_ran("context reranker", &model, pamin_index::Reranker::plans);
     let labels = reranking::context_labels();
     let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
     harness::shape::tables(labels.iter().map(|(label, _)| label));
     for query in queries {
-        let hits = engine
-            .search_reranked(query.text(), WIDE, DEPTHS, tier)
+        let hits = tier
+            .search(engine, query.text(), WIDE, DEPTHS)
             .await
             .expect("search");
         channels::enough_room(&hits, WIDE);
-        let replayed = reranking::replay(&hits, tier);
+        let replayed = reranking::replay(&hits);
         let (orders, _) = reranking::in_context(
             &hits,
             &replayed,

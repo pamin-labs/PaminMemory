@@ -48,35 +48,35 @@ futures = "0.3"
 # nothing to the tree.
 libc = "0.2"
 half = "2.7.1"
-# image-models is on by default and pulls a full image codec stack, including
-# an AVIF encoder, for models we do not use.
+# Test-only: `pamin-index`'s `shared_vocabulary` test compares the encoder with
+# what `fastembed` computed before the encoder replaced it. No product code
+# calls it. image-models is on by default and pulls a full image codec stack,
+# including an AVIF encoder, for models we do not use.
 fastembed = { version = "6", default-features = false, features = [
     "ort-download-binaries-native-tls",
     "hf-hub-native-tls",
 ] }
-# The tokenizer `fastembed` already builds on, at the version and features it
-# resolves, so this adds no lockfile entry. Named directly so a reranker and an
-# embedder that share a vocabulary can share one loaded copy of it; see
-# `pamin-index`'s `tokenizer.rs`.
+# The tokenizer the models' sessions are fed through. Named directly so a
+# reranker and an embedder that share a vocabulary can share one loaded copy
+# of it; see `pamin-index`'s `tokenizer.rs`.
 tokenizers = { version = "0.23.2", default-features = false, features = ["onig"] }
 # The double-array trie a Unigram vocabulary is held in, in place of the hash
 # map per trie node `tokenizers` builds: 280 MiB for BGE-M3's vocabulary. Pure
 # Rust with no dependencies of its own; see `pamin-index`'s `tokenizer.rs`.
 yada = "0.7"
-# The inference runtime `fastembed` already runs on, named directly because the
-# rerankers and BGE-M3 run their own sessions on it (see `pamin-index`'s
-# `encoder.rs`) and to ask it for a GPU execution provider. Pinned to the exact
-# version `fastembed` resolves, so it is the same crate and the features unify
-# rather than a second runtime being linked. `std` is what loading a session
-# from a file needs; `fastembed` enables it too, and naming it here stops the
-# build depending on that.
-ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std"] }
-# The model hub client, for the reranker's weights. Already compiled -- it is
-# how `fastembed` fetches the embedding model -- so declaring it adds nothing
-# to the tree and stops the build depending on that staying true. TLS has to
-# match what `fastembed` chose.
-hf-hub = { version = "0.5", default-features = false, features = ["native-tls"] }
-ndarray = "0.17"
+# The inference runtime the reranker and BGE-M3 run their sessions on (see
+# `pamin-index`'s `encoder.rs`), and what is asked for a GPU execution
+# provider. Pinned exactly because it is a release candidate. `std` is what
+# loading a session from a file needs; `download-binaries` fetches the
+# prebuilt ONNX Runtime at build time, over the platform's native TLS.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = [
+    "std",
+    "download-binaries",
+    "tls-native",
+] }
+# The model hub client, for both models' weights: its blocking API (`ureq`)
+# over the platform's native TLS.
+hf-hub = { version = "0.5", default-features = false, features = ["ureq", "native-tls"] }
 icu_segmenter = { version = "2", features = ["compiled_data", "auto"] }
 # Not used directly: icu4x reference-counts its compiled data with `Rc` unless
 # this is on, which makes every segmenter -- and so every index that holds one

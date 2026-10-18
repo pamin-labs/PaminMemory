@@ -1908,7 +1908,6 @@ dependencies = [
  "icu_provider",
  "icu_segmenter",
  "libc",
- "ndarray",
  "ort",
  "pamin-core",
  "serde",

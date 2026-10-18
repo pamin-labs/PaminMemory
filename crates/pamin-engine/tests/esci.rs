@@ -60,7 +60,7 @@ use std::process::Command;
 
 use pamin_core::{Channel, Fusion};
 use pamin_engine::{Depths, Engine};
-use pamin_index::{Access, Rerank, VectorIndex};
+use pamin_index::{Access, VectorIndex};
 use pamin_store::Workspace;
 
 use harness::profile;
@@ -341,7 +341,7 @@ async fn search_ranks_product_listings() {
     let corpus = Corpus::load();
     corpus.describe();
 
-    let (named, profile) = profile();
+    let named = profile();
     let home = std::env::var("PAMIN_EVAL_HOME").ok();
     let scratch = home
         .is_none()
@@ -356,7 +356,6 @@ async fn search_ranks_product_listings() {
     let engine = Engine::open(
         &workspace,
         &project,
-        profile,
         VectorIndex::default(),
         Access::ReadWrite,
     )
@@ -374,7 +373,7 @@ async fn search_ranks_product_listings() {
     let started = std::time::Instant::now();
     for query in &corpus.queries {
         let hits = engine
-            .search_reranked(&query.text, DEPTH as u32, DEPTHS, Rerank::default())
+            .search_reranked(&query.text, DEPTH as u32, DEPTHS)
             .await
             .expect("search");
         let ranked: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
@@ -459,10 +458,7 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
             );
         }
         for missing in CHANNELS {
-            let ranking = channels::as_if_effective(
-                &hits,
-                &channels::effective_fusion(&hits, &Fusion::default()).without(*missing),
-            );
+            let ranking = channels::as_if(&hits, &Fusion::default().without(*missing));
             score(
                 without
                     .entry(*missing)

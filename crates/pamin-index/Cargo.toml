@@ -13,8 +13,6 @@ repository.workspace = true
 # already in the tree as `pamin-cli`'s, so this adds no lockfile entry.
 libc = { workspace = true }
 pamin-core = { workspace = true }
-fastembed = { workspace = true }
-ndarray = { workspace = true }
 hf-hub = { workspace = true }
 icu_segmenter = { workspace = true }
 # Widens stored fp16 vectors for rescoring with the CPU's own conversion
@@ -33,9 +31,8 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 whatlang = { workspace = true }
 zvec-rust = { workspace = true }
-# The inference runtime, named directly: the rerankers and BGE-M3 run their
-# sessions on it (see `encoder`), the E5 models run on it through `fastembed`,
-# and it configures the CPU execution provider (see `inference::cpu`) and, per
+# The inference runtime, named directly: the reranker and BGE-M3 run their
+# sessions on it (see `encoder`), and it configures the CPU execution provider (see `inference::cpu`) and, per
 # platform below, asks for a GPU one.
 ort = { workspace = true, features = ["api-24"] }
 
@@ -73,5 +70,7 @@ ort = { workspace = true, features = ["directml", "copy-dylibs"] }
 sha2 = { workspace = true }
 
 [dev-dependencies]
+# Only for the `shared_vocabulary` parity test; see the workspace manifest.
+fastembed = { workspace = true }
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }

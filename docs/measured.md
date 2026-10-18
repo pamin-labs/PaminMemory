@@ -11,6 +11,14 @@ in [benchmarks.md](benchmarks.md), along with what that comparison holds fixed
 and how each condition is asserted. The committed evidence behind both pages is
 under [benchmarks/results/](../benchmarks/results).
 
+Every search now embeds with BGE-M3 and reranks with bge-reranker-v2-m3: what
+the figures below call the `accuracy` profile and the `accurate` tier. The
+other profiles (`speed`, `balanced`, `dual_accuracy`) and the `fast` tier were
+removed, and rows measured under them are kept as history; they describe no
+path a current build runs. An `off` row is fusion alone, what
+`Engine::search_fused` returns, which the evaluations still measure as the
+comparison for what reranking is worth; `pamin search` no longer offers it.
+
 **Complete XQuAD-R product-path comparison (2026-09-30)**: all 1,190 queries
 through `search_reranked`, accuracy profile, accurate reranker, head 30, limit
 60, same complete revision-bound 13,014-sentence memory index.
@@ -87,7 +95,7 @@ persistent cache, then run only the search test:
 
 ```sh
 env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p pamin-engine --test crosslingual prepare_pinned_xquad_models -- --exact --ignored
-env -u HF_HOME -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_SEARCH_EFFORT -u PAMIN_PREPARED -u PAMIN_FUSED_ATTENTION PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_PROFILE=accuracy PAMIN_DEVICE=cpu cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
+env -u HF_HOME -u PAMIN_RERANK_DEPTH -u PAMIN_RERANK_MAX_TOKENS -u PAMIN_RERANK_BATCH -u PAMIN_RERANK_BATCH_TOKENS -u PAMIN_SEARCH_EFFORT -u PAMIN_PREPARED -u PAMIN_FUSED_ATTENTION PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_DEVICE=cpu cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
 python3 benchmarks/results/retrieval/verify_xquad_models.py /path/to/eval-home/models xquad-run.log
 ```
 
@@ -949,8 +957,9 @@ is when the embedding model and both rerankers are loaded at once:
 
 Seven gigabytes for a hundred and thirty thousand documents is the number to
 plan around, and it is why two workspaces do not fit on a sixteen-gigabyte
-machine at this corpus size. A workspace that never asks for `accurate` never
-loads the 570 MB reranker; `--rerank off` never loads either.
+machine at this corpus size. Those figures include the since-removed `fast`
+reranker loaded beside the current one; a current server loads only the
+570 MB reranker.
 
 **And where those seven gigabytes are.** The `MEMORY` arm of
 `pamin-engine/tests/monolingual.rs` reads `/proc/self/smaps` after each thing a

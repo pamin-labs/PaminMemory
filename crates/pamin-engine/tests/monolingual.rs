@@ -63,8 +63,7 @@
 //! |---|---|
 //! | `MIRACL_DIR` | where the three dataset files are, instead of fetching them |
 //! | `MIRACL_MAX_DOCS` | cap the corpus, for checking the harness runs. **Not the benchmark**: the floors are not asserted and the number is not comparable with anyone's |
-//! | `PAMIN_PROFILE` | which embedding profile, default `accuracy`. The floors are asserted for that one only |
-//! | `TIERS` | run all three rerank tiers instead of the default |
+//! | `TIERS` | run fusion alone (`off`) and the shipped reranker side by side, paired |
 //! | `PASSAGES` | a second project whose vectors embed the topic name, paired against this one |
 //! | `ROUTES` | a cascade and gates that spend less on the reranker, against the shipped pass |
 //! | `CONTEXT` | price showing the reranker each candidate's name, from one run |
@@ -87,9 +86,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
 
+use harness::Rerank;
 use pamin_core::{Channel, Fusion};
 use pamin_engine::{Depths, Engine};
-use pamin_index::{Access, Embedder, Rerank, VectorIndex};
+use pamin_index::{Access, Embedder, VectorIndex};
 use pamin_store::Workspace;
 
 // ---------------------------------------------------------------------------
@@ -107,7 +107,7 @@ const QRELS: &str = "https://huggingface.co/datasets/miracl/miracl/resolve/main/
 const CORPUS: &str = "https://huggingface.co/datasets/miracl/miracl-corpus/resolve/main/\
                       miracl-corpus-v1.0-sw/docs-0.jsonl.gz";
 
-use harness::{DEFAULT_PROFILE, eval_home, profile};
+use harness::{eval_home, profile};
 use scoring::{NDCG_AT, RECALL_AT, Scores};
 
 /// How deep a ranking is taken before scoring, so recall@50 can be reached.
@@ -399,7 +399,7 @@ fn report(title: &str, scores: &Scores, per_query_ms: f64) {
 /// a rounding error -- which was written down as an expectation long before
 /// anything counted a character.
 fn report_reranking(engine: &Engine, tier: Rerank, queries: usize) {
-    let Some(counted) = engine.reranked(tier) else {
+    let Some(counted) = engine.reranked() else {
         println!("  the {} tier was never loaded\n", tier.name());
         return;
     };
@@ -434,11 +434,7 @@ fn report_reranking(engine: &Engine, tier: Rerank, queries: usize) {
 }
 
 /// Asserts the floors, unless this run is disqualified from carrying them.
-fn assert_floors(named: &str, corpus: &Corpus, scores: &Scores, floors: (f64, f64)) {
-    if named != DEFAULT_PROFILE {
-        println!("  {named} is not the default profile, so the floors are not asserted\n");
-        return;
-    }
+fn assert_floors(corpus: &Corpus, scores: &Scores, floors: (f64, f64)) {
     if corpus.capped {
         println!("  the corpus was capped, so the floors are not asserted\n");
         return;
@@ -474,7 +470,7 @@ const MODEL_FLOORS: (f64, f64) = (0.0, 0.0);
 #[ignore = "downloads a corpus and embeds a hundred and thirty-two thousand passages"]
 fn the_model_ranks_real_passages() {
     let corpus = Corpus::load();
-    let (named, profile) = profile();
+    let named = profile();
     let mut shape = corpus.shape();
     shape.publish("the_model_ranks_real_passages", &named);
     corpus.describe(&named);
@@ -482,17 +478,14 @@ fn the_model_ranks_real_passages() {
     let home = eval_home();
     shape.observe_models();
     let embedder = harness::shape::owned(
-        Embedder::load(profile, &home.join("models")).expect("load the embedding model"),
+        Embedder::load(&home.join("models")).expect("load the embedding model"),
     );
     // No engine: the record's providers are the harness's own model.
     shape.ran_on(Vec::new);
     shape.also_ran("embedding", &embedder, Embedder::plans);
-    shape.also_ran("embedding secondary", &embedder, |embedder| {
-        embedder.secondary_plans().unwrap_or_default()
-    });
     let mut embedder = harness::shape::lock(&embedder);
 
-    let width = profile.dimensions() as usize;
+    let width = pamin_index::DIMENSIONS as usize;
     let (file, embedded) = embed_corpus(&mut embedder, &corpus, &home, width);
     shape.cached(
         &file,
@@ -533,7 +526,7 @@ fn the_model_ranks_real_passages() {
         &scores,
         started.elapsed().as_secs_f64() * 1000.0 / corpus.queries.len() as f64,
     );
-    assert_floors(&named, &corpus, &scores, MODEL_FLOORS);
+    assert_floors(&corpus, &scores, MODEL_FLOORS);
 }
 
 /// Embeds every passage through the shared vector cache (see
@@ -546,7 +539,7 @@ fn embed_corpus(
 ) -> (String, harness::vectors::Embedded) {
     /// How many passages go into one call.
     ///
-    /// A call and not a forward pass on the default profile: the joint export
+    /// A call and not a forward pass on this model: the joint export
     /// runs its texts one at a time, because a batched vector there depends on
     /// which texts it shared a batch with. This still bounds how much is lost
     /// when the process dies.
@@ -554,7 +547,7 @@ fn embed_corpus(
 
     let file = format!(
         "miracl-sw-{}-{}.f32",
-        embedder.profile().model_id().replace('/', "-"),
+        pamin_index::MODEL_ID.replace('/', "-"),
         corpus.fingerprint()
     );
     let path = home.join(&file);
@@ -611,7 +604,7 @@ async fn search() {
     println!("  open files: {before} raised to {after}");
 
     let corpus = Corpus::load();
-    let (named, profile) = profile();
+    let named = profile();
 
     let home = eval_home();
     let temporary = (std::env::var("PAMIN_EVAL_HOME").is_err())
@@ -621,8 +614,6 @@ async fn search() {
         None => Workspace::at(&home),
     };
 
-    // The profile is part of the workspace identity: an index records the
-    // profile it was built with and refuses to open under another.
     let project = format!("miracl-sw-{named}-{}", corpus.fingerprint());
 
     // `MEMORY`: where the resident memory goes, stage by stage. First, so no
@@ -632,7 +623,7 @@ async fn search() {
     if std::env::var("MEMORY").is_ok() {
         let _turn = harness::load_models();
         corpus.describe(&named);
-        attribute_memory(&open(&workspace, &project, profile).await, &corpus).await;
+        attribute_memory(&open(&workspace, &project).await, &corpus).await;
         return;
     }
 
@@ -642,7 +633,7 @@ async fn search() {
     shape.publish("search_ranks_real_passages", &named);
     corpus.describe(&named);
     shape.observe_models();
-    let engine = open(&workspace, &project, profile).await;
+    let engine = open(&workspace, &project).await;
     shape.ran_on(harness::shape::engines(&[("primary", &engine)]));
     harness::index(
         &mut shape,
@@ -828,7 +819,7 @@ async fn search() {
     // the topic's name, asked every question alongside this one. See
     // `channels::Paired`.
     if std::env::var("PASSAGES").is_ok() {
-        let other = open(&workspace, &format!("{project}-named"), profile).await;
+        let other = open(&workspace, &format!("{project}-named")).await;
         shape.ran_on(harness::shape::engines(&[
             ("primary", &engine),
             ("named", &other),
@@ -880,34 +871,25 @@ async fn search() {
         return;
     }
 
-    // `ROUTES`: spending less on the reranker -- a cascade, and gates that
-    // skip it -- priced against the shipped pass. See `reranking::Routes`.
+    // `ROUTES`: spending less on the reranker -- gates that skip it, and a
+    // learned router -- priced against the shipped pass. See
+    // `reranking::Routes`.
     if std::env::var("ROUTES").is_ok() {
         const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
         let tier = Rerank::default();
-        let small = harness::shape::owned(
-            pamin_index::Reranker::load(Rerank::Fast, &workspace.root().join("models"))
-                .expect("load the small reranker"),
-        );
-        shape.also_ran(
-            "routes small reranker",
-            &small,
-            pamin_index::Reranker::plans,
-        );
         let mut routes = reranking::Routes::default();
         for query in &corpus.queries {
-            let hits = engine
-                .search_reranked(&query.text, WIDE, DEPTHS, tier)
+            let hits = tier
+                .search(&engine, &query.text, WIDE, DEPTHS)
                 .await
                 .expect("search");
             channels::enough_room(&hits, WIDE);
-            let replayed = reranking::replay(&hits, tier);
+            let replayed = reranking::replay(&hits);
             routes.observe(
                 GROUP,
                 &query.text,
                 &hits,
                 &replayed,
-                &mut harness::shape::lock(&small),
                 &query.text,
                 |into, ranking| query.score(into, ranking),
             );
@@ -928,7 +910,7 @@ async fn search() {
 
     if std::env::var("TIERS").is_ok() {
         let mut priced: Vec<(Rerank, Scores)> = Vec::new();
-        let tiers = [Rerank::Off, Rerank::Fast, Rerank::Accurate];
+        let tiers = [Rerank::Off, Rerank::Accurate];
         harness::shape::tables(tiers.map(|tier| tier.name()));
         for tier in tiers {
             harness::shape::table(tier.name());
@@ -978,7 +960,7 @@ async fn search() {
         started.elapsed().as_secs_f64() * 1000.0 / corpus.queries.len() as f64,
     );
     report_reranking(&engine, Rerank::default(), corpus.queries.len());
-    assert_floors(&named, &corpus, &shipped, SEARCH_FLOORS);
+    assert_floors(&corpus, &shipped, SEARCH_FLOORS);
 
     // Fusion alone, to price the reranker on this corpus rather than assume
     // the other corpus's answer carries over. It does not: reranking touches
@@ -995,12 +977,12 @@ async fn search() {
     // Query by query, not mean against mean. This corpus is where the
     // reranker was measured *losing* 0.0152, and a loss that size is exactly
     // what a paired count can dissolve or confirm -- until now nothing here
-    // could tell which. Printed on every profile, because the number is worth
+    // could tell which. Printed on every run, because the number is worth
     // having even when the floors are not asserted; see `statistics`.
     let paired = statistics::compare(&fused.per_query, &shipped.per_query);
     println!("  reranking is worth {paired} nDCG@{NDCG_AT} here\n");
 
-    if named == DEFAULT_PROFILE && !corpus.capped {
+    if !corpus.capped {
         let gain = shipped.mean_ndcg() - fused.mean_ndcg();
         assert!(
             gain >= RERANK_IS_WORTH,
@@ -1055,8 +1037,8 @@ async fn run(engine: &Engine, corpus: &Corpus, route: Route) -> Scores {
     for query in &corpus.queries {
         let hits = match &route {
             Route::Shipped(rerank) => {
-                engine
-                    .search_reranked(&query.text, DEPTH as u32, DEPTHS, *rerank)
+                rerank
+                    .search(engine, &query.text, DEPTH as u32, DEPTHS)
                     .await
             }
             Route::Fused(fusion) => {
@@ -1078,12 +1060,12 @@ async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
     let tier = Rerank::default();
     let mut priced = reranking::Priced::default();
     for query in &corpus.queries {
-        let hits = engine
-            .search_reranked(&query.text, WIDE, DEPTHS, tier)
+        let hits = tier
+            .search(engine, &query.text, WIDE, DEPTHS)
             .await
             .expect("search");
         channels::enough_room(&hits, WIDE);
-        let replayed = reranking::replay(&hits, tier);
+        let replayed = reranking::replay(&hits);
         priced.observe(
             engine,
             GROUP,
@@ -1118,20 +1100,19 @@ async fn context(
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
     let model = harness::shape::owned(
-        pamin_index::Reranker::load(tier, &workspace.root().join("models"))
-            .expect("load the reranker"),
+        pamin_index::Reranker::load(&workspace.root().join("models")).expect("load the reranker"),
     );
     shape.also_ran("context reranker", &model, pamin_index::Reranker::plans);
     let labels = reranking::context_labels();
     let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); labels.len()];
     harness::shape::tables(labels.iter().map(|(label, _)| label));
     for query in &corpus.queries {
-        let hits = engine
-            .search_reranked(&query.text, WIDE, DEPTHS, tier)
+        let hits = tier
+            .search(engine, &query.text, WIDE, DEPTHS)
             .await
             .expect("search");
         channels::enough_room(&hits, WIDE);
-        let replayed = reranking::replay(&hits, tier);
+        let replayed = reranking::replay(&hits);
         let (orders, _) = reranking::in_context(
             &hits,
             &replayed,
@@ -1225,10 +1206,7 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
         }
 
         for missing in CHANNELS {
-            let ranking = channels::as_if_effective(
-                &hits,
-                &channels::effective_fusion(&hits, &Fusion::default()).without(*missing),
-            );
+            let ranking = channels::as_if(&hits, &Fusion::default().without(*missing));
             harness::shape::table(channels::without_table(missing));
             query.score(without.entry(*missing).or_default(), &ranking);
         }
@@ -1328,15 +1306,13 @@ async fn attribute_memory(engine: &Engine, corpus: &Corpus) {
         .take(SEARCHES)
         .map(|query| query.text.as_str())
         .collect();
-    for tier in [Rerank::Off, Rerank::Fast, Rerank::Accurate] {
-        engine
-            .search_reranked(queries[0], DEPTH as u32, DEPTHS, tier)
+    for tier in [Rerank::Off, Rerank::Accurate] {
+        tier.search(engine, queries[0], DEPTH as u32, DEPTHS)
             .await
             .expect("search");
         memory::Resident::now().print(&format!("one search, {}", tier.name()));
         for query in &queries {
-            engine
-                .search_reranked(query, DEPTH as u32, DEPTHS, tier)
+            tier.search(engine, query, DEPTH as u32, DEPTHS)
                 .await
                 .expect("search");
         }
@@ -1500,11 +1476,10 @@ fn clone_route(route: &Route) -> Route {
 }
 
 /// Opens `project` in `workspace` for reading and writing.
-async fn open(workspace: &Workspace, project: &str, profile: pamin_index::Profile) -> Engine {
+async fn open(workspace: &Workspace, project: &str) -> Engine {
     Engine::open(
         workspace,
         project,
-        profile,
         VectorIndex::default(),
         Access::ReadWrite,
     )

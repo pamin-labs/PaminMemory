@@ -1,8 +1,8 @@
 //! A prepared copy of a model scores exactly as the file it came from, and the
 //! weights it holds are mapped rather than copied.
 //!
-//! Ignored by default: it needs the `fast` and `accurate` rerankers and the
-//! BGE-M3 embedder, 1.2 GB between them, and writes a copy of each. Run with
+//! Ignored by default: it needs the `accurate` reranker and the
+//! BGE-M3 embedder, 1.1 GB between them, and writes a copy of each. Run with
 //!
 //! ```sh
 //! cargo test -p pamin-index --test prepared -- --ignored --nocapture
@@ -23,7 +23,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use pamin_index::{Device, Embedder, Profile, Rerank, Reranker};
+use pamin_index::{Device, Embedder, Reranker};
 
 /// Which load a child process runs, and where its models are.
 const ARM: &str = "PAMIN_PREPARED_ARM";
@@ -34,7 +34,7 @@ const CACHE: &str = "PAMIN_PREPARED_CACHE";
 const MARK: &str = "prepared-arm-result";
 
 /// Models loaded by the product's own entry points, by name.
-const MODELS: &[&str] = &["fast", "accurate", "embedder"];
+const MODELS: &[&str] = &["accurate", "embedder"];
 
 const QUERY: &str = "how does the deployment pipeline handle a failed migration";
 
@@ -52,7 +52,7 @@ const TEXTS: &[&str] = &[
 ];
 
 #[test]
-#[ignore = "downloads the fast and accurate rerankers and the BGE-M3 embedder"]
+#[ignore = "downloads the reranker and the BGE-M3 embedder"]
 fn a_prepared_copy_scores_the_same_and_holds_less() {
     if let Ok(model) = std::env::var(ARM) {
         return child(&model, Path::new(&std::env::var(CACHE).expect("the cache")));
@@ -221,9 +221,8 @@ fn child(model: &str, cache: &Path) {
     // Kept alive until every figure below is taken: dropped any earlier, the
     // last of them would measure a process that no longer holds a model.
     let mut score: Box<dyn FnMut() -> Vec<f32>> = match model {
-        "fast" | "accurate" => {
-            let tier = Rerank::parse(model).expect("a tier");
-            let mut reranker = Reranker::load(tier, cache).expect("load the reranker");
+        "accurate" => {
+            let mut reranker = Reranker::load(cache).expect("load the reranker");
             assert_eq!(reranker.device(), Device::Cpu, "the copy is for the CPU");
             Box::new(move || {
                 let mut scores = vec![f32::NAN; TEXTS.len()];
@@ -234,7 +233,7 @@ fn child(model: &str, cache: &Path) {
             })
         }
         "embedder" => {
-            let mut embedder = Embedder::load(Profile::Accuracy, cache).expect("load the embedder");
+            let mut embedder = Embedder::load(cache).expect("load the embedder");
             Box::new(move || {
                 let vectors = embedder.embed_passages(TEXTS).expect("embed");
                 vectors.into_iter().flatten().collect()

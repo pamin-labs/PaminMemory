@@ -14,7 +14,7 @@ mod session;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use pamin_index::{Profile, VectorIndex};
+use pamin_index::VectorIndex;
 use pamin_store::Workspace;
 
 #[derive(Parser)]
@@ -33,20 +33,12 @@ struct Cli {
     #[arg(long, env = "PAMIN_PROJECT", global = true, default_value = "default")]
     project: String,
 
-    /// Which embedding profile to use: speed, balanced, accuracy, or dual_accuracy (experimental).
-    ///
-    /// The index records the profile it was built with, so changing this
-    /// requires `pamin reindex` rather than silently mixing vector spaces.
-    #[arg(long, env = "PAMIN_PROFILE", global = true, default_value = "accuracy")]
-    profile: String,
-
     /// Which vector index to build: disk or memory.
     ///
     /// `disk` holds almost nothing resident and is slower to query and much
     /// slower to build; `memory` is the fastest and the smallest on disk, and
     /// holds its graph and vectors resident. The index records which it was
-    /// built with, so changing this requires `pamin reindex`, as a profile
-    /// change does.
+    /// built with, so changing this requires `pamin reindex`.
     #[arg(
         long,
         env = "PAMIN_VECTOR_INDEX",
@@ -140,9 +132,7 @@ async fn main() -> Result<()> {
     };
     let format = output::Format::from_flags(cli.json, cli.pretty);
     // Checked here although the server parses it again, so that a misspelled
-    // profile is refused before a server is started for it.
-    Profile::parse(&cli.profile)
-        .ok_or_else(|| anyhow::anyhow!("unknown profile {:?}", cli.profile))?;
+    // vector index is refused before a server is started for it.
     VectorIndex::parse(&cli.vector_index)
         .ok_or_else(|| anyhow::anyhow!("unknown vector index {:?}", cli.vector_index))?;
 
@@ -187,19 +177,10 @@ async fn main() -> Result<()> {
     // reference.
     let call = fill_from_stdin(call)?;
 
-    // Before a server is started or a database provisioned. A misspelled tier
-    // is an error the caller can act on at once, and one that arrived after a
-    // PostgreSQL install -- leaving a workspace behind for a command that never
-    // ran -- would be a worse answer to the same question.
-    if let protocol::Call::Search(args) = &call {
-        pamin_index::Rerank::parse(&args.rerank)
-            .ok_or_else(|| anyhow::anyhow!("unknown rerank tier {:?}", args.rerank))?;
-    }
-
     let request = protocol::Request {
         version: protocol::version(),
         project,
-        profile: cli.profile.clone(),
+        profile: String::new(),
         vector_index: cli.vector_index.clone(),
         call,
     };
@@ -225,18 +206,38 @@ async fn main() -> Result<()> {
 /// the one they asked for. Whatever it is set to, including a value that
 /// used to mean "use the server": it cannot be honoured either way, and
 /// the fix is the same.
+///
+/// `PAMIN_RERANK` chose a reranking tier, and there is one reranker now.
+/// Somebody who set it to `off` to buy back search time would otherwise be
+/// paying for a reranker they believe is off.
 fn refuse_removed_settings() -> Result<()> {
-    if std::env::var_os(NO_SERVER).is_some() {
-        anyhow::bail!(
-            "{NO_SERVER} was removed: every command now goes through the workspace's \
-             server, and none can run in the calling process. Unset it to continue."
-        );
+    for (name, why) in REMOVED {
+        if std::env::var_os(name).is_some() {
+            anyhow::bail!("{name} was removed: {why} Unset it to continue.");
+        }
     }
     Ok(())
 }
 
-/// The removed setting [`refuse_removed_settings`] turns away.
-const NO_SERVER: &str = "PAMIN_NO_SERVER";
+/// The removed settings [`refuse_removed_settings`] turns away, and why each
+/// cannot be honoured.
+const REMOVED: &[(&str, &str)] = &[
+    (
+        "PAMIN_NO_SERVER",
+        "every command now goes through the workspace's server, and none can run in \
+         the calling process.",
+    ),
+    (
+        "PAMIN_PROFILE",
+        "every project uses the one embedding model, BGE-M3, so there is no profile to \
+         choose.",
+    ),
+    (
+        "PAMIN_RERANK",
+        "`pamin search` always reranks with its one reranker, so there is no tier to \
+         choose.",
+    ),
+];
 
 /// Reads standard input into the one argument that takes it.
 fn fill_from_stdin(call: protocol::Call) -> Result<protocol::Call> {
@@ -344,11 +345,7 @@ mod tests {
         // Compile-time source/compiler fingerprint, not a runtime user setting.
         "PAMIN_INFERENCE_BUILD",
         "PAMIN_INFERENCE_CARGO",
-        // Compile-time harness provenance from pamin-engine's build.rs: how the
-        // evaluation binary was compiled, recorded in its shape records.
-        "PAMIN_ENGINE_BUILD_ENVIRONMENT",
         "PAMIN_CATCH_UP_BATCH",
-        "PAMIN_EVAL_HOME",
         // Cached-export inputs used only by the native preparation regression.
         "PAMIN_NATIVE_MODEL_SOURCE",
         "PAMIN_NATIVE_TEST_CACHE",
@@ -387,8 +384,9 @@ mod tests {
         let documented =
             std::fs::read_to_string(root.join("docs/cli.md")).expect("read docs/cli.md");
 
-        let mut found: Vec<String> = Vec::new();
-        collect_settings(&root.join("crates"), &mut found);
+        let mut read: Vec<String> = Vec::new();
+        collect_settings(&root.join("crates"), &mut read);
+        let mut found = read.clone();
         found.sort();
         found.dedup();
         assert!(
@@ -407,9 +405,13 @@ mod tests {
             "read by the product and in neither docs/cli.md nor UNDOCUMENTED: {missing:?}"
         );
 
+        // The scan reads this file too, so every name in [`UNDOCUMENTED`] is
+        // found once in the list itself. Read by the product means found
+        // somewhere else as well; asking only whether it was found at all
+        // could never fail.
         let gone: Vec<&&str> = UNDOCUMENTED
             .iter()
-            .filter(|name| !found.contains(&(*name).to_string()))
+            .filter(|name| read.iter().filter(|found| found == *name).count() < 2)
             .collect();
         assert!(
             gone.is_empty(),
@@ -455,47 +457,16 @@ mod tests {
         }
     }
 
-    /// The profile a command gets when nobody names one.
+    /// The vector index a command gets when nobody names one.
     ///
     /// Two defaults, and nothing else makes them agree: `clap` parses a string
-    /// and the library has its own `Default`. They are used in different
-    /// places -- the string here, the impl by anything constructing a profile
-    /// directly -- so a change to one and not the other is two defaults, both
-    /// shipping, differing in which vector space a project ends up in.
-    #[test]
-    fn the_documented_default_profile_is_the_library_default() {
-        // Read off the declared argument rather than by parsing a command
-        // line, because parsing consults `PAMIN_PROFILE` and would then be
-        // measuring whatever the environment running the test happens to say.
-        let command = <Cli as clap::CommandFactory>::command();
-        let declared = command
-            .get_arguments()
-            .find(|argument| argument.get_id() == "profile")
-            .and_then(|argument| argument.get_default_values().first().cloned())
-            .expect("the profile argument declares a default");
-
-        assert_eq!(
-            Profile::parse(&declared.to_string_lossy()),
-            Some(Profile::default())
-        );
-    }
-
-    #[test]
-    fn profile_help_includes_the_opt_in_dual_profile() {
-        let mut command = <Cli as clap::CommandFactory>::command();
-        assert!(
-            command
-                .render_long_help()
-                .to_string()
-                .contains("dual_accuracy")
-        );
-    }
-
-    /// The vector index a command gets when nobody names one, for the same
-    /// reason: the string here and the library's `Default` are two defaults
-    /// that nothing else makes agree.
+    /// and the library has its own `Default`. A change to one and not the
+    /// other is two defaults, both shipping.
     #[test]
     fn the_documented_default_vector_index_is_the_library_default() {
+        // Read off the declared argument rather than by parsing a command
+        // line, because parsing consults `PAMIN_VECTOR_INDEX` and would then
+        // be measuring whatever the environment running the test says.
         let command = <Cli as clap::CommandFactory>::command();
         let declared = command
             .get_arguments()
