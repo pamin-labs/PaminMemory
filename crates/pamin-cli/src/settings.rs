@@ -374,9 +374,25 @@ impl Server {
             file_postgres.as_deref().map(pamin_index::spelled_path),
             "none (installs its own)".to_string(),
         );
-        if let Some(prefix) = &postgres_dir {
-            let entry = entries.last_mut().expect("postgres_dir was just picked");
-            entry.value = pamin_index::shown_path(prefix);
+        // Paths are compared by their spelling, which doubles a backslash, and
+        // shown as written.
+        for entry in &mut entries {
+            match entry.key {
+                "ep_libraries" if !ep_libraries.is_empty() => {
+                    let shown: Vec<String> = ep_libraries
+                        .iter()
+                        .map(|path| pamin_index::shown_path(path))
+                        .collect();
+                    entry.value =
+                        serde_json::to_string(&shown).expect("a list of strings serializes");
+                }
+                "postgres_dir" => {
+                    if let Some(prefix) = &postgres_dir {
+                        entry.value = pamin_index::shown_path(prefix);
+                    }
+                }
+                _ => {}
+            }
         }
 
         let settings = pamin_engine::Settings {
@@ -775,11 +791,11 @@ mod tests {
         assert_eq!(server.settings.store.postgres_dir, Some(half));
     }
 
-    /// A backslash in a PostgreSQL prefix is shown as written, while what a
-    /// running server is compared by stays the escaped spelling.
+    /// A backslash in a PostgreSQL prefix or a library is shown as written,
+    /// while what a running server is compared by stays the escaped spelling.
     #[cfg(unix)]
     #[test]
-    fn a_postgres_prefix_is_shown_as_written() {
+    fn a_path_setting_is_shown_as_written() {
         let root = tempfile::tempdir().unwrap();
         let prefix = root.path().join(r"pg\17");
         installation(&prefix);
@@ -793,6 +809,17 @@ mod tests {
         assert_eq!(entry.compared, pamin_index::spelled_path(&prefix));
         assert_ne!(entry.value, entry.compared);
         assert_eq!(server.asked()["postgres_dir"].value, entry.compared);
+
+        let library = root.path().join(r"ep\npu.so");
+        let server = resolve(root.path(), &["--ep-library", library.to_str().unwrap()]).unwrap();
+        let entry = server
+            .entries
+            .iter()
+            .find(|entry| entry.key == "ep_libraries")
+            .unwrap();
+        let shown: Vec<String> = serde_json::from_str(&entry.value).unwrap();
+        assert_eq!(shown, [library.to_str().unwrap()]);
+        assert_eq!(entry.compared, pamin_index::spelled_paths(&[library]));
     }
 
     /// A comma in a library's path does not make it two libraries: a server
