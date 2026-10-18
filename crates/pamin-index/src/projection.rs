@@ -1607,14 +1607,18 @@ impl Previous {
         Ok(lendable)
     }
 
-    /// Hands `take` every document this index can lend, `batch` at a time,
-    /// as the topic, the text wanted for it and its stored vector, with what
-    /// produced those vectors ([`Stored::encoding`]); returns the topics it
-    /// lent.
+    /// Hands `take` every document this index can lend, at most `batch` at a
+    /// time, as the topic, the text wanted for it and its stored vector, with
+    /// what produced those vectors ([`Stored::encoding`]); returns the topics
+    /// it lent.
     ///
     /// Each batch shares one encoding, so the caller can record it as this
     /// index did: a rebuild that dropped it would leave every lent document
-    /// one the next sync of it has to embed again.
+    /// one the next sync of it has to embed again. The bound holds across
+    /// encodings, not per encoding: a long-lived index can carry many, and
+    /// waiting for each to fill a batch would hold most of the collection's
+    /// vectors at once. So whenever `batch` documents are waiting in all,
+    /// every encoding's are handed over.
     ///
     /// A topic is lent when this index holds it with exactly the text in
     /// `wanted`; everything else is the caller's to embed. In the order this
@@ -1631,6 +1635,7 @@ impl Previous {
     ) -> Result<HashSet<TopicId>> {
         let mut lent = HashSet::new();
         let mut pending: BTreeMap<Option<String>, Vec<PendingVectorDocument<'_>>> = BTreeMap::new();
+        let mut waiting = 0;
         let mut hand_over =
             |encoding: &Option<String>, pending: &mut Vec<PendingVectorDocument<'_>>| {
                 let documents: Vec<VectorDocument<'_>> = pending
@@ -1666,10 +1671,18 @@ impl Previous {
             };
             let encoding = self.index.encoding_of(&doc)?;
             lent.insert(topic);
-            let group = pending.entry(encoding.clone()).or_default();
-            group.push((topic, wanted[&topic], vector, secondary));
-            if group.len() == batch {
-                hand_over(&encoding, group)?;
+            pending
+                .entry(encoding)
+                .or_default()
+                .push((topic, wanted[&topic], vector, secondary));
+            waiting += 1;
+            if waiting == batch {
+                for (encoding, group) in &mut pending {
+                    if !group.is_empty() {
+                        hand_over(encoding, group)?;
+                    }
+                }
+                waiting = 0;
             }
             Ok(())
         })?;
