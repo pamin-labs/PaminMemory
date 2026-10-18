@@ -1386,9 +1386,11 @@ about 205 MB with BGE-M3, so sixteen of them is 3.3 GB. On a machine where that 
 much, `--open-indexes` sets a smaller number. Lowering it costs nothing but
 a reopen when a query lands on a project that has fallen out.
 
-Every command goes through the server except two. `serve` is the server, and
-`stop` is what shuts it down; with no server running, `stop` stops the database
-itself rather than starting a server to do it. There is no way to run a command
+Every command goes through the server except three. `serve` is the server,
+`stop` is what shuts it down -- with no server running, `stop` stops the
+database itself rather than starting a server to do it -- and `config` only
+reads the settings a server would start with, so it starts none to show them.
+There is no way to run a command
 in the calling process instead: `PAMIN_NO_SERVER`, which used to, was removed,
 and a command run with it set fails and says so rather than quietly going
 through the server it was set to avoid.
