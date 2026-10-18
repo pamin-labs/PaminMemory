@@ -117,7 +117,7 @@ pub struct LocalServer {
     pub database: String,
     pub installation_dir: PathBuf,
     /// The store settings the cluster was started with, so a caller asking
-    /// for others restarts it rather than reusing it. `None` in a record
+    /// for others is refused rather than served by it. `None` in a record
     /// written before this was kept, which no request matches.
     #[serde(default)]
     pub started_with: Option<StartedWith>,
