@@ -11,23 +11,33 @@ the last section).
 
 Each arm is one commit's implementation of the same work: 1 query norm, then
 100 candidates × 1024 dimensions. The harness holds a copy of each commit's
-kernels; the x86 kernels are identical to this PR's (checked with `diff`).
+kernels; the x86 kernels are identical to this PR's (checked with `diff`), and
+the `shipped` arm runs this PR's `vector_math.rs` verbatim, through its
+runtime dispatcher.
 
 | Arm | Commit | fp16 → f32 | Dot product |
 | --- | --- | --- | --- |
 | `main` | `ad33d2d` | scalar `decode`, one code at a time | sequential f32 sum |
-| `dot-avx2` | `255fbe1` | scalar `decode` | AVX2+FMA kernel (`crates/pamin-index/src/vector_math.rs`), forced |
+| `dot-avx2` | `255fbe1` | scalar `decode` | AVX2+FMA kernel, forced |
 | `dot-avx512` | `255fbe1` | scalar `decode` | AVX-512F kernel, forced (removed from the product, see below) |
-| `convert-avx2` | `01614fb` | `half` 2.7.1 slice conversion (F16C) | AVX2+FMA, forced; **what this PR ships on x86-64** |
+| `convert-avx2` | `01614fb` | `half` 2.7.1 slice conversion (F16C) | AVX2+FMA, forced |
 | `convert-avx512` | `01614fb` | as `convert-avx2` | AVX-512F, forced |
+| `shipped` | `3fcf789` | `half` slice conversion | `vector_math::dot`, which checks for AVX2 and FMA on every call: **what this PR ships on x86-64** |
 
 ## Results (x86-64)
 
 - Host: Intel Xeon @ 2.10 GHz, 4 vCPUs (AVX-512F/VNNI/FP16, AMX, F16C), no GPU.
-- Build: rustc 1.97.0, `--release`, one thread, pinned to one CPU with `taskset`.
-- Quiet host: before each run the queue waited for 60 s of 1-minute load
-  below 0.5, with no Cargo, rustc, `pamin serve` or model job running. The
-  load before and after each run is in [`x86-raw/conditions.txt`](x86-raw/conditions.txt).
+- Build: rustc 1.97.0, `--release`, one thread, pinned to one CPU with
+  `taskset` ([build record](x86-raw/build.txt)).
+- Inputs: one xorshift64 stream (seed `0x9e3779b97f4a7c15`) of values in
+  [−0.06, 0.06): first the 1024-dimension f32 query, then the 100 candidates as
+  fp16 codes. The inputs are identical in every run and arm.
+- Warm: the working set (about 200 KiB) stays cache-resident, and the premise
+  pass runs every arm once before any timing. Cold-cache cost is N/A.
+- Quiet host: before each run the queue waited for 60 s of 1-minute load below
+  0.5 with no Cargo or rustc running; an unrelated accuracy job on the host was
+  paused (SIGSTOP) for the duration. The load before and after each run is in
+  [`x86-raw/conditions.txt`](x86-raw/conditions.txt).
 - Method: three runs, each of three passes. Every pass has 20 rounds, with the
   arm order rotated and reversed between rounds, 100 calls per arm per round.
   Each figure is the median over the three runs of each run's p50 or p95,
@@ -43,18 +53,22 @@ kernels; the x86 kernels are identical to this PR's (checked with `diff`).
 
 The `main` and `dot-avx2` columns compare `dot` with its predecessor `main`.
 The `dot-avx2` and `convert-avx2` columns compare `convert` with its
-predecessor `dot`. The last column compares the stack with `main`.
+predecessor `dot`. The last two columns compare what ships with `main`.
 
-| Metric | `main` | `dot-avx2` | Δ vs `main` | `convert-avx2` | Δ vs `dot-avx2` | Stack Δ vs `main` |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Max abs cosine error vs f64 oracle | 7.749e-8 | 1.487e-8 | −6.262e-8 (−80.8%) | 1.487e-8 | 0 (0%) | −6.262e-8 (−80.8%) |
-| Top-10 overlap with oracle (of 10) | 10 | 10 | 0 | 10 | 0 | 0 |
-| p50 µs per 100×1024 rescore, elapsed | 258.95 | 130.06 | −128.89 (−49.8%) | 38.59 | −91.47 (−70.3%) | −220.36 (−85.1%) |
-| p95 µs, elapsed | 286.45 | 149.44 | −137.01 (−47.8%) | 48.90 | −100.54 (−67.3%) | −237.55 (−82.9%) |
-| CPU user / system time | N/A | N/A | N/A | N/A | N/A | N/A |
-| Memory | N/A | N/A | N/A | N/A | N/A | N/A |
-| Disk | N/A | N/A | N/A | N/A | N/A | N/A |
+| Metric | `main` | `dot-avx2` | Δ vs `main` | `convert-avx2` | Δ vs `dot-avx2` | `shipped` | Stack Δ vs `main` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Max abs cosine error vs f64 oracle | 7.749e-8 | 1.487e-8 | −6.262e-8 (−80.8%) | 1.487e-8 | 0 (0%) | 1.487e-8 | −6.262e-8 (−80.8%) |
+| Top-10 overlap with oracle (of 10) | 10 | 10 | 0 | 10 | 0 | 10 | 0 |
+| p50 µs per 100×1024 rescore, elapsed | 261.49 | 130.49 | −131.00 (−50.1%) | 38.25 | −92.24 (−70.7%) | 38.85 | −222.64 (−85.1%) |
+| p95 µs, elapsed | 340.13 | 164.19 | −175.94 (−51.7%) | 50.08 | −114.11 (−69.5%) | 52.48 | −287.65 (−84.6%) |
+| CPU user / system time | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Memory | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Disk | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 
+- **Dispatch:** `shipped` is 0.60 µs (+1.6%) slower than the forced
+  `convert-avx2` at p50 and 2.40 µs (+4.8%) at p95. That is the cost of the
+  run-time feature check on each of the 201 `dot` calls, plus noise between
+  arms.
 - **Memory:** not measured. Neither change adds a buffer or keeps one alive:
   both arms allocate one 1024-wide `Vec<f32>` per candidate, as `main` does.
 - **Disk:** not measured as a size. The release binary gains the `half`
@@ -74,20 +88,22 @@ other in the same rotated rounds, AVX2 was no slower:
 | Metric | AVX-512 | AVX2 | Δ AVX2 vs AVX-512 |
 | --- | ---: | ---: | ---: |
 | Max abs cosine error vs f64 oracle | 1.544e-8 | 1.487e-8 | −5.7e-10 (−3.7%) |
-| p50 µs, with `half` conversion | 39.22 | 38.59 | −0.63 (−1.6%) |
-| p95 µs, with `half` conversion | 50.25 | 48.90 | −1.35 (−2.7%) |
-| p50 µs, with scalar `decode` | 130.45 | 130.06 | −0.39 (−0.3%) |
-| p95 µs, with scalar `decode` | 150.80 | 149.44 | −1.36 (−0.9%) |
+| p50 µs, with `half` conversion | 39.37 | 38.25 | −1.12 (−2.8%) |
+| p95 µs, with `half` conversion | 51.89 | 50.08 | −1.81 (−3.5%) |
+| p50 µs, with scalar `decode` | 130.96 | 130.49 | −0.47 (−0.4%) |
+| p95 µs, with scalar `decode` | 164.38 | 164.19 | −0.19 (−0.1%) |
 
-AVX2 was ahead at pooled p50 in all three runs for both conversions, and in 16
-of the 18 per-pass comparisons. The per-pass p95 went either way. So this PR
-removes the AVX-512 kernel, and every x86-64 CPU with AVX2 and FMA runs the
-AVX2 kernel. Only one CPU was measured: other AVX-512 CPUs (AMD Zen 4/5,
-older Intel parts that lower their clock under AVX-512) are N/A, and no gain is
-claimed for them; the measured CPU gives no reason to expect AVX-512 to win.
+AVX2 was ahead at pooled p50 in all three runs for both conversions, and in 17
+of the 18 per-pass p50 comparisons. An earlier set of three runs without the
+`shipped` arm ([`x86-raw/five-arm/`](x86-raw/five-arm/)) agrees: AVX2 ahead
+at pooled p50 in all three runs, by 0.2–2.0%. So this PR removes the AVX-512
+kernel, and every x86-64 CPU with AVX2 and FMA runs the AVX2 kernel. Only one
+CPU was measured: other AVX-512 CPUs (AMD Zen 4/5, older Intel parts that
+lower their clock under AVX-512) are N/A, and no gain is claimed for them; the
+measured CPU gives no reason to expect AVX-512 to win.
 
 An earlier screen of the same arms ran beside unrelated Cargo builds (1-minute
-load about 5.6) and is superseded by this one; its output is kept as
+load about 5.6) and is superseded; its output is kept as
 [`result.txt`](result.txt).
 
 ## Other platforms
@@ -128,7 +144,7 @@ bodies. `half` is 2.7.1 from the harness's lockfile.
 - Host: MacBook Air Mac16,12, Apple M4 (4 P + 6 E cores), 32 GB, macOS 27.0.1
   (26A434). On AC power, with no thermal warnings before or after.
 - Build: Homebrew `rustc`/`cargo` 1.99.0 (rustup was not installed), against
-  Rust 1.98.1 on x86-64. `--release`, one thread. The compiler differs between
+  rustc 1.97.0 on x86-64. `--release`, one thread. The compiler differs between
   the two hosts, so their figures are not comparable with each other.
 - Clock: elapsed (wall) time per call; CPU time N/A (see the x86 section).
 - Load: 1-minute load average 2.55–2.59. Chrome (13–22% CPU), OrbStack,
@@ -194,4 +210,5 @@ The harness only produces numbers, so it is kept out of this tree.
 - Premise: it aborts before timing if any arm misses the f64 oracle by more
   than 1e-6 in cosine or changes the top 10.
 - Raw output: [`x86-raw/`](x86-raw/) holds the three runs above, the load
-  before and after each run, and `SHA256SUMS`.
+  before and after each run, the binary's sha256 and compiler, and
+  `SHA256SUMS`; `x86-raw/five-arm/` holds the earlier runs without `shipped`.
