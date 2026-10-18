@@ -171,6 +171,15 @@ struct Tally {
 
 thread_local! {
     static TALLY: RefCell<Option<Tally>> = const { RefCell::new(None) };
+    /// The corpus digest of the shape this thread published, per thread for
+    /// the reason [`Tally`] is.
+    static PUBLISHED: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// The [`Shape::digest`] of the shape this test published, for a file the
+/// run writes beside its record to carry; `None` before one is published.
+pub fn published_digest() -> Option<String> {
+    PUBLISHED.with(|published| published.borrow().clone())
 }
 
 /// Runs `f` on this thread's tally.
@@ -262,7 +271,7 @@ const NOT_IDENTITY: [(&str, &str); 6] = [
 /// that is set names the record, whichever harness reads it, so no harness
 /// keeps a list of its own that can miss one.
 /// `every_evaluation_read_is_classified` holds the tests to this.
-const EVAL_SETTINGS: [&str; 30] = [
+const EVAL_SETTINGS: [&str; 29] = [
     "AT_LIMIT",
     "CALIBRATE",
     "CHANNELS",
@@ -272,7 +281,6 @@ const EVAL_SETTINGS: [&str; 30] = [
     "DEPTH_VARIANTS",
     "EFFORTS",
     "ENTITIES",
-    "FEATURES_OUT",
     "GATE",
     "GRAPHS",
     "LABELS",
@@ -284,11 +292,11 @@ const EVAL_SETTINGS: [&str; 30] = [
     "PAIRS",
     "PASSAGES",
     "REACH",
+    "REPLAY_OUT",
     "RERANK_RULES",
     "RESCORE_IN",
     "RESHAPE",
     "ROUTES",
-    "SUFFICIENCY_OUT",
     "SWEEP",
     "SWEEP_AGAINST",
     "TIERS",
@@ -297,12 +305,8 @@ const EVAL_SETTINGS: [&str; 30] = [
 
 /// Variables the evaluation tests read that change nothing a record is
 /// named by, with why.
-const EVAL_NOT_IDENTITY: [(&str, &str); 7] = [
+const EVAL_NOT_IDENTITY: [(&str, &str); 6] = [
     ("CHANNELS_OUT", "where a table is written"),
-    (
-        "SHORTLIST_OUT",
-        "where the shortlists a reranker saw are written",
-    ),
     (
         "ESCI_DIR",
         "where a dataset is; what it holds is the corpus digest",
@@ -1942,6 +1946,7 @@ impl Shape {
             record.display()
         ));
         self.record = Some(record);
+        PUBLISHED.with(|published| *published.borrow_mut() = Some(digest));
         open_tally();
     }
 

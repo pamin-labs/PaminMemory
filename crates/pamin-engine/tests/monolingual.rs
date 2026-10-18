@@ -69,13 +69,12 @@
 //! | `CONTEXT` | price showing the reranker each candidate's name, from one run |
 //! | `RERANK_RULES` | price blending the shipped tier's scores with fusion's, from one run |
 //! | `SWEEP` | run fusion settings instead of the shipped path |
-//! | `FEATURES_OUT` | a path: every candidate fusion saw, one row each, for fitting a fusion offline |
+//! | `REPLAY_OUT` | a path: run `RERANK_RULES` and write each search down, fused list, labels and the model's scores past the shipped shortlist, for pricing other shortlists offline |
 //!
 //! The dataset is not vendored. The corpus is Wikipedia text under
 //! CC-BY-SA-3.0 and this repository is Apache-2.0, and it is 40 MB unpacked.
 
 mod channels;
-mod features;
 mod harness;
 mod memory;
 mod reranking;
@@ -738,34 +737,6 @@ async fn search() {
          would have changed these numbers"
     );
 
-    // `FEATURES_OUT`: every candidate fusion saw, one row each, for fitting a
-    // fusion offline. See `features`.
-    if let Some(mut dump) = features::Features::from_env("miracl-sw") {
-        const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
-        harness::shape::tables(["features"]);
-        harness::shape::table("features");
-        for query in &corpus.queries {
-            let hits = engine
-                .search_fused(&query.text, WIDE, harness::depths(), Fusion::default())
-                .await
-                .expect("search");
-            let relevant = query.relevant();
-            let asked = features::Asked {
-                group: GROUP,
-                question: &query.id,
-                text: &query.text,
-                // What `write_corpus` labels every passage with.
-                language: Some("sw"),
-                judged: relevant.len(),
-            };
-            dump.observe(&asked, &hits, WIDE, |docid| {
-                Some(f64::from(relevant.contains(docid)))
-            });
-        }
-        dump.finish(corpus.queries.len());
-        return;
-    }
-
     // `CHANNELS` reports what each channel is worth on its own, and what the
     // fused list looks like with each one taken away. One run, not four: the
     // trace carries every channel's rank for every candidate, so the whole
@@ -863,8 +834,8 @@ async fn search() {
     }
 
     // `RERANK_RULES`: other rules for using the shipped tier's scores, priced
-    // from one shipped run. See `reranking`.
-    if std::env::var("RERANK_RULES").is_ok() {
+    // from one shipped run; `REPLAY_OUT` records that run. See `reranking`.
+    if reranking::rules_asked() {
         rerank_rules(&engine, &corpus, &named).await;
         return;
     }
@@ -1071,11 +1042,24 @@ async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
         let replayed = reranking::replay(&hits);
         priced.observe(
             engine,
-            GROUP,
-            &query.text,
+            &reranking::Asked {
+                group: GROUP,
+                question: &query.id,
+                query: &query.text,
+                // What `write_corpus` labels every passage with.
+                language: Some("sw"),
+                cluster: None,
+            },
             &hits,
             &replayed,
-            None,
+            || {
+                vec![reranking::Answers {
+                    key: GROUP.to_string(),
+                    judged: query.relevant.len(),
+                    relevant: query.relevant.clone(),
+                    dropped: HashSet::new(),
+                }]
+            },
             |into, ranking| query.score(into.entry(GROUP.to_string()).or_default(), ranking),
         );
     }

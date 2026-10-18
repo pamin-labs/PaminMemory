@@ -132,7 +132,6 @@
 
 mod channels;
 mod cold;
-mod features;
 mod harness;
 mod reranking;
 mod scoring;
@@ -223,31 +222,6 @@ async fn retrieval_quality_by_group() {
     // not is written once and re-read. Writing is idempotent per topic either
     // way: the same content produces the same state.
     write_corpus(&mut engine, &corpus).await;
-
-    // `FEATURES_OUT`: every candidate fusion saw, one row each, for fitting a
-    // fusion offline. See `features`.
-    if let Some(mut dump) = features::Features::from_env("own") {
-        const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
-        for (index, query) in queries.iter().enumerate() {
-            let hits = engine
-                .search_fused(&query.query, WIDE, harness::depths(), Fusion::default())
-                .await
-                .expect("search");
-            let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
-            let asked = features::Asked {
-                group: &query.group,
-                question: &format!("q{index:03}"),
-                text: &query.query,
-                language: None,
-                judged: relevant.len(),
-            };
-            dump.observe(&asked, &hits, WIDE, |topic| {
-                Some(f64::from(relevant.contains(topic)))
-            });
-        }
-        dump.finish(queries.len());
-        return;
-    }
 
     // `CHANNELS`: what each channel is worth alone, and what the fused list
     // looks like with each one taken away. See `channels`.
@@ -391,9 +365,10 @@ async fn retrieval_quality_by_group() {
 
     // `RERANK_RULES` asks which candidates the reranker should be allowed to
     // move, which is a question the tier table cannot ask: it compares tiers
-    // under one rule, and this compares rules under one tier.
-    if std::env::var("RERANK_RULES").is_ok() {
-        rerank_rules(&engine, &queries).await;
+    // under one rule, and this compares rules under one tier. `REPLAY_OUT`
+    // records that run.
+    if reranking::rules_asked() {
+        rerank_rules(&engine, &queries, digest(&corpus, &queries)).await;
         return;
     }
 
@@ -681,11 +656,14 @@ async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query]) {
 /// (+0.0259, 4W/0L, p = 0.12) and cost cross-lingual (-0.0108, 0W/10L,
 /// p = 0.0018), so it traded one group for another and was dropped. Blending
 /// keeps fusion's opinion of every candidate rather than of some.
-async fn rerank_rules(engine: &Engine, queries: &[Query]) {
+///
+/// `digest` names the corpus and questions for `REPLAY_OUT`'s lines, since
+/// this harness publishes no shape whose digest they would carry.
+async fn rerank_rules(engine: &Engine, queries: &[Query], digest: String) {
     const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
     let tier = Rerank::default();
-    let mut priced = reranking::Priced::default();
-    for query in queries {
+    let mut priced = reranking::Priced::default().corpus(digest);
+    for (index, query) in queries.iter().enumerate() {
         let hits = tier
             .search(engine, &query.query, WIDE, harness::depths())
             .await
@@ -696,11 +674,23 @@ async fn rerank_rules(engine: &Engine, queries: &[Query]) {
         let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
         priced.observe(
             engine,
-            &query.group,
-            &query.query,
+            &reranking::Asked {
+                group: &query.group,
+                question: &format!("q{index:03}"),
+                query: &query.query,
+                language: None,
+                cluster: None,
+            },
             &hits,
             &replayed,
-            None,
+            || {
+                vec![reranking::Answers {
+                    key: query.group.clone(),
+                    judged: relevant.len(),
+                    relevant: relevant.iter().map(|topic| topic.to_string()).collect(),
+                    dropped: HashSet::new(),
+                }]
+            },
             |into, ranking| {
                 into.entry(query.group.clone()).or_default().add(
                     ranking,
@@ -1042,6 +1032,25 @@ fn load<T: serde::de::DeserializeOwned>(name: &str) -> Vec<T> {
         panic!("reading {}: {error}", path.display());
     });
     serde_json::from_str(&text).unwrap_or_else(|error| panic!("parsing {name}: {error}"))
+}
+
+/// SHA-256 over the corpus and the questions asked of it, in order.
+fn digest(corpus: &[Memory], queries: &[Query]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    let fields = corpus
+        .iter()
+        .flat_map(|memory| [&memory.topic, &memory.content, &memory.language])
+        .chain(queries.iter().flat_map(|query| {
+            [&query.group, &query.query]
+                .into_iter()
+                .chain(&query.relevant)
+        }));
+    for field in fields {
+        hash.update(field.len().to_le_bytes());
+        hash.update(field.as_bytes());
+    }
+    format!("{:x}", hash.finalize())
 }
 
 /// A short digest of the corpus, so a changed corpus gets a fresh project.

@@ -47,7 +47,7 @@
 //! | `MUSIQUE_SAMPLE` | ask this many, drawn from the whole split by a seeded hash, stratified by hop count |
 //! | `EVAL_SEED` | the seed `MUSIQUE_SAMPLE` draws with, default `harness::shape::SEED` |
 //! | `CHANNELS` | the channel diagnostic and the offline fusion sweep |
-//! | `FEATURES_OUT` | a path: every candidate fusion saw, one row each, for fitting a fusion offline |
+//! | `REPLAY_OUT` | a path: run `RERANK_RULES` and write each search down, fused list, labels and the model's scores past the shipped shortlist, for pricing other shortlists offline |
 //! | `CONTEXT` | price what the reranker is shown, from one run |
 //! | `PASSAGES` | a second project whose vectors embed the topic name, paired against this one |
 //! | `ROUTES` | a cascade and gates that spend less on the reranker, against the shipped pass |
@@ -55,7 +55,6 @@
 //! | `ENTITIES` | a second project with edges between memories that share a rare proper name, paired against this one |
 
 mod channels;
-mod features;
 mod harness;
 mod reranking;
 mod scoring;
@@ -537,8 +536,8 @@ fn download(path: &Path, url: &str) {
 }
 
 /// Scores one ranking, and counts it toward the run's coverage. Every arm
-/// that scores comes through here; the two that do not -- `FEATURES_OUT` and
-/// `REACH` -- count each question themselves.
+/// that scores comes through here; the one that does not -- `REACH` --
+/// counts each question itself.
 fn score(into: &mut Scores, query: &Query, ranked: &[String]) {
     harness::shape::tally(&query.group, &query.id);
     into.add(ranked, query.relevant.len(), |title| {
@@ -685,8 +684,9 @@ async fn search_answers_questions_that_take_several_steps() {
     }
 
     // `RERANK_RULES`: every rule for using the reranker's scores, priced
-    // against the shipped one from a single shipped run. See `reranking`.
-    if std::env::var("RERANK_RULES").is_ok() {
+    // against the shipped one from a single shipped run; `REPLAY_OUT`
+    // records that run. See `reranking`.
+    if reranking::rules_asked() {
         let mut priced = reranking::Priced::default();
         for query in &corpus.queries {
             let hits = engine
@@ -697,11 +697,24 @@ async fn search_answers_questions_that_take_several_steps() {
             let replayed = reranking::replay(&hits);
             priced.observe(
                 &engine,
-                &query.group,
-                &query.text,
+                &reranking::Asked {
+                    group: &query.group,
+                    question: &query.id,
+                    query: &query.text,
+                    // What `write_corpus` labels every memory with.
+                    language: Some("eng"),
+                    cluster: None,
+                },
                 &hits,
                 &replayed,
-                None,
+                || {
+                    vec![reranking::Answers {
+                        key: query.group.clone(),
+                        judged: query.relevant.len(),
+                        relevant: query.relevant.clone(),
+                        dropped: HashSet::new(),
+                    }]
+                },
                 |into, ranking| score(into.entry(query.group.clone()).or_default(), query, ranking),
             );
         }
@@ -742,33 +755,6 @@ async fn search_answers_questions_that_take_several_steps() {
 
     if std::env::var("ENTITIES").is_ok() {
         entities(&engine, &mut shape, &workspace, &corpus, &project, &named).await;
-        return;
-    }
-
-    // `FEATURES_OUT`: every candidate fusion saw, one row each, for fitting a
-    // fusion offline. See `features`.
-    if let Some(mut dump) = features::Features::from_env("musique") {
-        harness::shape::tables(["features"]);
-        harness::shape::table("features");
-        for query in &corpus.queries {
-            let hits = engine
-                .search_fused(&query.text, WIDE, harness::depths(), Fusion::default())
-                .await
-                .expect("search");
-            let asked = features::Asked {
-                group: &query.group,
-                question: &query.id,
-                text: &query.text,
-                // What `write_corpus` labels every memory with.
-                language: Some("eng"),
-                judged: query.relevant.len(),
-            };
-            dump.observe(&asked, &hits, WIDE, |title| {
-                Some(f64::from(query.relevant.contains(title)))
-            });
-            harness::shape::tally(&query.group, &query.id);
-        }
-        dump.finish(corpus.queries.len());
         return;
     }
 
