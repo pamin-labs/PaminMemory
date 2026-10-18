@@ -229,24 +229,28 @@ const NOT_SETTINGS: [&str; 10] = [
 /// Variables outside `PAMIN_` that every harness's record is named by,
 /// whichever harness it is. `SIGNIFICANCE_GATE`, which `statistics::gate`
 /// reads, decides whether a run's significance gate was applied at all.
-/// `HF_ENDPOINT` is where the product downloads its models from. The rest
-/// set how many threads the runtime, the tokenizer and the model's kernels
-/// use: they change timings, and a reduction split over a different number
-/// of threads can round differently. With them, every variable starting
-/// with one of [`ALWAYS_PREFIXES`], and the CUDA device selection
+/// `HF_ENDPOINT` is where the product downloads its models from. The next
+/// four set how many threads the runtime, the tokenizer and the model's
+/// kernels use: they change timings, and a reduction split over a different
+/// number of threads can round differently. The last two set how many heap
+/// arenas glibc keeps, which changes memory and system time. With them,
+/// every variable starting with one of [`ALWAYS_PREFIXES`], and the CUDA
+/// device selection
 /// ([`pamin_index::CUDA_SELECTION`], the product's own list, which names its
 /// CUDA plans).
 ///
 /// `every_environment_read_is_classified` holds the product to this: each
 /// variable its code reads is here, under a prefix, or in
 /// [`NOT_IDENTITY`] with the reason it changes no result.
-const ALWAYS_SETTINGS: [&str; 6] = [
+const ALWAYS_SETTINGS: [&str; 8] = [
     "SIGNIFICANCE_GATE",
     "HF_ENDPOINT",
     "TOKIO_WORKER_THREADS",
     "RAYON_NUM_THREADS",
     "TOKENIZERS_PARALLELISM",
     "OMP_NUM_THREADS",
+    "MALLOC_ARENA_MAX",
+    "GLIBC_TUNABLES",
 ];
 
 /// Families of variables the native libraries read at run time: ONNX
@@ -256,7 +260,7 @@ const ALWAYS_PREFIXES: [&str; 7] = ["ORT_", "OMP_", "MKL_", "KMP_", "OPENBLAS_",
 
 /// Variables the product reads that change no result or timing, with why.
 /// Anything else it reads names the record.
-const NOT_IDENTITY: [(&str, &str); 8] = [
+const NOT_IDENTITY: [(&str, &str); 6] = [
     ("HF_HOME", "where downloaded models are cached, not which"),
     ("LOCALAPPDATA", "where the WinML runtime is unpacked"),
     ("OUT_DIR", "a build directory, compiled in"),
@@ -269,14 +273,6 @@ const NOT_IDENTITY: [(&str, &str); 8] = [
         "the CPU, recorded as the hardware's cpu",
     ),
     ("HOSTNAME", "who holds a cascade claim in a shared store"),
-    (
-        "MALLOC_ARENA_MAX",
-        "how many heap arenas glibc keeps, which only memory depends on",
-    ),
-    (
-        "GLIBC_TUNABLES",
-        "whether it already limits glibc's heap arenas, which only memory depends on",
-    ),
 ];
 
 /// Variables outside `PAMIN_` the evaluation tests read that choose what a
