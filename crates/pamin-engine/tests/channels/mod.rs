@@ -60,7 +60,7 @@
 // shared modules exist to undo.
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use pamin_core::{Channel, ChannelResults, Combine, Fusion, Scored, TopicId, Why};
 use pamin_engine::SearchHit;
@@ -369,6 +369,23 @@ pub fn sweep_table<T>(
     variants: &[(String, T)],
     rows: &[Option<&crate::scoring::Scores>],
 ) {
+    let keys = Units::Questions.group_keys(title, shipped);
+    clustered_sweep_table(title, shipped, variants, rows, &keys);
+}
+
+/// [`sweep_table`] whose tests run over units rather than questions: `keys`
+/// names each scored query's unit, in `per_query` order. The means are still
+/// over questions; the paired differences, the family p and what a row can
+/// see are over each unit's share of that mean
+/// (`statistics::cluster_macro_contributions`), whose mean is the `diff`
+/// shown.
+pub fn clustered_sweep_table<T>(
+    title: &str,
+    shipped: &crate::scoring::Scores,
+    variants: &[(String, T)],
+    rows: &[Option<&crate::scoring::Scores>],
+    keys: &[String],
+) {
     use crate::scoring::{NDCG_AT, RECALL_AT};
     use crate::statistics;
 
@@ -377,11 +394,18 @@ pub fn sweep_table<T>(
         .enumerate()
         .filter_map(|(at, row)| row.map(|row| (at, row)))
         .collect();
+    // Each cluster's share of the table's question-weighted mean, so a paired
+    // mean over them is the `diff` shown.
+    let one = vec![0; keys.len()];
+    let units = |scores: &crate::scoring::Scores| {
+        statistics::cluster_macro_contributions(&scores.per_query, &one, keys)
+    };
+    let shipped_units = units(shipped);
     let adjusted = statistics::family(
-        &shipped.per_query,
+        &shipped_units,
         &present
             .iter()
-            .map(|(_, row)| row.per_query.clone())
+            .map(|(_, row)| units(row))
             .collect::<Vec<_>>(),
     );
 
@@ -391,10 +415,10 @@ pub fn sweep_table<T>(
     );
     println!("  {}", "-".repeat(118));
     for ((at, row), family_p) in present.iter().zip(&adjusted) {
-        let differences: Vec<f64> = row
-            .per_query
+        let row_units = units(row);
+        let differences: Vec<f64> = row_units
             .iter()
-            .zip(&shipped.per_query)
+            .zip(&shipped_units)
             .map(|(after, before)| after - before)
             .collect();
         println!(
@@ -405,7 +429,7 @@ pub fn sweep_table<T>(
             row.mean_ndcg() - shipped.mean_ndcg(),
             statistics::minimum_detectable(&differences),
             family_p,
-            statistics::compare(&shipped.per_query, &row.per_query)
+            statistics::compare(&shipped_units, &row_units)
         );
     }
 }
@@ -421,9 +445,12 @@ pub fn sweep_table<T>(
 /// go to the shipped setting, so a sweep that finds nothing changes nothing.
 /// `recall@50` is not in the rule; it is reported beside it.
 ///
-/// Five folds stratified by group, with linked answer keys of one physical
-/// query kept in one fold when `linked` is true. For each, the rule sees the
-/// other four folds' means and its choice is scored on the fifth. Three numbers come out,
+/// Five folds stratified by group, or as many as there are units when there
+/// are fewer, dealt by `units`: the queries of one unit share a fold, and the
+/// paired test runs over each unit's share of the macro mean, so related
+/// questions are neither split between training and holdout nor counted as
+/// independent. For each fold, the rule sees the other folds' means and its
+/// choice is scored on that one. Three numbers come out,
 /// and the gap between the first two is the one this repository never had:
 ///
 /// - the best macro nDCG@10 of any row, scored on the queries that chose it --
@@ -438,7 +465,7 @@ pub fn cross_validated<T>(
     variants: &[(String, T)],
     ship: Option<usize>,
     offline: &[BTreeMap<String, crate::scoring::Scores>],
-    linked: bool,
+    units: Units,
 ) {
     use crate::statistics;
 
@@ -506,24 +533,44 @@ pub fn cross_validated<T>(
         .iter()
         .map(|row| macro_mean(&by_group(row)))
         .fold(f64::MIN, f64::max);
-    let assigned = if linked {
-        statistics::linked_folds(
-            &groups
-                .iter()
-                .map(|group| shipped[*group].per_query.len())
-                .collect::<Vec<_>>(),
-            5,
-        )
-    } else {
-        statistics::folds(&labels, 5)
-    };
+    let keys = units.keys(&groups, shipped);
+    let assigned = statistics::cluster_folds(&labels, &keys, 5);
+    // Fewer units than folds deal fewer folds; one fold holds nothing out.
+    let folds = assigned.iter().collect::<BTreeSet<_>>().len();
+    assert!(
+        folds >= 2,
+        "{title}: {folds} fold from {} units, so nothing is held out to choose on",
+        keys.iter().collect::<BTreeSet<_>>().len()
+    );
     let selected = statistics::cross_validate(&matrix, &labels, &assigned, rule);
     let procedure = macro_mean(&by_group(&selected.held_out));
     let current = macro_mean(&by_group(&baseline));
 
-    println!("\n  choosing from this sweep, cross-validated over five folds, {title}");
-    if linked {
+    let spelled = match folds {
+        2 => "two".to_string(),
+        3 => "three".to_string(),
+        4 => "four".to_string(),
+        5 => "five".to_string(),
+        folds => folds.to_string(),
+    };
+    println!("\n  choosing from this sweep, cross-validated over {spelled} folds, {title}");
+    let mut members: BTreeMap<&str, BTreeSet<usize>> = BTreeMap::new();
+    let mut sizes: BTreeMap<&str, usize> = BTreeMap::new();
+    for (key, label) in keys.iter().zip(&labels) {
+        members.entry(key).or_default().insert(*label);
+        *sizes.entry(key).or_default() += 1;
+    }
+    if groups.len() > 1
+        && members
+            .iter()
+            .all(|(key, labels)| labels.len() == groups.len() && sizes[key] == groups.len())
+    {
         println!("  both answer keys for each physical query share one fold");
+    } else if members.len() < keys.len() {
+        println!(
+            "  {} clusters of related questions, each in one fold; the paired test is over their shares of the macro mean",
+            members.len()
+        );
     }
     println!(
         "  rule: maximise the mean over {} groups of nDCG@10, ties to what ships",
@@ -538,14 +585,12 @@ pub fn cross_validated<T>(
         "  optimism of choosing in-sample                  {:+.4}",
         in_sample - procedure
     );
-    let paired = if linked {
-        statistics::compare(
-            &statistics::linked_mean(&baseline, groups.len()),
-            &statistics::linked_mean(&selected.held_out, groups.len()),
-        )
-    } else {
-        statistics::compare(&baseline, &selected.held_out)
-    };
+    // Each unit's share of the macro means above, so the paired test's mean
+    // difference is the reported one, procedure less what ships.
+    let paired = statistics::compare(
+        &statistics::cluster_macro_contributions(&baseline, &labels, &keys),
+        &statistics::cluster_macro_contributions(&selected.held_out, &labels, &keys),
+    );
     println!("  the procedure against what ships: {paired}");
     let chosen: Vec<&str> = selected
         .chosen
@@ -570,6 +615,67 @@ pub fn cross_validated<T>(
     }
 }
 
+/// What one independent unit is, for [`cross_validated`]'s folds and its
+/// paired test.
+#[derive(Clone, Copy)]
+pub enum Units<'a> {
+    /// Every scored question is its own unit.
+    Questions,
+    /// Every group lists the same physical questions in the same order, each
+    /// under its own answer key, so a position across groups is one unit.
+    AnswerKeys,
+    /// Per group, one key per scored question in `per_query` order; questions
+    /// that share a key are one unit -- the questions of one LOCOMO
+    /// conversation, which share its corpus, index and graph.
+    Clusters(&'a BTreeMap<String, Vec<String>>),
+}
+
+impl Units<'_> {
+    /// One key per query of one group, in `per_query` order.
+    pub fn group_keys(&self, group: &str, scores: &crate::scoring::Scores) -> Vec<String> {
+        let length = scores.per_query.len();
+        match self {
+            Units::Questions | Units::AnswerKeys => (0..length).map(|at| at.to_string()).collect(),
+            Units::Clusters(clusters) => {
+                let keyed = &clusters[group];
+                assert_eq!(
+                    keyed.len(),
+                    length,
+                    "one cluster key a scored query in {group}"
+                );
+                keyed.clone()
+            }
+        }
+    }
+
+    /// One key per query, in the order `groups` flattens `shipped`. A key
+    /// names one unit across every group.
+    fn keys(
+        &self,
+        groups: &[&str],
+        shipped: &BTreeMap<String, crate::scoring::Scores>,
+    ) -> Vec<String> {
+        let mut keys = Vec::new();
+        for (index, group) in groups.iter().enumerate() {
+            let keyed = self.group_keys(group, &shipped[*group]);
+            match self {
+                // A position names a question of this group alone.
+                Units::Questions => keys.extend(keyed.iter().map(|at| format!("{index}/{at}"))),
+                Units::AnswerKeys => {
+                    assert_eq!(
+                        keyed.len(),
+                        shipped[groups[0]].per_query.len(),
+                        "linked groups must contain the same questions"
+                    );
+                    keys.extend(keyed);
+                }
+                Units::Clusters(_) => keys.extend(keyed),
+            }
+        }
+        keys
+    }
+}
+
 /// Select only among the 25 independently swept lexical weight pairs.
 ///
 /// The full diagnostic also varies `k`, the combiner and graph weight. Its
@@ -583,7 +689,7 @@ pub fn lexical_cross_validated(
     variants: &[(String, Fusion)],
     ship: Option<usize>,
     offline: &[BTreeMap<String, crate::scoring::Scores>],
-    linked: bool,
+    units: Units,
 ) {
     let indices: Vec<usize> = variants
         .iter()
@@ -595,7 +701,7 @@ pub fn lexical_cross_validated(
     let rows: Vec<_> = indices.iter().map(|at| offline[*at].clone()).collect();
     let baseline = ship.and_then(|at| indices.iter().position(|index| *index == at));
     assert!(baseline.is_some(), "the lexical grid lost the shipped row");
-    cross_validated(title, groups, shipped, &lexical, baseline, &rows, linked);
+    cross_validated(title, groups, shipped, &lexical, baseline, &rows, units);
 }
 
 /// Kendall's tau-b between two channels' orderings.
@@ -833,7 +939,7 @@ impl Diagnosis {
             &self.variants,
             shipped_row(&self.variants),
             &self.offline,
-            false,
+            Units::Questions,
         );
         lexical_cross_validated(
             &format!("{title}, lexical weights only"),
@@ -842,7 +948,7 @@ impl Diagnosis {
             &self.variants,
             shipped_row(&self.variants),
             &self.offline,
-            false,
+            Units::Questions,
         );
         println!();
     }

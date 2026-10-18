@@ -316,38 +316,88 @@ pub fn folds(groups: &[usize], k: usize) -> Vec<usize> {
     assigned
 }
 
-/// Keep multiple judgements of the same questions in the same held-out fold.
+/// Which fold each query falls in when queries come in clusters: queries that
+/// share a key share a fold.
 ///
-/// Each group's scores must list the same physical questions in the same
-/// order. XQuAD-R scores every asking once as cross-language and once as
-/// same-language; shuffling the views independently lets training see the
-/// held-out question under its other answer key.
-pub fn linked_folds(group_lengths: &[usize], k: usize) -> Vec<usize> {
-    let Some(&questions) = group_lengths.first() else {
-        return Vec::new();
-    };
-    assert!(
-        group_lengths.iter().all(|length| *length == questions),
-        "linked groups must contain the same questions"
-    );
-    let one = folds(&vec![0; questions], k);
-    (0..group_lengths.len())
-        .flat_map(|_| one.iter().copied())
-        .collect()
+/// A cluster is one unit of evidence: questions asked of one LOCOMO
+/// conversation share its corpus, index and graph, and XQuAD-R scores every
+/// asking once under each of two answer keys. Dealing their questions to
+/// different folds lets the selection train on part of a cluster and be
+/// scored on the rest of it.
+///
+/// Clusters are dealt by [`folds`], in the order they first appear. A cluster
+/// whose queries all sit in one group is stratified by that group; one that
+/// spans groups joins a single shared stratum. So a key per query gives
+/// exactly `folds(groups, k)`, and one key per position across groups that
+/// list the same questions gives every group the folds of its questions.
+pub fn cluster_folds(groups: &[usize], keys: &[String], k: usize) -> Vec<usize> {
+    assert_eq!(groups.len(), keys.len(), "one key a query");
+    let mut first: std::collections::BTreeMap<&str, usize> = Default::default();
+    let mut strata: Vec<Option<usize>> = Vec::new();
+    let mut cluster = Vec::with_capacity(keys.len());
+    for (key, group) in keys.iter().zip(groups) {
+        let next = strata.len();
+        let at = *first.entry(key.as_str()).or_insert(next);
+        if at == next {
+            strata.push(Some(*group));
+        } else if strata[at] != Some(*group) {
+            strata[at] = None;
+        }
+        cluster.push(at);
+    }
+    let spanning = groups.iter().max().map_or(0, |max| max + 1);
+    let strata: Vec<usize> = strata
+        .iter()
+        .map(|stratum| stratum.unwrap_or(spanning))
+        .collect();
+    let dealt = folds(&strata, k);
+    cluster.iter().map(|at| dealt[*at]).collect()
 }
 
-/// One score per physical query when the same questions have several answer keys.
-pub fn linked_mean(scores: &[f64], groups: usize) -> Vec<f64> {
-    assert!(groups > 0 && scores.len().is_multiple_of(groups));
-    let questions = scores.len() / groups;
-    (0..questions)
-        .map(|query| {
-            (0..groups)
-                .map(|group| scores[group * questions + query])
-                .sum::<f64>()
-                / groups as f64
-        })
-        .collect()
+/// One contribution per cluster, in the order clusters first appear, whose
+/// mean is exactly the macro mean over groups that the report gives.
+///
+/// The macro mean is (1/C) Σ_c (1/N_c) Σ_{i in c} s_i over C groups of N_c
+/// questions each. It is linear in the scores, so splitting it by cluster
+/// gives cluster k the share u_k = (K/C) Σ_c (n_kc/N_c) · s̄_kc over K
+/// clusters, where cluster k asks n_kc of group c's questions and scores
+/// s̄_kc on them on average. The mean of u_k over clusters is the macro mean,
+/// so a paired sign-flip test over u_k tests the reported difference itself
+/// rather than a differently weighted one. Every clustered test runs over
+/// these: the procedure against what ships over its groups, and a per-group
+/// sweep table over that one group (every `groups` entry the same), where
+/// u_k = K · (n_k / N) · s̄_k and the mean is the question-weighted mean the
+/// table's `diff` shows.
+///
+/// Every question counts as much as its group's size allows, wherever its
+/// cluster is, so a cluster of one question is not that question's score
+/// unless every group is the same size: its share is scaled by
+/// K / (C · N_c).
+pub fn cluster_macro_contributions(scores: &[f64], groups: &[usize], keys: &[String]) -> Vec<f64> {
+    assert_eq!(scores.len(), keys.len(), "one key a score");
+    assert_eq!(groups.len(), keys.len(), "one group a score");
+    let mut sizes: std::collections::BTreeMap<usize, usize> = Default::default();
+    for group in groups {
+        *sizes.entry(*group).or_default() += 1;
+    }
+    let mut first: std::collections::BTreeMap<&str, usize> = Default::default();
+    for key in keys {
+        let next = first.len();
+        first.entry(key.as_str()).or_insert(next);
+    }
+    // One weight a group, K / (C · N_c), so a group whose questions are each
+    // their own cluster and whose size is K / C weighs each by exactly one:
+    // a unit of one keeps its score, and two equal scores stay a tie.
+    let clusters = first.len() as f64;
+    let weights: std::collections::BTreeMap<usize, f64> = sizes
+        .iter()
+        .map(|(group, size)| (*group, clusters / (sizes.len() * size) as f64))
+        .collect();
+    let mut shares = vec![0.0; first.len()];
+    for ((score, group), key) in scores.iter().zip(groups).zip(keys) {
+        shares[first[key.as_str()]] += score * weights[group];
+    }
+    shares
 }
 
 /// What a selection procedure is worth on queries it did not choose on.
@@ -653,15 +703,59 @@ mod tests {
 
     #[test]
     fn two_answer_keys_for_one_question_never_cross_folds() {
-        let assigned = linked_folds(&[11, 11], 5);
+        // Eleven questions, each listed once in each of two groups.
+        let groups: Vec<usize> = [0; 11].into_iter().chain([1; 11]).collect();
+        let keys: Vec<String> = (0..22).map(|at| (at % 11).to_string()).collect();
+        let assigned = cluster_folds(&groups, &keys, 5);
         assert_eq!(&assigned[..11], &assigned[11..]);
-        assert_eq!(assigned, linked_folds(&[11, 11], 5));
-        for fold in 0..5 {
-            let first = assigned[..11].iter().filter(|at| **at == fold).count();
-            let second = assigned[11..].iter().filter(|at| **at == fold).count();
-            assert_eq!(first, second);
+        assert_eq!(&assigned[..11], folds(&[0; 11], 5).as_slice());
+        let shares = cluster_macro_contributions(
+            &[1.0, 3.0, 5.0, 7.0],
+            &[0; 4],
+            &["a", "b", "a", "b"].map(String::from),
+        );
+        assert_close(&shares, &[3.0, 5.0]);
+    }
+
+    /// A key per query is the plain stratified split, and a paired test over
+    /// one-query clusters is a test over queries.
+    #[test]
+    fn a_query_its_own_cluster_changes_nothing() {
+        let groups: Vec<usize> = (0..60).map(|query| usize::from(query >= 50)).collect();
+        let keys: Vec<String> = (0..60).map(|query| query.to_string()).collect();
+        assert_eq!(cluster_folds(&groups, &keys, 5), folds(&groups, 5));
+        let scores: Vec<f64> = (0..60).map(|query| query as f64 / 7.0).collect();
+        assert_close(
+            &cluster_macro_contributions(&scores, &[0; 60], &keys),
+            &scores,
+        );
+    }
+
+    /// The questions of one conversation, spread over several categories,
+    /// stay in one fold and count once.
+    #[test]
+    fn a_conversation_never_crosses_folds() {
+        let groups: Vec<usize> = (0..40).map(|query| query % 4).collect();
+        let keys: Vec<String> = (0..40).map(|query| format!("conv-{}", query / 4)).collect();
+        let assigned = cluster_folds(&groups, &keys, 5);
+        for conversation in 0..10 {
+            let folds: std::collections::BTreeSet<usize> = assigned
+                [conversation * 4..conversation * 4 + 4]
+                .iter()
+                .copied()
+                .collect();
+            assert_eq!(folds.len(), 1, "conversation {conversation} crossed folds");
         }
-        assert_eq!(linked_mean(&[1.0, 3.0, 5.0, 7.0], 2), vec![3.0, 5.0]);
+        for fold in 0..5 {
+            let held = (0..40).filter(|query| assigned[*query] == fold).count();
+            assert_eq!(held, 8, "two conversations a fold");
+        }
+        let scores: Vec<f64> = (0..40).map(|query| (query / 4) as f64).collect();
+        // The same size each, so each counts as its mean.
+        assert_close(
+            &cluster_macro_contributions(&scores, &[0; 40], &keys),
+            &(0..10).map(f64::from).collect::<Vec<_>>(),
+        );
     }
 
     /// Six units are the fewest a one-sided run of signs can take below
@@ -677,6 +771,105 @@ mod tests {
         assert!(six.p >= smallest_p(6) * 0.5, "p was {}", six.p);
         assert_eq!(smallest_p(0), 1.0);
         assert_eq!(smallest_p(10_000), 1.0 / (RESAMPLES + 1) as f64);
+    }
+
+    fn assert_close(got: &[f64], want: &[f64]) {
+        assert_eq!(got.len(), want.len(), "{got:?} against {want:?}");
+        for (got_one, want_one) in got.iter().zip(want) {
+            assert!(
+                (got_one - want_one).abs() < 1e-12,
+                "{got:?} against {want:?}"
+            );
+        }
+    }
+
+    /// In a per-group sweep table, every row's paired mean over cluster
+    /// shares is the question-weighted `diff` the table shows, on uneven
+    /// clusters.
+    #[test]
+    fn a_tables_paired_mean_is_its_displayed_diff() {
+        let keys: Vec<String> = ["a", "a", "a", "b", "c", "c", "d"]
+            .map(String::from)
+            .to_vec();
+        let one = [0; 7];
+        let shipped = [0.3, 0.9, 0.1, 0.5, 0.7, 0.2, 0.4];
+        let rows = [
+            [0.4, 0.6, 0.3, 0.5, 0.2, 0.9, 0.1],
+            [0.3, 0.9, 0.1, 0.5, 0.7, 0.2, 0.4],
+            [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25],
+        ];
+        let mean = |values: &[f64]| values.iter().sum::<f64>() / values.len() as f64;
+        let before = cluster_macro_contributions(&shipped, &one, &keys);
+        for row in &rows {
+            let paired = compare(&before, &cluster_macro_contributions(row, &one, &keys));
+            let diff = mean(row) - mean(&shipped);
+            assert!(
+                (paired.mean - diff).abs() < 1e-12,
+                "{} against {diff}",
+                paired.mean
+            );
+        }
+    }
+
+    /// The mean of the contributions is the reported macro difference, on
+    /// uneven clusters, one of which never asks in one category.
+    #[test]
+    fn the_cluster_contributions_average_to_the_macro_difference() {
+        let keys: Vec<String> = ["a", "a", "a", "b", "c", "c", "b", "c"]
+            .map(String::from)
+            .to_vec();
+        let groups = [0, 0, 1, 0, 2, 1, 0, 0];
+        let current = [0.3, 0.9, 0.1, 0.5, 0.7, 0.2, 0.4, 0.8];
+        let procedure = [0.4, 0.6, 0.3, 0.5, 0.2, 0.9, 0.1, 0.7];
+        let macro_mean = |scores: &[f64]| {
+            let mut by: std::collections::BTreeMap<usize, Vec<f64>> = Default::default();
+            for (score, group) in scores.iter().zip(&groups) {
+                by.entry(*group).or_default().push(*score);
+            }
+            by.values()
+                .map(|values| values.iter().sum::<f64>() / values.len() as f64)
+                .sum::<f64>()
+                / by.len() as f64
+        };
+        let (before, after) = (
+            cluster_macro_contributions(&current, &groups, &keys),
+            cluster_macro_contributions(&procedure, &groups, &keys),
+        );
+        assert_eq!(before.len(), 3);
+        let mean = |values: &[f64]| values.iter().sum::<f64>() / values.len() as f64;
+        assert!((mean(&before) - macro_mean(&current)).abs() < 1e-12);
+        let paired = compare(&before, &after);
+        assert!(
+            (paired.mean - (macro_mean(&procedure) - macro_mean(&current))).abs() < 1e-12,
+            "{} against {}",
+            paired.mean,
+            macro_mean(&procedure) - macro_mean(&current)
+        );
+    }
+
+    /// A unit of one question is its own score when the groups are the same
+    /// size, and one question under each of several answer keys is the mean
+    /// of its keys; with groups of different sizes, it is scaled by what its
+    /// group weighs in the macro mean.
+    #[test]
+    fn single_question_units_are_scaled_by_their_group() {
+        let single: Vec<String> = (0..4).map(|at| at.to_string()).collect();
+        assert_close(
+            &cluster_macro_contributions(&[0.1, 0.2, 0.3, 0.4], &[0, 0, 1, 1], &single),
+            &[0.1, 0.2, 0.3, 0.4],
+        );
+        assert_close(
+            &cluster_macro_contributions(&[0.1, 0.2, 0.3], &[0, 0, 0], &single[..3]),
+            &[0.1, 0.2, 0.3],
+        );
+        let linked: Vec<String> = ["a", "b", "a", "b"].map(String::from).to_vec();
+        assert_close(
+            &cluster_macro_contributions(&[1.0, 3.0, 5.0, 7.0], &[0, 0, 1, 1], &linked),
+            &[3.0, 5.0],
+        );
+        // Three in one group and one in another: 4 / (2 · 3) and 4 / (2 · 1).
+        let uneven = cluster_macro_contributions(&[0.3, 0.3, 0.3, 0.3], &[0, 0, 0, 1], &single);
+        assert!((uneven[0] - 0.2).abs() < 1e-12 && (uneven[3] - 0.6).abs() < 1e-12);
     }
 
     /// Choosing the best of many settings on the same queries that grade it

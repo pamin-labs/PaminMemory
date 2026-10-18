@@ -683,7 +683,7 @@ async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query]) {
         &labels,
         reranking::shipped_context(),
         &measured,
-        false,
+        channels::Units::Questions,
     );
 }
 
@@ -701,9 +701,7 @@ async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query]) {
 async fn rerank_rules(engine: &Engine, queries: &[Query]) {
     const WIDE: u32 = 4 * DEPTHS.channel + 4 * DEPTHS.channel / 2;
     let tier = Rerank::default();
-    let rules = reranking::rules();
-
-    let mut measured: Vec<BTreeMap<String, Scores>> = vec![BTreeMap::new(); rules.len()];
+    let mut priced = reranking::Priced::default();
     for query in queries {
         let hits = engine
             .search_reranked(&query.query, WIDE, DEPTHS, tier)
@@ -713,25 +711,27 @@ async fn rerank_rules(engine: &Engine, queries: &[Query]) {
         let replayed = reranking::replay(&hits, tier);
 
         let relevant: HashSet<&str> = query.relevant.iter().map(String::as_str).collect();
-        for ((_, rule), into) in rules.iter().zip(&mut measured) {
-            into.entry(query.group.clone()).or_default().add(
-                &replayed.order(*rule),
-                relevant.len(),
-                |topic| relevant.contains(topic),
-            );
-        }
+        priced.observe(
+            engine,
+            &query.group,
+            &query.query,
+            &hits,
+            &replayed,
+            None,
+            |into, ranking| {
+                into.entry(query.group.clone()).or_default().add(
+                    ranking,
+                    relevant.len(),
+                    |topic| relevant.contains(topic),
+                );
+            },
+        );
     }
 
-    reranking::report(
-        &format!(
-            "rules for the {} reranker's scores, own corpus",
-            tier.name()
-        ),
-        &rules,
-        reranking::shipped(&rules),
-        &measured,
-        false,
-    );
+    priced.report(&format!(
+        "rules for the {} reranker's scores, own corpus",
+        tier.name()
+    ));
 }
 
 /// Each channel alone, and each one removed, on the corpus this project wrote.
@@ -904,7 +904,7 @@ async fn report_channels(engine: &Engine, queries: &[Query]) {
         &variants,
         channels::shipped_row(&variants),
         &offline,
-        false,
+        channels::Units::Questions,
     );
 
     println!(

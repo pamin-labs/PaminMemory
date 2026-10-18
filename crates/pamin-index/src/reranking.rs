@@ -959,6 +959,33 @@ impl Reranker {
         self.tier
     }
 
+    /// Each (query, document) pair's encoded length in tokens, as
+    /// [`rank`](Self::rank) encodes it before planning its passes; see
+    /// [`plan`](Self::plan).
+    pub fn lengths(&self, query: &str, documents: &[&str]) -> Result<Vec<usize>> {
+        let encodings = self.model.encode(
+            documents
+                .iter()
+                .map(|document| (query, *document))
+                .collect::<Vec<_>>(),
+        )?;
+        Ok(encodings.iter().map(Encoding::len).collect())
+    }
+
+    /// The passes [`rank`](Self::rank) makes of pairs whose encodings are
+    /// `lengths` tokens long (see [`lengths`](Self::lengths)), as positions
+    /// into `lengths`, in the order it runs them: this model's limits under
+    /// the active `PAMIN_RERANK_BATCH_TOKENS` and `PAMIN_RERANK_BATCH`, and
+    /// the planner `rank` runs. For an evaluation replaying its passes; the
+    /// pairs already in the score cache are still planned, as `rank` plans
+    /// them before it looks them up.
+    pub fn plan(&self, lengths: &[usize]) -> Vec<Vec<usize>> {
+        let (budget, most) = self.model.batch_limits(batch_tokens(), batch());
+        plan_positions(lengths, budget, most, |length| {
+            self.model.batching_length(length)
+        })
+    }
+
     /// Orders `documents` best first, returning their original positions.
     ///
     /// Batched by length rather than in the order given, because a batch is
@@ -1320,24 +1347,47 @@ fn plan_batches(
     batching_length: impl Fn(usize) -> usize,
     execution_shape: impl Fn(usize, usize) -> (usize, usize),
 ) -> Vec<Batch> {
-    let mut sorted: Vec<_> = encodings.into_iter().enumerate().collect();
-    sorted.sort_by_key(|(position, encoding)| (encoding.len(), *position));
-    let lengths: Vec<_> = sorted
-        .iter()
-        .map(|(_, encoding)| batching_length(encoding.len()))
-        .collect();
-    let mut pending = sorted.into_iter();
-    batches(&lengths, budget, most)
+    let lengths: Vec<usize> = encodings.iter().map(Encoding::len).collect();
+    let mut pending: Vec<Option<Encoding>> = encodings.into_iter().map(Some).collect();
+    plan_positions(&lengths, budget, most, batching_length)
         .into_iter()
-        .map(|size| {
-            let (positions, encodings): (Vec<_>, Vec<_>) = pending.by_ref().take(size).unzip();
-            let shape = execution_shape(size, encodings.last().expect("nonempty batch").len());
+        .map(|positions| {
+            let encodings: Vec<Encoding> = positions
+                .iter()
+                .map(|at| pending[*at].take().expect("each pair planned once"))
+                .collect();
+            let shape = execution_shape(
+                positions.len(),
+                encodings.last().expect("nonempty batch").len(),
+            );
             Batch {
                 positions,
                 encodings,
                 shape,
             }
         })
+        .collect()
+}
+
+/// The passes [`plan_batches`] makes of pairs of these encoded `lengths`, as
+/// positions into `lengths`, in execution order: sorted by real length then
+/// position, and grouped by [`batches`] over each pair's `batching_length`.
+fn plan_positions(
+    lengths: &[usize],
+    budget: usize,
+    most: usize,
+    batching_length: impl Fn(usize) -> usize,
+) -> Vec<Vec<usize>> {
+    let mut order: Vec<usize> = (0..lengths.len()).collect();
+    order.sort_by_key(|at| (lengths[*at], *at));
+    let sized: Vec<usize> = order
+        .iter()
+        .map(|at| batching_length(lengths[*at]))
+        .collect();
+    let mut pending = order.into_iter();
+    batches(&sized, budget, most)
+        .into_iter()
+        .map(|size| pending.by_ref().take(size).collect())
         .collect()
 }
 
@@ -2294,6 +2344,55 @@ mod tests {
         );
         assert_eq!(bits(&retry), bits(&fresh));
         assert_eq!(work.pairs, 6, "failed partial misses must execute again");
+    }
+
+    /// `plan_positions`, which [`Reranker::plan`] exposes, is the planner
+    /// `rank` runs: `plan_batches` gives the same passes in the same order,
+    /// each carrying the encodings at its positions, and both match the
+    /// planner as it was written before the positions were factored out.
+    #[test]
+    fn the_public_plan_is_the_planner_rank_runs() {
+        let lengths = [9, 3, 40, 3, 200, 17, 120, 64, 5, 300, 33, 3];
+        let rows: Vec<(u32, usize)> = lengths
+            .into_iter()
+            .enumerate()
+            .map(|(id, len)| (id as u32, len))
+            .collect();
+        let bucket = |len: usize| len.div_ceil(64) * 64;
+        for (budget, most) in [(512, 4), (128, 8), (64, 2), (4096, 32)] {
+            for padded in [false, true] {
+                let sized = |len: usize| if padded { bucket(len) } else { len };
+                // The planner before the refactor, over the same pairs.
+                let mut sorted: Vec<(usize, usize)> = lengths.into_iter().enumerate().collect();
+                sorted.sort_by_key(|(position, len)| (*len, *position));
+                let sizes: Vec<usize> = sorted.iter().map(|(_, len)| sized(*len)).collect();
+                let mut pending = sorted.into_iter().map(|(position, _)| position);
+                let before: Vec<Vec<usize>> = batches(&sizes, budget, most)
+                    .into_iter()
+                    .map(|size| pending.by_ref().take(size).collect())
+                    .collect();
+
+                let planned = plan_batches(
+                    rows.iter().map(|(id, len)| encoding(*id, *len)).collect(),
+                    budget,
+                    most,
+                    sized,
+                    |rows, len| (rows, len),
+                );
+                for batch in &planned {
+                    let ids: Vec<usize> = batch
+                        .encodings
+                        .iter()
+                        .map(|encoding| encoding.get_ids()[0] as usize)
+                        .collect();
+                    assert_eq!(ids, batch.positions, "each pass carries its own pairs");
+                }
+                let positions: Vec<Vec<usize>> =
+                    planned.into_iter().map(|batch| batch.positions).collect();
+                assert_eq!(positions, before);
+                assert_eq!(plan_positions(&lengths, budget, most, sized), before);
+            }
+        }
     }
 
     #[test]
