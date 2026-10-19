@@ -1454,9 +1454,3 @@ recovery state. Transient or numerical qualification failures retain a bounded
 retry interval; configured exclusions and incompatible plans do not by
 themselves require repeated selection.
 
-**Known issue.** An accelerator provider that is built in but cannot register
-on the host -- CUDA without its libraries, for example -- is currently treated
-as a transient failure, so a resident server repeats this recovery every five
-minutes on such a host: it reloads its models and clears its query and score
-caches each time, and a search that overlaps a reload is slower. A change that
-probes whether a provider can register before reloading is in progress.
