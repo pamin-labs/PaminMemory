@@ -227,6 +227,20 @@ pub(crate) fn options(threads: usize, target: impl Into<Target>) -> Result<Sessi
     } else {
         builder
     };
+    // A memory pattern is a plan of every intermediate buffer, recorded per
+    // input shape and replayed as one block. The reranker sees a new shape
+    // with nearly every pair, so on the CPU, where the arena is off, a
+    // pattern is rarely replayed and is only kept.
+    let builder = if providers
+        .iter()
+        .all(|provider| provider.downcast_ref::<ort::ep::CPU>().is_some())
+    {
+        builder
+            .with_memory_pattern(false)
+            .map_err(|error| unready(&error))?
+    } else {
+        builder
+    };
     let builder = match target {
         Target::Providers(_) => builder,
         Target::Npu { provider, id } => {
