@@ -996,11 +996,14 @@ in every group. CPU time counts the server's worker threads, so it exceeds
 wall time; no accelerator ran. The raw rows, per-run premises and harnesses
 are in the private q42 and q44 folders named above.
 
-**The longest pass first.** The passes of one call were handed to the
-side-by-side sessions shortest first, the order the reranker's plan sorts
-them in, so the longest started last and the call waited on it.
-`Encoder::run_each` now hands them out longest first, by padded tokens. No
-pass changes, so no score does. Measured at the entry point (`pamin serve`
+**The longest pass first.** The reranker already handed its passes to the
+side-by-side sessions longest first, by reversing its shortest-first plan.
+The embedder did not: a store's texts went out in the order they came, so a
+long text could start last while the other sessions sat idle.
+`Encoder::run_each` now orders every caller's passes longest first, by
+padded tokens, and the reranker's own reversal is gone. No pass changes, so
+no score does. What moved is ingest, which is where the embedder's order
+changed; search reranks as before. Measured at the entry point (`pamin serve`
 and one `pamin search --limit 10` process a query, CPU execution provider,
 four Xeon cores at 2.8 GHz with AVX-512 VNNI, ONNX Runtime 1.28,
 `gpahal/bge-m3-onnx-int8` @ `2b34e84` and
