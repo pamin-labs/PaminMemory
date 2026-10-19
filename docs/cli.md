@@ -219,6 +219,15 @@ kept only if it scores a probe bit-for-bit as the first does, and otherwise
 `config.toml` key, loads the unfused graph, for measuring one against the
 other.
 
+Where a graph gathers its word embeddings from one quantized table -- both
+int8 exports the CPU loads -- the copy also gets `model.split1.onnx` (or
+`attention.split1.onnx`), which takes those rows as an input instead, and
+`model.split1.table`, which says where the table is in the data file: Påmin
+reads the rows a batch needs from the file, so the runtime never maps the
+whole table. It is kept only if it scores the same probe bit-for-bit, and
+otherwise `model.split1.unsplit` says why. `--split-embeddings false`, also
+hidden and with no `config.toml` key, loads the graph it was split from.
+
 CoreML packages written by older versions under
 `models/typed-reranker-v3/<SHA-256>/coreml-all-v1`
 are not reused by the current `coreml-all-v2` policy. Old processes can still

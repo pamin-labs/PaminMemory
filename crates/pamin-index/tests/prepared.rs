@@ -12,6 +12,13 @@
 //! holds them to skip the download -- its `models--*` entries are linked into
 //! a temporary directory, so the copies are written there and removed after.
 //!
+//! The copy's split graph -- word embeddings read from the data file rather
+//! than mapped (see `word_embeddings.rs`) -- is loaded by default, and is
+//! held to the same: a third load turns it off, and every output of the two
+//! must match bit for bit. Each child scores once on the session of the whole
+//! budget, a single batch, and once side by side on the one-thread session,
+//! several batches, so both sessions read the table.
+//!
 //! Each load runs in a child process of its own, through `Reranker::load` and
 //! `Embedder::load` -- the functions a server calls -- and that is the point of
 //! the design rather than a convenience. Anonymous memory is what the copy is
@@ -40,6 +47,10 @@ const MODELS: &[&str] = &["accurate", "embedder"];
 
 const QUERY: &str = "how does the deployment pipeline handle a failed migration";
 
+/// Asked of one text alone, so its pair is one the scores of [`QUERY`] have
+/// not already remembered, and runs.
+const ALONE: &str = "what happens to the schema when a migration fails";
+
 /// Of different lengths, so a reranker batch pads and an embedding runs at
 /// more than one shape.
 const TEXTS: &[&str] = &[
@@ -67,18 +78,19 @@ fn a_prepared_copy_scores_the_same_and_holds_less() {
     let copies = cache.join("prepared");
 
     for model in MODELS {
-        let source = run(model, &cache, false);
+        let source = run(model, &cache, false, true);
 
         // The first prepared load writes the copy, and so loads the source
         // onto the heap in the same process before loading the copy: its
         // scores count, its memory does not.
-        let writing = run(model, &cache, true);
+        let writing = run(model, &cache, true, true);
         let copy = only_copy(&copies);
         let data = std::fs::metadata(copy.join("model.onnx.data"))
             .unwrap_or_else(|_| panic!("the {model} copy has no data file, so nothing is mapped"))
             .len()
             / 1024;
-        let prepared = run(model, &cache, true);
+        let prepared = run(model, &cache, true, true);
+        let unsplit = run(model, &cache, true, false);
 
         // Which graph the copy loads: attention fused, or as the runtime
         // wrote it -- see `attention.rs`. The `accurate` reranker is the one
@@ -106,10 +118,32 @@ fn a_prepared_copy_scores_the_same_and_holds_less() {
             "the {model} copy is not bit-identical to the source"
         );
 
+        // Which graph it split, if any. Both exports gather their word
+        // embeddings from one quantized table, which is the pattern the split
+        // was written for, so a copy of either that stopped splitting has
+        // lost the saving without any score saying so.
+        let graph = if fused { "attention" } else { "model" };
+        let split = copy.join(format!("{graph}.split1.onnx")).exists();
+        let unsplit_reason =
+            std::fs::read_to_string(copy.join(format!("{graph}.split1.unsplit"))).ok();
+        assert!(
+            split,
+            "the {model} copy's word embeddings were not split: {}",
+            unsplit_reason
+                .as_deref()
+                .unwrap_or("no reason recorded")
+                .trim()
+        );
+        assert_eq!(
+            prepared.bits, unsplit.bits,
+            "the {model} copy's split graph is not bit-identical to the graph it came from"
+        );
+
         println!(
             "  {model}: {} outputs bit-identical; anonymous MiB, source against copy: \
              after load {} / {}, after a pass {} / {}, live {} / {}; copy data file {} MiB; \
-             attention {}",
+             attention {}; word embeddings split, live anonymous MiB unsplit against split \
+             {} / {}",
             source.bits.len(),
             mebibytes(source.loaded),
             mebibytes(prepared.loaded),
@@ -123,6 +157,8 @@ fn a_prepared_copy_scores_the_same_and_holds_less() {
                 (false, Some(reason)) => format!("unfused ({})", reason.trim()),
                 (false, None) => "unsettled".to_string(),
             },
+            mebibytes(unsplit.held),
+            mebibytes(prepared.held),
         );
 
         // What the copy keeps off the heap, against what it maps.
@@ -163,8 +199,9 @@ struct Arm {
     held: Option<u64>,
 }
 
-/// Runs one load in a fresh process, from the prepared copy or from the source.
-fn run(model: &str, cache: &Path, prepared: bool) -> Arm {
+/// Runs one load in a fresh process, from the prepared copy or from the source,
+/// and from the copy's split graph or the graph it came from.
+fn run(model: &str, cache: &Path, prepared: bool, split: bool) -> Arm {
     let mut command = Command::new(std::env::current_exe().expect("this test binary"));
     command
         .args([
@@ -184,11 +221,16 @@ fn run(model: &str, cache: &Path, prepared: bool) -> Arm {
     } else {
         command.env("PAMIN_EVAL_PREPARED", "false");
     }
+    if split {
+        command.env_remove("PAMIN_EVAL_SPLIT_EMBEDDINGS");
+    } else {
+        command.env("PAMIN_EVAL_SPLIT_EMBEDDINGS", "false");
+    }
     let output = command.output().expect("run the child");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
-        "the {model} child (prepared: {prepared}) failed:\n{stdout}\n{}",
+        "the {model} child (prepared: {prepared}, split: {split}) failed:\n{stdout}\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
 
@@ -228,10 +270,19 @@ fn child(model: &str, cache: &Path) {
                 Reranker::load(cache, &support::inference()).expect("load the reranker");
             assert_eq!(reranker.device(), Device::Cpu, "the copy is for the CPU");
             Box::new(move || {
+                // A pair a batch, side by side; then one batch alone, on the
+                // session of the whole budget, of a pair not scored yet.
                 let mut scores = vec![f32::NAN; TEXTS.len()];
                 for ranked in reranker.rank(QUERY, TEXTS).expect("rank") {
                     scores[ranked.position] = ranked.score;
                 }
+                scores.extend(
+                    reranker
+                        .rank(ALONE, &TEXTS[..1])
+                        .expect("rank one")
+                        .into_iter()
+                        .map(|ranked| ranked.score),
+                );
                 scores
             })
         }
@@ -239,8 +290,12 @@ fn child(model: &str, cache: &Path) {
             let mut embedder =
                 Embedder::load(cache, &support::inference()).expect("load the embedder");
             Box::new(move || {
+                // A text a pass, side by side; then a query alone, on the
+                // session of the whole budget.
                 let vectors = embedder.embed_passages(TEXTS).expect("embed");
-                vectors.into_iter().flatten().collect()
+                let mut outputs: Vec<f32> = vectors.into_iter().flatten().collect();
+                outputs.extend(embedder.embed_query(QUERY).expect("embed the query"));
+                outputs
             })
         }
         other => panic!("no such model {other}"),
