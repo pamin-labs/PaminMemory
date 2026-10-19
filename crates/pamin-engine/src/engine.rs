@@ -2768,33 +2768,56 @@ const GRAPH_SHOWN_AT_MOST: usize = 30;
 /// those below the head that only the graph found with a graph score of at least [`GRAPH_SHOWN_FROM`], strongest
 /// first and at most [`GRAPH_SHOWN_AT_MOST`] of them. Ascending.
 ///
+/// "Strongest" divides each find's graph score by the square root of how many
+/// of the eligible finds came through the same `via` topic. A hub one hop
+/// from a seed hands the graph channel dozens of neighbours with similar
+/// scores, and ranked by score alone they fill the cap with one topic's
+/// surroundings. Replayed on recorded searches with the cap at four, MuSiQue's
+/// nDCG@10 went from -0.0053 against the uncapped rule (p_fw = 0.009) to
+/// -0.0005 (p_fw = 1.0), and no LoCoMo key moved significantly.
+///
 /// One rule, public so the harnesses that replay a search from its trace use
 /// this rather than a copy that could drift from it. `traces` is each fused
 /// result's `why`, in fused order.
 pub fn rerankable(traces: &[&[Why]], depth: usize) -> Vec<usize> {
     let head = depth.min(traces.len());
-    let graph_only = |why: &[Why]| -> Option<f32> {
+    // A graph-only find's score and the topic its walk last came through.
+    fn graph_only(why: &[Why]) -> Option<(f32, Option<&str>)> {
         let mut graph = None;
+        let mut via = None;
         for entry in why {
-            if let Why::Channel { channel, score, .. } = entry {
-                if *channel != Channel::Graph {
-                    return None;
+            match entry {
+                Why::Channel { channel, score, .. } => {
+                    if *channel != Channel::Graph {
+                        return None;
+                    }
+                    graph = Some(score.unwrap_or(0.0));
                 }
-                graph = Some(score.unwrap_or(0.0));
+                Why::Path { via: through, .. } => via = Some(through.as_str()),
+                _ => {}
             }
         }
-        graph
-    };
+        graph.map(|score| (score, via))
+    }
 
     let mut positions: Vec<usize> = (0..head).collect();
-    let mut graph: Vec<(usize, f32)> = (head..traces.len())
-        .filter_map(|at| graph_only(traces[at]).map(|score| (at, score)))
+    let eligible: Vec<(usize, f32, Option<&str>)> = (head..traces.len())
+        .filter_map(|at| graph_only(traces[at]).map(|(score, via)| (at, score, via)))
+        .filter(|(_, score, _)| *score >= GRAPH_SHOWN_FROM)
+        .collect();
+    let mut sharing: std::collections::HashMap<Option<&str>, u32> =
+        std::collections::HashMap::new();
+    for (_, _, via) in &eligible {
+        *sharing.entry(*via).or_default() += 1;
+    }
+    let mut graph: Vec<(usize, f64)> = eligible
+        .iter()
+        .map(|(at, score, via)| (*at, f64::from(*score) / f64::from(sharing[via]).sqrt()))
         .collect();
     graph.sort_by(|left, right| right.1.total_cmp(&left.1).then(left.0.cmp(&right.0)));
     positions.extend(
         graph
             .into_iter()
-            .filter(|(_, score)| *score >= GRAPH_SHOWN_FROM)
             .take(GRAPH_SHOWN_AT_MOST)
             .map(|(at, _)| at),
     );
@@ -3293,6 +3316,46 @@ mod tests {
         let shown = rerankable(&few, head);
         let below: Vec<usize> = shown.iter().copied().filter(|at| *at >= head).collect();
         assert_eq!(below, vec![first_strong, first_strong + 1]);
+    }
+
+    /// A hub's neighbours share its strength: more finds through one topic at
+    /// 0.9 than the cap, and a lone find at 0.6 last in the list. By score
+    /// alone the cap would fill with the hub; divided by sqrt(count) the hub's
+    /// finds rank below the lone one, which is shown.
+    #[test]
+    fn finds_through_one_hub_share_their_strength() {
+        use pamin_core::{Derivation, EdgeKind, Why};
+
+        let find = |score: f32, via: &str| {
+            vec![
+                Why::Channel {
+                    channel: Channel::Graph,
+                    rank: 1,
+                    score: Some(score),
+                    weight: 1.0,
+                    contribution: 0.0,
+                },
+                Why::Path {
+                    from: "seed".into(),
+                    via: via.into(),
+                    hops: 1,
+                    asserted_from: "seed".into(),
+                    asserted_to: via.into(),
+                    edge: EdgeKind::Mentions,
+                    derivation: Derivation::Explicit,
+                },
+            ]
+        };
+        let head = 1;
+        let mut traces: Vec<Vec<Why>> = vec![find(1.0, "head")];
+        for _ in 0..GRAPH_SHOWN_AT_MOST + 5 {
+            traces.push(find(0.9, "hub"));
+        }
+        traces.push(find(0.6, "lone"));
+        let borrowed: Vec<&[Why]> = traces.iter().map(Vec::as_slice).collect();
+        let shown = rerankable(&borrowed, head);
+        assert_eq!(shown.len(), head + GRAPH_SHOWN_AT_MOST);
+        assert!(shown.contains(&(traces.len() - 1)), "{shown:?}");
     }
 
     /// A head candidate is refilled in place; a graph find from below the head
