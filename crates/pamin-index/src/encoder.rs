@@ -322,7 +322,13 @@ impl Encoder {
             self.token_type_ids,
             self.word_embeddings.as_deref(),
         );
-        let pending = &std::sync::Mutex::new(batches.into_iter().enumerate());
+        // Longest pass first. The passes share one queue, so the last to start
+        // decides when the call returns; started last, the longest pass leaves
+        // the other workers idle while it runs. Results are put back in the
+        // caller's order below, and each pass is computed alone either way.
+        let mut order: Vec<(usize, Vec<Encoding>)> = batches.into_iter().enumerate().collect();
+        order.sort_by_key(|(at, batch)| (std::cmp::Reverse(padded_tokens(batch)), *at));
+        let pending = &std::sync::Mutex::new(order.into_iter());
         let read = &read;
         #[cfg(test)]
         let (running, most) = (&AtomicUsize::new(0), &AtomicUsize::new(0));
@@ -669,6 +675,11 @@ fn pad(tokenizer: &Tokenizer, batch: &mut [Encoding]) -> Result<()> {
         tokenizers::pad_encodings(batch, params).map_err(|error| failed(&error))?;
     }
     Ok(())
+}
+
+/// The tokens `batch` runs once [`pad`]ded: its members times the longest.
+fn padded_tokens(batch: &[Encoding]) -> usize {
+    batch.len() * batch.iter().map(Encoding::len).max().unwrap_or(0)
 }
 
 #[cfg(test)]
