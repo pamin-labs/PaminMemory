@@ -1034,6 +1034,46 @@ in every group. CPU time counts the server's worker threads, so it exceeds
 wall time; no accelerator ran. The raw rows, per-run premises and harnesses
 are in the private q42 and q44 folders named above.
 
+**The longest pass first.** The reranker already handed its passes to the
+side-by-side sessions longest first, by reversing its shortest-first plan.
+The embedder did not: a store's texts went out in the order they came, so a
+long text could start last while the other sessions sat idle.
+`Encoder::run_each` now orders every caller's passes longest first, by
+padded tokens, and the reranker's own reversal is gone. No pass changes, so
+no score does. What moved is ingest, which is where the embedder's order
+changed; search reranks as before. Measured at the entry point (`pamin serve`
+and one `pamin search --limit 10` process a query, CPU execution provider,
+four Xeon cores at 2.8 GHz with AVX-512 VNNI, ONNX Runtime 1.28,
+`gpahal/bge-m3-onnx-int8` @ `2b34e84` and
+`onnx-community/bge-reranker-v2-m3-ONNX` (`onnx/model_int8.onnx`) @
+`6f5ff65`, 3,230 texts ingested, 120 timed queries asked twice after 20
+warm ones, four rotated runs an arm, none shared), main `010c4d5` against
+the branch at `77f032c`. These rows are of the pass order alone, measured
+before main took the graph cap of four (`fdc5782`); the branch merged on top
+of it was not re-timed, so they do not cover the two together:
+
+| metric | before | after | abs diff | % change | ratio [95% CI] |
+| --- | --- | --- | --- | --- | --- |
+| nDCG@10, 120 queries | 0.7381 | 0.7381 | 0 | 0.0% | top-10 identical in all 8 runs |
+| search p50 ms (per run) | 1,021.8 | 1,002.6 | −19.3 | −1.9% | 0.981 [0.858, 1.096] |
+| search p95 ms (per run) | 3,089.2 | 2,919.3 | −169.9 | −5.5% | 0.945 [0.874, 1.050] |
+| search server CPU user ms/query | 4,067.0 | 3,853.6 | −213.4 | −5.2% | 0.948 [0.876, 1.029] |
+| search server CPU sys ms/query | 23.8 | 21.6 | −2.2 | −9.4% | 0.906 [0.784, 0.984] |
+| search VmHWM MB (process RSS) | 1,026 | 1,035 | +9 | +0.9% | 1.009 [0.993, 1.029] |
+| ingest wall s | 228.2 | 209.3 | −18.9 | −8.3% | **0.917 [0.867, 0.983]** |
+| ingest server CPU user s | 788.0 | 739.8 | −48.3 | −6.1% | 0.939 [0.881, 1.019] |
+| ingest server CPU sys s | 10.1 | 9.0 | −1.1 | −10.9% | 0.891 [0.565, 1.514] |
+| ingest VmHWM MB (process RSS) | 955 | 1,015 | +60 | +6.2% | **1.062 [1.011, 1.143]** |
+| index dir MB | 27.2 | 27.9 | +0.7 | N/A | allocation noise; same index |
+
+Indexing is faster, and its peak memory is higher: the longest passes now run
+at the same time, and their intermediates are alive together. Search latency
+moved in the same direction but within noise, and search peak memory did not
+move. Memory is the `pamin serve` process alone, with no accelerator
+services; the prepared model copies (1,668 MB) are the same in both arms and
+are not in the index figure. The raw rows and harness are in the private
+`internal-docs/pamin-memory/research/2026-10-19/raw/q65/` folder.
+
 **Truncating at 192 or 384 tokens rather than 256 was measured, and neither
 ships.** In the same runs, each limit paired against 256 with the new batching:
 192 made a search 0.80 of what it was on MuSiQue, where half the pairs reach
