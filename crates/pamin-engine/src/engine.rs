@@ -2760,9 +2760,11 @@ const GRAPH_SHOWN_FROM: f32 = 0.5;
 
 /// At most this many of the finds at [`GRAPH_SHOWN_FROM`] are shown, strongest
 /// first. A cap is what keeps a densely linked question from handing the
-/// reranker every neighbour: MuSiQue reaches it on about one question in
-/// eight. Thirty is the cap the threshold was measured with, not a tuned value.
-const GRAPH_SHOWN_AT_MOST: usize = 30;
+/// reranker every neighbour. With the finds ranked by strength shared across
+/// their hub (see [`rerankable`]), four kept every answer key of a replay on
+/// recorded MuSiQue and LoCoMo searches within noise of thirty while showing
+/// LoCoMo's reranker 34 pairs a search instead of 57.6.
+const GRAPH_SHOWN_AT_MOST: usize = 4;
 
 /// The positions of a fused list the reranker is shown: the whole head, and
 /// those below the head that only the graph found with a graph score of at least [`GRAPH_SHOWN_FROM`], strongest
