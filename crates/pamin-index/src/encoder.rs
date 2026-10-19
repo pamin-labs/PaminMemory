@@ -322,10 +322,12 @@ impl Encoder {
             self.token_type_ids,
             self.word_embeddings.as_deref(),
         );
-        // Longest pass first. The passes share one queue, so the last to start
-        // decides when the call returns; started last, the longest pass leaves
-        // the other workers idle while it runs. Results are put back in the
-        // caller's order below, and each pass is computed alone either way.
+        // Longest pass first, for every caller: the reranker's plan and a
+        // store's texts arrive in any order. The passes share one queue, so
+        // the last to start decides when the call returns; started last, the
+        // longest pass leaves the other workers idle while it runs. Results
+        // are put back in the caller's order below, and each pass is computed
+        // alone either way.
         let mut order: Vec<(usize, Vec<Encoding>)> = batches.into_iter().enumerate().collect();
         order.sort_by_key(|(at, batch)| (std::cmp::Reverse(padded_tokens(batch)), *at));
         let pending = &std::sync::Mutex::new(order.into_iter());
