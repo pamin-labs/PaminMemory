@@ -45,6 +45,13 @@ const BATCH: i32 = 64;
 /// is the knee rather than the floor.
 const AWAITING_DURABILITY: usize = 128;
 
+/// How often a drain that owes everything looks again at work another round
+/// has claimed.
+///
+/// A round is a couple of seconds and a flush less, so a tenth of one is
+/// short against the wait and long against the question, one count.
+const CLAIMED_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// What a drain did.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Drained {
@@ -81,7 +88,9 @@ pub struct Drained {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Owed {
     /// Everything. What `pamin cascade` means, and what a process with nothing
-    /// behind it has to do for itself.
+    /// behind it has to do for itself. That includes work other rounds on the
+    /// project hold: it is flushed, or waited for until its claim is
+    /// recorded, or lapses and this drain claims it again.
     Everything,
     /// What a memory needs before it can be found, and nothing that only makes
     /// finding it quicker.
@@ -146,6 +155,21 @@ impl Engine {
             )
             .await?;
             if claimed.is_empty() {
+                // Everything includes what other rounds on this project left:
+                // writes a drain owing less applied and left for a flush.
+                // Recorded first, so the question below counts them -- they
+                // are writes this drain settled, and a batch of them can be
+                // what crosses the index's budget.
+                if owed == Owed::Everything {
+                    let flushed = self.flush_what_is_applied().await?;
+                    drained.completed += flushed;
+                    // Writes that landed after this drain tidied reopen the
+                    // question. Bounded: each reopening needs fresh writes
+                    // from another round, and the tidy-up itself is not one.
+                    if flushed > 0 {
+                        tidied = false;
+                    }
+                }
                 // A drain that wrote anything ends by asking whether the index
                 // has spread across more files than it should have. Queued
                 // rather than called: maintenance is per-project work, and the
@@ -170,6 +194,15 @@ impl Engine {
                     if owed == Owed::Everything {
                         continue;
                     }
+                }
+                // And a round still running, or one whose lease lapsed after
+                // the claim above looked. Without this a drain reported work
+                // owed that was done and only waiting to be recorded.
+                if owed == Owed::Everything
+                    && jobs::any_in_flight(self.database.pool(), self.project).await?
+                {
+                    tokio::time::sleep(CLAIMED_POLL).await;
+                    continue;
                 }
                 break;
             }
