@@ -405,7 +405,7 @@ set checked against an independent recomputation on every search.
 | graph finds shown, thirty → ten | 8.32 → 5.05 | 0.01 → 0.01 |
 | reranker pairs a search | 26.8 → 23.6 | 20.3 → 20.3 |
 
-Both clauses hold, and thirty still ships (`GRAPH_SHOWN_AT_MOST`): accuracy
+Both clauses hold, and thirty still shipped then (`GRAPH_SHOWN_AT_MOST`; see below for four): accuracy
 outranks latency in this project, and the accuracy estimate below points the
 wrong way on exactly the questions the cap changes. The caps differed on
 72 of the 300 questions, as the 142 of 600 above predicted; there ten takes
@@ -416,6 +416,42 @@ five losses are on questions where thirty showed 16 to 30 finds, the two
 gains where it showed 11 and 13. This harness ran from the build the
 evaluation workspace was made with, which predates changes elsewhere in the
 stack; the two arms differ only in `rerankable`'s cap.
+
+**A cap of four, ranked by strength shared across a hub, ships.** A hub one
+hop from a seed hands the graph channel dozens of neighbours with similar
+scores, and ranked by score alone they fill any cap with one topic's
+surroundings. `rerankable` now divides each eligible find's graph score by
+the square root of how many eligible finds came through the same `via`
+topic, and shows the strongest four. Replayed on recorded searches first,
+against the cap of thirty: MuSiQue 2-hop (600) −0.0005 (7 better, 7 worse,
+p_fw = 0.79), every LoCoMo category level or better (multi-hop +0.0055,
+p_fw = 0.066), XQuAD identical (no edges). Then at the product entry point
+(`pamin serve` and one `pamin search --limit 10` process a query, CPU
+execution provider, four Xeon cores at 2.8 GHz with AVX-512 VNNI, ONNX
+Runtime 1.28, bge-m3 and bge-reranker-v2-m3 int8, LoCoMo's five
+conversations with their adjacency links, 120 timed queries after 20 warm
+ones, four rotated runs an arm, no run shared), main `010c4d5` against the
+branch:
+
+| metric | cap 30 | cap 4, fan-out ranked | abs diff | % change | ratio [95% CI] |
+| --- | --- | --- | --- | --- | --- |
+| nDCG@10, 120 queries | 0.7189 | 0.7173 | −0.0017 | −0.2% | 0.998 [0.980, 1.016] |
+| search p50 ms | 4,426 | 2,442 | −1,985 | −44.8% | 0.552 [0.531, 0.576] |
+| search p95 ms | 5,431 | 3,070 | −2,361 | −43.5% | 0.565 [0.533, 0.604] |
+| server CPU user s a query | 16.43 | 8.86 | −7.57 | −46.1% | 0.539 [0.508, 0.565] |
+| search peak RSS MB (server process) | 1,323 | 1,329 | +6 | +0.5% | 1.005 [0.991, 1.014] |
+| ingest peak RSS MB | 1,101 | 1,132 | +31 | +2.8% | 1.028 [0.988, 1.072] |
+| index MB, 5 projects | 54.6 | 55.6 | +1.1 | +1.9% | 1.019 [0.999, 1.035] |
+| graph-only finds shown a query | 27.7 | 4.0 | −23.7 | −85.6% | N/A (diagnostic) |
+
+The nDCG@10 difference is not significant (paired bootstrap over queries
+[−0.0147, +0.0114]; 7 better, 5 worse, 108 equal; queries of one
+conversation share a graph, so that interval is optimistic): multi-hop
++0.0152, temporal level, single-hop −0.0068, open-domain −0.0127 on 7
+queries. Search memory, ingest and the index do not move beyond noise; the
+peak-RSS rows are the server process only, with no accelerator services,
+and the index row excludes postgres and the model caches. Times are wall
+time of the search process, warm, prepared copies in the page cache.
 
 ### What the fusion function itself is worth
 
