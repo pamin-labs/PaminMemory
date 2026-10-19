@@ -1338,6 +1338,43 @@ with [raw/q52/](../internal-docs/pamin-memory/research/2026-10-18/raw/q52/), and
 [q51-memory-split-and-arena-cap.md](../internal-docs/pamin-memory/research/2026-10-18/q51-memory-split-and-arena-cap.md)
 with [raw/q51/](../internal-docs/pamin-memory/research/2026-10-18/raw/q51/).
 
+**The word-embedding tables, read rather than mapped.** Each prepared CPU
+copy's uint8 word-embedding table (250,002 rows of 1,024) was gathered by
+ONNX Runtime from the mapped file, and the kernel's read-around left much of
+it resident. The prepared copy now drops that `Gather` and feeds the rows a
+batch needs, read with `pread` and dequantized as `DequantizeLinear` does,
+bit for bit. At the search entry point, one binary (`f34cec6`) with the
+hidden `--split-embeddings` flag off (before) and on (after), 4 runs per arm
+in the order ABBA BAAB, on a 4-vCPU Xeon @ 2.80 GHz (AVX-512 VNNI, no AMX),
+CPU execution provider, `inference_threads = 4`, the same 3,230 texts, 20
+warm-up and 120 timed queries:
+
+| metric | before | after | change | ratio [95% CI] |
+| --- | ---: | ---: | ---: | ---: |
+| nDCG@10, 120 queries | 0.7381 | 0.7381 | 0.0000 (0.0%) | 120 of 120 equal |
+| top-10 order, 120 queries, every run | identical | identical | none | N/A |
+| search p50 ms (pooled) | 2,040.6 | 2,000.5 | −40.1 (−2.0%) | 0.980 [0.894, 1.073] |
+| search p95 ms (pooled) | 3,301.2 | 3,107.5 | −193.7 (−5.9%) | 0.941 [0.859, 1.043] |
+| search server CPU user ms per query | 7,765.0 | 7,593.0 | −172.0 (−2.2%) | 0.978 [0.902, 1.026] |
+| search server peak RSS MB (VmHWM, median of runs) | 1,425 | 1,171 | −254 (−17.8%) | 0.822 [0.650, 1.039] |
+| search server peak file-backed RSS MB | 1,063 | 798 | −265 (−24.9%) | 0.751 [0.530, 1.126] |
+| search server peak file-backed PSS MB | 906 | 647 | −258 (−28.5%) | 0.715 [0.676, 0.853] |
+| ingest server peak RSS MB (VmHWM) | 1,109 | 926 | −184 (−16.5%) | 0.835 [0.772, 0.935] |
+| ingest wall s (import and drain) | 222.8 | 210.2 | −12.6 (−5.6%) | 0.944 [0.915, 1.046] |
+| search server read syscalls per query | 584 | 2,836 | +2,252 (+386%) | the row reads |
+| index directory MB allocated | 27.2 | 26.1 | −1.1 (−4.1%) | 0.959 [0.843, 1.087] |
+| prepared copies MB (both, split files included) | 1,668.3 | 1,668.3 | 0 (0.0%) | written in both arms |
+
+**No speed change is claimed: every latency and CPU CI includes 1.0.** Memory
+is the server process only, with no accelerator services; disk is the index
+directory and the two prepared copies, without postgres or temporary files
+(not measured, N/A). Half the runs in each arm crossed a five-minute model
+reload this host triggers (its CUDA provider cannot register), which maps both
+models twice for a moment; without it the after arm peaked at 1,022 and
+1,049 MB. The summary, raw rows and harness:
+[q54-split-word-embeddings.md](../internal-docs/pamin-memory/research/2026-10-19/q54-split-word-embeddings.md)
+with [raw/q54/](../internal-docs/pamin-memory/research/2026-10-19/raw/q54/).
+
 **What the database is made of**, which is a figure this page has never carried
 and which turned out to be worth carrying. Broken down by table on the
 evaluation workspace, 1.7 GB across its projects, before either change below:
