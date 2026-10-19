@@ -1405,10 +1405,9 @@ type Scored = Result<(Vec<Vec<f32>>, u64)>;
 /// `batches`' scores, in order, and the time their passes took together.
 ///
 /// Through [`Encoder::run_each`], so on the CPU the batches of one call run
-/// side by side, one thread a pass, longest first: the plan is shortest
-/// first, and the longest pass started last would be the one the others
-/// wait for. Run one after another -- on an accelerator, or at one thread --
-/// they keep the plan's order, the order [`Reranker::plan`] reports. The time
+/// side by side, one thread a pass, longest first (`run_each` orders them).
+/// Run one after another -- on an accelerator, or at one thread -- they keep
+/// the plan's order, the order [`Reranker::plan`] reports. The time
 /// is of the passes alone: the sessions they run on are loaded before it
 /// starts. Measured through `Reranker::rank` on four cores (ONNX Runtime
 /// 1.28, Xeon with AMX), 100 calls of 30 uncached pairs, two runs each:
@@ -1421,18 +1420,11 @@ type Scored = Result<(Vec<Vec<f32>>, u64)>;
 /// 3,021 MB at `pamin search`; `docs/measured.md` has the run.
 fn forward(model: &mut Encoder, batches: Vec<Vec<Encoding>>) -> Scored {
     let counts: Vec<usize> = batches.iter().map(Vec::len).collect();
-    let longest_first = model.ready(batches.len())? > 1;
-    let batches = if longest_first {
-        batches.into_iter().rev().collect()
-    } else {
-        batches
-    };
+    // Loaded before the clock starts, so the time is of the passes alone.
+    model.ready(batches.len())?;
     let start = Instant::now();
-    let mut scores = model.run_each(batches, first_column)?;
+    let scores = model.run_each(batches, first_column)?;
     let forward_us = start.elapsed().as_micros() as u64;
-    if longest_first {
-        scores.reverse();
-    }
     for (scores, count) in scores.iter().zip(counts) {
         if scores.len() != count {
             return Err(IndexError::Engine(format!(
