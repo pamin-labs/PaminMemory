@@ -154,6 +154,20 @@ const FUSED: &str = "attention.onnx";
 /// again. The copy then loads [`MODEL`].
 const UNFUSED: &str = "attention.unfused";
 
+/// What a graph of a copy -- [`MODEL`] or [`FUSED`] -- is called with its
+/// word embeddings split out (see `crate::word_embeddings`), beside it and
+/// reading the same data file: `model.split1.onnx`, with
+/// `model.split1.table` saying where the table it no longer maps is, or
+/// `model.split1.unsplit` saying why there is no such graph. Present only
+/// once it has scored a probe bit-identically to the graph it came from.
+///
+/// Derived from a settled copy rather than settled with it, so a copy written
+/// before the split existed gains one on its next load without being written
+/// again, and the copy's key is unchanged. The number is the rewrite's: one
+/// that changed what it writes would take the next, and leave this one's
+/// files to go with their copy.
+const SPLIT: &str = "split1";
+
 /// The stamp a load leaves in a copy: an empty file whose modification time is
 /// when the copy was last handed out.
 const USED: &str = "used";
@@ -219,7 +233,9 @@ pub(crate) trait Download {
 /// The copy's graph with its attention fused, where that scored identically,
 /// and turning [`fused_attention`](crate::InferenceSettings::fused_attention)
 /// off asks for the graph as ONNX Runtime wrote it -- the other arm of a
-/// measurement of what the fusion is worth.
+/// measurement of what the fusion is worth. Either with its word embeddings
+/// split out, where that scored identically ([`split`]), unless
+/// [`split_embeddings`](crate::InferenceSettings::split_embeddings) is off.
 pub(crate) fn load_path(
     download: &impl Download,
     cache_dir: &Path,
@@ -245,7 +261,7 @@ pub(crate) fn load_path(
                 .and_then(|source| found(source, &root, fused))
             {
                 collect(&root, SystemTime::now());
-                return Ok(copy);
+                return Ok(split(copy, settings));
             }
             let fetched = download.fetch().map_err(|error| match &recorded {
                 Some(_) => IndexError::Engine(format!(
@@ -271,7 +287,7 @@ pub(crate) fn load_path(
     match prepare(&source, &root, settings.budget()?) {
         Ok(copy) => {
             collect(&root, SystemTime::now());
-            Ok(graph(copy, fused))
+            Ok(split(graph(copy, fused), settings))
         }
         Err(error) => {
             // Another process released the download between this one finding
@@ -281,7 +297,7 @@ pub(crate) fn load_path(
                     recorded(download, &root).and_then(|source| found(&source, &root, fused))
             {
                 collect(&root, SystemTime::now());
-                return Ok(copy);
+                return Ok(split(copy, settings));
             }
             tracing::warn!(
                 source = %source.display(),
@@ -911,12 +927,131 @@ fn try_fuse(copy: &Path, threads: usize) -> std::result::Result<(usize, (usize, 
     written.map(|()| (fused.layers, fused.nodes))
 }
 
+/// `graph`, a graph of a copy this process holds, with its word embeddings
+/// split out where that has scored a probe identically; otherwise `graph`.
+///
+/// Settled on the first load that asks, as the fusion is, but not under the
+/// copy's lock: the load already holds it shared, as every process that loads
+/// the copy does, and taking it exclusively would wait on those holds. Nothing
+/// needs it. The split is written under names of this writer's own and renamed
+/// into place, its description before its graph, so a split graph that exists
+/// has its description; two processes splitting one copy at once write the
+/// same bytes, and the second either replaces the first's or -- where Windows
+/// will not replace a file another process has open -- finds it there and
+/// keeps it. The copy cannot be collected meanwhile, since this process holds
+/// it, and what a writer that stopped part way leaves goes with the copy.
+///
+/// Never fails the load. Whatever goes wrong -- nothing to split, a probe that
+/// differs, a directory that cannot be written -- is written to the `unsplit`
+/// file where it can be, and logged, and the copy loads `graph`, which is what
+/// it loaded before this existed. Turning
+/// [`split_embeddings`](crate::InferenceSettings::split_embeddings) off asks
+/// for `graph` without looking.
+fn split(graph: PathBuf, settings: &crate::InferenceSettings) -> PathBuf {
+    if !settings.split_embeddings {
+        return graph;
+    }
+    let split = named(&graph, "onnx");
+    if split.exists() {
+        return split;
+    }
+    let unsplit = named(&graph, "unsplit");
+    if unsplit.exists() {
+        return graph;
+    }
+    let Ok(threads) = settings.budget() else {
+        return graph;
+    };
+    let started = std::time::Instant::now();
+    match try_split(&graph, threads) {
+        Ok(table) => {
+            tracing::info!(
+                graph = %graph.display(),
+                rows = table.rows,
+                width = table.width,
+                seconds = started.elapsed().as_secs_f64(),
+                "split the word embeddings out of a mapped copy; it scored a probe bit-identically"
+            );
+            split
+        }
+        Err(reason) => {
+            tracing::info!(graph = %graph.display(), %reason, "left the word embeddings of a mapped copy in its graph");
+            // Best effort: without it the next load asks again, which costs
+            // time and changes nothing it loads.
+            let _ = std::fs::write(unsplit, format!("{reason}\n"));
+            graph
+        }
+    }
+}
+
+/// `graph`'s split file with `extension`: `model.onnx` has
+/// `model.split1.onnx`, `model.split1.unsplit`.
+fn named(graph: &Path, extension: &str) -> PathBuf {
+    graph.with_extension(format!("{SPLIT}.{extension}"))
+}
+
+/// The split itself: the rewrite and its description, written beside the
+/// graph they came from under this writer's own names, checked, and renamed
+/// into place only once they have passed. Returns where the table is.
+fn try_split(
+    graph: &Path,
+    threads: usize,
+) -> std::result::Result<crate::word_embeddings::Table, String> {
+    let original = std::fs::read(graph).map_err(|error| format!("reading the graph: {error}"))?;
+    let split = crate::word_embeddings::split(&original)?;
+    // `model.split1.<writer>.onnx`, whose description the probe finds beside
+    // it as a load finds the final one's.
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let candidate = graph.with_extension(format!(
+        "{SPLIT}.{}-{}.onnx",
+        std::process::id(),
+        WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let described = crate::word_embeddings::description(&candidate);
+    let final_graph = named(graph, "onnx");
+    let written = [
+        (&described, split.table.encode().into_bytes()),
+        (&candidate, split.model),
+    ]
+    .into_iter()
+    .try_for_each(|(path, bytes)| {
+        std::fs::write(path, bytes).and_then(|()| std::fs::File::open(path)?.sync_all())
+    })
+    .map_err(|error| format!("writing the split graph: {error}"))
+    .and_then(|()| same_on_a_probe(graph, &candidate, threads))
+    .and_then(|()| {
+        place(
+            &described,
+            &crate::word_embeddings::description(&final_graph),
+        )
+    })
+    .and_then(|()| place(&candidate, &final_graph));
+    // Gone already once renamed.
+    let _ = std::fs::remove_file(&described);
+    let _ = std::fs::remove_file(&candidate);
+    written.map(|()| split.table)
+}
+
+/// Renames `from` to `to`, or keeps the `to` another writer of the same bytes
+/// put there first if it cannot be replaced.
+fn place(from: &Path, to: &Path) -> std::result::Result<(), String> {
+    match std::fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(_) if to.exists() => Ok(()),
+        Err(error) => Err(format!("renaming {} into place: {error}", to.display())),
+    }
+}
+
 /// Whether two graphs return the same bits on a probe, as the product runs
 /// them: a CPU session at [`LEVEL`], and every output compared.
 ///
 /// Two rows, the second padded, because the padding is what the fused
 /// kernel reads differently -- a key padding mask where the graph it
 /// replaces added a bias -- and a probe with none would not exercise it.
+/// A split graph's word embeddings are read for its ids by
+/// `crate::word_embeddings::WordTable`, the reader the encoder feeds it
+/// from, so the probe checks that reader as well as the rewrite; its ids
+/// include the first rows and repeats, as padding does.
 /// The token ids are arbitrary: any ids below a thousand are in every
 /// vocabulary these models have, and the question is whether the two graphs
 /// agree, not what either one thinks of the text.
@@ -944,17 +1079,28 @@ fn same_on_a_probe(
     let outputs = |path: &Path| -> std::result::Result<Vec<(String, Vec<u32>)>, String> {
         let failed = |error: &dyn std::fmt::Display| format!("{}: {error}", path.display());
         let mut session = crate::inference::probe(threads, path).map_err(|error| failed(&error))?;
-        let mut feed = Vec::new();
+        // A split graph's word embeddings, read as the encoder reads them.
+        let table =
+            crate::word_embeddings::WordTable::beside(path).map_err(|error| failed(&error))?;
+        type Input = ort::session::SessionInputValue<'static>;
+        let mut feed: Vec<(std::borrow::Cow<'static, str>, Input)> = Vec::new();
         for input in session.inputs() {
-            let values = match input.name() {
-                "input_ids" => ids.clone(),
-                "attention_mask" => mask.clone(),
-                "token_type_ids" => vec![0; ids.len()],
-                other => return Err(failed(&format!("no probe for an input named {other}"))),
+            let tokens = |values: Vec<i64>| -> std::result::Result<Input, ort::Error> {
+                ort::value::Tensor::from_array(([2, LENGTH], values)).map(Into::into)
             };
-            let tensor = ort::value::Tensor::from_array(([2, LENGTH], values))
-                .map_err(|error| failed(&error))?;
-            feed.push((input.name().to_string(), tensor));
+            let value = match (input.name(), &table) {
+                ("input_ids", _) => tokens(ids.clone()),
+                ("attention_mask", _) => tokens(mask.clone()),
+                ("token_type_ids", _) => tokens(vec![0; ids.len()]),
+                (name, Some(table)) if name == table.input() => {
+                    let rows = table.embed(&ids).map_err(|error| failed(&error))?;
+                    ort::value::Tensor::from_array(([2, LENGTH, table.width()], rows))
+                        .map(Into::into)
+                }
+                (other, _) => return Err(failed(&format!("no probe for an input named {other}"))),
+            }
+            .map_err(|error| failed(&error))?;
+            feed.push((input.name().to_string().into(), value));
         }
         let names: Vec<String> = session
             .outputs()
@@ -990,7 +1136,7 @@ fn same_on_a_probe(
             .collect::<Vec<_>>()
             .join(", ");
         return Err(format!(
-            "the fused graph scored the probe differently ({differing})"
+            "the rewritten graph scored the probe differently ({differing})"
         ));
     }
     Ok(())

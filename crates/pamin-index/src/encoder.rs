@@ -9,12 +9,15 @@
 //! The inputs are built the way `fastembed` 6.1 built them, because they are
 //! the scores: a batch encoded with special tokens and padded to its longest
 //! member, its ids and attention mask fed as `i64` in the batch's shape, and
-//! token type ids only to a graph that declares an input of that name.
+//! token type ids only to a graph that declares an input of that name. A
+//! prepared copy's split graph (see `crate::word_embeddings`) also takes the
+//! batch's word embeddings, which are read here for its ids.
 
 use std::borrow::Cow;
 use std::ffi::CString;
 use std::path::PathBuf;
 use std::ptr::NonNull;
+use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 
@@ -25,6 +28,7 @@ use tokenizers::{EncodeInput, Encoding};
 use crate::error::{IndexError, Result};
 use crate::hub::Repository;
 use crate::tokenizer::Tokenizer;
+use crate::word_embeddings::WordTable;
 
 pub(crate) struct Encoder {
     runtime_plan: crate::inference::RuntimePlan,
@@ -35,6 +39,10 @@ pub(crate) struct Encoder {
     /// Whether the graph takes token type ids. XLM-R's family ignores them and
     /// most of its exports do not declare the input.
     token_type_ids: bool,
+    /// Where a split graph's word embeddings are read from, for the input that
+    /// takes them; `None` for a graph that gathers its own. Shared by both
+    /// sessions, which load the same graph.
+    word_embeddings: Option<Arc<WordTable>>,
     /// The graph [`run_each`](Self::run_each) loads its single-threaded
     /// session from, and that session once it has been loaded; `None` runs
     /// every text on [`session`](Self::session); and how many passes it runs
@@ -103,6 +111,7 @@ impl Encoder {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             fixed: None,
             token_type_ids,
+            word_embeddings: None,
             side_by_side: None,
             #[cfg(test)]
             most_at_once: 0,
@@ -115,6 +124,11 @@ impl Encoder {
     /// single-threaded session over the same `model` -- a mapped copy (see
     /// `crate::prepared`). `revision` is the [`Repository::revision`] `model`
     /// and `tokenizer` were read from.
+    ///
+    /// A split graph's word embeddings are read from the table described
+    /// beside it, which is opened here once for both sessions. A description
+    /// naming an input the graph does not take is refused here, rather than
+    /// by the runtime on every pass that fed it.
     pub(crate) fn side_by_side(
         model: PathBuf,
         threads: usize,
@@ -122,7 +136,21 @@ impl Encoder {
         revision: String,
     ) -> Result<Self> {
         let session = crate::inference::cpu_session(&model, threads)?;
+        let word_embeddings = WordTable::beside(&model)?.map(Arc::new);
+        if let Some(table) = &word_embeddings
+            && !session
+                .inputs()
+                .iter()
+                .any(|input| input.name() == table.input())
+        {
+            return Err(failed(&format!(
+                "{} takes no input named {}, which its word-embedding table is described for",
+                model.display(),
+                table.input()
+            )));
+        }
         Ok(Self {
+            word_embeddings,
             side_by_side: Some((model, None, threads)),
             ..Self::from_parts(session, tokenizer, revision)
         })
@@ -155,6 +183,7 @@ impl Encoder {
             session,
             fixed: Some((short, long)),
             token_type_ids: false,
+            word_embeddings: None,
             side_by_side: None,
             #[cfg(test)]
             most_at_once: 0,
@@ -288,7 +317,11 @@ impl Encoder {
                     .collect();
             }
         };
-        let (tokenizer, token_type_ids) = (&self.tokenizer, self.token_type_ids);
+        let (tokenizer, token_type_ids, word_embeddings) = (
+            &self.tokenizer,
+            self.token_type_ids,
+            self.word_embeddings.as_deref(),
+        );
         let pending = &std::sync::Mutex::new(batches.into_iter().enumerate());
         let read = &read;
         #[cfg(test)]
@@ -305,7 +338,7 @@ impl Encoder {
                             };
                             let outputs = pad(tokenizer, &mut batch).and_then(|()| {
                                 let shape = [batch.len(), batch[0].len()];
-                                let feed = feed(&batch, shape, token_type_ids)?;
+                                let feed = feed(&batch, shape, token_type_ids, word_embeddings)?;
                                 #[cfg(test)]
                                 most.fetch_max(running.fetch_add(1, SeqCst) + 1, SeqCst);
                                 let outputs = run_shared(session, &feed);
@@ -396,7 +429,12 @@ impl Encoder {
         if logical_rows > rows || length > tokens {
             return Err(failed(&"batch exceeds the static execution shape"));
         }
-        let feed = feed(encodings, [rows, tokens], self.token_type_ids)?;
+        let feed = feed(
+            encodings,
+            [rows, tokens],
+            self.token_type_ids,
+            self.word_embeddings.as_deref(),
+        )?;
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let session = if let Some((short, long)) = &mut self.fixed {
             match tokens {
@@ -432,24 +470,42 @@ impl Encoder {
 }
 
 /// What a session is fed for `encodings` in the execution shape `shape`.
+///
+/// With `word_embeddings`, a split graph's: the row of every id, padding
+/// included, in a `[batch, sequence, width]` tensor that owns the rows as
+/// they were read, with no copy between.
 fn feed(
     encodings: &[Encoding],
     shape: [usize; 2],
     token_type_ids: bool,
+    word_embeddings: Option<&WordTable>,
 ) -> Result<Vec<(Cow<'static, str>, SessionInputValue<'static>)>> {
     let column = |field: fn(&Encoding) -> &[u32], padding| {
         let values = input_values(encodings, shape, field, padding);
         Tensor::from_array((shape, values)).map_err(|error| failed(&error))
     };
 
+    let ids = input_values(encodings, shape, Encoding::get_ids, 1);
+    let embedded = word_embeddings
+        .map(|table| table.embed(&ids).map(|rows| (table, rows)))
+        .transpose()?;
     let mut feed = ort::inputs![
-        "input_ids" => column(Encoding::get_ids, 1)?,
+        "input_ids" => Tensor::from_array((shape, ids)).map_err(|error| failed(&error))?,
         "attention_mask" => column(Encoding::get_attention_mask, 0)?,
     ];
     if token_type_ids {
         feed.push((
             "token_type_ids".into(),
             column(Encoding::get_type_ids, 0)?.into(),
+        ));
+    }
+    if let Some((table, rows)) = embedded {
+        let [batch, sequence] = shape;
+        feed.push((
+            table.input().to_string().into(),
+            Tensor::from_array(([batch, sequence, table.width()], rows))
+                .map_err(|error| failed(&error))?
+                .into(),
         ));
     }
     Ok(feed)

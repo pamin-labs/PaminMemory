@@ -27,6 +27,7 @@ mod tokenizer;
 mod vector_math;
 #[cfg(target_os = "windows")]
 mod winml;
+mod word_embeddings;
 
 pub use activity::LoadActivity;
 pub use descriptors::raise_open_file_limit;

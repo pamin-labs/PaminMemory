@@ -86,6 +86,19 @@ pub struct ServerArgs {
     )]
     pub fused_attention: Option<bool>,
 
+    /// Load a mapped copy's graph with its word embeddings read from the data
+    /// file rather than mapped, where one was kept. For measuring the split
+    /// against the graph it came from.
+    #[arg(
+        long,
+        global = true,
+        hide = true,
+        action = clap::ArgAction::Set,
+        value_name = "BOOL",
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
+    pub split_embeddings: Option<bool>,
+
     /// Seconds a server keeps a model, and the indexes pinning it, that
     /// nothing has asked for. Default: 1800.
     #[arg(
@@ -316,6 +329,17 @@ impl Server {
             default.inference.fused_attention.to_string(),
         );
 
+        let split_embeddings = args
+            .split_embeddings
+            .unwrap_or(default.inference.split_embeddings);
+        pick(
+            "split_embeddings",
+            args.split_embeddings.map(|b| b.to_string()),
+            given("split_embeddings"),
+            None,
+            default.inference.split_embeddings.to_string(),
+        );
+
         let model_idle = args
             .model_idle
             .or(serve.model_idle)
@@ -402,6 +426,7 @@ impl Server {
                 ep_libraries,
                 prepared,
                 fused_attention,
+                split_embeddings,
                 ..default.inference
             },
             store: pamin_store::StoreSettings { jit, postgres_dir },
@@ -499,6 +524,9 @@ pub fn forwarded(args: &ServerArgs) -> Vec<std::ffi::OsString> {
     }
     if let Some(fused) = args.fused_attention {
         flag("fused-attention", fused.to_string().into());
+    }
+    if let Some(split) = args.split_embeddings {
+        flag("split-embeddings", split.to_string().into());
     }
     if let Some(idle) = args.model_idle {
         flag("model-idle", idle.to_string().into());

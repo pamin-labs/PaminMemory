@@ -27,18 +27,30 @@ pub(crate) const ATTRIBUTE_GRAPHS: u32 = 11;
 pub(crate) const ATTRIBUTE_TYPE: u32 = 20;
 pub(crate) const TENSOR_DIMS: u32 = 1;
 pub(crate) const TENSOR_DATA_TYPE: u32 = 2;
+pub(crate) const TENSOR_FLOAT_DATA: u32 = 4;
+pub(crate) const TENSOR_INT32_DATA: u32 = 5;
 pub(crate) const TENSOR_INT64_DATA: u32 = 7;
 pub(crate) const TENSOR_NAME: u32 = 8;
 pub(crate) const TENSOR_RAW_DATA: u32 = 9;
+pub(crate) const TENSOR_EXTERNAL_DATA: u32 = 13;
 pub(crate) const TENSOR_DATA_LOCATION: u32 = 14;
+pub(crate) const ENTRY_KEY: u32 = 1;
+pub(crate) const ENTRY_VALUE: u32 = 2;
 pub(crate) const VALUE_INFO_NAME: u32 = 1;
 pub(crate) const VALUE_INFO_TYPE: u32 = 2;
 pub(crate) const TYPE_TENSOR: u32 = 1;
 pub(crate) const TENSOR_TYPE_ELEM_TYPE: u32 = 1;
+pub(crate) const TENSOR_TYPE_SHAPE: u32 = 2;
+pub(crate) const SHAPE_DIM: u32 = 1;
+pub(crate) const DIM_VALUE: u32 = 1;
+pub(crate) const DIM_PARAM: u32 = 2;
 
 // `AttributeProto.AttributeType` and `TensorProto.DataType`.
 pub(crate) const ATTRIBUTE_FLOAT: u64 = 1;
 pub(crate) const ATTRIBUTE_INT: u64 = 2;
+pub(crate) const FLOAT: i64 = 1;
+pub(crate) const UINT8: i64 = 2;
+pub(crate) const INT8: i64 = 3;
 pub(crate) const INT32: i64 = 6;
 pub(crate) const INT64: i64 = 7;
 
