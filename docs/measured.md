@@ -1403,7 +1403,9 @@ and no B run did:
 | search p50 ms, first time a query is asked | 2,220 | 2,152 | −68 (−3.1%) | N/A (within run spread) |
 | search p95 ms, first time a query is asked | 3,443 | 3,419 | −24 (−0.7%) | N/A |
 | search p50 ms, the same query again | 2,085 | 32 | −2,053 (−98.5%) | the cached scores survive |
+| search p95 ms, the same query again | 3,293 | 43 | −3,250 (−98.7%) | the cached scores survive |
 | search server CPU user ms per query, both passes | 7,782 | 4,036 | −3,747 (−48.1%) | 0.519 [0.485, 0.563] |
+| search server CPU system ms per query, both passes | 44.5 | 23.5 | −21.0 (−47.1%) | 0.529 [0.430, 0.591] |
 | **search server peak RSS MB (VmHWM, median of runs)** | **1,295** | **1,032** | **−263 (−20.3%)** | **0.797 [0.785, 0.821]** |
 | search server peak file-backed RSS MB | 945 | 652 | −293 (−31.0%) | 0.690 [0.688, 0.690] |
 | search server peak file-backed PSS MB | 646 | 647 | 0 (0.0%) | 1.000 [0.999, 1.001] |

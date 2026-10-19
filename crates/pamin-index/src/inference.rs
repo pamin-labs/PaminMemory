@@ -244,9 +244,9 @@ pub(crate) fn options(threads: usize, target: impl Into<Target>) -> Result<Sessi
                     "NPU {provider}/{id} unavailable"
                 )));
             }
-            builder
-                .with_devices(devices, None)
-                .map_err(|e| unready(&e))?
+            builder.with_devices(devices, None).map_err(|error| {
+                IndexError::Incompatible(format!("registering a provider: {error}"))
+            })?
         }
     };
     // A provider that cannot be registered -- its library or a library it
