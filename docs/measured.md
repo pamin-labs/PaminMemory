@@ -1389,7 +1389,13 @@ was excluded because another process shared the host). Hardware and settings:
 a 4-vCPU Xeon @ 2.80 GHz (AVX-512 VNNI, no AMX), the CPU execution provider,
 `inference_threads = 4`, split embeddings on, and the same 3,230 texts. The 120
 timed queries were asked twice each, 240 searches, so the search phase outlasts
-the deadline. Every A run reloaded once and no B run did:
+the deadline. The corpus is `corpus.jsonl` (SHA-256 `5e41ac21…`), and the timed
+queries are `queries_timed.jsonl` (SHA-256 `4012c98a…`), asked in file order, the
+whole list once and then again, after 20 warm-up queries on a fresh home per
+run. The models are `gpahal/bge-m3-onnx-int8` at `2b34e84` and
+`onnx-community/bge-reranker-v2-m3-ONNX` at `6f5ff65`, both int8, loaded from
+their prepared copies with split word embeddings. Every A run reloaded once
+and no B run did:
 
 | metric | before | after | change | ratio [95% CI] |
 | --- | ---: | ---: | ---: | ---: |
