@@ -244,14 +244,20 @@ pub(crate) fn options(threads: usize, target: impl Into<Target>) -> Result<Sessi
                     "NPU {provider}/{id} unavailable"
                 )));
             }
-            builder
-                .with_devices(devices, None)
-                .map_err(|e| unready(&e))?
+            builder.with_devices(devices, None).map_err(|error| {
+                IndexError::Incompatible(format!("registering a provider: {error}"))
+            })?
         }
     };
+    // A provider that cannot be registered -- its library or a library it
+    // needs does not load, or it finds no device -- stays that way for the
+    // life of the process. Calling it transient revalidated the CPU plan
+    // every RUNTIME_RETRY: both models were reloaded beside the resident
+    // ones, about 300 MB more at the peak and a stalled search, every five
+    // minutes on every x86-64 Linux machine without CUDA.
     builder
         .with_execution_providers(providers)
-        .map_err(|error| unready(&error))?
+        .map_err(|error| IndexError::Incompatible(format!("registering a provider: {error}")))?
         .with_config_entry("session.record_ep_graph_assignment_info", "1")
         .map_err(|error| unready(&error))?
         .with_optimization_level(crate::prepared::LEVEL)
@@ -4499,6 +4505,23 @@ mod tests {
                 .success()
         );
         assert!(InventoryPermit::acquire(busy).is_none());
+    }
+
+    /// CUDA that cannot be registered here -- no device, or its libraries
+    /// do not load -- is incompatible, not transient, so the CPU plan the
+    /// calibration falls back to is not revalidated every few minutes.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn a_provider_that_cannot_register_is_incompatible() {
+        let cuda = ort::ep::CUDA::default().build().error_on_failure();
+        match super::options(1, vec![cuda]) {
+            Err(crate::IndexError::Incompatible(message)) => {
+                assert!(message.contains("registering a provider"), "{message}");
+            }
+            Err(other) => panic!("expected Incompatible, got {other}"),
+            // CUDA registers here, so there is no failure to classify.
+            Ok(_) => {}
+        }
     }
 
     #[test]

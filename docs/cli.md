@@ -1443,7 +1443,7 @@ row and paying startup once.
 
 ### Accelerator plan recovery
 
-Registered plugin libraries participate in automatic routing only for discovered NPU devices; arbitrary non-NPU plugins are not automatically selected. Runtime execution failure quarantines the affected qualified model/revision, runtime/build, target and configured shape scope for five minutes, requalifies the remaining accelerator/optimized CPU plans and retries the complete operation. A replacement becomes visible only after that operation succeeds. Resident models check the recovery deadline before query/score-cache lookups and requalify on the next request after expiry; failed revalidation retains the qualified fallback and reserves another five-minute interval. Successful replacements clear query/score entries while preserving lifetime counters, so cached results from different targets or export scales are not mixed. Completed all-plan measurements use the normal plan lifetime; only incomplete/transient qualification keeps the five-minute retry interval.
+Registered plugin libraries participate in automatic routing only for discovered NPU devices; arbitrary non-NPU plugins are not automatically selected. Runtime execution failure quarantines the affected qualified model/revision, runtime/build, target and configured shape scope for five minutes, requalifies the remaining accelerator/optimized CPU plans and retries the complete operation. A replacement becomes visible only after that operation succeeds. Resident models check the recovery deadline before query/score-cache lookups and requalify on the next request after expiry; failed revalidation retains the qualified fallback and reserves another five-minute interval. Successful replacements clear query/score entries while preserving lifetime counters, so cached results from different targets or export scales are not mixed. Completed all-plan measurements use the normal plan lifetime; only incomplete/transient qualification keeps the five-minute retry interval. A provider that cannot be registered in the process (its library or one it needs does not load, or it finds no device) is incompatible rather than transient: a CPU plan chosen without it takes the normal lifetime, so a machine without CUDA does not reload its models every five minutes.
 
 Cold calibration is coordinated in one per-user cache location across workspace model caches. If coordination is unavailable, disk choice reuse/publication is disabled. A validated accelerator winner can be reused for a short interval while transiently failed alternatives are retried; malformed or nonfinite saved reference fixtures are cache misses.
 
@@ -1454,9 +1454,3 @@ recovery state. Transient or numerical qualification failures retain a bounded
 retry interval; configured exclusions and incompatible plans do not by
 themselves require repeated selection.
 
-**Known issue.** An accelerator provider that is built in but cannot register
-on the host -- CUDA without its libraries, for example -- is currently treated
-as a transient failure, so a resident server repeats this recovery every five
-minutes on such a host: it reloads its models and clears its query and score
-caches each time, and a search that overlaps a reload is slower. A change that
-probes whether a provider can register before reloading is in progress.

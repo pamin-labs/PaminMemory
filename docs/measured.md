@@ -1369,11 +1369,64 @@ warm-up and 120 timed queries:
 is the server process only, with no accelerator services; disk is the index
 directory and the two prepared copies, without postgres or temporary files
 (not measured, N/A). Half the runs in each arm crossed a five-minute model
-reload this host triggers (its CUDA provider cannot register), which maps both
-models twice for a moment; without it the after arm peaked at 1,022 and
+reload this host triggered (its CUDA provider cannot register; fixed in the
+next paragraph), which mapped both models twice for a moment; without it the after arm peaked at 1,022 and
 1,049 MB. The summary, raw rows and harness:
 [q54-split-word-embeddings.md](../internal-docs/pamin-memory/research/2026-10-19/q54-split-word-embeddings.md)
 with [raw/q54/](../internal-docs/pamin-memory/research/2026-10-19/raw/q54/).
+
+**A provider that cannot register no longer reloads the models every five
+minutes.** Every x86-64 Linux build offers CUDA to the plan measurement, and on
+a machine where CUDA cannot register (here its `libcublasLt.so.13` is missing)
+that failure was treated as transient. So the CPU plan it fell back to kept the
+five-minute retry interval rather than the normal lifetime. Each time the
+interval ran out, both models were reloaded beside the resident ones -- mapping
+the prepared copies twice -- and the reranker's pair-score cache, which lives
+in the replaced reranker, was emptied. A registration failure is now
+incompatible. At the search entry point, main (`83f5442`, before) against the
+fix (`0f31715`, after), 4 runs per arm rotated A B B A B A A B (a fifth A run
+was excluded because another process shared the host). Hardware and settings:
+a 4-vCPU Xeon @ 2.80 GHz (AVX-512 VNNI, no AMX), the CPU execution provider,
+`inference_threads = 4`, split embeddings on, and the same 3,230 texts. The 120
+timed queries were asked twice each, 240 searches, so the search phase outlasts
+the deadline. The corpus is `corpus.jsonl` (SHA-256 `5e41ac21…`), and the timed
+queries are `queries_timed.jsonl` (SHA-256 `4012c98a…`), asked in file order, the
+whole list once and then again, after 20 warm-up queries on a fresh home per
+run. The models are `gpahal/bge-m3-onnx-int8` at `2b34e84` and
+`onnx-community/bge-reranker-v2-m3-ONNX` at `6f5ff65`, both int8, loaded from
+their prepared copies with split word embeddings. Every A run reloaded once
+and no B run did:
+
+| metric | before | after | change | ratio [95% CI] |
+| --- | ---: | ---: | ---: | ---: |
+| nDCG@10, 120 queries | 0.7381 | 0.7381 | 0.0000 (0.0%) | identical top-10s |
+| search p50 ms, first time a query is asked | 2,220 | 2,152 | −68 (−3.1%) | N/A (within run spread) |
+| search p95 ms, first time a query is asked | 3,443 | 3,419 | −24 (−0.7%) | N/A |
+| search p50 ms, the same query again | 2,085 | 32 | −2,053 (−98.5%) | the cached scores survive |
+| search p95 ms, the same query again | 3,293 | 43 | −3,250 (−98.7%) | the cached scores survive |
+| search server CPU user ms per query, both passes | 7,782 | 4,036 | −3,747 (−48.1%) | 0.519 [0.485, 0.563] |
+| search server CPU system ms per query, both passes | 44.5 | 23.5 | −21.0 (−47.1%) | 0.529 [0.430, 0.591] |
+| **search server peak RSS MB (VmHWM, median of runs)** | **1,295** | **1,032** | **−263 (−20.3%)** | **0.797 [0.785, 0.821]** |
+| search server peak file-backed RSS MB | 945 | 652 | −293 (−31.0%) | 0.690 [0.688, 0.690] |
+| search server peak file-backed PSS MB | 646 | 647 | 0 (0.0%) | 1.000 [0.999, 1.001] |
+| ingest server peak RSS MB (VmHWM) | 925 | 962 | +37 (+4.0%) | 1.040 [0.940, 1.079] |
+| ingest wall s (import and drain) | 230.4 | 228.7 | −1.7 (−0.7%) | 0.993 [0.933, 1.047] |
+| index directory MB allocated | 27.2 | 26.1 | −1.1 (−4.0%) | 0.960 [0.922, 1.043] |
+
+**No first-pass speed change is claimed.** The repeated-query rows are an
+upper bound: they time a query whose answer is still cached, which a workload
+that rarely repeats a query seldom sees. The CPU row is specific to this run,
+which asks every query exactly twice: a workload that repeats queries across
+several reload intervals would miss the cache again after each reload before
+the fix, so its saving could be larger, and one that never repeats a query
+would save less. The first-pass rows were computed from the raw query
+rows, and CPU was sampled over the whole timed loop, so a first-pass CPU figure
+is N/A. Memory is the server process only, with no accelerator services; disk
+is the index directory, without postgres, the prepared copies (unchanged, 1,668
+MB) or temporary files (not measured, N/A). The summary, raw-row checksums and
+harness:
+[q56-provider-reload.md](../internal-docs/pamin-memory/research/2026-10-19/q56-provider-reload.md)
+with [raw/q56/](../internal-docs/pamin-memory/research/2026-10-19/raw/q56/).
 
 **What the database is made of**, which is a figure this page has never carried
 and which turned out to be worth carrying. Broken down by table on the
