@@ -423,15 +423,17 @@ scores, and ranked by score alone they fill any cap with one topic's
 surroundings. `rerankable` now divides each eligible find's graph score by
 the square root of how many eligible finds came through the same `via`
 topic, and shows the strongest four. Replayed on recorded searches first,
-against the cap of thirty: MuSiQue 2-hop (600) −0.0005 (7 better, 7 worse,
-p_fw = 0.79), every LoCoMo category level or better (multi-hop +0.0055,
+against the cap of thirty: MuSiQue 2-hop (600) −0.0005 (7 better, 7 worse;
+p_fw = 0.79 in a four-arm replay, 1.0 in an eight-arm one), every LoCoMo category level or better (multi-hop +0.0055,
 p_fw = 0.066), XQuAD identical (no edges). Then at the product entry point
 (`pamin serve` and one `pamin search --limit 10` process a query, CPU
 execution provider, four Xeon cores at 2.8 GHz with AVX-512 VNNI, ONNX
-Runtime 1.28, bge-m3 and bge-reranker-v2-m3 int8, LoCoMo's five
+Runtime 1.28, `gpahal/bge-m3-onnx-int8` @ `2b34e84` and
+`onnx-community/bge-reranker-v2-m3-ONNX` (`onnx/model_int8.onnx`) @
+`6f5ff65`, LoCoMo's five
 conversations with their adjacency links, 120 timed queries after 20 warm
 ones, four rotated runs an arm, no run shared), main `010c4d5` against the
-branch:
+branch at `fe30d05`:
 
 | metric | cap 30 | cap 4, fan-out ranked | abs diff | % change | ratio [95% CI] |
 | --- | --- | --- | --- | --- | --- |

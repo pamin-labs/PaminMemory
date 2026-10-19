@@ -178,7 +178,7 @@ measure from outside. If you want more control over retrieval, use `grep`,
 
 Every uncached `search` costs two to three seconds on four cores and a page of results
 in your context. The reranker reads the top thirty fused results, and up to
-thirty more that only the graph found; `docs/measured.md` records a median of
+four more that only the graph found; `docs/measured.md` records a median of
 about 2.7 s at `pamin search` over 3,230 memories on a four-core machine. On
 Apple silicon, where the reranker runs on CoreML, `docs/measured.md` records a
 whole-search p50 of 0.48 s and p95 of 0.81 s. A second search pays off only when

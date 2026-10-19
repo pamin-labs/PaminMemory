@@ -2776,7 +2776,8 @@ const GRAPH_SHOWN_AT_MOST: usize = 4;
 /// scores, and ranked by score alone they fill the cap with one topic's
 /// surroundings. Replayed on recorded searches with the cap at four, MuSiQue's
 /// nDCG@10 went from -0.0053 against the uncapped rule (p_fw = 0.009) to
-/// -0.0005 (p_fw = 1.0), and no LoCoMo key moved significantly.
+/// -0.0005 (p_fw = 1.0, Holm over that replay's eight arms), and no LoCoMo
+/// key moved significantly.
 ///
 /// One rule, public so the harnesses that replay a search from its trace use
 /// this rather than a copy that could drift from it. `traces` is each fused
