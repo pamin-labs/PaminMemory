@@ -38,6 +38,10 @@ pub const KNOBS: &[(&str, &str)] = &[
         "load the fused graph, true or false (`--fused-attention`)",
     ),
     (
+        "PAMIN_EVAL_SPLIT_EMBEDDINGS",
+        "load the split graph, true or false (`--split-embeddings`)",
+    ),
+    (
         "PAMIN_EVAL_RERANK_BATCH",
         "pairs per reranker pass (no flag)",
     ),

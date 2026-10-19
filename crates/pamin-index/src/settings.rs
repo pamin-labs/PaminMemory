@@ -87,6 +87,10 @@ pub struct InferenceSettings {
     /// Whether a mapped copy's attention-fused graph is loaded where one was
     /// kept.
     pub fused_attention: bool,
+    /// Whether a mapped copy's graph is loaded with its word embeddings read
+    /// by this process rather than mapped by the runtime, where that graph was
+    /// kept (see `crate::word_embeddings`).
+    pub split_embeddings: bool,
     /// The reranker's batching and truncation.
     pub rerank: RerankSettings,
 }
@@ -99,6 +103,7 @@ impl Default for InferenceSettings {
             ep_libraries: Vec::new(),
             prepared: true,
             fused_attention: true,
+            split_embeddings: true,
             rerank: RerankSettings::default(),
         }
     }
@@ -153,6 +158,11 @@ impl InferenceSettings {
             "fused_attention",
             self.fused_attention != default.fused_attention,
             self.fused_attention.to_string(),
+        );
+        differs(
+            "split_embeddings",
+            self.split_embeddings != default.split_embeddings,
+            self.split_embeddings.to_string(),
         );
         differs(
             "rerank_batch",

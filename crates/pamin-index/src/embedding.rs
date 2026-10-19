@@ -625,8 +625,13 @@ mod tests {
         let path = std::env::var_os("PAMIN_EVAL_JOINT_GRAPH")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
-                crate::prepared::load_path(&weights, &cache, &crate::InferenceSettings::default())
-                    .unwrap()
+                // The graph a session loads alone: a split one takes its word
+                // embeddings from `Encoder::side_by_side`, which this skips.
+                let settings = crate::InferenceSettings {
+                    split_embeddings: false,
+                    ..crate::InferenceSettings::default()
+                };
+                crate::prepared::load_path(&weights, &cache, &settings).unwrap()
             });
         let session = crate::inference::options(threads, vec![crate::inference::cpu()])
             .unwrap()

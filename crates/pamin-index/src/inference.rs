@@ -1675,20 +1675,21 @@ fn device_persists(device: Device, cuda_identified: bool) -> bool {
 /// [`InferenceSettings::overrides`](crate::InferenceSettings::overrides)
 /// names them: the device it may run on, the provider libraries and the
 /// threads it runs with, and which copy of its weights -- the download, or a
-/// prepared copy with or without fused attention -- it loads. A plan's key is
-/// named by these.
+/// prepared copy with or without fused attention, and with or without its
+/// word embeddings split out -- it loads. A plan's key is named by these.
 ///
 /// Only these: a plan's key named every `PAMIN_` variable set, so a knob
 /// that never reaches a model -- the reranker's depth, the search's effort,
 /// where the workspace is -- recalibrated every model and renamed every
 /// plan. What a model's own settings change, such as the reranker's batch
 /// and token limits, its identity names (see `reranking`).
-pub const EXECUTION_SETTINGS: [&str; 5] = [
+pub const EXECUTION_SETTINGS: [&str; 6] = [
     "device",
     "inference_threads",
     "ep_libraries",
     "prepared",
     "fused_attention",
+    "split_embeddings",
 ];
 
 /// The [`EXECUTION_SETTINGS`] among `settings`' overrides, in the order
@@ -2899,6 +2900,10 @@ mod tests {
             },
             crate::InferenceSettings {
                 fused_attention: false,
+                ..crate::InferenceSettings::default()
+            },
+            crate::InferenceSettings {
+                split_embeddings: false,
                 ..crate::InferenceSettings::default()
             },
         ];
