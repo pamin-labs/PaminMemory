@@ -1413,10 +1413,13 @@ and no B run did:
 | ingest wall s (import and drain) | 230.4 | 228.7 | −1.7 (−0.7%) | 0.993 [0.933, 1.047] |
 | index directory MB allocated | 27.2 | 26.1 | −1.1 (−4.0%) | 0.960 [0.922, 1.043] |
 
-**No first-pass speed change is claimed.** The repeated-query row and the CPU
-row depend on how often a workload repeats a query: this run asks every query
-exactly twice, so they are an upper bound on what the cache retention is worth,
-not a typical figure. The first-pass rows were computed from the raw query
+**No first-pass speed change is claimed.** The repeated-query rows are an
+upper bound: they time a query whose answer is still cached, which a workload
+that rarely repeats a query seldom sees. The CPU row is specific to this run,
+which asks every query exactly twice: a workload that repeats queries across
+several reload intervals would miss the cache again after each reload before
+the fix, so its saving could be larger, and one that never repeats a query
+would save less. The first-pass rows were computed from the raw query
 rows, and CPU was sampled over the whole timed loop, so a first-pass CPU figure
 is N/A. Memory is the server process only, with no accelerator services; disk
 is the index directory, without postgres, the prepared copies (unchanged, 1,668
