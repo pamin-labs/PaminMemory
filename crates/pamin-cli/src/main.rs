@@ -572,8 +572,8 @@ mod tests {
         let cli = Cli::from_arg_matches(&matches).unwrap();
         let server = settings::Server::resolve(root.path(), &cli.server, &matches).unwrap();
         for entry in &server.entries {
-            // Hidden, like its flag: a measurement switch, not a setting.
-            if entry.key == "fused_attention" {
+            // Hidden, like their flags: measurement switches, not settings.
+            if matches!(entry.key, "fused_attention" | "split_embeddings") {
                 continue;
             }
             let key = format!("`{}`", entry.key);

@@ -25,6 +25,8 @@ pub fn inference() -> InferenceSettings {
         prepared: eval::switch("PAMIN_EVAL_PREPARED").unwrap_or(default.prepared),
         fused_attention: eval::switch("PAMIN_EVAL_FUSED_ATTENTION")
             .unwrap_or(default.fused_attention),
+        split_embeddings: eval::switch("PAMIN_EVAL_SPLIT_EMBEDDINGS")
+            .unwrap_or(default.split_embeddings),
         rerank: RerankSettings {
             batch: eval::parsed("PAMIN_EVAL_RERANK_BATCH"),
             batch_tokens: eval::parsed::<std::num::NonZeroUsize>("PAMIN_EVAL_RERANK_BATCH_TOKENS")
