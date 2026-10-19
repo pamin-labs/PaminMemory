@@ -121,7 +121,7 @@ enum Command {
 fn main() -> Result<()> {
     // Before the runtime starts its worker threads: glibc fixes how many heap
     // arenas it will make the first time a thread needs one of its own.
-    server::cap_heap_arenas();
+    server::tune_heap();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
