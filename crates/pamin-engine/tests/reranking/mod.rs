@@ -772,8 +772,14 @@ pub fn replay(hits: &[SearchHit]) -> Replayed {
         .collect();
 
     let results = Fusion::default().fuse(&crate::channels::replay(hits));
-    // The engine's own rule for what the model is shown, not a copy of it.
-    let traces: Vec<&[Why]> = results.iter().map(|result| result.why.as_slice()).collect();
+    // The engine's own rule for what the model is shown, not a copy of it,
+    // over each find's own trace: the rebuild above keeps only the channel
+    // lines, and the rule also reads the graph path a find came by.
+    let why: HashMap<_, &[Why]> = hits
+        .iter()
+        .map(|hit| (hit.result.topic, hit.result.why.as_slice()))
+        .collect();
+    let traces: Vec<&[Why]> = results.iter().map(|result| why[&result.topic]).collect();
     let movable = pamin_engine::rerankable(&traces, crate::harness::depths().rerank.get());
     let fused: Vec<String> = results
         .iter()
