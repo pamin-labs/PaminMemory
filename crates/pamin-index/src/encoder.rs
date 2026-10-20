@@ -48,10 +48,11 @@ pub(crate) struct Encoder {
     /// every text on [`session`](Self::session); and how many passes it runs
     /// at once.
     side_by_side: Option<(PathBuf, Option<SharedCpuSession>, usize)>,
-    /// The clean mappings of [`side_by_side`](Self::side_by_side)'s graph that
-    /// [`run_each`](Self::run_each) releases, and whether its session was
-    /// loaded when they were found: loading it maps the graph again.
-    resident: Option<(bool, Vec<(usize, usize)>)>,
+    /// The clean mappings of [`side_by_side`](Self::side_by_side)'s graph
+    /// that this encoder's own sessions created, which
+    /// [`run_each`](Self::run_each) releases. They stay mapped while the
+    /// sessions do, so they are never another mapping's addresses.
+    resident: Vec<(usize, usize)>,
     /// The most passes [`run_each`](Self::run_each) has had running at once.
     #[cfg(test)]
     most_at_once: usize,
@@ -117,7 +118,7 @@ impl Encoder {
             token_type_ids,
             word_embeddings: None,
             side_by_side: None,
-            resident: None,
+            resident: Vec::new(),
             #[cfg(test)]
             most_at_once: 0,
             revision,
@@ -140,7 +141,7 @@ impl Encoder {
         tokenizer: Tokenizer,
         revision: String,
     ) -> Result<Self> {
-        let session = crate::inference::cpu_session(&model, threads)?;
+        let (session, resident) = crate::inference::cpu_session(&model, threads)?;
         let word_embeddings = WordTable::beside(&model)?.map(Arc::new);
         if let Some(table) = &word_embeddings
             && !session
@@ -157,7 +158,7 @@ impl Encoder {
         Ok(Self {
             word_embeddings,
             side_by_side: Some((model, None, threads)),
-            resident: None,
+            resident,
             ..Self::from_parts(session, tokenizer, revision)
         })
     }
@@ -191,7 +192,7 @@ impl Encoder {
             token_type_ids: false,
             word_embeddings: None,
             side_by_side: None,
-            resident: None,
+            resident: Vec::new(),
             #[cfg(test)]
             most_at_once: 0,
             revision: repository.revision(),
@@ -276,7 +277,10 @@ impl Encoder {
             // every batch: one that will not load leaves the passes to it,
             // and stops passes being planned for running side by side.
             match SharedCpuSession::load(model) {
-                Ok(session) => *shared = Some(session),
+                Ok((session, mapped)) => {
+                    *shared = Some(session);
+                    self.resident.extend(mapped);
+                }
                 Err(error) => {
                     tracing::warn!(%error, "could not load the side-by-side session");
                     self.side_by_side = None;
@@ -318,17 +322,7 @@ impl Encoder {
         // A search runs the embedder and then the reranker; handing each
         // one's weights back once its passes are done keeps only one model's
         // in the process at a time. See `crate::resident`.
-        if let Some((model, session, _)) = &self.side_by_side
-            && let Some(directory) = model.parent()
-        {
-            let loaded = session.is_some();
-            if self.resident.as_ref().is_none_or(|(was, _)| *was != loaded) {
-                self.resident = crate::resident::clean(directory).map(|ranges| (loaded, ranges));
-            }
-            if let Some((_, ranges)) = &self.resident {
-                crate::resident::release(ranges);
-            }
-        }
+        crate::resident::release(&self.resident);
         results
     }
 
@@ -601,10 +595,12 @@ fn native_shape(length: usize) -> (usize, usize) {
 struct SharedCpuSession(Session);
 
 impl SharedCpuSession {
-    fn load(model: &std::path::Path) -> Result<Self> {
-        let session = crate::inference::cpu_session(model, 1)?;
+    /// The session, and the clean mappings of `model`'s directory it
+    /// created; see [`crate::resident::loading`].
+    fn load(model: &std::path::Path) -> Result<(Self, Vec<(usize, usize)>)> {
+        let (session, mapped) = crate::inference::cpu_session(model, 1)?;
         cpu_alone(&crate::inference::assigned_providers(&session)?)?;
-        Ok(Self(session))
+        Ok((Self(session), mapped))
     }
 }
 
