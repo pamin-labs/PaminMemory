@@ -1074,6 +1074,53 @@ services; the prepared model copies (1,668 MB) are the same in both arms and
 are not in the index figure. The raw rows and harness are in the private
 `internal-docs/pamin-memory/research/2026-10-19/raw/q65/` folder.
 
+**A fixed glibc mapping threshold, trading indexing speed for memory.** glibc
+maps a request of 128 KiB or more and returns it on free, but raises that
+threshold to the size of each mapped block it frees, up to 32 MiB. After the
+first few passes, the passes' intermediate buffers of a few megabytes come
+from the heap, which keeps what it frees. `tune_heap` now fixes the threshold
+at 1 MiB with `mallopt`, unless the process was started with its own
+threshold. Measured at the entry point, with the same setup as the
+longest-pass-first rows above, main `1d141db` against the branch at
+`d569c57`, four rotated runs an arm, none shared:
+
+| metric | before | after | abs diff | % change | ratio [95% CI] |
+| --- | --- | --- | --- | --- | --- |
+| nDCG@10, 120 queries | 0.7381 | 0.7381 | 0 | 0.0% | 120 of 120 queries equal |
+| search p50 ms (per run) | 880.3 | 883.5 | +3.2 | +0.4% | 1.004 [0.937, 1.090] |
+| search p95 ms (per run) | 2,533.4 | 2,605.4 | +72.0 | +2.8% | 1.028 [0.990, 1.094] |
+| search server CPU sys ms/query | 18.7 | 38.3 | +19.6 | +105.1% | **2.051 [1.590, 2.383]** |
+| search VmHWM MB (process RSS) | 1,019 | 993 | −26 | −2.5% | **0.975 [0.946, 0.991]** |
+| search peak RssAnon MB | 368 | 338 | −30 | −8.1% | **0.919 [0.858, 0.963]** |
+| ingest wall s | 189.9 | 201.5 | +11.6 | +6.1% | **1.061 [1.014, 1.133]** |
+| ingest server CPU sys s | 7.8 | 44.5 | +36.7 | +472.6% | **5.726 [4.742, 9.991]** |
+| ingest VmHWM MB (process RSS) | 986 | 789 | −198 | −20.0% | **0.800 [0.707, 0.816]** |
+| ingest peak RssAnon MB | 630 | 397 | −232 | −36.9% | **0.631 [0.581, 0.654]** |
+| index dir MB | 26.1 | 26.1 | 0.0 | N/A | allocation noise; same index |
+
+**The cost is indexing time.** Every pass now maps its buffers and faults
+them in afresh, so ingest system time rises 5.7× and ingest wall time
+rises 6%. The gain is memory: indexing peaks 198 MB lower, and search
+peaks under a gigabyte. The trade was made deliberately, because the search
+peak is held to about a gigabyte.
+
+**Alternatives measured and rejected:**
+
+- **Trimming the heap after every group of passes, in the same runs.** It
+  kept none of the memory: search −9 MB and ingest −37 MB, neither
+  significant. The blocks are retained within a group of passes, not
+  between groups.
+- **A 4 MiB threshold.** The search gain disappeared at the entry point.
+- **A 128 KiB threshold.** Mapping every small buffer cost ingest 1.19×
+  its wall time.
+
+Memory is the `pamin serve` process alone, with no accelerator services.
+CPU time counts the server's worker threads. The setting has an effect only
+under glibc on Linux; macOS and Windows are unaffected and unmeasured. The
+raw rows and harnesses are in the private
+`internal-docs/pamin-memory/research/2026-10-20/raw/q69/` folder, with
+q64 and q67 beside it.
+
 **Truncating at 192 or 384 tokens rather than 256 was measured, and neither
 ships.** In the same runs, each limit paired against 256 with the new batching:
 192 made a search 0.80 of what it was on MuSiQue, where half the pairs reach
