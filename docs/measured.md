@@ -1130,7 +1130,12 @@ passes, `Encoder::run_each` now hands that model's clean mappings back with
 - The pages stay in the page cache, and the next pass maps them back with
   minor faults.
 - A mapping with any written page is skipped.
-- The mappings are found once per set of loaded sessions, because reading
+- Only the mappings an encoder's own sessions created are released. They are
+  found once, as each session loads: loads run one at a time, and
+  `/proc/self/maps` before is compared with `/proc/self/smaps` after. A
+  released range is therefore never the address of another session's
+  mapping, which may be unmapped and its addresses reused.
+- Finding them once, not after every pass, matters because reading
   `/proc/self/smaps` walks every page table.
 
 Measured at the entry point with the same setup as the rows above, four
@@ -1160,6 +1165,10 @@ change is claimed.**
 - No latency figure moved significantly, either way. The branch head was
   not measured directly against main, so its latency cells against main
   are N/A.
+- The measured `7e78d51` found the ranges once per set of loaded sessions by
+  looking at the model's directory. Finding them per session load instead
+  reads the same files no more often per search, but that form is not in
+  this table.
 - These runs' absolute latencies are higher than the rows above, because
   they interleaved with an unrelated accuracy replay that never overlapped a
   timed run. The comparisons within each experiment hold.
