@@ -10,44 +10,79 @@
 
 use std::path::Path;
 
-/// The `[start, end)` address ranges of this process's clean mappings of files
-/// under `directory`, for [`release`].
+use crate::error::Result;
+
+/// Held across every session load from a file, so the mappings that appear
+/// while one loads are that session's own. See [`loading`].
+#[cfg(target_os = "linux")]
+static LOADS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// What `load` returns, and the `[start, end)` address ranges of the clean
+/// mappings of files under `directory` that it created, for [`release`].
+///
+/// Every session load from a file goes through here, one at a time, so the
+/// mappings that appear during `load` are the loaded session's and no other's.
+/// They are unmapped only when that session is dropped, so whoever holds the
+/// session may release its ranges for as long as it holds it. Ranges found by
+/// looking at a directory instead could belong to another session over the
+/// same copy, which may be dropped and its addresses reused while they are
+/// still held.
 ///
 /// A mapping is left out if any of its pages has been written: the mappings
 /// are private, so a written page holds the only copy of what was written, and
 /// dropping it would bring the file's bytes back in its place. The weights are
 /// never written, so in practice nothing is left out, but the check is what
-/// makes releasing safe rather than the assumption. Reading `smaps` walks
-/// every page of every mapping, so a caller finds the ranges once per set of
-/// loaded sessions and releases them as often as it needs.
+/// makes releasing safe rather than the assumption.
 ///
-/// Advisory: `None` if the mappings cannot be read.
+/// Advisory: no ranges if the mappings cannot be read.
 #[cfg(target_os = "linux")]
-pub(crate) fn clean(directory: &Path) -> Option<Vec<(usize, usize)>> {
-    let smaps = std::fs::read_to_string("/proc/self/smaps").ok()?;
+pub(crate) fn loading<T>(
+    directory: &Path,
+    load: impl FnOnce() -> Result<T>,
+) -> Result<(T, Vec<(usize, usize)>)> {
+    let _loading = LOADS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // smaps names a mapping by its resolved path, so a directory reached
     // through a symbolic link would match nothing.
-    let directory = std::fs::canonicalize(directory).ok()?;
-    Some(clean_mappings(&smaps, &directory))
+    let directory = std::fs::canonicalize(directory).ok();
+    let before = directory.as_deref().and_then(|directory| {
+        Some(mapped(
+            &std::fs::read_to_string("/proc/self/maps").ok()?,
+            directory,
+        ))
+    });
+    let value = load()?;
+    let ranges = match (directory, before) {
+        (Some(directory), Some(before)) => std::fs::read_to_string("/proc/self/smaps")
+            .map(|smaps| new_since(&clean_mappings(&smaps, &directory), &before))
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    Ok((value, ranges))
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn clean(_directory: &Path) -> Option<Vec<(usize, usize)>> {
-    None
+pub(crate) fn loading<T>(
+    _directory: &Path,
+    load: impl FnOnce() -> Result<T>,
+) -> Result<(T, Vec<(usize, usize)>)> {
+    Ok((load()?, Vec::new()))
 }
 
 /// Drops from this process every resident page of `ranges`, which
-/// [`clean`] found.
+/// [`loading`] found for a session the caller holds.
 ///
 /// Advisory: a range that cannot be released is left as it is.
 #[cfg(target_os = "linux")]
 pub(crate) fn release(ranges: &[(usize, usize)]) {
     let mut released = 0usize;
     for &(start, end) in ranges {
-        // SAFETY: the range is a whole mapping this process holds, read from
-        // its own smaps, and `MADV_DONTNEED` on a private file mapping with no
-        // written page only unmaps pages the next access maps back from the
-        // file. Nothing in safe Rust observes the difference.
+        // SAFETY: the range is a whole mapping, with no written page, of a
+        // session the caller holds, so it is still that mapping.
+        // `MADV_DONTNEED` on a private file mapping with no written page only
+        // unmaps pages the next access maps back from the file. Nothing in safe
+        // Rust observes the difference.
         let done =
             unsafe { libc::madvise(start as *mut libc::c_void, end - start, libc::MADV_DONTNEED) };
         if done == 0 {
@@ -62,6 +97,44 @@ pub(crate) fn release(ranges: &[(usize, usize)]) {
 
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn release(_ranges: &[(usize, usize)]) {}
+
+/// The ranges of the mappings in `maps` (`/proc/self/maps`, or the header
+/// lines of `smaps`) whose file is under `directory`.
+#[cfg(any(target_os = "linux", test))]
+fn mapped(maps: &str, directory: &Path) -> Vec<(usize, usize)> {
+    maps.lines()
+        .filter_map(|line| header(line, directory).flatten())
+        .collect()
+}
+
+/// The parts of `after` that no range of `before` covers.
+///
+/// Not just the ranges of `after` missing from `before`: the kernel merges a
+/// new mapping into an adjacent one of the same file at the next offset, so a
+/// mapping found after a load can hold one that was there before it, which
+/// belongs to another session and may be unmapped while this one lives.
+#[cfg(any(target_os = "linux", test))]
+fn new_since(after: &[(usize, usize)], before: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    let mut before = before.to_vec();
+    before.sort_unstable();
+    let mut new = Vec::new();
+    for &(start, end) in after {
+        let mut from = start;
+        for &(old_start, old_end) in &before {
+            if old_end <= from || old_start >= end {
+                continue;
+            }
+            if old_start > from {
+                new.push((from, old_start));
+            }
+            from = from.max(old_end);
+        }
+        if from < end {
+            new.push((from, end));
+        }
+    }
+    new
+}
 
 /// The `[start, end)` address ranges of the mappings in `smaps` whose file is
 /// under `directory` and none of whose pages is anonymous, that is written.
@@ -124,6 +197,34 @@ Anonymous:            16 kB
         assert_eq!(
             clean_mappings(SMAPS, Path::new("/models/prepared/b")),
             vec![(0x7f00_0000_8000, 0x7f00_0000_c000)]
+        );
+    }
+
+    #[test]
+    fn a_directorys_mappings_are_read_from_maps_and_smaps_alike() {
+        let a = Path::new("/models/prepared/a");
+        assert_eq!(
+            mapped(SMAPS, a),
+            vec![
+                (0x7f00_0000_0000, 0x7f00_0000_4000),
+                (0x7f00_0000_4000, 0x7f00_0000_8000)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_load_owns_only_what_was_not_mapped_before_it() {
+        // Unchanged, new, and new but merged around two older mappings.
+        let before = [(0x5000, 0x6000), (0x1000, 0x2000), (0x3000, 0x3800)];
+        let after = [(0x1000, 0x2000), (0x8000, 0x9000), (0x0, 0x4000)];
+        assert_eq!(
+            new_since(&after, &before),
+            vec![
+                (0x8000, 0x9000),
+                (0x0, 0x1000),
+                (0x2000, 0x3000),
+                (0x3800, 0x4000)
+            ]
         );
     }
 
