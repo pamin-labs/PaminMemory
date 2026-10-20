@@ -48,6 +48,10 @@ pub(crate) struct Encoder {
     /// every text on [`session`](Self::session); and how many passes it runs
     /// at once.
     side_by_side: Option<(PathBuf, Option<SharedCpuSession>, usize)>,
+    /// The clean mappings of [`side_by_side`](Self::side_by_side)'s graph that
+    /// [`run_each`](Self::run_each) releases, and whether its session was
+    /// loaded when they were found: loading it maps the graph again.
+    resident: Option<(bool, Vec<(usize, usize)>)>,
     /// The most passes [`run_each`](Self::run_each) has had running at once.
     #[cfg(test)]
     most_at_once: usize,
@@ -113,6 +117,7 @@ impl Encoder {
             token_type_ids,
             word_embeddings: None,
             side_by_side: None,
+            resident: None,
             #[cfg(test)]
             most_at_once: 0,
             revision,
@@ -152,6 +157,7 @@ impl Encoder {
         Ok(Self {
             word_embeddings,
             side_by_side: Some((model, None, threads)),
+            resident: None,
             ..Self::from_parts(session, tokenizer, revision)
         })
     }
@@ -185,6 +191,7 @@ impl Encoder {
             token_type_ids: false,
             word_embeddings: None,
             side_by_side: None,
+            resident: None,
             #[cfg(test)]
             most_at_once: 0,
             revision: repository.revision(),
@@ -311,10 +318,16 @@ impl Encoder {
         // A search runs the embedder and then the reranker; handing each
         // one's weights back once its passes are done keeps only one model's
         // in the process at a time. See `crate::resident`.
-        if let Some((model, ..)) = &self.side_by_side
+        if let Some((model, session, _)) = &self.side_by_side
             && let Some(directory) = model.parent()
         {
-            crate::resident::release(directory);
+            let loaded = session.is_some();
+            if self.resident.as_ref().is_none_or(|(was, _)| *was != loaded) {
+                self.resident = crate::resident::clean(directory).map(|ranges| (loaded, ranges));
+            }
+            if let Some((_, ranges)) = &self.resident {
+                crate::resident::release(ranges);
+            }
         }
         results
     }

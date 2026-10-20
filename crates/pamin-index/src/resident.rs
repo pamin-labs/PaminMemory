@@ -10,29 +10,40 @@
 
 use std::path::Path;
 
-/// Drops from this process every resident page of the clean mappings of files
-/// under `directory`.
+/// The `[start, end)` address ranges of this process's clean mappings of files
+/// under `directory`, for [`release`].
 ///
-/// A mapping is skipped if any of its pages has been written: the mappings are
-/// private, so a written page holds the only copy of what was written, and
+/// A mapping is left out if any of its pages has been written: the mappings
+/// are private, so a written page holds the only copy of what was written, and
 /// dropping it would bring the file's bytes back in its place. The weights are
-/// never written, so in practice nothing is skipped, but the check is what
-/// makes the call safe rather than the assumption.
+/// never written, so in practice nothing is left out, but the check is what
+/// makes releasing safe rather than the assumption. Reading `smaps` walks
+/// every page of every mapping, so a caller finds the ranges once per set of
+/// loaded sessions and releases them as often as it needs.
 ///
-/// Advisory: a mapping that cannot be read or released is left as it is.
+/// Advisory: `None` if the mappings cannot be read.
 #[cfg(target_os = "linux")]
-pub(crate) fn release(directory: &Path) {
-    let Ok(smaps) = std::fs::read_to_string("/proc/self/smaps") else {
-        return;
-    };
+pub(crate) fn clean(directory: &Path) -> Option<Vec<(usize, usize)>> {
+    let smaps = std::fs::read_to_string("/proc/self/smaps").ok()?;
     // smaps names a mapping by its resolved path, so a directory reached
     // through a symbolic link would match nothing.
-    let Ok(directory) = std::fs::canonicalize(directory) else {
-        return;
-    };
-    let directory = directory.as_path();
+    let directory = std::fs::canonicalize(directory).ok()?;
+    Some(clean_mappings(&smaps, &directory))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn clean(_directory: &Path) -> Option<Vec<(usize, usize)>> {
+    None
+}
+
+/// Drops from this process every resident page of `ranges`, which
+/// [`clean`] found.
+///
+/// Advisory: a range that cannot be released is left as it is.
+#[cfg(target_os = "linux")]
+pub(crate) fn release(ranges: &[(usize, usize)]) {
     let mut released = 0usize;
-    for (start, end) in clean_mappings(&smaps, directory) {
+    for &(start, end) in ranges {
         // SAFETY: the range is a whole mapping this process holds, read from
         // its own smaps, and `MADV_DONTNEED` on a private file mapping with no
         // written page only unmaps pages the next access maps back from the
@@ -44,14 +55,13 @@ pub(crate) fn release(directory: &Path) {
         }
     }
     tracing::trace!(
-        directory = %directory.display(),
         released,
         "handed a model's mapped weights back to the page cache"
     );
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn release(_directory: &Path) {}
+pub(crate) fn release(_ranges: &[(usize, usize)]) {}
 
 /// The `[start, end)` address ranges of the mappings in `smaps` whose file is
 /// under `directory` and none of whose pages is anonymous, that is written.
