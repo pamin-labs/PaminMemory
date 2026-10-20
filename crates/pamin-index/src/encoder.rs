@@ -307,6 +307,23 @@ impl Encoder {
         batches: Vec<Vec<Encoding>>,
         read: impl Fn(Outputs) -> Result<T> + Sync,
     ) -> Result<Vec<T>> {
+        let results = self.run_each_resident(batches, read);
+        // A search runs the embedder and then the reranker; handing each
+        // one's weights back once its passes are done keeps only one model's
+        // in the process at a time. See `crate::resident`.
+        if let Some((model, ..)) = &self.side_by_side
+            && let Some(directory) = model.parent()
+        {
+            crate::resident::release(directory);
+        }
+        results
+    }
+
+    fn run_each_resident<T: Send>(
+        &mut self,
+        batches: Vec<Vec<Encoding>>,
+        read: impl Fn(Outputs) -> Result<T> + Sync,
+    ) -> Result<Vec<T>> {
         let workers = self.ready(batches.len())?;
         let session = match &self.side_by_side {
             Some((_, Some(session), _)) if workers > 1 => session,
