@@ -403,6 +403,17 @@ fn batch_on(side_by_side: bool, budget: usize, explicit: Option<NonZeroUsize>) -
     explicit.map_or(if overlap { CPU_BATCH } else { BATCH }, NonZeroUsize::get)
 }
 
+/// How the passes over a mapped copy are shaped. The copy is loaded side by
+/// side, so a pass takes one pair where [`batch_on`] says so, and a pass of
+/// one pair is never padded; any more and the rows of a pass can be.
+fn cpu_passes(settings: &crate::InferenceSettings) -> crate::prepared::Passes {
+    if batch_on(true, side_by_side_budget(settings), settings.rerank.batch) == 1 {
+        crate::prepared::Passes::OneRow
+    } else {
+        crate::prepared::Passes::Padded
+    }
+}
+
 /// The inference budget, as `Encoder::run_each` reads it; one if unreadable.
 fn side_by_side_budget(settings: &crate::InferenceSettings) -> usize {
     settings.budget().unwrap_or(1)
@@ -1112,7 +1123,7 @@ fn cpu_model(
     let threads = settings.budget()?;
     let max_tokens = settings.rerank.max_tokens.get();
     let weights = repository.file(cache_dir, onnx(Device::Cpu));
-    let path = crate::prepared::load_path(&weights, cache_dir, settings)?;
+    let path = crate::prepared::load_path(&weights, cache_dir, settings, cpu_passes(settings))?;
     let encoder = if crate::prepared::is_copy(&path, cache_dir) {
         let tokenizer = crate::tokenizer::load(repository, max_tokens)?;
         Encoder::side_by_side(path, threads, tokenizer, repository.revision())
@@ -2664,6 +2675,51 @@ mod tests {
         assert!(alone == together, "logits changed side by side");
     }
 
+    /// A CPU of one pair a pass loads its copy's trimmed, unmasked graph, and
+    /// one whose passes take more than one pair the masked graph it was
+    /// written from. The model is read from, or downloaded into,
+    /// `PAMIN_EVAL_MODEL_CACHE`; the trimmed graph is written into its copy.
+    #[test]
+    #[ignore = "downloads reranker model weights; set PAMIN_EVAL_MODEL_CACHE"]
+    fn a_cpu_of_one_pair_a_pass_loads_the_trimmed_graph() {
+        let cache = PathBuf::from(
+            std::env::var_os("PAMIN_EVAL_MODEL_CACHE").expect("set PAMIN_EVAL_MODEL_CACHE"),
+        );
+        std::fs::create_dir_all(&cache).expect("create the model cache");
+        let repository = Repository::open(&cache, REPOSITORY).expect("open the repository");
+        let weights = repository.file(&cache, onnx(Device::Cpu));
+        let loaded = |threads: usize, batch: Option<usize>| {
+            let settings = crate::InferenceSettings {
+                threads: NonZeroUsize::new(threads),
+                rerank: crate::RerankSettings {
+                    batch: batch.and_then(NonZeroUsize::new),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let path =
+                crate::prepared::load_path(&weights, &cache, &settings, cpu_passes(&settings))
+                    .expect("load the reranker's copy");
+            assert!(
+                crate::prepared::is_copy(&path, &cache),
+                "{}",
+                path.display()
+            );
+            path.file_name().unwrap().to_string_lossy().into_owned()
+        };
+        for padded in [loaded(1, None), loaded(4, Some(4))] {
+            assert!(
+                padded.starts_with("attention.") && !padded.contains("cls1"),
+                "padded passes loaded {padded}"
+            );
+        }
+        let one_row = loaded(4, None);
+        assert!(
+            one_row.starts_with("attention.cls1."),
+            "passes of one pair loaded {one_row}"
+        );
+    }
+
     /// The plan key names both batch caps.
     ///
     /// Execution plans are measured once and cached under this key, so a new
@@ -2701,6 +2757,30 @@ mod tests {
         let two = NonZeroUsize::new(2);
         assert_eq!(batch_on(true, 4, two), 2);
         assert_eq!(batch_on(false, 1, two), 2);
+    }
+
+    /// A mapped copy loads its unmasked graph only where no pass can pad: one
+    /// pair a pass, on a CPU whose passes overlap. A budget of one thread, or
+    /// an explicit batch of more than one pair, keeps the masked graph.
+    #[test]
+    fn only_passes_of_one_pair_load_the_unmasked_graph() {
+        use crate::prepared::Passes;
+        let passes = |threads: usize, batch: Option<usize>| {
+            cpu_passes(&crate::InferenceSettings {
+                threads: NonZeroUsize::new(threads),
+                rerank: crate::RerankSettings {
+                    batch: batch.and_then(NonZeroUsize::new),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+        };
+        assert_eq!(passes(4, None), Passes::OneRow);
+        assert_eq!(passes(2, None), Passes::OneRow);
+        assert_eq!(passes(1, None), Passes::Padded);
+        assert_eq!(passes(4, Some(2)), Passes::Padded);
+        assert_eq!(passes(4, Some(4)), Passes::Padded);
+        assert_eq!(passes(1, Some(1)), Passes::OneRow);
     }
 
     /// Every pair lands in exactly one batch, in order, and no batch pads
