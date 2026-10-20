@@ -187,6 +187,15 @@ pub(crate) enum Passes {
     OneRow,
 }
 
+/// Whether `graph` is a [`TRIMMED`] one, which scores correctly only a pass of
+/// one unpadded row, split or not.
+pub(crate) fn is_trimmed(graph: &Path) -> bool {
+    graph
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.split('.').any(|part| part == TRIMMED))
+}
+
 /// The stamp a load leaves in a copy: an empty file whose modification time is
 /// when the copy was last handed out.
 const USED: &str = "used";
@@ -1570,6 +1579,19 @@ mod tests {
     use std::cell::Cell;
 
     use super::*;
+
+    #[test]
+    fn only_a_trimmed_graph_is_one_rows_alone() {
+        for (name, trimmed) in [
+            ("attention.cls1.onnx", true),
+            ("attention.cls1.split1.onnx", true),
+            ("attention.onnx", false),
+            ("attention.split1.onnx", false),
+            ("model.onnx", false),
+        ] {
+            assert_eq!(is_trimmed(Path::new(name)), trimmed, "{name}");
+        }
+    }
 
     /// A hub that is a file on this disk: `fetch` copies `origin` into place
     /// as a download would, and fails while `online` is false.

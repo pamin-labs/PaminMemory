@@ -385,8 +385,13 @@ const BATCH: usize = 4;
 /// would run one after another -- that case keeps [`BATCH`], as before.
 const CPU_BATCH: usize = 1;
 
-/// The most pairs a pass of `model` takes. See [`batch_on`].
+/// The most pairs a pass of `model` takes. See [`batch_on`]; one for a graph
+/// that only a pass of one unpadded row scores correctly, even once its passes
+/// no longer run side by side.
 fn batch(model: &Encoder, settings: &crate::InferenceSettings) -> usize {
+    if model.takes_one_row() {
+        return 1;
+    }
     batch_on(
         model.runs_side_by_side(),
         side_by_side_budget(settings),
