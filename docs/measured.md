@@ -1129,6 +1129,52 @@ a search there (1.32) and moved its nDCG@10 by −0.0016 (`p = 0.31`). On XQuAD-
 and MIRACL neither limit moved ranking by more than 0.0006, significant nowhere.
 The rule, and the table, are at `MAX_TOKENS` in the same file.
 
+**The reranker's last layer is computed for its first token alone, and a
+batch-1 pass runs its attention without a mask.** Only the classification
+token's row of the last layer reaches the classifier. So in that layer, the
+attention's query and output projections and both feed-forward layers now run
+on one row; the keys and values still run over every token. A batch-1 pass has
+no padding, so its fused attention takes no key mask. The rewritten graph is
+written beside the prepared copy (`attention.cls1.onnx`, 0.66 MB with its
+split twin) and loaded only by computed batch-1 CPU passes; a copy that can
+pad keeps the masked graph. Neither change is bit-identical, because the int8
+matrix products quantize activations with one scale over the rows they see.
+
+Measured at the entry point with the same setup as the rows above, four
+rotated runs an arm, main `48448b6` against `19eaa4a`:
+
+| metric | before | after | abs diff | % change | ratio [95% CI] |
+| --- | --- | --- | --- | --- | --- |
+| nDCG@10, 120 queries (paired) | 0.7381 | 0.7436 | +0.0054 | +0.7% | diff [−0.0009, +0.0116] |
+| search p50 ms (per run) | 1,002.6 | 1,036.0 | +33.4 | +3.3% | 1.033 [0.940, 1.103] |
+| **search p95 ms (per run)** | **3,264.8** | **3,022.8** | **−242.0** | **−7.4%** | **0.926 [0.869, 0.972]** |
+| **search server CPU user ms/query** | **4,275.2** | **3,964.8** | **−310.4** | **−7.3%** | **0.927 [0.887, 0.968]** |
+| search server CPU sys ms/query | 50.2 | 33.5 | −16.7 | −33.3% | **0.667 [0.404, 0.897]** |
+| search VmHWM MB (process RSS) | 988 | 971 | −17 | −1.7% | 0.983 [0.973, 1.004] |
+| ingest VmHWM MB (process RSS) | 790 | 787 | −4 | −0.5% | 0.995 [0.969, 1.027] |
+| ingest wall s | 244.1 | 250.8 | +6.7 | +2.8% | 1.028 [0.936, 1.120] |
+| **search first query s (loads both models)** | **11.29** | **9.92** | **−1.37** | **−12.2%** | **0.878 [0.749, 0.993]** |
+| index dir MB | 26.1 | 27.2 | +1.1 | N/A | allocation noise; same index |
+| prepared copies MB | 1,668.3 | 1,668.9 | +0.66 | +0.04% | the trimmed graphs |
+
+**The slowest searches are 7% faster, and ranking does not move beyond
+noise.**
+- p95 and server CPU fall, and their CIs exclude 1. p50 does not move
+  significantly.
+- nDCG@10 moves +0.0054, with 23 queries better and 9 worse. Its CI includes
+  zero, so no accuracy gain is claimed.
+- In an offline replay of every XQuAD-R shortlist, no key moved
+  significantly. The logits moved about as much as they do between two builds
+  of the runtime.
+- The first query is faster too. Its cause was not profiled, so no mechanism
+  is claimed.
+- Memory is the `pamin serve` process alone, with no accelerator services.
+  The prepared-copy figure includes the trimmed graphs; the index figure does
+  not.
+- The raw rows and harness are in the private
+  `internal-docs/pamin-memory/research/2026-10-20/raw/q73/` folder, with the
+  replay in `raw/q71/`.
+
 **Reranking only the queries that need it was measured, and does not ship.**
 No reranking is the cheapest sufficient choice for 43.4% of XQuAD-R's
 cross-lingual queries, so an oracle would save a great deal. The `ROUTES` arm
