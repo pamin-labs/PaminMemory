@@ -1121,6 +1121,56 @@ raw rows and harnesses are in the private
 `internal-docs/pamin-memory/research/2026-10-20/raw/q69/` folder, with
 q64 and q67 beside it.
 
+**One model's weights resident at a time.** A CPU session reads its weights
+from a mapped prepared copy, and every page a pass touches stays in the
+process until the mapping goes. A search runs the embedder and then the
+reranker, so its peak counted both models' weights. After each model's
+passes, `Encoder::run_each` now hands that model's clean mappings back with
+`madvise(MADV_DONTNEED)`.
+- The pages stay in the page cache, and the next pass maps them back with
+  minor faults.
+- A mapping with any written page is skipped.
+- The mappings are found once per set of loaded sessions, because reading
+  `/proc/self/smaps` walks every page table.
+
+Measured at the entry point with the same setup as the rows above, four
+rotated runs an arm. The release is `1e97b9e` against main's code `d569c57`.
+The finding-once change is `7e78d51` against `1e97b9e`, with one shared run
+excluded and re-run:
+
+| metric | main | release | release, ranges found once | abs diff vs main | % vs main |
+| --- | --- | --- | --- | --- | --- |
+| nDCG@10, 120 queries | 0.7381 | 0.7381 | 0.7381 | 0 | 0.0% |
+| search p50 ms (per run) | 1,115.1 | 1,198.1 (1.074 [0.976, 1.199]) | 0.945 [0.802, 1.114] of release | N/A | N/A, not measured against main |
+| search p95 ms (per run) | 3,438.8 | 3,452.8 (1.004 [0.917, 1.081]) | 0.895 [0.854, 1.023] of release | N/A | N/A, not measured against main |
+| search server CPU sys ms/query | 82.4 | 124.3 | 89.8 (**0.744 [0.481, 0.919]** of release) | N/A | N/A, not measured against main |
+| search server reads kB/query | 1,132.6 | 2,743.2 | 1,132.6 | 0 | 0.0% |
+| **search VmHWM MB (process RSS)** | **973** | **689 (0.708 [0.693, 0.718])** | 693 (1.001 [0.973, 1.038] of release) | **−284** | **−29.2%** |
+| search peak RssAnon MB | 312 | 325 (**1.044 [1.012, 1.075]**) | 323 | +14 | +4.4% |
+| ingest VmHWM MB (process RSS) | 790 | 759 (**0.960 [0.916, 0.984]**) | 757 | −31 | −4.0% |
+| ingest wall s | 251.4 | 255.7 (1.017 [0.971, 1.088]) | 0.979 [0.932, 1.047] of release | N/A | N/A |
+| index dir MB | 27.3 | 27.2 | 28.4 | N/A | allocation noise; same index |
+
+**The search peak falls by about one model's mapped weights, and no latency
+change is claimed.**
+- At the end of a search, neither model's data file holds a resident page,
+  against 291 and 294 MB before.
+- Reading smaps after every pass cost reads and system time. Finding the
+  ranges once removed both: reads are back to main's exact figure.
+- No latency figure moved significantly, either way. The branch head was
+  not measured directly against main, so its latency cells against main
+  are N/A.
+- These runs' absolute latencies are higher than the rows above, because
+  they interleaved with an unrelated accuracy replay that never overlapped a
+  timed run. The comparisons within each experiment hold.
+
+Memory is the `pamin serve` process alone, with no accelerator services.
+Disk is the index directory; the prepared copies (1,668 MB) are unchanged.
+The release runs only on Linux; macOS and Windows are unaffected and
+unmeasured. The raw rows and harnesses are in the private
+`internal-docs/pamin-memory/research/2026-10-20/raw/q72b/` and `raw/q72c/`
+folders.
+
 **Truncating at 192 or 384 tokens rather than 256 was measured, and neither
 ships.** In the same runs, each limit paired against 256 with the new batching:
 192 made a search 0.80 of what it was on MuSiQue, where half the pairs reach
