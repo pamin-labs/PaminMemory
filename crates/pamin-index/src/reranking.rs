@@ -495,7 +495,7 @@ fn plan_key(repository: &str, settings: &crate::InferenceSettings) -> String {
         batch_tokens,
         ..
     } = settings.rerank;
-    format!("reranker-v4:{TIER}:{repository}:{max_tokens}:{cpu}/{accelerator}:{batch_tokens}")
+    format!("reranker-v5:{TIER}:{repository}:{max_tokens}:{cpu}/{accelerator}:{batch_tokens}")
 }
 
 /// How many logical pair scores are remembered across complete batches.
@@ -2726,13 +2726,16 @@ mod tests {
     /// spelling throws every host's measured plan away and measures again.
     /// v4 did so on purpose: the CPU plan v3 measured ran four pairs a pass,
     /// and a plan measured with one cap is not a measurement of the other.
+    /// v5 too: a CPU of one pair a pass loads the trimmed, unmasked graph
+    /// (`crate::prepared::Passes`), and a plan timed on the graph before it
+    /// is not a timing of it.
     #[test]
     fn the_plan_key_names_both_batch_caps() {
         let settings = crate::InferenceSettings::default();
         assert_eq!(
             plan_key("onnx-community/bge-reranker-v2-m3-ONNX@abc", &settings),
             format!(
-                "reranker-v4:accurate:onnx-community/bge-reranker-v2-m3-ONNX@abc:256:{}/{}:512",
+                "reranker-v5:accurate:onnx-community/bge-reranker-v2-m3-ONNX@abc:256:{}/{}:512",
                 batch_on(true, side_by_side_budget(&settings), None),
                 batch_on(false, side_by_side_budget(&settings), None)
             )
