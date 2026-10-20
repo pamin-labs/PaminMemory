@@ -481,7 +481,12 @@ fn joint_session(
     let threads = settings.budget()?;
     let mut download = None;
     if device == crate::inference::Device::Cpu {
-        let path = crate::prepared::load_path(weights, cache_dir, settings)?;
+        let path = crate::prepared::load_path(
+            weights,
+            cache_dir,
+            settings,
+            crate::prepared::Passes::Padded,
+        )?;
         // Side by side only over a mapped copy, whose weights the sessions
         // share. Over the download it falls back to, each session would copy
         // them onto the heap, so that loads the one session it did before.
@@ -631,7 +636,13 @@ mod tests {
                     split_embeddings: false,
                     ..crate::InferenceSettings::default()
                 };
-                crate::prepared::load_path(&weights, &cache, &settings).unwrap()
+                crate::prepared::load_path(
+                    &weights,
+                    &cache,
+                    &settings,
+                    crate::prepared::Passes::Padded,
+                )
+                .unwrap()
             });
         let session = crate::inference::options(threads, vec![crate::inference::cpu()])
             .unwrap()
