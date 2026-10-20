@@ -25,6 +25,12 @@ pub(crate) fn release(directory: &Path) {
     let Ok(smaps) = std::fs::read_to_string("/proc/self/smaps") else {
         return;
     };
+    // smaps names a mapping by its resolved path, so a directory reached
+    // through a symbolic link would match nothing.
+    let Ok(directory) = std::fs::canonicalize(directory) else {
+        return;
+    };
+    let directory = directory.as_path();
     let mut released = 0usize;
     for (start, end) in clean_mappings(&smaps, directory) {
         // SAFETY: the range is a whole mapping this process holds, read from
