@@ -191,6 +191,7 @@ impl Encoder {
             token_type_ids: false,
             word_embeddings: None,
             side_by_side: None,
+            one_row: false,
             #[cfg(test)]
             most_at_once: 0,
             revision: repository.revision(),
