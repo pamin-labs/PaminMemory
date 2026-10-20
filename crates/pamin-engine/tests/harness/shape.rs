@@ -232,8 +232,9 @@ const NOT_SETTINGS: [&str; 10] = [
 /// `HF_ENDPOINT` is where the product downloads its models from. The next
 /// four set how many threads the runtime, the tokenizer and the model's
 /// kernels use: they change timings, and a reduction split over a different
-/// number of threads can round differently. The last two set how many heap
-/// arenas glibc keeps, which changes memory and system time. With them,
+/// number of threads can round differently. The last three set how many heap
+/// arenas glibc keeps and the size from which it maps a block of its own,
+/// which change memory and system time. With them,
 /// every variable starting with one of [`ALWAYS_PREFIXES`], and the CUDA
 /// device selection
 /// ([`pamin_index::CUDA_SELECTION`], the product's own list, which names its
@@ -242,7 +243,7 @@ const NOT_SETTINGS: [&str; 10] = [
 /// `every_environment_read_is_classified` holds the product to this: each
 /// variable its code reads is here, under a prefix, or in
 /// [`NOT_IDENTITY`] with the reason it changes no result.
-const ALWAYS_SETTINGS: [&str; 8] = [
+const ALWAYS_SETTINGS: [&str; 9] = [
     "SIGNIFICANCE_GATE",
     "HF_ENDPOINT",
     "TOKIO_WORKER_THREADS",
@@ -250,6 +251,7 @@ const ALWAYS_SETTINGS: [&str; 8] = [
     "TOKENIZERS_PARALLELISM",
     "OMP_NUM_THREADS",
     "MALLOC_ARENA_MAX",
+    "MALLOC_MMAP_THRESHOLD_",
     "GLIBC_TUNABLES",
 ];
 

@@ -590,11 +590,17 @@ fn trim_heap() {
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 fn trim_heap() {}
 
-/// How many heap arenas glibc may keep: [`cap_heap_arenas`].
+/// How many heap arenas glibc may keep: [`tune_heap`].
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 const HEAP_ARENAS: i32 = 2;
 
-/// Caps how many heap arenas glibc keeps, at [`HEAP_ARENAS`].
+/// The request size from which glibc maps a block of its own rather than
+/// carving it from a heap: [`tune_heap`].
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+const MAPPED_FROM: i32 = 1 << 20;
+
+/// Caps how many heap arenas glibc keeps, at [`HEAP_ARENAS`], and fixes the
+/// size from which it maps a block on its own, at [`MAPPED_FROM`].
 ///
 /// glibc gives a thread that finds the main heap contended an arena of its
 /// own, up to eight per core, and an arena keeps what it has freed. A search
@@ -607,64 +613,90 @@ const HEAP_ARENAS: i32 = 2;
 /// 1,124 MB, search p50 0.958x [0.899, 1.020] and p95 0.967x [0.899, 1.035]
 /// of before, the same top five on every query.
 ///
-/// Must run before a second thread allocates: glibc reads the cap when it
-/// first needs an arena beyond the main one, and keeps that figure. So
+/// glibc maps a request of 128 KiB or more and returns it on free, but raises
+/// that threshold to the size of each mapped block it frees, up to 32 MiB.
+/// The model passes' intermediate buffers, a few megabytes each, therefore
+/// come from the heap after the first few passes, and a heap keeps what it
+/// has freed. Fixed at 1 MiB, they are mapped and returned. Measured at the
+/// entry point (q69: `pamin serve` at 1d141db against this change, same
+/// corpus and host as q51, four rotated runs an arm): search peak RSS 1,019
+/// to 993 MB, its anonymous part 368 to 338 MB, ingest peak RSS 986 to 789
+/// MB, search p50 1.004x [0.937, 1.090] and p95 1.028x [0.990, 1.094], the
+/// same top ten on every query. The price is ingest: every pass now maps and
+/// faults in its buffers afresh, so its system time is 5.7x and its wall time
+/// 1.061x [1.014, 1.133] -- a trade of indexing speed for memory, chosen on
+/// purpose. Trimming the heap between groups of passes instead (q69) kept
+/// none of the memory, since the blocks are retained within a group; at 4
+/// MiB (q67) the search gain vanished; at 128 KiB (q62) mapping every small
+/// buffer cost ingest 1.19x its wall time.
+///
+/// Must run before a second thread allocates: glibc reads the arena cap when
+/// it first needs an arena beyond the main one, and keeps that figure. So
 /// `main` calls this before it starts the runtime.
 ///
-/// An arena limit the process was started with -- `MALLOC_ARENA_MAX`, or
-/// `arena_max` in `GLIBC_TUNABLES` -- is left alone, whether it is lower or
-/// higher: `mallopt` replaces the limit rather than tightening it, and the
-/// operator who set one chose it.
+/// A limit the process was started with -- `MALLOC_ARENA_MAX` or
+/// `MALLOC_MMAP_THRESHOLD_`, or `arena_max` or `mmap_threshold` in
+/// `GLIBC_TUNABLES` -- is left alone, whether it is lower or higher:
+/// `mallopt` replaces a limit rather than tightening it, and the operator who
+/// set one chose it.
 ///
 /// glibc only, like [`trim_heap`]; elsewhere it does nothing.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-pub(crate) fn cap_heap_arenas() {
+pub(crate) fn tune_heap() {
+    use std::os::unix::ffi::OsStrExt;
+
     unsafe extern "C" {
         /// glibc's own, declared here rather than through a crate for the
         /// reason [`trim_heap`] gives.
         fn mallopt(param: i32, value: i32) -> i32;
     }
-    /// `M_ARENA_MAX` in glibc's `malloc.h`.
+    /// `M_ARENA_MAX` and `M_MMAP_THRESHOLD` in glibc's `malloc.h`.
     const M_ARENA_MAX: i32 = -8;
+    const M_MMAP_THRESHOLD: i32 = -3;
 
-    if arena_limit_given(
-        std::env::var_os("MALLOC_ARENA_MAX")
-            .as_deref()
-            .map(std::os::unix::ffi::OsStrExt::as_bytes),
-        std::env::var_os("GLIBC_TUNABLES")
-            .as_deref()
-            .map(std::os::unix::ffi::OsStrExt::as_bytes),
-    ) {
-        return;
-    }
+    let tunables = std::env::var_os("GLIBC_TUNABLES");
+    let tunables = tunables.as_deref().map(OsStrExt::as_bytes);
+    let given = |variable: &str, tunable: &[u8]| {
+        let variable = std::env::var_os(variable);
+        limit_given(
+            variable.as_deref().map(OsStrExt::as_bytes),
+            tunables,
+            tunable,
+        )
+    };
 
     // SAFETY: `mallopt` takes two integers by value and only changes a limit
-    // the allocator consults when it next makes an arena. Its flag is not
-    // read: this runs before logging starts, and a refused cap leaves glibc's
-    // default, which is the behaviour this had before.
-    unsafe { mallopt(M_ARENA_MAX, HEAP_ARENAS) };
+    // the allocator consults when it next makes an arena or serves a request.
+    // Its flag is not read: this runs before logging starts, and a refused
+    // limit leaves glibc's default, which is the behaviour this had before.
+    if !given("MALLOC_ARENA_MAX", b"glibc.malloc.arena_max=") {
+        unsafe { mallopt(M_ARENA_MAX, HEAP_ARENAS) };
+    }
+    if !given("MALLOC_MMAP_THRESHOLD_", b"glibc.malloc.mmap_threshold=") {
+        unsafe { mallopt(M_MMAP_THRESHOLD, MAPPED_FROM) };
+    }
 }
 
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
-pub(crate) fn cap_heap_arenas() {}
+pub(crate) fn tune_heap() {}
 
-/// Whether the process was started with its own glibc arena limit: a
-/// non-empty `MALLOC_ARENA_MAX`, or `glibc.malloc.arena_max` set to anything
-/// among the colon-separated `GLIBC_TUNABLES`, read as bytes as glibc reads
-/// them.
+/// Whether the process was started with its own glibc limit: a non-empty
+/// environment variable, or `tunable` (such as `glibc.malloc.arena_max=`)
+/// followed by anything among the colon-separated `GLIBC_TUNABLES`, read as
+/// bytes as glibc reads them.
 ///
 /// The value is not parsed. glibc has no call that reports the limit it
 /// took, and its parser's corners (signs, blanks, octal, overflow) are its
 /// own; a copy would drift from it. Any value an operator wrote is left to
 /// glibc: one it applies is never loosened, and one it ignores, which glibc
-/// warns about at start-up, costs only this cap.
+/// warns about at start-up, costs only this limit.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-fn arena_limit_given(malloc_arena_max: Option<&[u8]>, tunables: Option<&[u8]>) -> bool {
-    malloc_arena_max.is_some_and(|value| !value.is_empty())
+fn limit_given(variable: Option<&[u8]>, tunables: Option<&[u8]>, tunable: &[u8]) -> bool {
+    variable.is_some_and(|value| !value.is_empty())
         || tunables.is_some_and(|tunables| {
-            tunables.split(|byte| *byte == b':').any(|tunable| {
-                tunable
-                    .strip_prefix(b"glibc.malloc.arena_max=")
+            tunables.split(|byte| *byte == b':').any(|written| {
+                written
+                    .strip_prefix(tunable)
                     .is_some_and(|value| !value.is_empty())
             })
         })
@@ -852,12 +884,12 @@ pub fn socket_path(workspace: &Workspace) -> PathBuf {
 
 #[cfg(all(test, target_os = "linux", target_env = "gnu"))]
 mod tests {
-    use super::arena_limit_given;
+    use super::limit_given;
 
     #[test]
     fn an_arena_limit_the_process_was_started_with_is_left_alone() {
         let given = |env: Option<&str>, tunables: Option<&[u8]>| {
-            arena_limit_given(env.map(str::as_bytes), tunables)
+            limit_given(env.map(str::as_bytes), tunables, b"glibc.malloc.arena_max=")
         };
         assert!(given(Some("1"), None));
         assert!(given(None, Some(b"glibc.malloc.arena_max=1")));
@@ -878,5 +910,29 @@ mod tests {
         assert!(!given(None, Some(b"glibc.malloc.arena_max=")));
         assert!(!given(None, Some(b"glibc.malloc.trim_threshold=0")));
         assert!(!given(None, Some(b"glibc.malloc.arena_test=2")));
+    }
+
+    #[test]
+    fn a_mapping_threshold_the_process_was_started_with_is_left_alone() {
+        let given = |env: Option<&str>, tunables: Option<&[u8]>| {
+            limit_given(
+                env.map(str::as_bytes),
+                tunables,
+                b"glibc.malloc.mmap_threshold=",
+            )
+        };
+        assert!(given(Some("131072"), None));
+        assert!(given(None, Some(b"glibc.malloc.mmap_threshold=131072")));
+        assert!(given(
+            None,
+            Some(b"glibc.malloc.arena_max=2:glibc.malloc.mmap_threshold=0")
+        ));
+
+        assert!(!given(None, None));
+        assert!(!given(Some(""), None));
+        assert!(!given(None, Some(b"glibc.malloc.mmap_threshold=")));
+        // An arena limit is not a mapping threshold.
+        assert!(!given(None, Some(b"glibc.malloc.arena_max=2")));
+        assert!(!given(None, Some(b"glibc.malloc.mmap_max=0")));
     }
 }
