@@ -48,6 +48,10 @@ pub(crate) struct Encoder {
     /// every text on [`session`](Self::session); and how many passes it runs
     /// at once.
     side_by_side: Option<(PathBuf, Option<SharedCpuSession>, usize)>,
+    /// Whether its graph scores correctly only a pass of one unpadded row (see
+    /// `crate::prepared::is_trimmed`); kept when passes stop running side by
+    /// side, since [`session`](Self::session) loaded the same graph.
+    one_row: bool,
     /// The most passes [`run_each`](Self::run_each) has had running at once.
     #[cfg(test)]
     most_at_once: usize,
@@ -113,6 +117,7 @@ impl Encoder {
             token_type_ids,
             word_embeddings: None,
             side_by_side: None,
+            one_row: false,
             #[cfg(test)]
             most_at_once: 0,
             revision,
@@ -151,6 +156,7 @@ impl Encoder {
         }
         Ok(Self {
             word_embeddings,
+            one_row: crate::prepared::is_trimmed(&model),
             side_by_side: Some((model, None, threads)),
             ..Self::from_parts(session, tokenizer, revision)
         })
@@ -185,6 +191,7 @@ impl Encoder {
             token_type_ids: false,
             word_embeddings: None,
             side_by_side: None,
+            one_row: false,
             #[cfg(test)]
             most_at_once: 0,
             revision: repository.revision(),
@@ -213,6 +220,12 @@ impl Encoder {
     /// Whether [`run_each`](Self::run_each) runs passes side by side: the CPU.
     pub(crate) fn runs_side_by_side(&self) -> bool {
         self.side_by_side.is_some()
+    }
+
+    /// Whether every pass must be one unpadded row, whether or not passes run
+    /// side by side.
+    pub(crate) fn takes_one_row(&self) -> bool {
+        self.one_row
     }
 
     pub(crate) fn batch_limits(&self, budget: usize, most: usize) -> (usize, usize) {
@@ -770,6 +783,30 @@ mod tests {
         encoder.side_by_side = Some((model.with_file_name("missing.onnx"), None, 4));
         assert_eq!(encoder.ready(4).expect("falls back"), 1);
         assert!(!encoder.runs_side_by_side());
+        assert!(!encoder.takes_one_row());
+    }
+
+    /// A trimmed graph still takes one row a pass once its shared session
+    /// will not load: `session` loaded the same unmasked graph.
+    #[test]
+    fn a_trimmed_graph_takes_one_row_after_side_by_side_passes_stop() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/coreml-normalization.onnx");
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let model = directory.path().join("attention.cls1.split1.onnx");
+        std::fs::copy(&fixture, &model).expect("copy the fixture");
+        let mut encoder = Encoder::side_by_side(
+            model.clone(),
+            4,
+            crate::tokenizer::tests::fixture(),
+            String::from("fixture"),
+        )
+        .expect("a CPU graph loads");
+        assert!(encoder.takes_one_row());
+        encoder.side_by_side = Some((model.with_file_name("missing.onnx"), None, 4));
+        assert_eq!(encoder.ready(4).expect("falls back"), 1);
+        assert!(!encoder.runs_side_by_side());
+        assert!(encoder.takes_one_row());
     }
 
     #[test]

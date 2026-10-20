@@ -168,6 +168,34 @@ const UNFUSED: &str = "attention.unfused";
 /// files to go with their copy.
 const SPLIT: &str = "split1";
 
+/// What a copy's [`FUSED`] graph is called with its last layer computed for
+/// the first token alone and its attention unmasked (see
+/// `crate::attention::trim`): `attention.cls1.onnx`, or
+/// `attention.cls1.untrimmed` saying why there is no such graph. Derived as
+/// [`SPLIT`] is, on the first load that asks for it -- one whose passes are
+/// [`Passes::OneRow`] -- and split in turn: `attention.cls1.split1.onnx`.
+const TRIMMED: &str = "cls1";
+
+/// How the passes over a model are shaped, which decides whether its copy may
+/// load the graph only a pass of one unpadded row scores correctly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Passes {
+    /// Rows that may be padded together: the graph keeps its mask.
+    Padded,
+    /// One row a pass, never padded: the reranker on a CPU whose passes run
+    /// side by side. Its copy loads the [`TRIMMED`] graph where there is one.
+    OneRow,
+}
+
+/// Whether `graph` is a [`TRIMMED`] one, which scores correctly only a pass of
+/// one unpadded row, split or not.
+pub(crate) fn is_trimmed(graph: &Path) -> bool {
+    graph
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.split('.').any(|part| part == TRIMMED))
+}
+
 /// The stamp a load leaves in a copy: an empty file whose modification time is
 /// when the copy was last handed out.
 const USED: &str = "used";
@@ -235,11 +263,15 @@ pub(crate) trait Download {
 /// off asks for the graph as ONNX Runtime wrote it -- the other arm of a
 /// measurement of what the fusion is worth. Either with its word embeddings
 /// split out, where that scored identically ([`split`]), unless
-/// [`split_embeddings`](crate::InferenceSettings::split_embeddings) is off.
+/// [`split_embeddings`](crate::InferenceSettings::split_embeddings) is off;
+/// and before that, for `passes` of [`Passes::OneRow`], the fused graph
+/// trimmed to its first token and unmasked, where that rewrite applies
+/// ([`trim`]).
 pub(crate) fn load_path(
     download: &impl Download,
     cache_dir: &Path,
     settings: &crate::InferenceSettings,
+    passes: Passes,
 ) -> Result<PathBuf> {
     let root = cache_dir.join("prepared");
     let fused = settings.fused_attention;
@@ -261,7 +293,7 @@ pub(crate) fn load_path(
                 .and_then(|source| found(source, &root, fused))
             {
                 collect(&root, SystemTime::now());
-                return Ok(split(copy, settings));
+                return Ok(split(trim(copy, passes, settings), settings));
             }
             let fetched = download.fetch().map_err(|error| match &recorded {
                 Some(_) => IndexError::Engine(format!(
@@ -287,7 +319,7 @@ pub(crate) fn load_path(
     match prepare(&source, &root, settings.budget()?) {
         Ok(copy) => {
             collect(&root, SystemTime::now());
-            Ok(split(graph(copy, fused), settings))
+            Ok(split(trim(graph(copy, fused), passes, settings), settings))
         }
         Err(error) => {
             // Another process released the download between this one finding
@@ -297,7 +329,7 @@ pub(crate) fn load_path(
                     recorded(download, &root).and_then(|source| found(&source, &root, fused))
             {
                 collect(&root, SystemTime::now());
-                return Ok(split(copy, settings));
+                return Ok(split(trim(copy, passes, settings), settings));
             }
             tracing::warn!(
                 source = %source.display(),
@@ -927,6 +959,84 @@ fn try_fuse(copy: &Path, threads: usize) -> std::result::Result<(usize, (usize, 
     written.map(|()| (fused.layers, fused.nodes))
 }
 
+/// `graph`, a graph of a copy this process holds, trimmed to its first token
+/// and unmasked where `passes` are [`Passes::OneRow`], `graph` is the copy's
+/// [`FUSED`] one and the rewrite applies to it; otherwise `graph`.
+///
+/// Settled as [`split`] is, under the same hold, and never fails the load.
+/// Unlike the fusion and the split it does not score a probe bit-identically
+/// -- see `crate::attention::trim` for why -- so what it must pass is
+/// [`scores_a_probe`]: that the rewrite loads and scores a row in the shape the
+/// graph it came from does.
+fn trim(graph: PathBuf, passes: Passes, settings: &crate::InferenceSettings) -> PathBuf {
+    if passes != Passes::OneRow || !graph.ends_with(FUSED) {
+        return graph;
+    }
+    let trimmed = graph.with_extension(format!("{TRIMMED}.onnx"));
+    if trimmed.exists() {
+        return trimmed;
+    }
+    let untrimmed = graph.with_extension(format!("{TRIMMED}.untrimmed"));
+    if untrimmed.exists() {
+        return graph;
+    }
+    let Ok(threads) = settings.budget() else {
+        return graph;
+    };
+    let started = std::time::Instant::now();
+    match try_trim(&graph, &trimmed, threads) {
+        Ok((rows, unmasked)) => {
+            tracing::info!(
+                graph = %graph.display(),
+                rows,
+                unmasked,
+                seconds = started.elapsed().as_secs_f64(),
+                "trimmed the last layer of a mapped copy to its first token and unmasked its attention"
+            );
+            trimmed
+        }
+        Err(reason) => {
+            tracing::info!(graph = %graph.display(), %reason, "left the last layer of a mapped copy whole");
+            // Best effort: without it the next load asks again, which costs
+            // time and changes nothing it loads.
+            let _ = std::fs::write(untrimmed, format!("{reason}\n"));
+            graph
+        }
+    }
+}
+
+/// The trim itself: the rewrite, written beside the graph it came from under
+/// this writer's own name, checked, and renamed to `trimmed` only once it has
+/// passed. Returns the rows and attention nodes it rewrote.
+fn try_trim(
+    graph: &Path,
+    trimmed: &Path,
+    threads: usize,
+) -> std::result::Result<(usize, usize), String> {
+    let original = std::fs::read(graph).map_err(|error| format!("reading the graph: {error}"))?;
+    let rewritten = crate::attention::trim(&original)?;
+    let candidate = writer_named(graph, TRIMMED);
+    let written = std::fs::write(&candidate, &rewritten.model)
+        .and_then(|()| std::fs::File::open(&candidate)?.sync_all())
+        .map_err(|error| format!("writing the trimmed graph: {error}"))
+        .and_then(|()| scores_a_probe(graph, &candidate, threads))
+        .and_then(|()| place(&candidate, trimmed));
+    // Gone already once renamed.
+    let _ = std::fs::remove_file(&candidate);
+    written.map(|()| (rewritten.rows, rewritten.unmasked))
+}
+
+/// A name beside `graph` for a `stage` of it no other writer uses:
+/// `model.<stage>.<process>-<write>.onnx`.
+fn writer_named(graph: &Path, stage: &str) -> PathBuf {
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    graph.with_extension(format!(
+        "{stage}.{}-{}.onnx",
+        std::process::id(),
+        WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))
+}
+
 /// `graph`, a graph of a copy this process holds, with its word embeddings
 /// split out where that has scored a probe identically; otherwise `graph`.
 ///
@@ -1001,12 +1111,7 @@ fn try_split(
     let split = crate::word_embeddings::split(&original)?;
     // `model.split1.<writer>.onnx`, whose description the probe finds beside
     // it as a load finds the final one's.
-    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let candidate = graph.with_extension(format!(
-        "{SPLIT}.{}-{}.onnx",
-        std::process::id(),
-        WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
+    let candidate = writer_named(graph, SPLIT);
     let described = crate::word_embeddings::description(&candidate);
     let final_graph = named(graph, "onnx");
     let written = [
@@ -1052,75 +1157,13 @@ fn place(from: &Path, to: &Path) -> std::result::Result<(), String> {
 /// `crate::word_embeddings::WordTable`, the reader the encoder feeds it
 /// from, so the probe checks that reader as well as the rewrite; its ids
 /// include the first rows and repeats, as padding does.
-/// The token ids are arbitrary: any ids below a thousand are in every
-/// vocabulary these models have, and the question is whether the two graphs
-/// agree, not what either one thinks of the text.
 fn same_on_a_probe(
     expected: &Path,
     candidate: &Path,
     threads: usize,
 ) -> std::result::Result<(), String> {
-    const LENGTH: usize = 24;
-    const PADDED_FROM: usize = 13;
-    let ids: Vec<i64> = (0..2 * LENGTH)
-        .map(|at| match at % LENGTH {
-            0 => 0,
-            position if at >= LENGTH && position >= PADDED_FROM => 1,
-            position if position == LENGTH - 1 || (at >= LENGTH && position == PADDED_FROM - 1) => {
-                2
-            }
-            position => 5 + (at as i64 * 37 + position as i64 * 11) % 900,
-        })
-        .collect();
-    let mask: Vec<i64> = (0..2 * LENGTH)
-        .map(|at| i64::from(at < LENGTH || at % LENGTH < PADDED_FROM))
-        .collect();
-
-    let outputs = |path: &Path| -> std::result::Result<Vec<(String, Vec<u32>)>, String> {
-        let failed = |error: &dyn std::fmt::Display| format!("{}: {error}", path.display());
-        let mut session = crate::inference::probe(threads, path).map_err(|error| failed(&error))?;
-        // A split graph's word embeddings, read as the encoder reads them.
-        let table =
-            crate::word_embeddings::WordTable::beside(path).map_err(|error| failed(&error))?;
-        type Input = ort::session::SessionInputValue<'static>;
-        let mut feed: Vec<(std::borrow::Cow<'static, str>, Input)> = Vec::new();
-        for input in session.inputs() {
-            let tokens = |values: Vec<i64>| -> std::result::Result<Input, ort::Error> {
-                ort::value::Tensor::from_array(([2, LENGTH], values)).map(Into::into)
-            };
-            let value = match (input.name(), &table) {
-                ("input_ids", _) => tokens(ids.clone()),
-                ("attention_mask", _) => tokens(mask.clone()),
-                ("token_type_ids", _) => tokens(vec![0; ids.len()]),
-                (name, Some(table)) if name == table.input() => {
-                    let rows = table.embed(&ids).map_err(|error| failed(&error))?;
-                    ort::value::Tensor::from_array(([2, LENGTH, table.width()], rows))
-                        .map(Into::into)
-                }
-                (other, _) => return Err(failed(&format!("no probe for an input named {other}"))),
-            }
-            .map_err(|error| failed(&error))?;
-            feed.push((input.name().to_string().into(), value));
-        }
-        let names: Vec<String> = session
-            .outputs()
-            .iter()
-            .map(|output| output.name().to_string())
-            .collect();
-        let ran = session.run(feed).map_err(|error| failed(&error))?;
-        names
-            .into_iter()
-            .map(|name| {
-                let (_, values) = ran[name.as_str()]
-                    .try_extract_tensor::<f32>()
-                    .map_err(|error| failed(&format!("output {name}: {error}")))?;
-                Ok((name, values.iter().map(|value| value.to_bits()).collect()))
-            })
-            .collect()
-    };
-
-    let expected = outputs(expected)?;
-    let candidate = outputs(candidate)?;
+    let expected = probe(expected, threads, 2)?;
+    let candidate = probe(candidate, threads, 2)?;
     if expected != candidate {
         let differing = expected
             .iter()
@@ -1140,6 +1183,107 @@ fn same_on_a_probe(
         ));
     }
     Ok(())
+}
+
+/// Whether `candidate` scores the probe's first row, which is not padded,
+/// with the outputs `expected` returns for it, of the same sizes, and every
+/// value finite. For a rewrite that is not meant to score bit-identically,
+/// and only ever loaded for passes of one unpadded row.
+fn scores_a_probe(
+    expected: &Path,
+    candidate: &Path,
+    threads: usize,
+) -> std::result::Result<(), String> {
+    let shape = |outputs: &[(String, Vec<u32>)]| -> Vec<(String, usize)> {
+        outputs
+            .iter()
+            .map(|(name, values)| (name.clone(), values.len()))
+            .collect()
+    };
+    let expected = probe(expected, threads, 1)?;
+    let candidate = probe(candidate, threads, 1)?;
+    if shape(&expected) != shape(&candidate) {
+        return Err(format!(
+            "the rewritten graph returned {:?} for the probe, not {:?}",
+            shape(&candidate),
+            shape(&expected)
+        ));
+    }
+    if candidate
+        .iter()
+        .flat_map(|(_, values)| values)
+        .any(|bits| !f32::from_bits(*bits).is_finite())
+    {
+        return Err("the rewritten graph scored the probe with a value that is not finite".into());
+    }
+    Ok(())
+}
+
+/// Every output of `path` for the probe's first `rows` rows, as bits.
+///
+/// The token ids are arbitrary: any ids below a thousand are in every
+/// vocabulary these models have, and the question is whether two graphs
+/// agree, not what either one thinks of the text. The second row is padded.
+fn probe(
+    path: &Path,
+    threads: usize,
+    rows: usize,
+) -> std::result::Result<Vec<(String, Vec<u32>)>, String> {
+    const LENGTH: usize = 24;
+    const PADDED_FROM: usize = 13;
+    let ids: Vec<i64> = (0..rows * LENGTH)
+        .map(|at| match at % LENGTH {
+            0 => 0,
+            position if at >= LENGTH && position >= PADDED_FROM => 1,
+            position if position == LENGTH - 1 || (at >= LENGTH && position == PADDED_FROM - 1) => {
+                2
+            }
+            position => 5 + (at as i64 * 37 + position as i64 * 11) % 900,
+        })
+        .collect();
+    let mask: Vec<i64> = (0..rows * LENGTH)
+        .map(|at| i64::from(at < LENGTH || at % LENGTH < PADDED_FROM))
+        .collect();
+
+    let failed = |error: &dyn std::fmt::Display| format!("{}: {error}", path.display());
+    let mut session = crate::inference::probe(threads, path).map_err(|error| failed(&error))?;
+    // A split graph's word embeddings, read as the encoder reads them.
+    let table = crate::word_embeddings::WordTable::beside(path).map_err(|error| failed(&error))?;
+    type Input = ort::session::SessionInputValue<'static>;
+    let mut feed: Vec<(std::borrow::Cow<'static, str>, Input)> = Vec::new();
+    for input in session.inputs() {
+        let tokens = |values: Vec<i64>| -> std::result::Result<Input, ort::Error> {
+            ort::value::Tensor::from_array(([rows, LENGTH], values)).map(Into::into)
+        };
+        let value = match (input.name(), &table) {
+            ("input_ids", _) => tokens(ids.clone()),
+            ("attention_mask", _) => tokens(mask.clone()),
+            ("token_type_ids", _) => tokens(vec![0; ids.len()]),
+            (name, Some(table)) if name == table.input() => {
+                let embedded = table.embed(&ids).map_err(|error| failed(&error))?;
+                ort::value::Tensor::from_array(([rows, LENGTH, table.width()], embedded))
+                    .map(Into::into)
+            }
+            (other, _) => return Err(failed(&format!("no probe for an input named {other}"))),
+        }
+        .map_err(|error| failed(&error))?;
+        feed.push((input.name().to_string().into(), value));
+    }
+    let names: Vec<String> = session
+        .outputs()
+        .iter()
+        .map(|output| output.name().to_string())
+        .collect();
+    let ran = session.run(feed).map_err(|error| failed(&error))?;
+    names
+        .into_iter()
+        .map(|name| {
+            let (_, values) = ran[name.as_str()]
+                .try_extract_tensor::<f32>()
+                .map_err(|error| failed(&format!("output {name}: {error}")))?;
+            Ok((name, values.iter().map(|value| value.to_bits()).collect()))
+        })
+        .collect()
 }
 
 /// Writes the optimized graph and its external data into `into`.
@@ -1436,6 +1580,19 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn only_a_trimmed_graph_is_one_rows_alone() {
+        for (name, trimmed) in [
+            ("attention.cls1.onnx", true),
+            ("attention.cls1.split1.onnx", true),
+            ("attention.onnx", false),
+            ("attention.split1.onnx", false),
+            ("model.onnx", false),
+        ] {
+            assert_eq!(is_trimmed(Path::new(name)), trimmed, "{name}");
+        }
+    }
+
     /// A hub that is a file on this disk: `fetch` copies `origin` into place
     /// as a download would, and fails while `online` is false.
     struct Hub {
@@ -1587,8 +1744,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let hub = Hub::new(dir.path(), &tiny_model());
         let cache = dir.path().join("models");
-        let copy =
-            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("the first load");
+        let copy = load_path(
+            &hub,
+            &cache,
+            &crate::InferenceSettings::default(),
+            Passes::Padded,
+        )
+        .expect("the first load");
         load(&copy);
         release(&hub, &cache, &crate::InferenceSettings::default());
         assert!(hub.on_disk().is_none());
@@ -1601,8 +1763,13 @@ mod tests {
 
         hub.online.set(false);
         assert_eq!(
-            load_path(&hub, &cache, &crate::InferenceSettings::default())
-                .expect("the same revision"),
+            load_path(
+                &hub,
+                &cache,
+                &crate::InferenceSettings::default(),
+                Passes::Padded
+            )
+            .expect("the same revision"),
             copy
         );
         hub.moved("someone/model@decaf", "4567cdef");
@@ -1611,12 +1778,23 @@ mod tests {
             "the old revision's copy is ready"
         );
         assert!(
-            load_path(&hub, &cache, &crate::InferenceSettings::default()).is_err(),
+            load_path(
+                &hub,
+                &cache,
+                &crate::InferenceSettings::default(),
+                Passes::Padded
+            )
+            .is_err(),
             "the old revision's copy loaded under the new ref"
         );
         hub.online.set(true);
-        let new = load_path(&hub, &cache, &crate::InferenceSettings::default())
-            .expect("a load of the new revision");
+        let new = load_path(
+            &hub,
+            &cache,
+            &crate::InferenceSettings::default(),
+            Passes::Padded,
+        )
+        .expect("a load of the new revision");
         assert_eq!(hub.fetches.get(), 2, "the new revision was not fetched");
 
         // A replaced revision's copy goes as soon as its record names
@@ -1627,8 +1805,13 @@ mod tests {
         assert!(copy.exists(), "a held copy was removed");
         held().remove(new.parent().expect("the copy's directory"));
         hub.moved("someone/model@beef", "89abef01");
-        let newest = load_path(&hub, &cache, &crate::InferenceSettings::default())
-            .expect("a load of the next revision");
+        let newest = load_path(
+            &hub,
+            &cache,
+            &crate::InferenceSettings::default(),
+            Passes::Padded,
+        )
+        .expect("a load of the next revision");
         assert_eq!(hub.fetches.get(), 3, "the next revision was not fetched");
         load(&newest);
         release(&hub, &cache, &crate::InferenceSettings::default());
@@ -1687,8 +1870,13 @@ mod tests {
         let model = tiny_model();
         let hub = Hub::new(dir.path(), &model);
         let cache = dir.path().join("models");
-        let copy =
-            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("the first load");
+        let copy = load_path(
+            &hub,
+            &cache,
+            &crate::InferenceSettings::default(),
+            Passes::Padded,
+        )
+        .expect("the first load");
         load(&copy);
         release(&hub, &cache, &crate::InferenceSettings::default());
 
@@ -1707,8 +1895,13 @@ mod tests {
         let blob = hub.blob.borrow().file_name().expect("a name").to_owned();
         hub.moved("someone/model@decaf", &blob.to_string_lossy());
 
-        let new = load_path(&hub, &cache, &crate::InferenceSettings::default())
-            .expect("a load of the new revision");
+        let new = load_path(
+            &hub,
+            &cache,
+            &crate::InferenceSettings::default(),
+            Passes::Padded,
+        )
+        .expect("a load of the new revision");
         assert_eq!(hub.fetches.get(), 2);
         assert_ne!(new, copy, "the new weights were keyed as the old copy");
         load(&new);
@@ -1723,8 +1916,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let hub = Hub::new(dir.path(), &tiny_model());
         let cache = dir.path().join("models");
-        let copy =
-            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("the first load");
+        let copy = load_path(
+            &hub,
+            &cache,
+            &crate::InferenceSettings::default(),
+            Passes::Padded,
+        )
+        .expect("the first load");
         load(&copy);
         release(&hub, &cache, &crate::InferenceSettings::default());
         let path = cache.join("prepared").join(record_name(&hub));
@@ -1746,12 +1944,24 @@ mod tests {
             "an unverified copy is ready"
         );
         assert!(
-            load_path(&hub, &cache, &crate::InferenceSettings::default()).is_err(),
+            load_path(
+                &hub,
+                &cache,
+                &crate::InferenceSettings::default(),
+                Passes::Padded
+            )
+            .is_err(),
             "an unverified copy loaded"
         );
         hub.online.set(true);
         assert_eq!(
-            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("a verified load"),
+            load_path(
+                &hub,
+                &cache,
+                &crate::InferenceSettings::default(),
+                Passes::Padded
+            )
+            .expect("a verified load"),
             copy
         );
         assert_eq!(hub.fetches.get(), 2);
@@ -1773,12 +1983,22 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let hub = Hub::new(dir.path(), &tiny_model());
         let cache = dir.path().join("models");
-        let first = load_path(&hub, &cache, &crate::InferenceSettings::default())
-            .expect("the first revision");
+        let first = load_path(
+            &hub,
+            &cache,
+            &crate::InferenceSettings::default(),
+            Passes::Padded,
+        )
+        .expect("the first revision");
         load(&first);
         hub.moved("someone/model@decaf", "4567cdef");
-        let second = load_path(&hub, &cache, &crate::InferenceSettings::default())
-            .expect("the second revision");
+        let second = load_path(
+            &hub,
+            &cache,
+            &crate::InferenceSettings::default(),
+            Passes::Padded,
+        )
+        .expect("the second revision");
         load(&second);
         // Both downloads are on disk and both copies are held, as in two
         // processes loading at once; the second revision releases first.
@@ -1791,14 +2011,24 @@ mod tests {
         hub.online.set(false);
         let fetches = hub.fetches.get();
         assert_eq!(
-            load_path(&hub, &cache, &crate::InferenceSettings::default())
-                .expect("the first, offline"),
+            load_path(
+                &hub,
+                &cache,
+                &crate::InferenceSettings::default(),
+                Passes::Padded
+            )
+            .expect("the first, offline"),
             first
         );
         hub.moved("someone/model@decaf", "4567cdef");
         assert_eq!(
-            load_path(&hub, &cache, &crate::InferenceSettings::default())
-                .expect("the second, offline"),
+            load_path(
+                &hub,
+                &cache,
+                &crate::InferenceSettings::default(),
+                Passes::Padded
+            )
+            .expect("the second, offline"),
             second
         );
         assert_eq!(hub.fetches.get(), fetches);
@@ -1813,16 +2043,26 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let hub = Hub::new(dir.path(), &tiny_model());
         let cache = dir.path().join("models");
-        let copy = load_path(&hub, &cache, &crate::InferenceSettings::default())
-            .expect("the first revision");
+        let copy = load_path(
+            &hub,
+            &cache,
+            &crate::InferenceSettings::default(),
+            Passes::Padded,
+        )
+        .expect("the first revision");
         load(&copy);
         release(&hub, &cache, &crate::InferenceSettings::default());
         assert!(hub.on_disk().is_none());
 
         // The ref moves to a commit with the same weights: the same blob.
         hub.moved("someone/model@decaf", "0123abcd");
-        let same = load_path(&hub, &cache, &crate::InferenceSettings::default())
-            .expect("the second revision");
+        let same = load_path(
+            &hub,
+            &cache,
+            &crate::InferenceSettings::default(),
+            Passes::Padded,
+        )
+        .expect("the second revision");
         assert_eq!(same, copy, "the same weights were written again");
         load(&same);
         release(&hub, &cache, &crate::InferenceSettings::default());
@@ -1833,8 +2073,13 @@ mod tests {
         hub.online.set(false);
         let fetches = hub.fetches.get();
         assert_eq!(
-            load_path(&hub, &cache, &crate::InferenceSettings::default())
-                .expect("the second, offline"),
+            load_path(
+                &hub,
+                &cache,
+                &crate::InferenceSettings::default(),
+                Passes::Padded
+            )
+            .expect("the second, offline"),
             copy
         );
         hub.moved("someone/model@c0ffee", "0123abcd");
@@ -1843,8 +2088,13 @@ mod tests {
             "the first revision lost its record"
         );
         assert_eq!(
-            load_path(&hub, &cache, &crate::InferenceSettings::default())
-                .expect("the first, offline"),
+            load_path(
+                &hub,
+                &cache,
+                &crate::InferenceSettings::default(),
+                Passes::Padded
+            )
+            .expect("the first, offline"),
             copy
         );
         assert_eq!(hub.fetches.get(), fetches);
@@ -1862,8 +2112,13 @@ mod tests {
         let root = cache.join("prepared");
 
         // First load: fetched, written into a copy, loaded, then removed.
-        let copy =
-            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("the first load");
+        let copy = load_path(
+            &hub,
+            &cache,
+            &crate::InferenceSettings::default(),
+            Passes::Padded,
+        )
+        .expect("the first load");
         assert_eq!(hub.fetches.get(), 1);
         assert!(copy.starts_with(&root), "loaded {copy:?}, not a copy");
         assert!(is_copy(&copy, &cache));
@@ -1887,7 +2142,13 @@ mod tests {
         hub.online.set(false);
         assert!(is_ready(&hub, &cache, &crate::InferenceSettings::default()));
         assert_eq!(
-            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("a load offline"),
+            load_path(
+                &hub,
+                &cache,
+                &crate::InferenceSettings::default(),
+                Passes::Padded
+            )
+            .expect("a load offline"),
             copy
         );
         assert_eq!(hub.fetches.get(), 1, "a load with a fitting copy fetched");
@@ -1900,9 +2161,14 @@ mod tests {
             &cache,
             &crate::InferenceSettings::default()
         ));
-        let refused = load_path(&hub, &cache, &crate::InferenceSettings::default())
-            .expect_err("a load with no fitting copy and no network must fail")
-            .to_string();
+        let refused = load_path(
+            &hub,
+            &cache,
+            &crate::InferenceSettings::default(),
+            Passes::Padded,
+        )
+        .expect_err("a load with no fitting copy and no network must fail")
+        .to_string();
         assert!(
             refused.contains("someone/model/onnx/model.onnx")
                 && refused.contains("download was removed")
@@ -1913,8 +2179,13 @@ mod tests {
         // Back online: fetched again, and keyed as the removed file was, so
         // a copy another runtime keeps for it would still fit.
         hub.online.set(true);
-        let rewritten = load_path(&hub, &cache, &crate::InferenceSettings::default())
-            .expect("a load once online");
+        let rewritten = load_path(
+            &hub,
+            &cache,
+            &crate::InferenceSettings::default(),
+            Passes::Padded,
+        )
+        .expect("a load once online");
         assert_eq!(hub.fetches.get(), 2);
         assert_eq!(
             rewritten, copy,
@@ -1934,8 +2205,13 @@ mod tests {
         let hub = Hub::new(dir.path(), b"this is not a protobuf");
         let cache = dir.path().join("models");
 
-        let loaded =
-            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("fall back");
+        let loaded = load_path(
+            &hub,
+            &cache,
+            &crate::InferenceSettings::default(),
+            Passes::Padded,
+        )
+        .expect("fall back");
         assert!(
             !is_copy(&loaded, &cache),
             "the download it fell back to is taken for a copy"
@@ -2001,6 +2277,34 @@ mod tests {
             prepare(&source, &root, 1).expect("find the copy"),
             root.join(key).join(MODEL)
         );
+    }
+
+    /// The trimmed graph is loaded only for passes of one unpadded row, and
+    /// only in place of the fused graph it was written from: padded passes,
+    /// and a copy whose trim was refused, keep the masked graph. The files
+    /// here are not models, so reaching a rewrite would fail: getting the
+    /// paths back proves the choice never got that far.
+    #[test]
+    fn only_passes_of_one_row_load_the_trimmed_graph() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let settings = crate::InferenceSettings::default();
+        let fused = dir.path().join(FUSED);
+        let trimmed = dir.path().join(format!("attention.{TRIMMED}.onnx"));
+        for path in [&fused, &trimmed] {
+            std::fs::write(path, b"a graph").expect("write a graph");
+        }
+        assert_eq!(trim(fused.clone(), Passes::OneRow, &settings), trimmed);
+        assert_eq!(trim(fused.clone(), Passes::Padded, &settings), fused);
+        let model = dir.path().join(MODEL);
+        assert_eq!(trim(model.clone(), Passes::OneRow, &settings), model);
+
+        std::fs::remove_file(&trimmed).expect("remove the trimmed graph");
+        std::fs::write(
+            dir.path().join(format!("attention.{TRIMMED}.untrimmed")),
+            b"refused\n",
+        )
+        .expect("record a refusal");
+        assert_eq!(trim(fused.clone(), Passes::OneRow, &settings), fused);
     }
 
     #[test]
@@ -2203,8 +2507,13 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let hub = Hub::new(dir.path(), &tiny_model());
         let cache = dir.path().join("models");
-        let copy =
-            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("the first load");
+        let copy = load_path(
+            &hub,
+            &cache,
+            &crate::InferenceSettings::default(),
+            Passes::Padded,
+        )
+        .expect("the first load");
         load(&copy);
         release(&hub, &cache, &crate::InferenceSettings::default());
         assert!(hub.on_disk().is_none(), "the download was kept");
@@ -2222,7 +2531,13 @@ mod tests {
 
         hub.online.set(false);
         assert_eq!(
-            load_path(&hub, &cache, &crate::InferenceSettings::default()).expect("a load offline"),
+            load_path(
+                &hub,
+                &cache,
+                &crate::InferenceSettings::default(),
+                Passes::Padded
+            )
+            .expect("a load offline"),
             copy
         );
         assert!(
