@@ -261,7 +261,7 @@ const REPOSITORY: &str = "pamin-labs/bge-reranker-v2-m3-sq-int8-onnx";
 
 /// The commit of [`REPOSITORY`] every file is read at, so that the weights a
 /// measurement priced are the weights that load.
-const REVISION: &str = "cfa01c1989db3c5cc3a720a495e86966de9b4d6b";
+const REVISION: &str = "eb7411f3a2e11886fdcddbcd25f99c16309c0d28";
 
 /// The name this reranker had when it was one tier of several. It is part of
 /// every execution plan's key and of the provider label evaluations record
