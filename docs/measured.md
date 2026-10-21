@@ -1126,9 +1126,9 @@ reads its weights from a mapped prepared copy, and every page a pass touches
 stays in the process until the mapping goes. A search runs the embedder and
 then the reranker, so the process holds both models' weights. A background
 thread now hands a model's clean mappings back with `madvise(MADV_DONTNEED)`
-once that model has run no pass for 30 s. The rows below measured an earlier
-form that released them after every model's passes in every search; why that
-changed, and what is not yet measured, follows the table.
+once that model has run no pass for 30 s. The first table below measured an
+earlier form that released them after every model's passes in every search;
+why that changed, and the idle release's own measurement, follow it.
 - The pages stay in the page cache, and the next pass maps them back with
   minor faults.
 - A mapping with any written page is skipped.
@@ -1196,16 +1196,45 @@ Latency outranks memory. An agent's queries come in bursts a few seconds
 apart, while a memory tool is idle most of the time. Releasing only after
 30 s without a pass should keep a burst's latency at main's and still hand
 the weights back while idle. It gives up the lower peak during a burst.
-**The idle release itself is not yet measured:** neither its latency
-against main under back-to-back queries nor its resident memory after the
-delay. The table's memory gain is the per-search form's, not this one's.
+
+q80 measured the idle release (`c3c6260`) directly against main
+(`b2b3bc7`), which is also its immediate predecessor, at the entry point:
+four rotated runs an arm (`A I I A I A A I`), none shared. Each run timed the
+same 240 back-to-back queries, then waited 45 s with no query and read the
+server's memory:
+
+| metric | main | idle release | abs diff | % change | ratio [95% CI] |
+| --- | --- | --- | --- | --- | --- |
+| nDCG@10, 120 queries | 0.7436 | 0.7436 | 0 | 0.0% | top-10 identical across all runs |
+| search p50 ms (per run) | 1,186.9 | 1,111.4 | −75.6 | −6.4% | 0.936 [0.854, 1.000] |
+| search p95 ms (per run) | 3,205.3 | 3,405.5 | +200.3 | +6.2% | 1.062 [0.967, 1.123] |
+| search server CPU user ms/query | 4,201.8 | 4,350.9 | +149.0 | +3.5% | 1.035 [0.978, 1.119] |
+| search VmHWM MB (process RSS) | 971 | 972 | +1 | +0.1% | 1.001 [0.987, 1.008] |
+| **VmRSS MB after 45 s idle** | **926** | **336** | **−590** | **−63.8%** | **0.362 [0.349, 0.390]** |
+| model data files resident after 45 s idle, MB | 585.1 | 0.0 | −585.1 | −100% | released in every run |
+| first query after idle | N/A | N/A | N/A | N/A | not measured; see below |
+| ingest VmHWM MB | 798 | 782 | −17 | −2.1% | 0.979 [0.975, 0.999] |
+| ingest wall s | 258.2 | 265.3 | +7.1 | +2.8% | 1.028 [0.956, 1.121] |
+
+- **Accuracy and latency.** Accuracy is identical. Neither latency change
+  is significant, and the two move in opposite directions.
+- **No release during a burst.** At the end of the timed loop, both arms
+  still held both models' data files (585 MB), so back-to-back queries
+  never released anything. The search peak is therefore main's.
+- **Memory while idle.** After 45 s, the idle release held none of the
+  model data and its process RSS was 0.36 of main's.
+- **The first query after idle is not measured.** The harness re-ran
+  queries it had already scored. Those were served from the reranker score
+  cache without a pass, so no weights were mapped back. That search pays at
+  most what the per-search release paid on every search: p50 +2.6% (q78)
+  to +10.4% (q74).
 
 Memory is the `pamin serve` process alone, with no accelerator services.
 Disk is the index directory; the prepared copies (1,668 MB) are unchanged.
 The release runs only on Linux; macOS and Windows are unaffected and
 unmeasured. The raw rows and harnesses are in the private
 `internal-docs/pamin-memory/research/2026-10-20/raw/q72b/`, `raw/q72c/` and
-`raw/q74/` folders, and in `2026-10-21/raw/q78/`.
+`raw/q74/` folders, and in `2026-10-21/raw/q78/` and `raw/q80/`.
 
 **Truncating at 192 or 384 tokens rather than 256 was measured, and neither
 ships.** In the same runs, each limit paired against 256 with the new batching:
