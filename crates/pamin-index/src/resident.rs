@@ -98,32 +98,6 @@ pub(crate) fn release(ranges: &[(usize, usize)]) {
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn release(_ranges: &[(usize, usize)]) {}
 
-/// Maps back every page of `ranges`, which [`loading`] found for a session the
-/// caller holds, in one call per range, before passes that will read them.
-///
-/// After a [`release`] the pages are still in the page cache, so this reads
-/// nothing from disk; it only saves the passes faulting them back a few pages
-/// at a time. Advisory: on a kernel without `MADV_POPULATE_READ` (before 5.14)
-/// the call fails and the passes fault the pages back as before.
-#[cfg(target_os = "linux")]
-pub(crate) fn populate(ranges: &[(usize, usize)]) {
-    for &(start, end) in ranges {
-        // SAFETY: as in `release`, the range is a whole mapping of a session the
-        // caller holds. `MADV_POPULATE_READ` only maps its pages in, as a read
-        // of each would, and changes no byte.
-        unsafe {
-            libc::madvise(
-                start as *mut libc::c_void,
-                end - start,
-                libc::MADV_POPULATE_READ,
-            );
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn populate(_ranges: &[(usize, usize)]) {}
-
 /// The ranges of the mappings in `maps` (`/proc/self/maps`, or the header
 /// lines of `smaps`) whose file is under `directory`.
 #[cfg(any(target_os = "linux", test))]

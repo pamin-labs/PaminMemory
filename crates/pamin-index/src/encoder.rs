@@ -331,9 +331,6 @@ impl Encoder {
         batches: Vec<Vec<Encoding>>,
         read: impl Fn(Outputs) -> Result<T> + Sync,
     ) -> Result<Vec<T>> {
-        // The weights `release` handed back after the last passes are mapped in
-        // again at once rather than a fault at a time while these run.
-        crate::resident::populate(&self.resident);
         let results = self.run_each_resident(batches, read);
         // A search runs the embedder and then the reranker; handing each
         // one's weights back once its passes are done keeps only one model's
