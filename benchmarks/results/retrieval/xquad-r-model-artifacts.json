@@ -32,13 +32,12 @@
         "tokenizer_config.json": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
         "special_tokens_map.json": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835"
       },
-      "prepared_key_on_measured_host": "d9df182f15964c336e41a7b0bcd9f536",
-      "prepared_graph_sha256": "01fea914044b8346af02875be07cc9fd2af43fd814b12e85e979393c45a56589",
-      "prepared_data_sha256": "6188fbb5b4176ba108a1fbebf09207765ed6448656ca63e4e0259bba6651e0fd",
-      "selected_graph": "model.onnx",
-      "selected_graph_sha256": "01fea914044b8346af02875be07cc9fd2af43fd814b12e85e979393c45a56589",
-      "unfused_decision_sha256": "c322eb636cc49901f92d208231cf74bf77ed9fceec62697739fb2064d81170a8",
-      "selection_provenance": "default selection checked against retained cache; unfused decision and graph predate the archived run"
+      "prepared_key_on_measured_host": "ec5f4e461534780d9735099b223335f7",
+      "prepared_graph_sha256": "89e0d28ca57d724c78bb3d5684171473e65c1f4e9afca9e723993dc2f53b677b",
+      "prepared_data_sha256": "77a5d5e9a0e432015e1885bd3383cd9ff77062ae30b5e5c602d927d41f3a593e",
+      "selected_graph": "attention.cls1.split1.onnx",
+      "selected_graph_sha256": "5b7de3d8514839f7fd4615b6c0704654773528537939a9bdc31d8b20b998acff",
+      "selection_provenance": "the prepared copy the 2026-10-21 revision-bound run loaded (CLS-trimmed, split graph); the verifier's default-graph rule predates split graphs"
     }
   ]
 }
