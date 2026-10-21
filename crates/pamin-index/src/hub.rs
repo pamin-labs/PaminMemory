@@ -33,6 +33,10 @@ impl Repository {
     /// so under either it was fetched from somewhere the embedder was not --
     /// a mirror set for one and not the other, or two copies of the cache.
     /// Now the two are fetched alike.
+    ///
+    /// At `main`. Only tests open a repository without naming the revision:
+    /// the product names the one each model loads.
+    #[cfg(test)]
     pub(crate) fn open(cache_dir: &Path, name: &str) -> Result<Self> {
         Self::open_at(cache_dir, name, "main")
     }

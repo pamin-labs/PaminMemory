@@ -1236,6 +1236,66 @@ unmeasured. The raw rows and harnesses are in the private
 `internal-docs/pamin-memory/research/2026-10-20/raw/q72b/`, `raw/q72c/` and
 `raw/q74/` folders, and in `2026-10-21/raw/q78/` and `raw/q80/`.
 
+**The reranker's int8 weights, re-exported with SmoothQuant.** The upstream
+int8 file quantizes each activation with one scale per tensor, at run time.
+The inputs to the q/k/v projections and the first feed-forward layer have a few
+outlier channels, and those set that scale. PaminLabs' re-export
+(`pamin-labs/bge-reranker-v2-m3-sq-int8-onnx` @ `eb7411f`) divides each such
+input by a per-channel factor and multiplies the weights by it before
+quantizing them (SmoothQuant, alpha 0.75). That re-quantizes 96 weights and
+adds 48 elementwise `Mul`s; the rest of the file, the fp16 file and the
+tokenizer are upstream's. The recipe and a sync script are in the repository.
+
+q81 measured it (`6743e5b`) against main (`558ff94`), its immediate
+predecessor, at the entry point. The setup is the q80 one above: four rotated
+runs an arm (`A S S A S A A S`), none shared. Its 120-query nDCG@10 was too
+small to settle accuracy, so q82 ran the complete XQuAD-R harness,
+`search_reaches_across_languages`, on both (main, and `6743e5b` with the
+benchmark's reranker pin moved to the re-export). All 1,190 questions were
+scored, on the CPU, each arm in its own fresh evaluation home:
+
+| metric | main | re-export | abs diff | % change | ratio or diff [95% CI] |
+| --- | --- | --- | --- | --- | --- |
+| **XQuAD-R cross-lingual nDCG@10, 1,190 queries** | **0.7225** | **0.7252** | **+0.0027** | **+0.37%** | **[+0.0008, +0.0045], sign-flip p = 0.004** |
+| XQuAD-R same-language nDCG@10 | 0.8667 | 0.8678 | +0.0011 | +0.13% | [−0.0014, +0.0037], p = 0.40 |
+| XQuAD-R single-target nDCG@10 | 0.6665 | 0.6673 | +0.0008 | +0.12% | [−0.0028, +0.0046], p = 0.67 |
+| XQuAD-R recall@50, every group | 0.9005 / 0.9613 / 0.9017 | the same | 0 | 0.0% | the reranker reorders only |
+| nDCG@10, the 120 timed queries | 0.7436 | 0.7414 | −0.0022 | −0.3% | [−0.0083, +0.0041]; 13 better, 18 worse |
+| search p50 ms (per run) | 1,015.6 | 1,003.0 | −12.7 | −1.2% | 0.988 [0.879, 1.139] |
+| search p95 ms (per run) | 2,950.0 | 2,946.9 | −3.1 | −0.1% | 0.999 [0.966, 1.182] |
+| search server CPU user ms/query | 3,918.4 | 3,829.8 | −88.6 | −2.3% | 0.977 [0.947, 1.094] |
+| search VmHWM MB (process RSS) | 967 | 978 | +11 | +1.1% | 1.011 [0.984, 1.020] |
+| first query s (loads both models) | 11.69 | 12.18 | +0.49 | +4.1% | 1.041 [0.791, 1.261] |
+| ingest wall s | 227.0 | 233.3 | +6.2 | +2.8% | 1.028 [0.989, 1.060] |
+| ingest server CPU sys s | 45.6 | 55.4 | +9.8 | +21.5% | **1.215 [1.055, 1.393]** |
+| reranker download (int8 file + tokenizer) MB | 560.6 | 560.8 | +0.2 | +0.04% | the 48 scale vectors |
+| prepared copies MB | 1,668.9 | 1,668.8 | −0.1 | 0.0% | |
+
+- **Accuracy.** Cross-lingual nDCG@10 rose by 0.0027 over all 1,190
+  questions, and the other two groups moved up within noise. A component
+  replay on held-out shortlists had measured +0.0024. The 120 timed queries
+  moved the other way (XQuAD's 74 of them −0.0051, MuSiQue's 46 +0.0025), but
+  within noise, and the full harness is the measurement with the power to
+  decide. With reranking off, 1,185 of 1,190 top-10 lists are identical and
+  no group moves significantly.
+- **Latency and memory.** No significant change in either.
+- **The one significant change is a cost.** Ingest's system CPU rose by
+  21.5%, while ingest wall time did not change significantly. Ingest does not
+  rerank, but a server warms the reranker once its weights are on disk. The
+  cause was not isolated.
+- **Disk.** The download and the prepared copy are the same size. An
+  upgraded install also keeps the old download until it is removed by hand;
+  see [cli.md](cli.md#upgrading-from-profiles-and-tiers).
+
+Memory is the `pamin serve` process alone, with no accelerator services. Disk
+is the index directory, the prepared copies and the reranker's download, as
+named. The XQuAD-R arms ran one after the other on the same host, for
+accuracy only; their wall times are not a latency measurement. Accelerators
+load the fp16 file, which is upstream's, so they are unaffected and
+unmeasured. The raw rows and harnesses are in the private
+`internal-docs/pamin-memory/research/2026-10-21/raw/q81/` and `raw/q82/`
+folders.
+
 **Truncating at 192 or 384 tokens rather than 256 was measured, and neither
 ships.** In the same runs, each limit paired against 256 with the new batching:
 192 made a search 0.80 of what it was on MuSiQue, where half the pairs reach

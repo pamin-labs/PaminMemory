@@ -3448,3 +3448,30 @@ accelerator, and neither path changed. The host in these runs had a CUDA
 provider built in that could not register, so every arm saw one five-minute
 model reload in its search phase; excluding the queries that overlapped it
 moved no ratio by more than 0.004.
+
+## 2026-10-21: the reranker loads a SmoothQuant re-export
+
+**Decision.** The reranker's int8 file is PaminLabs' re-export,
+`pamin-labs/bge-reranker-v2-m3-sq-int8-onnx`, and every file is read at one
+pinned commit (`eb7411f`) rather than at `main`. The model is the same
+bge-reranker-v2-m3, quantized from upstream's fp32 weights with SmoothQuant
+(alpha 0.75) on the q/k/v and first feed-forward inputs. The fp16 file that
+accelerators load and the tokenizer are upstream's, byte for byte. The
+repository carries the recipe, its calibration statistics and a script that
+rebuilds the file from a new upstream revision and compares it.
+
+**Why.** Upstream's dynamic quantization gives each activation one scale per
+tensor, and a few outlier channels of those inputs set it. Smoothing them
+brought the int8 rankings closer to fp32's: Kendall τ 0.925 → 0.952 on
+XQuAD-R, 0.905 → 0.942 on MuSiQue and 0.918 → 0.950 on LoCoMo. At the entry
+point it raised XQuAD-R cross-lingual nDCG@10 from 0.7225 to 0.7252 over all
+1,190 questions (+0.0027, 95% CI [+0.0008, +0.0045]). Latency, search memory
+and disk were not significantly changed. [measured.md](../measured.md) has the
+conditions and every row.
+
+**What it costs.** Ingest's system CPU rose by 21.5% (1.215 [1.055, 1.393])
+with no significant change in ingest wall time, and the cause was not
+isolated. An upgraded install fetches the new repository once and keeps the
+old download until it is removed by hand, because the model directory may be
+shared. The re-export also has to follow upstream: a new upstream revision
+means re-running the sync script and moving the pin.
