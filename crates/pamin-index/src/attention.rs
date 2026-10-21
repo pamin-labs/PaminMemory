@@ -341,7 +341,7 @@ pub(crate) fn trim(model: &[u8]) -> Result<Trimmed, String> {
                         || mine.contains(output)
                         || graph.consumers.get(output).is_none_or(Vec::is_empty)
                 })
-                && (!node.is("Add", false)
+                && (!(node.is("Add", false) || node.is("Mul", false))
                     || node
                         .inputs
                         .iter()
@@ -514,7 +514,7 @@ const TRIM: &str = "pamin/cls1/";
 /// its query is.
 fn row_wise(node: &Node<'_>) -> Option<&'static [usize]> {
     Some(match node.op_type {
-        "SkipLayerNormalization" | "Add" => &[0, 1],
+        "SkipLayerNormalization" | "Add" | "Mul" => &[0, 1],
         "LayerNormalization"
         | "Gelu"
         | "BiasGelu"
@@ -1085,8 +1085,10 @@ mod tests {
     /// its quantized copy shared by the three projections, attention, the
     /// output projection and the feed-forward block between two skip layer
     /// norms, and the classifier's `Gather` of the first token. Its graph also
-    /// returns `extra`, if given.
-    fn last_layer(extra: Option<&str>) -> Vec<u8> {
+    /// returns `extra`, if given. `smoothed` puts a per-channel `Mul` by a
+    /// constant before the quantized copy and before the feed-forward block's
+    /// first projection, as a SmoothQuant export does.
+    fn last_layer(extra: Option<&str>, smoothed: bool) -> Vec<u8> {
         let ms = MICROSOFT;
         let projection = |weight: &str, output: &str| {
             node(
@@ -1115,7 +1117,8 @@ mod tests {
                 &[],
             )
         };
-        let nodes = [
+        let (quantized, expanded) = if smoothed { ("xm", "h1m") } else { ("x", "h1") };
+        let mut nodes = vec![
             node(
                 "Cast",
                 "",
@@ -1127,7 +1130,7 @@ mod tests {
             node(
                 "DynamicQuantizeLinear",
                 "",
-                &["x"],
+                &[quantized],
                 &["xq", "xs", "xz"],
                 &[],
             ),
@@ -1143,7 +1146,7 @@ mod tests {
             ),
             dense("attended", "wo", "o"),
             norm("o", "x", "h1"),
-            dense("h1", "w1", "f1"),
+            dense(expanded, "w1", "f1"),
             node("Gelu", ms, &["f1"], &["f1g"], &[]),
             dense("f1g", "w2", "f2"),
             norm("f2", "h1", "h2"),
@@ -1156,6 +1159,10 @@ mod tests {
             ),
             node("MatMul", "", &["cls", "wc"], &["logits"], &[]),
         ];
+        if smoothed {
+            nodes.insert(9, node("Mul", "", &["h1", "s1"], &["h1m"], &[]));
+            nodes.insert(2, node("Mul", "", &["x", "sx"], &["xm"], &[]));
+        }
         let mut graph = Vec::new();
         for node in &nodes {
             put_bytes(&mut graph, GRAPH_NODE, node);
@@ -1166,7 +1173,8 @@ mod tests {
             &int64_initializer("first", &[0]),
         );
         for weight in [
-            "wq", "wk", "wv", "wo", "w1", "w2", "wc", "ws", "wz", "bias", "gamma", "beta",
+            "wq", "wk", "wv", "wo", "w1", "w2", "wc", "ws", "wz", "bias", "gamma", "beta", "sx",
+            "s1",
         ] {
             put_bytes(
                 &mut graph,
@@ -1202,7 +1210,7 @@ mod tests {
     /// computes one row of.
     #[test]
     fn the_last_layer_runs_on_the_first_token_without_a_mask() {
-        let trimmed = trim(&last_layer(None)).expect("the layer trims");
+        let trimmed = trim(&last_layer(None, false)).expect("the layer trims");
         assert_eq!((trimmed.rows, trimmed.unmasked), (9, 1));
 
         let nodes = graph_nodes(&trimmed.model);
@@ -1285,7 +1293,36 @@ mod tests {
     /// graph returns it -- needs every row, and nothing is rewritten.
     #[test]
     fn a_last_layer_read_whole_is_left_alone() {
-        assert!(trim(&last_layer(Some("h2"))).is_err());
+        assert!(trim(&last_layer(Some("h2"), false)).is_err());
+    }
+
+    /// A smoothed export's per-channel `Mul`s by a constant are computed per
+    /// row like a bias `Add`: the feed-forward block's runs on row 0, and the
+    /// one before the quantized copy stays whole, since the keys and values
+    /// read every row of it.
+    #[test]
+    fn a_smoothed_last_layer_trims_through_its_muls() {
+        let trimmed = trim(&last_layer(None, true)).expect("the layer trims");
+        assert_eq!((trimmed.rows, trimmed.unmasked), (10, 1));
+        let nodes = graph_nodes(&trimmed.model);
+        let muls: Vec<(&[String], &[String])> = nodes
+            .iter()
+            .filter(|(op, _, _)| op == "Mul")
+            .map(|(_, inputs, outputs)| (&inputs[..], &outputs[..]))
+            .collect();
+        assert_eq!(
+            muls,
+            [
+                (
+                    &["x".to_string(), "sx".to_string()][..],
+                    &["xm".to_string()][..]
+                ),
+                (
+                    &["h1".to_string(), "s1".to_string()][..],
+                    &["h1m".to_string()][..]
+                ),
+            ]
+        );
     }
 
     /// A graph `fuse` has not rewritten has no attention to unmask.

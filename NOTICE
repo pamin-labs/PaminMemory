@@ -31,9 +31,13 @@ Embedding models
 Reranker models
 ---------------
 
-  onnx-community/bge-reranker-v2-m3-ONNX               no tag
-    The reranker. An ONNX re-export of BAAI/bge-reranker-v2-m3, itself
-    Apache-2.0.
+  pamin-labs/bge-reranker-v2-m3-sq-int8-onnx           Apache-2.0
+    The reranker, pinned to eb7411f3a2e11886fdcddbcd25f99c16309c0d28.
+    Modified by PaminLabs from onnx-community/bge-reranker-v2-m3-ONNX at
+    6f5ff65298512715a1e669753bc754d2bc8f367b: the int8 weights re-quantized
+    from the fp32 export with SmoothQuant (alpha 0.75) on the q/k/v and first
+    feed-forward inputs. That is an ONNX re-export of BAAI/bge-reranker-v2-m3,
+    itself Apache-2.0.
 
 ================================================================================
 Rust dependencies

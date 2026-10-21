@@ -251,7 +251,17 @@ use crate::inference::Device;
 /// against +0.0201, because a twenty-one-million parameter model runs out of
 /// capacity on long real text where a three-hundred-million one does not. The
 /// module note has the paired numbers.
-const REPOSITORY: &str = "onnx-community/bge-reranker-v2-m3-ONNX";
+///
+/// The weights are PaminLabs' re-export of `onnx-community`'s int8 file:
+/// SmoothQuant (alpha 0.75) moves activation outliers on the q/k/v and first
+/// feed-forward inputs into the weights before they are quantized, with one
+/// `Mul` per smoothed input left in the graph. The fp16 file accelerators load
+/// and the tokenizer are upstream's, byte for byte.
+const REPOSITORY: &str = "pamin-labs/bge-reranker-v2-m3-sq-int8-onnx";
+
+/// The commit of [`REPOSITORY`] every file is read at, so that the weights a
+/// measurement priced are the weights that load.
+const REVISION: &str = "eb7411f3a2e11886fdcddbcd25f99c16309c0d28";
 
 /// The name this reranker had when it was one tier of several. It is part of
 /// every execution plan's key and of the provider label evaluations record
@@ -930,7 +940,7 @@ impl Reranker {
     /// resident server warming a project -- which should not be what
     /// downloads it.
     pub fn is_downloaded(cache_dir: &Path, settings: &crate::InferenceSettings) -> bool {
-        Repository::open(cache_dir, REPOSITORY).is_ok_and(|repository| {
+        Repository::open_at(cache_dir, REPOSITORY, REVISION).is_ok_and(|repository| {
             crate::prepared::is_ready(
                 &repository.file(cache_dir, onnx(Device::Cpu)),
                 cache_dir,
@@ -1148,7 +1158,7 @@ fn load_model(cache_dir: &Path, settings: &crate::InferenceSettings) -> Result<(
     let max_tokens = settings.rerank.max_tokens.get();
     let batch_tokens = settings.rerank.batch_tokens.get();
 
-    let repository = Repository::open(cache_dir, REPOSITORY)?;
+    let repository = Repository::open_at(cache_dir, REPOSITORY, REVISION)?;
 
     let session = |device: Device, providers, _validated: bool| -> Result<Encoder> {
         if device == Device::Cpu {
@@ -2630,7 +2640,8 @@ mod tests {
         // On the CPU directly: `load_model` may calibrate onto an
         // accelerator, which runs no batches side by side.
         std::fs::create_dir_all(&cache).expect("create the model cache");
-        let repository = Repository::open(&cache, REPOSITORY).expect("open the repository");
+        let repository =
+            Repository::open_at(&cache, REPOSITORY, REVISION).expect("open the repository");
         let mut model = cpu_model(
             &repository,
             &cache,
@@ -2691,7 +2702,8 @@ mod tests {
             std::env::var_os("PAMIN_EVAL_MODEL_CACHE").expect("set PAMIN_EVAL_MODEL_CACHE"),
         );
         std::fs::create_dir_all(&cache).expect("create the model cache");
-        let repository = Repository::open(&cache, REPOSITORY).expect("open the repository");
+        let repository =
+            Repository::open_at(&cache, REPOSITORY, REVISION).expect("open the repository");
         let weights = repository.file(&cache, onnx(Device::Cpu));
         let loaded = |threads: usize, batch: Option<usize>| {
             let settings = crate::InferenceSettings {
