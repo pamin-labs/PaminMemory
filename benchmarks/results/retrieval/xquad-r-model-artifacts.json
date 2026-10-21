@@ -22,10 +22,10 @@
     },
     {
       "role": "reranker",
-      "repository": "onnx-community/bge-reranker-v2-m3-ONNX",
-      "revision": "6f5ff65298512715a1e669753bc754d2bc8f367b",
+      "repository": "pamin-labs/bge-reranker-v2-m3-sq-int8-onnx",
+      "revision": "eb7411f3a2e11886fdcddbcd25f99c16309c0d28",
       "source_onnx": "onnx/model_int8.onnx",
-      "source_onnx_sha256": "912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d",
+      "source_onnx_sha256": "938a3f163723b6ca9725b2bd7ff62191ec8628b838a95458e55a8cf9c6af2280",
       "files_sha256": {
         "config.json": "122e922dcfed6503c8721e6fe1daf090340c3d95ca7f3aa3a72730b321a51cfd",
         "tokenizer.json": "8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3",
