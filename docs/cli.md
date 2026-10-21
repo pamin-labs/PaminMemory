@@ -381,8 +381,10 @@ because a CPU pass now takes one pair and its plan key changed with that.
   whole removes them, and the next load of the two current models fetches and
   prepares them again.
 - The reranker now loads from `pamin-labs/bge-reranker-v2-m3-sq-int8-onnx`,
-  fetched on the first search after upgrading, about 570 MB, and its plans are
-  measured again once. The previous download,
+  fetched on the first search after upgrading, and its plans are measured
+  again once. On the CPU that is the int8 file, about 570 MB; a host that
+  reranks on an accelerator also fetches the fp16 file, about 1.1 GB, which
+  is upstream's unchanged but now comes from the new repository. The previous download,
   `models--onnx-community--bge-reranker-v2-m3-ONNX`, is not deleted, for the
   same reason; remove it by hand once no older `pamin` uses the directory. Its
   prepared copy is not removed either, because its record still names it as
