@@ -88,10 +88,21 @@ pub(crate) fn probe(threads: usize, model: &Path) -> Result<Session> {
 }
 
 fn commit(builder: &mut SessionBuilder, model: &Path) -> Result<Session> {
-    let session = builder
-        .commit_from_file(model)
-        .map_err(|error| IndexError::Engine(format!("loading {}: {error}", model.display())))?;
-    Ok(session)
+    Ok(commit_owning(builder, model)?.0)
+}
+
+/// [`commit`], and the clean mappings of `model`'s directory the session
+/// created; see [`crate::resident::loading`]. Every session loaded from a file
+/// goes through here, so no other load's mappings can be counted as its own.
+fn commit_owning(
+    builder: &mut SessionBuilder,
+    model: &Path,
+) -> Result<(Session, Vec<(usize, usize)>)> {
+    crate::resident::loading(model.parent().unwrap_or(model), || {
+        builder
+            .commit_from_file(model)
+            .map_err(|error| IndexError::Engine(format!("loading {}: {error}", model.display())))
+    })
 }
 
 /// Preparation probes do not report themselves as scoring sessions.
@@ -410,14 +421,16 @@ fn coreml_cache(model: &std::path::Path, rows: usize, tokens: usize) -> Result<P
 }
 
 /// A CPU session over `model` with `threads` intra-op threads, otherwise
-/// built as [`session`] builds one.
-pub(crate) fn cpu_session(model: &Path, threads: usize) -> Result<Session> {
+/// built as [`session`] builds one, and the clean mappings of `model`'s
+/// directory it created, which the holder of the session may release; see
+/// [`crate::resident::loading`].
+pub(crate) fn cpu_session(model: &Path, threads: usize) -> Result<(Session, Vec<(usize, usize)>)> {
     let mut builder = options(threads, vec![cpu()])?
         .with_intra_threads(threads)
         .map_err(|error| IndexError::Engine(format!("preparing a session: {error}")))?;
-    let session = commit(&mut builder, model)?;
+    let (session, mapped) = commit_owning(&mut builder, model)?;
     report_model(&session, model);
-    Ok(session)
+    Ok((session, mapped))
 }
 
 /// The execution provider selected for a model's forward passes.

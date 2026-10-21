@@ -1121,6 +1121,121 @@ raw rows and harnesses are in the private
 `internal-docs/pamin-memory/research/2026-10-20/raw/q69/` folder, with
 q64 and q67 beside it.
 
+**An idle model's weights handed back to the page cache.** A CPU session
+reads its weights from a mapped prepared copy, and every page a pass touches
+stays in the process until the mapping goes. A search runs the embedder and
+then the reranker, so the process holds both models' weights. A background
+thread now hands a model's clean mappings back with `madvise(MADV_DONTNEED)`
+once that model has run no pass for 30 s. The first table below measured an
+earlier form that released them after every model's passes in every search;
+why that changed, and the idle release's own measurement, follow it.
+- The pages stay in the page cache, and the next pass maps them back with
+  minor faults.
+- A mapping with any written page is skipped.
+- Only the mappings an encoder's own sessions created are released. They are
+  found once, as each session loads: loads run one at a time, and
+  `/proc/self/maps` before is compared with `/proc/self/smaps` after. A
+  released range is therefore never the address of another session's
+  mapping, which may be unmapped and its addresses reused.
+- Finding them once, not after every pass, matters because reading
+  `/proc/self/smaps` walks every page table.
+
+Measured at the entry point with the same setup as the rows above, four
+rotated runs an arm. The release is `1e97b9e` against main's code `d569c57`.
+The finding-once change is `7e78d51` against `1e97b9e`, with one shared run
+excluded and re-run:
+
+| metric | main | release | release, ranges found once | abs diff vs main | % vs main |
+| --- | --- | --- | --- | --- | --- |
+| nDCG@10, 120 queries | 0.7381 | 0.7381 | 0.7381 | 0 | 0.0% |
+| search p50 ms (per run) | 1,115.1 | 1,198.1 (1.074 [0.976, 1.199]) | 0.945 [0.802, 1.114] of release | N/A | N/A, not measured against main |
+| search p95 ms (per run) | 3,438.8 | 3,452.8 (1.004 [0.917, 1.081]) | 0.895 [0.854, 1.023] of release | N/A | N/A, not measured against main |
+| search server CPU sys ms/query | 82.4 | 124.3 | 89.8 (**0.744 [0.481, 0.919]** of release) | N/A | N/A, not measured against main |
+| search server reads kB/query | 1,132.6 | 2,743.2 | 1,132.6 | 0 | 0.0% |
+| **search VmHWM MB (process RSS)** | **973** | **689 (0.708 [0.693, 0.718])** | 693 (1.001 [0.973, 1.038] of release) | **−284** | **−29.2%** |
+| search peak RssAnon MB | 312 | 325 (**1.044 [1.012, 1.075]**) | 323 | +14 | +4.4% |
+| ingest VmHWM MB (process RSS) | 790 | 759 (**0.960 [0.916, 0.984]**) | 757 | −31 | −4.0% |
+| ingest wall s | 251.4 | 255.7 (1.017 [0.971, 1.088]) | 0.979 [0.932, 1.047] of release | N/A | N/A |
+| index dir MB | 27.3 | 27.2 | 28.4 | N/A | allocation noise; same index |
+
+**The search peak falls by about one model's mapped weights, and no latency
+change is claimed.**
+- At the end of a search, neither model's data file holds a resident page,
+  against 291 and 294 MB before.
+- Reading smaps after every pass cost reads and system time. Finding the
+  ranges once removed both: reads are back to main's exact figure.
+- No latency figure moved significantly, either way. The branch head was
+  not measured directly against main, so its latency cells against main
+  are N/A.
+- The measured `7e78d51` found the ranges once per set of loaded sessions by
+  looking at the model's directory. Finding them per session load instead
+  reads the same files no more often per search, but that form is not in
+  this table.
+- These runs' absolute latencies are higher than the rows above, because
+  they interleaved with an unrelated accuracy replay that never overlapped a
+  timed run. The comparisons within each experiment hold.
+
+**Releasing after every search cost latency, so the release now waits for
+30 s of idleness.** Two later entry-point experiments measured the
+per-search release directly against main, four rotated runs an arm:
+- q74 (`740778d` against main `48448b6`): search p50 +10.4%, 1.104
+  [1.024, 1.231]; p95 −1.7%, not significant; search VmHWM −29.4%.
+- q78 (`3bc51c2` against main `b2b3bc7`): search p50 +2.6%, 1.026
+  [0.898, 1.250]; p95 +6.0%, 1.060 [0.999, 1.142]; search VmHWM −31.0%.
+  Neither latency change is significant there.
+- The cost is not the refaults: the release added about 4,300 minor faults
+  a search, on the order of milliseconds. What does cost the time is not
+  established.
+- Mapping the weights back in one call before the passes
+  (`MADV_POPULATE_READ`, `d7ed3aa`) brought no latency back and returned the
+  search peak to main's, because the mapped data file includes the
+  word-embedding table the product reads with `pread`. It was reverted
+  (`003152b`).
+
+Latency outranks memory. An agent's queries come in bursts a few seconds
+apart, while a memory tool is idle most of the time. Releasing only after
+30 s without a pass should keep a burst's latency at main's and still hand
+the weights back while idle. It gives up the lower peak during a burst.
+
+q80 measured the idle release (`c3c6260`) directly against main
+(`b2b3bc7`), which is also its immediate predecessor, at the entry point:
+four rotated runs an arm (`A I I A I A A I`), none shared. Each run timed the
+same 240 back-to-back queries, then waited 45 s with no query and read the
+server's memory:
+
+| metric | main | idle release | abs diff | % change | ratio [95% CI] |
+| --- | --- | --- | --- | --- | --- |
+| nDCG@10, 120 queries | 0.7436 | 0.7436 | 0 | 0.0% | top-10 identical across all runs |
+| search p50 ms (per run) | 1,186.9 | 1,111.4 | −75.6 | −6.4% | 0.936 [0.854, 1.000] |
+| search p95 ms (per run) | 3,205.3 | 3,405.5 | +200.3 | +6.2% | 1.062 [0.967, 1.123] |
+| search server CPU user ms/query | 4,201.8 | 4,350.9 | +149.0 | +3.5% | 1.035 [0.978, 1.119] |
+| search VmHWM MB (process RSS) | 971 | 972 | +1 | +0.1% | 1.001 [0.987, 1.008] |
+| **VmRSS MB after 45 s idle** | **926** | **336** | **−590** | **−63.8%** | **0.362 [0.349, 0.390]** |
+| model data files resident after 45 s idle, MB | 585.1 | 0.0 | −585.1 | −100% | released in every run |
+| first query after idle | N/A | N/A | N/A | N/A | not measured; see below |
+| ingest VmHWM MB | 798 | 782 | −17 | −2.1% | 0.979 [0.975, 0.999] |
+| ingest wall s | 258.2 | 265.3 | +7.1 | +2.8% | 1.028 [0.956, 1.121] |
+
+- **Accuracy and latency.** Accuracy is identical. Neither latency change
+  is significant, and the two move in opposite directions.
+- **No release during a burst.** At the end of the timed loop, both arms
+  still held both models' data files (585 MB), so back-to-back queries
+  never released anything. The search peak is therefore main's.
+- **Memory while idle.** After 45 s, the idle release held none of the
+  model data and its process RSS was 0.36 of main's.
+- **The first query after idle is not measured.** The harness re-ran
+  queries it had already scored. Those were served from the reranker score
+  cache without a pass, so no weights were mapped back. That search pays at
+  most what the per-search release paid on every search: p50 +2.6% (q78)
+  to +10.4% (q74).
+
+Memory is the `pamin serve` process alone, with no accelerator services.
+Disk is the index directory; the prepared copies (1,668 MB) are unchanged.
+The release runs only on Linux; macOS and Windows are unaffected and
+unmeasured. The raw rows and harnesses are in the private
+`internal-docs/pamin-memory/research/2026-10-20/raw/q72b/`, `raw/q72c/` and
+`raw/q74/` folders, and in `2026-10-21/raw/q78/` and `raw/q80/`.
+
 **Truncating at 192 or 384 tokens rather than 256 was measured, and neither
 ships.** In the same runs, each limit paired against 256 with the new batching:
 192 made a search 0.80 of what it was on MuSiQue, where half the pairs reach
