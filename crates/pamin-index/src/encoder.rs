@@ -31,6 +31,13 @@ use crate::tokenizer::Tokenizer;
 use crate::word_embeddings::WordTable;
 
 pub(crate) struct Encoder {
+    /// The clean mappings of [`side_by_side`](Self::side_by_side)'s graph
+    /// that this encoder's own sessions created, released once
+    /// [`run_each`](Self::run_each) has gone unused for a while. They stay
+    /// mapped while the sessions do, so they are never another mapping's
+    /// addresses. The first field, so that it is dropped -- and the ranges
+    /// unregistered -- before any session is.
+    resident: crate::resident::Resident,
     runtime_plan: crate::inference::RuntimePlan,
     tokenizer: Tokenizer,
     session: Session,
@@ -48,11 +55,6 @@ pub(crate) struct Encoder {
     /// every text on [`session`](Self::session); and how many passes it runs
     /// at once.
     side_by_side: Option<(PathBuf, Option<SharedCpuSession>, usize)>,
-    /// The clean mappings of [`side_by_side`](Self::side_by_side)'s graph
-    /// that this encoder's own sessions created, which
-    /// [`run_each`](Self::run_each) releases. They stay mapped while the
-    /// sessions do, so they are never another mapping's addresses.
-    resident: Vec<(usize, usize)>,
     /// Whether its graph scores correctly only a pass of one unpadded row (see
     /// `crate::prepared::is_trimmed`); kept when passes stop running side by
     /// side, since [`session`](Self::session) loaded the same graph.
@@ -122,7 +124,7 @@ impl Encoder {
             token_type_ids,
             word_embeddings: None,
             side_by_side: None,
-            resident: Vec::new(),
+            resident: crate::resident::Resident::default(),
             one_row: false,
             #[cfg(test)]
             most_at_once: 0,
@@ -146,7 +148,7 @@ impl Encoder {
         tokenizer: Tokenizer,
         revision: String,
     ) -> Result<Self> {
-        let (session, resident) = crate::inference::cpu_session(&model, threads)?;
+        let (session, mapped) = crate::inference::cpu_session(&model, threads)?;
         let word_embeddings = WordTable::beside(&model)?.map(Arc::new);
         if let Some(table) = &word_embeddings
             && !session
@@ -160,13 +162,14 @@ impl Encoder {
                 table.input()
             )));
         }
-        Ok(Self {
+        let mut encoder = Self {
             word_embeddings,
             one_row: crate::prepared::is_trimmed(&model),
             side_by_side: Some((model, None, threads)),
-            resident,
             ..Self::from_parts(session, tokenizer, revision)
-        })
+        };
+        encoder.resident.extend(mapped);
+        Ok(encoder)
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -198,7 +201,7 @@ impl Encoder {
             token_type_ids: false,
             word_embeddings: None,
             side_by_side: None,
-            resident: Vec::new(),
+            resident: crate::resident::Resident::default(),
             one_row: false,
             #[cfg(test)]
             most_at_once: 0,
@@ -331,11 +334,11 @@ impl Encoder {
         batches: Vec<Vec<Encoding>>,
         read: impl Fn(Outputs) -> Result<T> + Sync,
     ) -> Result<Vec<T>> {
+        // The weights stay resident while passes run, and are handed back
+        // once the model has gone unused for a while. See `crate::resident`.
+        self.resident.busy();
         let results = self.run_each_resident(batches, read);
-        // A search runs the embedder and then the reranker; handing each
-        // one's weights back once its passes are done keeps only one model's
-        // in the process at a time. See `crate::resident`.
-        crate::resident::release(&self.resident);
+        self.resident.idle();
         results
     }
 

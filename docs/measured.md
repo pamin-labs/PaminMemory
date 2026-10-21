@@ -1121,12 +1121,14 @@ raw rows and harnesses are in the private
 `internal-docs/pamin-memory/research/2026-10-20/raw/q69/` folder, with
 q64 and q67 beside it.
 
-**One model's weights resident at a time.** A CPU session reads its weights
-from a mapped prepared copy, and every page a pass touches stays in the
-process until the mapping goes. A search runs the embedder and then the
-reranker, so its peak counted both models' weights. After each model's
-passes, `Encoder::run_each` now hands that model's clean mappings back with
-`madvise(MADV_DONTNEED)`.
+**An idle model's weights handed back to the page cache.** A CPU session
+reads its weights from a mapped prepared copy, and every page a pass touches
+stays in the process until the mapping goes. A search runs the embedder and
+then the reranker, so the process holds both models' weights. A background
+thread now hands a model's clean mappings back with `madvise(MADV_DONTNEED)`
+once that model has run no pass for 30 s. The rows below measured an earlier
+form that released them after every model's passes in every search; why that
+changed, and what is not yet measured, follows the table.
 - The pages stay in the page cache, and the next pass maps them back with
   minor faults.
 - A mapping with any written page is skipped.
@@ -1173,12 +1175,37 @@ change is claimed.**
   they interleaved with an unrelated accuracy replay that never overlapped a
   timed run. The comparisons within each experiment hold.
 
+**Releasing after every search cost latency, so the release now waits for
+30 s of idleness.** Two later entry-point experiments measured the
+per-search release directly against main, four rotated runs an arm:
+- q74 (`740778d` against main `48448b6`): search p50 +10.4%, 1.104
+  [1.024, 1.231]; p95 −1.7%, not significant; search VmHWM −29.4%.
+- q78 (`3bc51c2` against main `b2b3bc7`): search p50 +2.6%, 1.026
+  [0.898, 1.250]; p95 +6.0%, 1.060 [0.999, 1.142]; search VmHWM −31.0%.
+  Neither latency change is significant there.
+- The cost is not the refaults: the release added about 4,300 minor faults
+  a search, on the order of milliseconds. What does cost the time is not
+  established.
+- Mapping the weights back in one call before the passes
+  (`MADV_POPULATE_READ`, `d7ed3aa`) brought no latency back and returned the
+  search peak to main's, because the mapped data file includes the
+  word-embedding table the product reads with `pread`. It was reverted
+  (`003152b`).
+
+Latency outranks memory. An agent's queries come in bursts a few seconds
+apart, while a memory tool is idle most of the time. Releasing only after
+30 s without a pass should keep a burst's latency at main's and still hand
+the weights back while idle. It gives up the lower peak during a burst.
+**The idle release itself is not yet measured:** neither its latency
+against main under back-to-back queries nor its resident memory after the
+delay. The table's memory gain is the per-search form's, not this one's.
+
 Memory is the `pamin serve` process alone, with no accelerator services.
 Disk is the index directory; the prepared copies (1,668 MB) are unchanged.
 The release runs only on Linux; macOS and Windows are unaffected and
 unmeasured. The raw rows and harnesses are in the private
-`internal-docs/pamin-memory/research/2026-10-20/raw/q72b/` and `raw/q72c/`
-folders.
+`internal-docs/pamin-memory/research/2026-10-20/raw/q72b/`, `raw/q72c/` and
+`raw/q74/` folders, and in `2026-10-21/raw/q78/`.
 
 **Truncating at 192 or 384 tokens rather than 256 was measured, and neither
 ships.** In the same runs, each limit paired against 256 with the new batching:
