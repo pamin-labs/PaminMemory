@@ -1313,8 +1313,14 @@ mod tests {
         assert_eq!(
             muls,
             [
-                (&["x".to_string(), "sx".to_string()][..], &["xm".to_string()][..]),
-                (&["h1".to_string(), "s1".to_string()][..], &["h1m".to_string()][..]),
+                (
+                    &["x".to_string(), "sx".to_string()][..],
+                    &["xm".to_string()][..]
+                ),
+                (
+                    &["h1".to_string(), "s1".to_string()][..],
+                    &["h1m".to_string()][..]
+                ),
             ]
         );
     }
