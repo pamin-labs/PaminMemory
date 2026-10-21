@@ -33,6 +33,35 @@ def loaded_graphs(run_log, workspace_models):
     return graphs
 
 
+def source_record(prepared, model):
+    """The lines of the record of the copy made from this model's pinned revision.
+
+    A record names its revision on a `revision <repository>@<commit>` line, under a file name that carries a hash of
+    it (`<label>.<tag>.source`); an older build wrote one `<label>.source` with no revision line.
+    """
+    revision = "revision " + model["repository"] + "@" + model["revision"]
+    records = [path.read_text().splitlines() for path in sorted(prepared.glob("*.source"))]
+    matching = [lines for lines in records if revision in lines]
+    if not matching:
+        label = model["repository"].replace("/", "--") + "--" + model["source_onnx"].replace("/", "--")
+        legacy = prepared / (label + ".source")
+        assert legacy.exists(), f"{model['role']}: no prepared source record names {revision}"
+        return legacy.read_text().splitlines()
+    assert len(matching) == 1, f"{model['role']}: several prepared source records name {revision}"
+    return matching[0]
+
+
+def default_graph(copy, selected):
+    """The graph the product loads from `copy`: the fused one if it exists, else ONNX Runtime's; its last-layer
+    trim when the passes are one unpadded row (the run's selection says whether they were); and the word-embedding
+    split of whichever that is, when it exists."""
+    base = "attention" if (copy / "attention.onnx").exists() else "model"
+    if base == "attention" and selected.name.startswith("attention.cls1.") and (copy / "attention.cls1.onnx").exists():
+        base = "attention.cls1"
+    split = copy / (base + ".split1.onnx")
+    return split if split.exists() else copy / (base + ".onnx")
+
+
 def verify(workspace_models, run_log, models):
     observed = loaded_graphs(run_log, workspace_models)
     observed_hashes = {path: digest(path) for path in observed}
@@ -44,9 +73,7 @@ def verify(workspace_models, run_log, models):
         for name, expected in model["files_sha256"].items():
             assert digest(snapshot / name) == expected, f"{model['role']}: {name} changed"
 
-        label = model["repository"].replace("/", "--") + "--" + model["source_onnx"].replace("/", "--")
-        source = workspace_models / "prepared" / (label + ".source")
-        record = source.read_text().splitlines()
+        record = source_record(workspace_models / "prepared", model)
         assert len(record) >= 4 and record[0] and record[1].isdigit() and record[2].isdigit(), (
             "prepared source record lacks a digest; rerun prepare_pinned_xquad_models")
         assert record[3] == "sha256 " + model["source_onnx_sha256"], f"{model['role']}: source digest changed"
@@ -56,11 +83,11 @@ def verify(workspace_models, run_log, models):
         selected = candidates[0]
         preferred = selected.parent
         assert selected.name == model["selected_graph"], f"{model['role']}: graph selection changed"
-        default = preferred / ("attention.onnx" if (preferred / "attention.onnx").exists() else "model.onnx")
-        assert selected == default, f"{model['role']}: run did not use the default graph selection"
+        assert selected == default_graph(preferred, selected), (
+            f"{model['role']}: run did not use the default graph selection")
         assert digest(preferred / "model.onnx") == model["prepared_graph_sha256"]
         assert digest(preferred / "model.onnx.data") == model["prepared_data_sha256"]
-        if selected.name == "model.onnx":
+        if selected.name in ("model.onnx", "model.split1.onnx"):
             assert digest(preferred / "attention.unfused") == model["unfused_decision_sha256"]
         matched.add(selected)
         print(f"{model['role']}: pinned revision and loaded graph {selected} match")
