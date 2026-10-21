@@ -21,6 +21,7 @@ pub(crate) const NODE_DOMAIN: u32 = 7;
 pub(crate) const ATTRIBUTE_NAME: u32 = 1;
 pub(crate) const ATTRIBUTE_F: u32 = 2;
 pub(crate) const ATTRIBUTE_I: u32 = 3;
+pub(crate) const ATTRIBUTE_T: u32 = 5;
 pub(crate) const ATTRIBUTE_G: u32 = 6;
 pub(crate) const ATTRIBUTE_INTS: u32 = 8;
 pub(crate) const ATTRIBUTE_GRAPHS: u32 = 11;
@@ -48,6 +49,7 @@ pub(crate) const DIM_PARAM: u32 = 2;
 // `AttributeProto.AttributeType` and `TensorProto.DataType`.
 pub(crate) const ATTRIBUTE_FLOAT: u64 = 1;
 pub(crate) const ATTRIBUTE_INT: u64 = 2;
+pub(crate) const ATTRIBUTE_TENSOR: u64 = 4;
 pub(crate) const FLOAT: i64 = 1;
 pub(crate) const UINT8: i64 = 2;
 pub(crate) const INT8: i64 = 3;
@@ -336,6 +338,29 @@ impl<'a> Node<'a> {
             Some(attribute) => attribute.int,
         }
     }
+}
+
+/// `node` with `inputs` in place of the inputs it has, every other field
+/// copied as it was: the message, without the tag a graph writes before it.
+/// Fewer inputs than the node had drop the last ones.
+pub(crate) fn with_inputs(node: &Node<'_>, inputs: &[&str]) -> Result<Vec<u8>, String> {
+    let outer = fields(node.raw)?;
+    let mut message = Vec::with_capacity(node.raw.len());
+    let mut had = 0;
+    for field in fields(only(&outer, GRAPH_NODE, "node")?.bytes()?)? {
+        if field.number != NODE_INPUT {
+            message.extend_from_slice(field.raw);
+            continue;
+        }
+        if let Some(input) = inputs.get(had) {
+            put_bytes(&mut message, NODE_INPUT, input.as_bytes());
+        }
+        had += 1;
+    }
+    if inputs.len() > had {
+        return Err(format!("a node of {had} inputs given {}", inputs.len()));
+    }
+    Ok(message)
 }
 
 pub(crate) fn int_attribute(name: &str, value: i64) -> Vec<u8> {
