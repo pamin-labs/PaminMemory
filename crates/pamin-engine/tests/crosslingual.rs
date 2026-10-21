@@ -910,7 +910,7 @@ fn stale_reranker_revision_is_rejected_before_indexing_or_scoring() {
     let models = tempfile::tempdir().unwrap();
     let refs = models
         .path()
-        .join("models--onnx-community--bge-reranker-v2-m3-ONNX/refs");
+        .join("models--pamin-labs--bge-reranker-v2-m3-sq-int8-onnx/refs");
     std::fs::create_dir_all(&refs).unwrap();
     std::fs::write(refs.join("main"), "stale").unwrap();
     pinned_model_id(models.path(), "reranker");
