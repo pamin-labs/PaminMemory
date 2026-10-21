@@ -311,7 +311,7 @@ reranker. There is nothing to choose between:
 | Role | Model | Width | Resident | Per query |
 | --- | --- | --- | --- | --- |
 | Embedding | BGE-M3, int8 weights (`gpahal/bge-m3-onnx-int8`) | 1024 | 272 MiB live | 37.7 ms idle, 46–47 ms under load |
-| Reranking | bge-reranker-v2-m3, int8 weights | | 271 MiB live | see [`pamin search`](#pamin-search) |
+| Reranking | bge-reranker-v2-m3, int8 weights (`pamin-labs/bge-reranker-v2-m3-sq-int8-onnx`) | | 271 MiB live | see [`pamin search`](#pamin-search) |
 
 Resident is live anonymous memory with the model loaded from its mapped copy,
 taken before the vocabulary was shared and compacted and without the session
@@ -380,6 +380,12 @@ because a CPU pass now takes one pair and its plan key changed with that.
   every process using the directory stopped, deleting `models/prepared/` as a
   whole removes them, and the next load of the two current models fetches and
   prepares them again.
+- The reranker now loads from `pamin-labs/bge-reranker-v2-m3-sq-int8-onnx`,
+  fetched on the first search after upgrading, about 570 MB, and its plans are
+  measured again once. The previous download,
+  `models--onnx-community--bge-reranker-v2-m3-ONNX`, is not deleted, for the
+  same reason; remove it by hand once no older `pamin` uses the directory. Its
+  prepared copy is removed on its own after 14 days without a load.
 
 `--vector-index` chooses how a project's vectors are indexed. Both choices
 store every vector in half precision and search the same way -- the index
@@ -657,7 +663,10 @@ retrieval should reach for `grep`, `read`, and `neighbors` rather than adjust
 ranking internals it has no way to evaluate.
 
 Every search reranks: bge-reranker-v2-m3, with int8 weights, reads the query
-and each candidate together and reorders what fusion found. There is no
+and each candidate together and reorders what fusion found. The weights are
+PaminLabs' SmoothQuant re-export of `onnx-community`'s int8 file, which
+moves activation outliers into the weights before they are quantized; see
+[measured.md](measured.md) for what it changed. There is no
 setting for it. Earlier versions chose a tier with `--rerank` and
 `PAMIN_RERANK` -- `off`, `fast` (a 119 MB MiniLM cross-encoder) or `accurate`,
 which is the one kept; see
