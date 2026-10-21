@@ -385,7 +385,9 @@ because a CPU pass now takes one pair and its plan key changed with that.
   measured again once. The previous download,
   `models--onnx-community--bge-reranker-v2-m3-ONNX`, is not deleted, for the
   same reason; remove it by hand once no older `pamin` uses the directory. Its
-  prepared copy is removed on its own after 14 days without a load.
+  prepared copy is not removed either, because its record still names it as
+  that model's current copy; deleting `models/prepared/` as a whole, as above,
+  removes it.
 
 `--vector-index` chooses how a project's vectors are indexed. Both choices
 store every vector in half precision and search the same way -- the index
