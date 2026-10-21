@@ -181,6 +181,7 @@ results/
     xquad-r-input.sha256             hashes of the pinned question, answer and passage files
     xquad-r-index-profile.txt        evaluated project's passage and storage marker
     xquad-r-model-artifacts.json      pinned hub revisions and model file hashes
+    xquad-r-model-artifacts-2026-09-26.json  the same, as the archived run below recorded them
     xquad-r-current-run.log          product-path XQuAD-R harness output
     summary-current-xquad.json       its four group metrics and run conditions
 ```
