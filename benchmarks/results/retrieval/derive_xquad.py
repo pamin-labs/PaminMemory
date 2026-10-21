@@ -33,7 +33,7 @@ profile = root / "xquad-r-index-profile.txt"
 assert profile.read_text().splitlines() == [
     "gpahal/bge-m3-onnx-int8", "topic", "memory", "named", "reversed-keys"
 ]
-models = root / "xquad-r-model-artifacts.json"
+models = root / "xquad-r-model-artifacts-2026-09-26.json"
 models_hash = hashlib.sha256(models.read_bytes()).hexdigest()
 assert models_hash == "75ff42b82260ba95ea8e26bdbcd7f4f52da05d0819625e2cbab3602643c2d4ee"
 embedding_ids = re.findall(r"^\s*index embedding identity: ([0-9a-f]{64})\s*$", text, re.M)
