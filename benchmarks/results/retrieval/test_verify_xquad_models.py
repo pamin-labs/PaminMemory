@@ -51,6 +51,42 @@ class LoadedGraphTest(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, "loaded graph must match"):
                 verify(models, log, manifest)
 
+    def test_a_tagged_record_and_the_trimmed_split_graph_verify(self):
+        with tempfile.TemporaryDirectory() as home:
+            models = Path(home) / "models"
+            hub = models / "models--someone--model"
+            (hub / "refs").mkdir(parents=True)
+            (hub / "refs/main").write_text("revision")
+            snapshot = hub / "snapshots/revision"
+            snapshot.mkdir(parents=True)
+            (snapshot / "config.json").write_bytes(b"config")
+            prepared = models / "prepared"
+            prepared.mkdir()
+            source_hash = hashlib.sha256(b"source").hexdigest()
+            (prepared / "someone--model@revision--model.onnx.0123456789abcdef.source").write_text(
+                "model.onnx\n6\n2\nsha256 " + source_hash + "\nrevision someone/model@revision\n")
+            copy = prepared / "key"
+            copy.mkdir()
+            files = {"model.onnx": b"graph", "model.onnx.data": b"weights", "attention.onnx": b"fused",
+                     "attention.cls1.onnx": b"trimmed", "attention.cls1.split1.onnx": b"trimmed split"}
+            for name, data in files.items():
+                (copy / name).write_bytes(data)
+            sha = lambda data: hashlib.sha256(data).hexdigest()
+            manifest = [{"role": "reranker", "repository": "someone/model", "revision": "revision",
+                         "source_onnx": "model.onnx", "source_onnx_sha256": source_hash,
+                         "files_sha256": {"config.json": sha(b"config")},
+                         "selected_graph": "attention.cls1.split1.onnx", "selected_graph_sha256": sha(b"trimmed split"),
+                         "prepared_graph_sha256": sha(b"graph"), "prepared_data_sha256": sha(b"weights")}]
+            log = Path(home) / "run.log"
+            log.write_text("INFO loaded ONNX graph model_graph="
+                           + json.dumps(str(copy / "attention.cls1.split1.onnx")) + "\n")
+            verify(models, log, manifest)
+            # The unsplit graph beside an existing split is not what the product loads.
+            manifest[0].update(selected_graph="attention.cls1.onnx", selected_graph_sha256=sha(b"trimmed"))
+            log.write_text("INFO loaded ONNX graph model_graph=" + json.dumps(str(copy / "attention.cls1.onnx")) + "\n")
+            with self.assertRaisesRegex(AssertionError, "default graph selection"):
+                verify(models, log, manifest)
+
 
 if __name__ == "__main__":
     unittest.main()

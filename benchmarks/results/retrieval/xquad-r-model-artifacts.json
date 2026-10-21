@@ -12,13 +12,13 @@
         "tokenizer_config.json": "b87c8703482b0300d3da30e201519aa641f6a450f5eb5bf1e624afbf70c74d80",
         "special_tokens_map.json": "8c785abebea9ae3257b61681b4e6fd8365ceafde980c21970d001e834cf10835"
       },
-      "prepared_key_on_measured_host": "549712a50abc9b4ab711de76de12c56a",
-      "prepared_graph_sha256": "28743108e5b205f566d0156a8d5cd9efb28179d0679755aff6940aeaf624bcb0",
-      "prepared_data_sha256": "e5ea60bbb78f8f6af7ce66032ed6c3f59496e247846b28a3fc91c0a5151e677f",
-      "selected_graph": "model.onnx",
-      "selected_graph_sha256": "28743108e5b205f566d0156a8d5cd9efb28179d0679755aff6940aeaf624bcb0",
+      "prepared_key_on_measured_host": "a160f4d7dd8c9dc2dfa7034a0ade7b46",
+      "prepared_graph_sha256": "51040ce485c0c3a9f9e46fdf1847ee125aa8e2dadbcf97a49a636bb47cd42ea4",
+      "prepared_data_sha256": "2600d5896ddedb06f0d1627179ea1c39da1ef075e170598cd467016dc06e8c0b",
+      "selected_graph": "model.split1.onnx",
+      "selected_graph_sha256": "70c299ee6c6d1072e129b18ab9f69fc1b75a3b1d9f2771698512889b81fa30da",
       "unfused_decision_sha256": "c322eb636cc49901f92d208231cf74bf77ed9fceec62697739fb2064d81170a8",
-      "selection_provenance": "default selection checked against retained cache; unfused decision and graph predate the archived run"
+      "selection_provenance": "the prepared copy the 2026-10-21 revision-bound run loaded (word embeddings split out)"
     },
     {
       "role": "reranker",
@@ -37,7 +37,7 @@
       "prepared_data_sha256": "77a5d5e9a0e432015e1885bd3383cd9ff77062ae30b5e5c602d927d41f3a593e",
       "selected_graph": "attention.cls1.split1.onnx",
       "selected_graph_sha256": "5b7de3d8514839f7fd4615b6c0704654773528537939a9bdc31d8b20b998acff",
-      "selection_provenance": "the prepared copy the 2026-10-21 revision-bound run loaded (CLS-trimmed, split graph); the verifier's default-graph rule predates split graphs"
+      "selection_provenance": "the prepared copy the 2026-10-21 revision-bound run loaded (last layer trimmed, word embeddings split out)"
     }
   ]
 }
