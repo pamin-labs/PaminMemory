@@ -20,9 +20,9 @@ pub struct Settings {
     /// How the workspace's PostgreSQL cluster is installed and configured.
     pub store: StoreSettings,
     /// How long a model, and the indexes pinning it, may sit unused before a
-    /// resident process gives them back, in seconds. See `MODEL_IDLE` in
-    /// `engine.rs`. Never zero, which would give a model back the tick after
-    /// it loaded and make every search a model load.
+    /// resident process gives them back, in seconds. See
+    /// [`pamin_core::settings::MODEL_IDLE`]. Never zero, which would give a
+    /// model back the tick after it loaded and make every search a model load.
     pub model_idle: std::num::NonZeroU64,
     /// How many documents may sit outside the vector graph before upkeep
     /// builds it; [`pamin_index::projection::UNINDEXED_BUDGET`] in the
@@ -43,7 +43,7 @@ impl Default for Settings {
         Self {
             inference: InferenceSettings::default(),
             store: StoreSettings::default(),
-            model_idle: std::num::NonZeroU64::new(crate::engine::MODEL_IDLE.as_secs())
+            model_idle: std::num::NonZeroU64::new(pamin_core::settings::MODEL_IDLE.as_secs())
                 .expect("a model may sit idle for at least a second"),
             unindexed_budget: pamin_index::projection::UNINDEXED_BUDGET,
         }

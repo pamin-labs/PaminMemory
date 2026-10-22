@@ -269,42 +269,9 @@ const REVISION: &str = "eb7411f3a2e11886fdcddbcd25f99c16309c0d28";
 /// tier keep matching.
 pub const TIER: &str = "accurate";
 
-/// How many of the fused results the reranker looks at.
-///
-/// Thirty, and it was twenty until the default tier was measured at it. The
-/// twenty was settled on the `fast` model, where thirty bought +0.0009 of
-/// XQuAD-R cross-lingual -- "twenty is simply where it stops". The default is
-/// now `accurate`, a model fourteen times the size, and it keeps finding
-/// answers further down. Paired against twenty through `search_reranked`,
-/// nDCG@10 (the `DEPTH_VARIANTS` arm of each harness):
-///
-/// | depth | XQuAD-R cross (1,190) | own cross (43) | MIRACL (482) | MuSiQue (1,000) |
-/// |---|---|---|---|---|
-/// | 10 | **−0.0365**, p = 0.0001 | −0.0144 | −0.0021 | −0.0031, p = 0.069 |
-/// | 15 | **−0.0096**, p = 0.0001 | +0.0027 | +0.0015 | −0.0004 |
-/// | **30** | **+0.0063**, 192W/134L, p = 0.0001 | +0.0117 | −0.0008 | +0.0011 |
-/// | 40 | **+0.0076**, p = 0.0001 | +0.0235, p = 0.062 | +0.0002 | +0.0007 |
-///
-/// Unmarked cells are not significant, and XQuAD-R's same-language group
-/// moves by under 0.0006 at every depth. So shallower is refused -- fifteen
-/// looked free on MIRACL and MuSiQue and costs a hundredth where the
-/// reranker matters most -- and deeper is a significant gain on the
-/// cross-lingual group and a loss nowhere. Thirty takes five sixths of forty's
-/// gain for half its extra pairs: accuracy decides the direction and latency
-/// the distance, and forty's last 0.0013 is not worth another third of the
-/// reranker's time. The pass costs half again what it did at twenty in model
-/// pairs. Its wall time at thirty is under [`BATCH_TOKENS`], taken on a
-/// machine shared with other measurements rather than a quiet one, so it is
-/// the ratios there that carry.
-///
-/// The default of a search's own depth (`pamin_engine::Depths::rerank`), so a
-/// sweep sets it per search rather than per process. `DEPTH`, `BATCH` and
-/// `MAX_TOKENS` were each settled by measurement, and two of the three were
-/// settled on the scratch harness whose figures turned out to be about half
-/// again too high -- so they have to be re-settleable by the harness rather
-/// than by editing a constant and rebuilding: this one through the search,
-/// the other two through [`crate::RerankSettings`].
-pub const DEPTH: usize = 30;
+// How many fused results the reranker reads by default, with what settled it;
+// in `pamin_core::search` beside the other defaults the command line shows.
+pub use pamin_core::search::RERANK_DEPTH as DEPTH;
 
 /// How many padded tokens go through the model at once, on an accelerator; on
 /// the CPU a pass takes one pair (see [`CPU_BATCH`]), which this never limits.
