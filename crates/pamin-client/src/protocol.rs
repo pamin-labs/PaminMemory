@@ -22,6 +22,11 @@ use crate::command;
 /// command that needed it, and the file that says how to reach it.
 pub const SOCKET: &str = "pamin.sock";
 
+/// Where this workspace's socket lives.
+pub fn socket_path(workspace: &pamin_core::Workspace) -> std::path::PathBuf {
+    workspace.root().join(SOCKET)
+}
+
 /// Where a server started in the background writes what it has to say.
 ///
 /// A server outlives the command that started it, so it cannot inherit that

@@ -1,43 +1,13 @@
 //! `pamin link` — assert a relationship the text does not state.
 
 use anyhow::{Result, bail};
+use pamin_client::command::link::{Args, Linked};
+use pamin_client::command::validity;
 use pamin_store::graph;
 use pamin_store::graph::EdgeClaim;
-use serde::{Deserialize, Serialize};
 
-use crate::command::{resolve, validity};
-
+use crate::command::resolve;
 use crate::session::Session;
-
-#[derive(clap::Args, Serialize, Deserialize)]
-pub struct Args {
-    /// The topic the relationship starts from.
-    pub from: String,
-
-    /// The topic it points at.
-    pub to: String,
-
-    /// What the relationship is: mentions, supports, contradicts, supersedes,
-    /// related_to, part_of, derived_from, same_as, or depends_on.
-    #[arg(long, default_value = "related_to")]
-    pub kind: String,
-
-    #[command(flatten)]
-    pub validity: validity::Flags,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct Linked {
-    from: String,
-    to: String,
-    kind: String,
-    version: u32,
-    /// False when an identical claim was already live, in which case nothing
-    /// was written.
-    appended: bool,
-    valid_from: Option<String>,
-    valid_to: Option<String>,
-}
 
 pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Linked> {
     let kind = resolve::edge_kind(&args.kind)?;
@@ -67,19 +37,4 @@ pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Lin
     };
 
     Ok(result)
-}
-
-/// Renders the result for a person reading it.
-pub fn render(result: &Linked) -> String {
-    if result.appended {
-        format!(
-            "{} --{}--> {} (v{})",
-            result.from, result.kind, result.to, result.version
-        )
-    } else {
-        format!(
-            "Already linked: {} --{}--> {} (v{})",
-            result.from, result.kind, result.to, result.version
-        )
-    }
 }

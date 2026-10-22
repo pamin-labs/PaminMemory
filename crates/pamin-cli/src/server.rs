@@ -10,12 +10,13 @@
 //! machine by accident. No authentication, for the same reason.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use futures::{SinkExt, StreamExt};
+use pamin_client::protocol::{Call, Request, Response, socket_path};
+use pamin_client::settings::Server;
 use pamin_core::JobKind;
 use pamin_engine::{Engine, Owed};
 use pamin_index::{ProjectionIndex, VectorIndex};
@@ -24,14 +25,13 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio_util::codec::{Framed, LinesCodec};
 
 use crate::command;
-use crate::protocol::{Call, Request, Response, SOCKET};
 use crate::session::Session;
 
 /// Serves until stopped, and cleans up the socket on the way out.
 ///
 /// `server` is what it runs with, fixed for its lifetime: a request that asks
 /// for other settings is refused, never served with these.
-pub async fn run(workspace: &Workspace, server: crate::settings::Server) -> Result<()> {
+pub async fn run(workspace: &Workspace, server: Server) -> Result<()> {
     let path = socket_path(workspace);
     std::fs::create_dir_all(workspace.root())?;
 
@@ -45,8 +45,14 @@ pub async fn run(workspace: &Workspace, server: crate::settings::Server) -> Resu
             "server setting"
         );
     }
-    let session =
-        Arc::new(Session::open(workspace, server.settings.clone(), server.open_indexes).await?);
+    let session = Arc::new(
+        Session::open(
+            workspace,
+            crate::settings::engine(&server),
+            server.open_indexes,
+        )
+        .await?,
+    );
     let server = Arc::new(server);
 
     // A socket file left by a process that died is not a listener, so the stale
@@ -713,7 +719,7 @@ enum Shutdown {
 /// Reads requests from one client until it hangs up.
 async fn serve_connection(
     session: &Arc<Session>,
-    server: &crate::settings::Server,
+    server: &Server,
     stream: UnixStream,
 ) -> Result<Shutdown> {
     let mut framed = Framed::new(stream, LinesCodec::new_with_max_length(MAX_REQUEST));
@@ -737,7 +743,7 @@ async fn serve_connection(
         // replaces a server it has just rejected -- refusing it on a version
         // mismatch would leave the mismatched server listening for ever, which
         // is the one situation this check exists to get out of.
-        let ours = crate::protocol::version();
+        let ours = pamin_client::protocol::version();
         if !stopping && request.version != ours {
             let response = Response::Mismatch { server: ours };
             framed.send(serde_json::to_string(&response)?).await?;
@@ -877,11 +883,6 @@ fn within_bounds(response: &Response) -> Result<String> {
 
 fn json<T: serde::Serialize>(value: T) -> Result<Payload> {
     Ok(serde_json::value::to_raw_value(&value)?)
-}
-
-/// Where this workspace's socket lives.
-pub fn socket_path(workspace: &Workspace) -> PathBuf {
-    workspace.root().join(SOCKET)
 }
 
 #[cfg(all(test, target_os = "linux", target_env = "gnu"))]

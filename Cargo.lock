@@ -1852,6 +1852,7 @@ dependencies = [
  "anyhow",
  "clap",
  "futures",
+ "pamin-client",
  "pamin-core",
  "pamin-engine",
  "pamin-index",
@@ -1866,6 +1867,25 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zvec-rust-sys",
+]
+
+[[package]]
+name = "pamin-client"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures",
+ "pamin-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "time",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

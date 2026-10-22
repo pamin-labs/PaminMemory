@@ -14,14 +14,13 @@
 //! memory.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use pamin_client::command::import::{Args, Imported};
 use pamin_engine::Owed;
 use pamin_index::VectorIndex;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-use crate::command::validity;
 use crate::session::Session;
 
 /// How many memories to record between checks on the queue.
@@ -50,39 +49,11 @@ const BETWEEN_CHECKS: usize = 1_000;
 /// something unusable.
 const LEAST_AT_ONCE: usize = 2;
 
-#[derive(clap::Args, Serialize, Deserialize)]
-pub struct Args {
-    /// A file of memories, one JSON object per line: `{"topic": …, "content": …}`.
-    ///
-    /// Read by whichever process holds the workspace, which is the server when
-    /// one is running. Both are on this machine and run as you.
-    #[arg(long)]
-    pub from: PathBuf,
-
-    #[command(flatten)]
-    pub validity: validity::Flags,
-}
-
 /// One line of the file.
 #[derive(Deserialize)]
 struct Memory {
     topic: String,
     content: String,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct Imported {
-    /// Memories read from the file.
-    memories: usize,
-    /// Of those, the ones the filter put on the retrieval surface.
-    promoted: usize,
-    /// The rest: recorded as evidence, not indexed. Re-importing the same file
-    /// is how this fills up, and it is the right answer rather than an error.
-    held: usize,
-    /// Whether the projection caught up before this returned.
-    cascade: String,
-    /// Set when the projection was behind at any point during the import.
-    cascade_lagging: bool,
 }
 
 /// The file's memories, grouped by topic, each group in the file's own order.
@@ -210,14 +181,6 @@ pub async fn execute(
         cascade: if owed == 0 { "applied" } else { "queued" }.to_string(),
         cascade_lagging: lagging,
     })
-}
-
-/// Renders the result for a person reading it.
-pub fn render(result: &Imported) -> String {
-    format!(
-        "Imported {} memories: {} written, {} held in evidence only",
-        result.memories, result.promoted, result.held
-    )
 }
 
 #[cfg(test)]

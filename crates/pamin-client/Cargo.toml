@@ -1,0 +1,30 @@
+[package]
+name = "pamin-client"
+description = "The pamin command line's client half: its arguments, the wire protocol, and rendering."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# What the `pamin` executable is built from, so it must stay light: every
+# dependency here is paid by every command an agent runs, at every start. In
+# particular nothing here may reach `pamin-index`, `pamin-store` or
+# `pamin-engine` -- and through them the inference runtime, the vector engine,
+# TLS and the database driver. `tests/light.rs` checks that.
+[dependencies]
+pamin-core = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
