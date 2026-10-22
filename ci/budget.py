@@ -17,7 +17,10 @@ import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BUDGETS = ROOT / "ci" / "budgets.json"
-BINARY = ROOT / "target" / "release" / "pamin"
+PROFILE = ROOT / "target" / "release"
+# What `cargo install` puts on a user's machine: the client every command
+# starts, and the server it starts.
+BINARIES = (PROFILE / "pamin", PROFILE / "pamin-server")
 
 
 def run(*args: str) -> None:
@@ -95,7 +98,7 @@ def sidecar_bytes() -> int:
     only the executable made every size comparison, including any comparison
     against a different retrieval engine, wrong by the larger of the two.
     """
-    profile = BINARY.parent
+    profile = PROFILE
     return sum(
         f.stat().st_size
         for f in profile.iterdir()
@@ -121,7 +124,7 @@ def accelerator_bytes() -> int:
     into its own cache on some hosts, and a link's size is not what a user
     downloads.
     """
-    profile = BINARY.parent
+    profile = PROFILE
     return sum(
         f.resolve().stat().st_size
         for f in profile.iterdir()
@@ -148,8 +151,8 @@ def measure() -> dict[str, float]:
     run("cargo", "check", "--workspace")
     incremental_check_seconds = time.monotonic() - start
 
-    require_runtime_library(BINARY.parent)
-    binary_bytes = BINARY.stat().st_size
+    require_runtime_library(PROFILE)
+    binary_bytes = sum(binary.stat().st_size for binary in BINARIES)
     return {
         "binary_bytes": binary_bytes,
         "distribution_bytes": binary_bytes + sidecar_bytes(),

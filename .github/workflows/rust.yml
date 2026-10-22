@@ -105,7 +105,10 @@ jobs:
     # runs at all. The retrieval engine is a dynamic library that Cargo does not
     # install beside the binary, and every other test runs the copy inside
     # `target/` with the build tree still around it -- so without this, the one
-    # arrangement users get is the one arrangement never exercised.
+    # arrangement users get is the one arrangement never exercised. It also
+    # checks that both executables, `pamin` and `pamin-server`, are installed
+    # and start, and that the installed `pamin` records none of the libraries
+    # only the server needs (zvec, OpenSSL, the C++ runtime).
     runs-on: ubuntu-latest
 
     steps:
