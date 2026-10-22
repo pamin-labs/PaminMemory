@@ -11,5 +11,7 @@ repository.workspace = true
 # edited most often, so its rebuild cost sets the daily development loop.
 [dependencies]
 serde = { workspace = true }
+# The workspace's server record, and a list of paths spelled as one value.
+serde_json = { workspace = true }
 time = { workspace = true }
 uuid = { workspace = true }

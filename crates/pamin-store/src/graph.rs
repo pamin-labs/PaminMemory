@@ -813,13 +813,7 @@ struct Crossing {
     outbound: bool,
 }
 
-/// The deepest walk this channel will make.
-///
-/// Not a preference. A topic's neighbourhood grows multiplicatively with each
-/// hop, and hub topics in a real project reach five figures of degree, so one
-/// hop further is not a slower query but a differently sized one. A caller who
-/// wants to reach further wants a different question.
-pub const MAX_DEPTH: u8 = 4;
+pub use pamin_core::graph::MAX_DEPTH;
 
 /// How the neighbourhood query is bounded.
 #[derive(Clone, Debug)]

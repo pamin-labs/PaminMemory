@@ -21,51 +21,7 @@ use time::OffsetDateTime;
 
 use crate::Settings;
 
-/// How deep each channel reaches before fusion.
-///
-/// These are inputs rather than constants because they are provisional: the
-/// evaluation harness exists to settle them, and it cannot sweep a value that
-/// is compiled in. The defaults are the ones the architecture specifies, so
-/// nothing changes for a caller that does not ask.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Depths {
-    /// Candidates each channel contributes.
-    ///
-    /// Deep enough for rank fusion to find agreement between channels, shallow
-    /// enough that reranking stays cheap. Never zero, which would leave
-    /// every channel, and so the search, empty.
-    pub channel: std::num::NonZeroU32,
-    /// Edges the graph channel walks out from its seeds.
-    ///
-    /// Two hops reaches a topic's neighbours and their neighbours, which is
-    /// where "related to something related to this" stops being informative
-    /// and starts being most of the project.
-    pub graph: u8,
-    /// How many of the fused results the reranker is shown as its head; see
-    /// [`pamin_index::reranking::DEPTH`] for what settled the default.
-    /// Never zero, which would rerank nothing while calling it reranked.
-    pub rerank: std::num::NonZeroUsize,
-    /// How wide the in-memory vector graph is searched; see
-    /// [`pamin_index::projection::SEARCH_EFFORT`]. Never zero, which is no
-    /// width for a graph search to have.
-    pub effort: std::num::NonZeroU32,
-}
-
-impl Depths {
-    /// What the product searches with.
-    pub const DEFAULT: Self = Self {
-        channel: std::num::NonZeroU32::new(50).unwrap(),
-        graph: 2,
-        rerank: std::num::NonZeroUsize::new(pamin_index::reranking::DEPTH).unwrap(),
-        effort: std::num::NonZeroU32::new(pamin_index::projection::SEARCH_EFFORT).unwrap(),
-    };
-}
-
-impl Default for Depths {
-    fn default() -> Self {
-        Self::DEFAULT
-    }
-}
+pub use pamin_core::Depths;
 
 /// Settings the graph channel shares with the fusion that will rank it.
 #[derive(Clone, Copy)]
@@ -506,49 +462,6 @@ pub struct Models {
 
 /// A loaded model and when it was last handed out.
 type Held<T> = (Instant, Arc<Mutex<T>>);
-
-/// How long a model may sit unused before the process gives it back.
-///
-/// It is worth giving back because of what it costs while it sits there, and
-/// because the giving back was measured rather than assumed -- dropping a
-/// model frees it to the allocator, which is not the same as to the operating
-/// system. On a resident server over a 13,014-document project, four cores:
-///
-/// | | resident |
-/// | --- | --- |
-/// | serving `--rerank off` | 1,625-1,626 MB, stable to a megabyte |
-/// | after one `fast` search | 2,007 MB or 2,271 MB |
-/// | after this releases it | 1,627-1,903 MB |
-///
-/// **One `fast` search costs either about 380 MB or about 645 MB of resident
-/// memory for a 130 MB model cache**, and the bimodality is the runtime's
-/// arenas rather than the weights -- six samples over one fixed query pair,
-/// three at each value, so it is not the shortlist either. Releasing gives
-/// back 368 to 380 MB of it, three samples, consistently: the model's own
-/// footprint returns to the operating system and the arena growth above it
-/// does not. So this reclaims about 380 MB reliably and sometimes all 645,
-/// against a server that otherwise holds it for as long as it lives.
-///
-/// `accurate` is four and a half times the weights and was not measurable
-/// here, its download being unreachable from the machine this ran on.
-///
-/// Thirty minutes, and the number moved once the other side of the trade was
-/// measured rather than guessed. Five was written here first, on the strength
-/// of "a caller pays about a second" -- **it is 4,528 ms**, median of three,
-/// against 116 ms for a warm search and 5,123 ms for a server starting from
-/// nothing. The sweep puts the next caller back to 88% of cold, so this is not
-/// a second of latency for a gigabyte, it is four and a half.
-///
-/// Thirty is where that trade stops being close. An agent working in bursts
-/// almost never waits half an hour between searches, so it almost never pays;
-/// a server left running overnight pays once and gives back 1.6 GB for the
-/// hours in between. Five minutes would have charged 4.5 seconds to anyone who
-/// stopped to read what they found.
-///
-/// One window for models and for the indexes that pin them, because the
-/// model dominates: reopening an index is part of the 4,528 ms and reloading
-/// the weights is most of it.
-pub(crate) const MODEL_IDLE: Duration = Duration::from_secs(30 * 60);
 
 impl Models {
     /// What this process was started with.
@@ -2968,9 +2881,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        GRAPH_SHOWN_AT_MOST, GRAPH_SHOWN_FROM, MODEL_IDLE, best_first, can_be_seen, is_idle,
-        path_strength, place, rerankable, runs_of_tokens, score_blend_order, seed_relevance, shown,
+        GRAPH_SHOWN_AT_MOST, GRAPH_SHOWN_FROM, best_first, can_be_seen, is_idle, path_strength,
+        place, rerankable, runs_of_tokens, score_blend_order, seed_relevance, shown,
     };
+    use pamin_core::settings::MODEL_IDLE;
     use pamin_core::{Channel, ChannelResults, TopicId};
 
     /// A load started ahead of its need returns at once, is waited for by
