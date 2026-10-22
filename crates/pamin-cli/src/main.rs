@@ -122,13 +122,20 @@ fn main() -> Result<()> {
     // Before the runtime starts its worker threads: glibc fixes how many heap
     // arenas it will make the first time a thread needs one of its own.
     server::tune_heap();
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(run())
+    let (cli, matches) = parse()?;
+    // Only the server runs work on the runtime. Every other command makes one
+    // request and waits for the answer, which one thread does without
+    // starting a worker per core first.
+    let mut runtime = match cli.command {
+        Command::Serve => tokio::runtime::Builder::new_multi_thread(),
+        _ => tokio::runtime::Builder::new_current_thread(),
+    };
+    runtime.enable_all().build()?.block_on(run(cli, matches))
 }
 
-async fn run() -> Result<()> {
+/// Logging, the removed-settings check and the arguments, which neither needs
+/// the runtime: `--help` and `--version` exit here without starting one.
+fn parse() -> Result<(Cli, clap::ArgMatches)> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("PAMIN_LOG")
@@ -144,6 +151,10 @@ async fn run() -> Result<()> {
 
     let matches = Cli::command().get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
+    Ok((cli, matches))
+}
+
+async fn run(cli: Cli, matches: clap::ArgMatches) -> Result<()> {
     let workspace = match &cli.home {
         Some(path) => Workspace::at(path),
         None => Workspace::discover()?,
