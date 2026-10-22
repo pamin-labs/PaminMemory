@@ -1236,9 +1236,11 @@ server's memory:
   model data and its process RSS was 0.36 of main's.
 - **The first query after idle is not measured.** The harness re-ran
   queries it had already scored. Those were served from the reranker score
-  cache without a pass, so no weights were mapped back. That search pays at
-  most what the per-search release paid on every search, which was not
-  significant: round-1 p50 +2.1% (q78) to +4.9% (q74).
+  cache without a pass, so no weights were mapped back. The per-search
+  release, which mapped the weights back on every search, is proxy evidence
+  only: its round-1 p50 was +2.1% (q78) to +4.9% (q74), not significant,
+  with CIs reaching +13.3%. Neither bounds the latency of one query after
+  idle, or its tail.
 
 Memory is the `pamin serve` process alone, with no accelerator services.
 Disk is the index directory; the prepared copies (1,668 MB) are unchanged.
