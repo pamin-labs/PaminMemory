@@ -93,11 +93,23 @@ from (see [cli.md](cli.md)).
 
 | crate | responsibility |
 | --- | --- |
-| `pamin-core` | domain model, ledger semantics, fusion. No heavy dependencies, because it is edited most and its rebuild cost sets the development loop. |
+| `pamin-core` | domain model, ledger semantics, fusion, and the settings, search depths and workspace layout the client and the libraries share. No heavy dependencies, because it is edited most and its rebuild cost sets the development loop. |
 | `pamin-store` | the PostgreSQL authority: evidence, ledger, graph, outbox. |
 | `pamin-index` | the projection: multilingual segmentation, lexical and vector channels. |
 | `pamin-engine` | where the two are composed, and where their drift is supposed to be visible. Sits above `pamin-core` so index types never reach the domain layer. It is **not** the only crate holding both, and the exception is named rather than left to be discovered: see below. |
-| `pamin-cli` | the command surface, and the resident server behind it. |
+| `pamin-client` | the command surface: every command's arguments and result types, the wire protocol, reaching or starting the server, and rendering. Depends on `pamin-core` alone, and a test fails if it reaches the inference runtime, the vector engine, TLS or the database driver. |
+| `pamin-cli` | two executables. `pamin` is built from `pamin-client` alone; `pamin-server` is the resident server, which runs each command against the engine and answers with `pamin-client`'s result types. |
+
+Two executables rather than one because what a process links is what it pays
+for at every start. The inference runtime is a static library, and the `ort`
+crate (2.0.0-rc.13) registers an exit hook that the compiler keeps in any
+binary linking it at all, which pulls in the runtime's C++ initialisers
+whatever `main` reaches; the vector engine and TLS are shared libraries the
+loader maps and relocates. A single binary charged each short-lived command for
+all three. Features cannot split one package's binaries -- they are unified per
+build -- so the client lives in its own crate, which the heavy crates never
+reach. What both halves must agree on -- the settings, the search depths and
+the workspace layout -- is defined once in `pamin-core`.
 
 `pamin-cli` reaches `pamin-store` directly for six commands -- `read`, `grep`,
 `topics` without a query, `link`, `unlink` and `neighbors` -- and the reason is
