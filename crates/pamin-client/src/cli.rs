@@ -167,6 +167,7 @@ pub async fn run(cli: Cli, matches: clap::ArgMatches) -> Result<Option<Unserved>
     if let Command::Stop = cli.command {
         let request = protocol::Request {
             version: protocol::version(),
+            wire: protocol::WIRE.to_string(),
             project: cli.project.clone(),
             profile: String::new(),
             vector_index: cli.vector_index.clone(),
@@ -225,6 +226,7 @@ pub async fn run(cli: Cli, matches: clap::ArgMatches) -> Result<Option<Unserved>
 
     let request = protocol::Request {
         version: protocol::version(),
+        wire: protocol::WIRE.to_string(),
         project,
         profile: String::new(),
         vector_index: cli.vector_index.clone(),
@@ -530,6 +532,11 @@ mod tests {
         for path in sources {
             let source = std::fs::read_to_string(&path).expect("read a source file");
             for (at, _) in source.match_indices("\"PAMIN_") {
+                // A compile-time stamp from a build script, not a variable
+                // anything reads when it runs.
+                if source[..at].ends_with("env!(") {
+                    continue;
+                }
                 let rest = &source[at + 1..];
                 let Some(end) = rest.find('"') else { continue };
                 let name = &rest[..end];

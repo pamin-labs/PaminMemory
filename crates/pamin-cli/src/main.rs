@@ -1,66 +1,61 @@
-//! The `pamin` command line interface.
+//! `pamin`, the command line an agent runs.
 //!
 //! The CLI is the primary surface: a shell command plus a skill file is a
 //! zero-integration path for any agent that can run a process, with no client
 //! library to adopt and no service to stand up.
 //!
-//! What a command takes and how its answer reads are `pamin_client`'s. This
-//! binary adds what a client cannot do: be the server, and stop a database
-//! that no server is running to stop.
+//! This executable is the client and nothing else: it is built from
+//! `pamin_client` alone, which reaches none of the inference runtime, the
+//! vector engine, TLS or the database driver. Every command starts it, and
+//! what a process links is what it pays for at every start, so a command pays
+//! for parsing, one socket round trip and printing. Being the server, and
+//! stopping a database that no server is running to stop, take the engine;
+//! this hands those to `pamin-server`, the executable installed beside it.
+//!
+//! Nothing here may name `pamin_engine`, `pamin_index` or `pamin_store`:
+//! rustc links only the crates a binary uses, and naming one would put it all
+//! back. `tests/install.rs` checks what the installed binary loads.
 
-mod command;
-mod registry;
-mod server;
-mod session;
-mod settings;
-
-use anyhow::Result;
-use pamin_client::cli::{self, Command, Unserved};
+use anyhow::{Context, Result};
+use pamin_client::cli;
 
 fn main() -> Result<()> {
-    // Before the runtime starts its worker threads: glibc fixes how many heap
-    // arenas it will make the first time a thread needs one of its own.
-    server::tune_heap();
     let (cli, matches) = cli::parse()?;
-    // Only the server runs work on the runtime. Every other command makes one
-    // request and waits for the answer, which one thread does without
-    // starting a worker per core first.
-    let mut runtime = match cli.command {
-        Command::Serve => tokio::runtime::Builder::new_multi_thread(),
-        _ => tokio::runtime::Builder::new_current_thread(),
-    };
-    runtime.enable_all().build()?.block_on(async {
-        match cli::run(cli, matches).await? {
-            Some(unserved) => answer(unserved).await,
-            None => Ok(()),
-        }
-    })
+    // One request and one answer, which one thread does without starting a
+    // worker per core first.
+    let unserved = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(cli::run(cli, matches))?;
+    match unserved {
+        Some(_) => hand_over(),
+        None => Ok(()),
+    }
 }
 
-/// Does what the client left to this binary.
-async fn answer(unserved: Unserved) -> Result<()> {
-    match unserved {
-        Unserved::Serve { workspace, server } => {
-            // Before anything opens an index. The server is the only process
-            // the CLI opens one in, and a process holding the descriptors a
-            // large index needs under the 1,024 a Linux process starts with
-            // does not degrade, it fails.
-            match pamin_index::raise_open_file_limit() {
-                Ok((before, after)) if after > before => {
-                    tracing::info!(before, after, "raised the open-file limit")
-                }
-                Ok(_) => {}
-                Err(error) => tracing::warn!(%error, "could not raise the open-file limit"),
-            }
-            server::run(&workspace, server).await
-        }
-        // There was no server, so there is nothing to ask, and the database
-        // still needs stopping. Without opening a session, because opening
-        // one starts the database.
-        Unserved::Stop { workspace, format } => {
-            let result = command::stop::execute(&workspace).await?;
-            format.emit(&result, || pamin_client::command::stop::render(&result));
-            Ok(())
-        }
+/// Runs this command line again as `pamin-server`, which does what a client
+/// cannot.
+///
+/// The same arguments, so the server parses, resolves and refuses exactly
+/// what this did, and on Unix in this process's place: `pamin serve` in the
+/// foreground is then the server itself, with its signals, its streams and
+/// its exit status.
+fn hand_over() -> Result<()> {
+    let server = pamin_client::client::server_exe()?;
+    let mut command = std::process::Command::new(&server);
+    command.args(std::env::args_os().skip(1));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let error = command.exec();
+        Err(error).with_context(|| format!("running {}", server.display()))
+    }
+    #[cfg(not(unix))]
+    {
+        let status = command
+            .status()
+            .with_context(|| format!("running {}", server.display()))?;
+        std::process::exit(status.code().unwrap_or(1));
     }
 }

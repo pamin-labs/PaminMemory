@@ -15,7 +15,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use futures::{SinkExt, StreamExt};
-use pamin_client::protocol::{Call, Request, Response, socket_path};
+use pamin_client::protocol::{Call, Request, Response, WIRE, identity, socket_path};
 use pamin_client::settings::Server;
 use pamin_core::JobKind;
 use pamin_engine::{Engine, Owed};
@@ -743,9 +743,16 @@ async fn serve_connection(
         // replaces a server it has just rejected -- refusing it on a version
         // mismatch would leave the mismatched server listening for ever, which
         // is the one situation this check exists to get out of.
-        let ours = pamin_client::protocol::version();
-        if !stopping && request.version != ours {
-            let response = Response::Mismatch { server: ours };
+        //
+        // Both halves of the identity: this executable, which the client
+        // checks is the one it would start, and the protocol this build
+        // speaks, which catches a client from another build beside it.
+        let ours = identity(std::env::current_exe().ok().as_deref());
+        if !stopping && (request.version != ours || request.wire != WIRE) {
+            let response = Response::Mismatch {
+                server: ours,
+                wire: WIRE.to_string(),
+            };
             framed.send(serde_json::to_string(&response)?).await?;
             // No point carrying on: the client is about to replace this
             // process rather than trust field names that may have moved.

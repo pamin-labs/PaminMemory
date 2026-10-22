@@ -26,5 +26,9 @@ futures = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+# The protocol fingerprint `build.rs` stamps in; see there.
+[build-dependencies]
+sha2 = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
