@@ -27,9 +27,9 @@
 //! else.
 //!
 //! Which exports it changes, measured rather than assumed: the `accurate`
-//! reranker (24 layers). BGE-M3's int8 export quantizes the two products
-//! inside attention as well, so a float kernel would not compute what it
-//! computes, and the pattern below does not match it.
+//! reranker and BGE-M3's (24 layers each). Both keep the two products inside
+//! attention `f32`; BGE-M3's export was constant-folded and given constant
+//! head-split targets so that its blocks have the reranker's shape.
 
 use std::collections::{HashMap, HashSet};
 
