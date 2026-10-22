@@ -35,13 +35,12 @@ use crate::hub::Repository;
 /// but it carries usage restrictions that must be passed on to downstream
 /// users, which is not a burden to attach to an open-source default.
 ///
-/// Run through the joint BGE-M3 export, which produces dense, sparse and
-/// ColBERT representations in one forward pass. Only the dense one is kept.
-/// The sparse arm duplicates the two lexical channels already in place and is
-/// worth 0.2 points of cross-lingual nDCG by its own authors' ablation; the
-/// ColBERT arm is one 1024-wide vector per token, which for a project of seven
-/// million documents is terabytes.
-pub const MODEL_ID: &str = "gpahal/bge-m3-onnx-int8";
+/// Only the dense representation is used. BGE-M3's sparse arm duplicates the
+/// two lexical channels already in place and is worth 0.2 points of
+/// cross-lingual nDCG by its own authors' ablation; its ColBERT arm is one
+/// 1024-wide vector per token, which for a project of seven million documents
+/// is terabytes. The export below computes neither.
+pub const MODEL_ID: &str = "pamin-labs/bge-m3-sq-int8-onnx";
 
 /// The embedding models earlier builds recorded in an index's marker, and the
 /// profile each shipped as.
@@ -271,7 +270,7 @@ fn primary_model(
     settings: &crate::InferenceSettings,
 ) -> Result<(Encoder, crate::inference::Device)> {
     std::fs::create_dir_all(cache_dir)?;
-    let repository = Repository::open_at(cache_dir, JOINT_REPOSITORY, "main")?;
+    let repository = Repository::open_at(cache_dir, JOINT_REPOSITORY, JOINT_REVISION)?;
     let identity = plan_key(MODEL_ID, &repository.identity(cache_dir));
     let references = std::cell::RefCell::new(crate::inference::References::default());
     let long = "migration ".repeat(600);
@@ -347,8 +346,20 @@ fn alone(model: &Encoder, texts: &[String]) -> Result<Vec<Vec<tokenizers::Encodi
 }
 
 /// Where BGE-M3's int8 export is published, and which of its files it is.
-const JOINT_REPOSITORY: &str = "gpahal/bge-m3-onnx-int8";
-const JOINT_FILE: &str = "model_quantized.onnx";
+///
+/// PaminLabs' re-export of `onnx-community`'s int8 file, built from the fp32
+/// weights: every weight per output channel in [-64, 64] where upstream used
+/// one scale per tensor, and SmoothQuant (alpha 0.75) on the q/k/v and first
+/// feed-forward inputs, with one `Mul` per smoothed input left in the graph.
+/// The graph ends in the dense head -- the CLS row, L2-normalized -- so a pass
+/// computes nothing it drops, and its attention products are `f32`, so
+/// `crate::attention` fuses them as it does the reranker's.
+const JOINT_REPOSITORY: &str = "pamin-labs/bge-m3-sq-int8-onnx";
+const JOINT_FILE: &str = "onnx/model_int8.onnx";
+
+/// The commit of [`JOINT_REPOSITORY`] every file is read at, so that the
+/// weights a measurement priced are the weights that load.
+const JOINT_REVISION: &str = "2e23a0f4fb004f913106788a1743cb8629ba1f0f";
 
 /// The longest text BGE-M3 reads, in tokens.
 ///
@@ -515,11 +526,8 @@ fn joint_session(
 /// One text's dense BGE-M3 vector, from the outputs of a forward pass of its
 /// own.
 ///
-/// The export's first output, as `fastembed` read it: the graph pools and
-/// normalizes the vector itself, so it is used as it comes. The sparse and
-/// ColBERT representations come back from the same pass and are dropped. They
-/// are not free -- the pass computes them -- but neither is wanted, and no
-/// cheaper export of this model's int8 weights exists.
+/// The export's one output: the graph pools and normalizes the vector itself,
+/// so it is used as it comes.
 fn dense(outputs: crate::encoder::Outputs) -> Result<Vec<f32>> {
     let (_, first) = outputs
         .first()
@@ -586,7 +594,7 @@ mod tests {
             .with_writer(std::io::stdout)
             .try_init();
         let cache = std::path::PathBuf::from(std::env::var("PAMIN_EVAL_MODEL_CACHE").unwrap());
-        let repository = Repository::open(&cache, JOINT_REPOSITORY).unwrap();
+        let repository = Repository::open_at(&cache, JOINT_REPOSITORY, JOINT_REVISION).unwrap();
         let threads = crate::InferenceSettings::default().budget().unwrap();
         let weights = repository.file(&cache, JOINT_FILE);
         let inputs = [
@@ -873,17 +881,16 @@ mod tests {
 
     use super::*;
 
-    /// The recorded identity and the plan key stay what they were when the
-    /// model was the `accuracy` profile: every existing index is tagged with
-    /// the first,
-    /// and every host's measured execution plan is cached under the second.
+    /// The recorded identity is what tags every index, so a change of it
+    /// is a change of embedding space and asks for a reindex; the plan key
+    /// carries it, so every host measures this export's plans afresh.
     #[test]
     fn the_model_keeps_its_recorded_identity_and_plan_key() {
-        assert_eq!(MODEL_ID, "gpahal/bge-m3-onnx-int8");
+        assert_eq!(MODEL_ID, "pamin-labs/bge-m3-sq-int8-onnx");
         assert_eq!(
-            plan_key(MODEL_ID, "gpahal/bge-m3-onnx-int8@abc"),
+            plan_key(MODEL_ID, "pamin-labs/bge-m3-sq-int8-onnx@abc"),
             "embedding-query-v4:max512:joint-singleton:e5-cpu256-accelerator8:\
-             gpahal/bge-m3-onnx-int8:gpahal/bge-m3-onnx-int8@abc"
+             pamin-labs/bge-m3-sq-int8-onnx:pamin-labs/bge-m3-sq-int8-onnx@abc"
         );
     }
 }
