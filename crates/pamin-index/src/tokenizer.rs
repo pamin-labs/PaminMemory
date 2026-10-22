@@ -1014,7 +1014,7 @@ pub(crate) mod tests {
         // As `crate::reranking` and `crate::embedding` load them, and at a
         // length that truncates almost everything.
         let models = [
-            ("gpahal/bge-m3-onnx-int8", 512),
+            ("pamin-labs/bge-m3-sq-int8-onnx", 512),
             ("onnx-community/bge-reranker-v2-m3-ONNX", 256),
         ];
         let mut vocabularies = Vec::new();

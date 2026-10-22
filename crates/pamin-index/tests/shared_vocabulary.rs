@@ -44,7 +44,7 @@ const ACCURATE_COPY: &str = "PAMIN_EVAL_SHARED_ACCURATE_COPY";
 /// What a child prints before each of its results.
 const MARK: &str = "shared-vocabulary-result";
 
-const EMBEDDER: &str = "gpahal/bge-m3-onnx-int8";
+const EMBEDDER: &str = "pamin-labs/bge-m3-sq-int8-onnx";
 
 const ACCURATE: &str = "onnx-community/bge-reranker-v2-m3-ONNX";
 

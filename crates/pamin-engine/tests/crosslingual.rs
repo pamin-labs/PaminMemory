@@ -898,7 +898,7 @@ fn pinned_model_id(models: &Path, role: &str) -> String {
 #[should_panic(expected = "XQuAD-R embedding revision differs")]
 fn stale_embedding_revision_is_rejected_before_index_reuse() {
     let models = tempfile::tempdir().unwrap();
-    let refs = models.path().join("models--gpahal--bge-m3-onnx-int8/refs");
+    let refs = models.path().join("models--pamin-labs--bge-m3-sq-int8-onnx/refs");
     std::fs::create_dir_all(&refs).unwrap();
     std::fs::write(refs.join("main"), "stale").unwrap();
     pinned_embedding_id(models.path());
