@@ -792,65 +792,18 @@ const DOCUMENT_GRAIN: &str = "topic";
 /// seven million.
 const GRAPH_DEGREE: i32 = 32;
 
-/// Which vector index a project's index is built with, and what its marker
-/// records.
-///
-/// A setting (`--vector-index`, `PAMIN_VECTOR_INDEX`) with two values, because
-/// the choice is a trade between resident memory on one side and query and
-/// build time on the other that only the person running a project can make.
-/// Both store vectors in half precision and both are searched the same way:
-/// the index proposes [`RESCORE`] times the candidates asked for, with their
-/// stored vectors, and those are ranked again by an exact f32 cosine. The two
-/// differ in their index and query parameters and in nothing else. ADR 0001,
-/// "Two vector indexes, both half precision", has the measurements.
-///
-/// The marker records which one an index was built with, and an index is
-/// never searched as the other: opening one under the other is refused with a
-/// message naming `pamin reindex`, as a model change is. Reading an index
-/// built one way as another is the silent-wrong-answer shape ADR 0001 records
-/// from the first attempt at quantization, which returned recall@10 of 0.000
-/// with no error. `pamin reindex` lends every vector the old index holds to
-/// the new one (see [`Previous`]), so changing costs a build and no embedding.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum VectorIndex {
-    /// A DiskANN graph kept on disk and read per query.
-    ///
-    /// Holds almost nothing resident, for a project whose memory is scarce.
-    /// Not the default: every `optimize` after a working drain rebuilds a
-    /// great deal of the graph (114 to 310 s after 64 new documents on 25,000,
-    /// against about a second for `memory`), and upkeep issues one after a
-    /// drain that did work whenever the file budget, the unmerged blocks or
-    /// the unindexed remainder asks for it.
-    Disk,
-    /// An HNSW graph held in memory.
-    ///
-    /// The default: the fastest to query and to build, and the smallest on
-    /// disk, at the cost of holding the graph and the vectors resident --
-    /// still half what the full-precision graph held.
-    #[default]
-    Memory,
+// The setting itself -- its two names and its default -- is in
+// `pamin_core::settings`, which the command-line client shares without linking
+// this crate; what each one builds and asks for is here.
+pub use pamin_core::settings::VectorIndex;
+
+/// What one [`VectorIndex`] builds and asks for.
+trait Parameters {
+    fn params(self) -> Result<IndexParams>;
+    fn ask(self, search: &mut SearchQuery, candidates: u32, effort: u32) -> Result<()>;
 }
 
-impl VectorIndex {
-    /// Both, in the order the setting documents them.
-    pub const ALL: [Self; 2] = [Self::Memory, Self::Disk];
-
-    /// The name the setting takes and the marker records.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Disk => "disk",
-            Self::Memory => "memory",
-        }
-    }
-
-    /// The index a name stands for, `None` for any other name -- including
-    /// what an index built before these existed records.
-    pub fn parse(label: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|index| index.label() == label.trim())
-    }
-
+impl Parameters for VectorIndex {
     /// The parameters a collection is created with.
     fn params(self) -> Result<IndexParams> {
         Ok(match self {
@@ -959,39 +912,9 @@ const RESCORE: u32 = 2;
 /// either way.
 const GRAPH_EFFORT: i32 = 500;
 
-/// How wide a query searches the graph.
-///
-/// The engine defaults to 300 and this had never been set, so every query took
-/// that default without anything saying so. Seven hundred is the first value
-/// measured to reach 0.95 recall against exact search, which is the target --
-/// the last few points cost more than the rest put together, and a query
-/// spends 35 ms embedding before it gets here.
-///
-/// **Checked again once segments grew, and it holds on real text.** A reshape
-/// takes a project from 10,000 documents a segment to a quarter of the
-/// collection, and on 132,000 synthetic clustered vectors four such segments
-/// reach only 0.9758 recall@50 against exact search at 700 (0.9976 at 2,000;
-/// the engine refuses more than 2,048). On MIRACL's 131,924 real passages in
-/// four segments, every one of 482 questions returns the same results at 700
-/// and at 2,000, fused and through the reranker -- zero wins, zero losses (the
-/// `EFFORTS` arm of `pamin-engine/tests/monolingual.rs`). Synthetic clusters
-/// are harder to search than real embeddings, so the width stays.
-///
-/// **And again over half-precision vectors with the rescore**, which is what
-/// [`VectorIndex::Memory`] searches, against the bar that fp32 at 700 sets --
-/// within 0.002 of its recall on 50,000 clustered vectors, 0.001 on MIRACL:
-///
-/// | width | synthetic @10 | synthetic @50 | MIRACL @10 | MIRACL @50 |
-/// | --- | --- | --- | --- | --- |
-/// | fp32 at 700 | 0.9980 | 0.9974 | 1.0000 | 0.9999 |
-/// | 200 | 0.9665 | 0.9458 | 0.9996 | 0.9980 |
-/// | 300 | 0.9855 | 0.9769 | 0.9998 | 0.9988 |
-/// | 500 | 0.9965 | 0.9927 | 1.0000 | 0.9993 |
-/// | **700** | **0.9965** | **0.9965** | **1.0000** | **0.9997** |
-///
-/// A narrower width saves about a millisecond a query and fails the bar at
-/// fifty on both sets, so 700 stays for this index too.
-pub const SEARCH_EFFORT: u32 = 700;
+// The width a search asks for by default, with what settled it; in
+// `pamin_core::search` beside the other defaults the command line shows.
+pub use pamin_core::search::SEARCH_EFFORT;
 
 impl ProjectionIndex {
     /// Opens the index at `dir`, creating it if absent.
