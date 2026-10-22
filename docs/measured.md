@@ -1055,8 +1055,8 @@ of it was not re-timed, so they do not cover the two together:
 | metric | before | after | abs diff | % change | ratio [95% CI] |
 | --- | --- | --- | --- | --- | --- |
 | nDCG@10, 120 queries | 0.7381 | 0.7381 | 0 | 0.0% | top-10 identical in all 8 runs |
-| search p50 ms (per run) | 1,021.8 | 1,002.6 | −19.3 | −1.9% | 0.981 [0.858, 1.096] |
-| search p95 ms (per run) | 3,089.2 | 2,919.3 | −169.9 | −5.5% | 0.945 [0.874, 1.050] |
+| search p50 ms, round 1 (per run) | 2,173.3 | 2,081.9 | −91.5 | −4.2% | 0.958 [0.878, 1.035] |
+| search p95 ms, round 1 (per run) | 3,419.6 | 3,110.2 | −309.4 | −9.0% | 0.910 [0.865, 1.034] |
 | search server CPU user ms/query | 4,067.0 | 3,853.6 | −213.4 | −5.2% | 0.948 [0.876, 1.029] |
 | search server CPU sys ms/query | 23.8 | 21.6 | −2.2 | −9.4% | 0.906 [0.784, 0.984] |
 | search VmHWM MB (process RSS) | 1,026 | 1,035 | +9 | +0.9% | 1.009 [0.993, 1.029] |
@@ -1074,6 +1074,16 @@ services; the prepared model copies (1,668 MB) are the same in both arms and
 are not in the index figure. The raw rows and harness are in the private
 `internal-docs/pamin-memory/research/2026-10-19/raw/q65/` folder.
 
+**Which searches the latency rows time.** This harness, and the ones below
+that ask their 120 timed queries twice, serve the second round entirely from
+the query-embedding and reranker score caches: about 30 ms a search, with no
+model pass. An earlier version of these tables reported a "per run" p50 and
+p95 over both rounds, so its p50 was the fastest round-1 search and its p95
+about the round-1 p90. The rows now report round 1 alone, the 120 searches
+that run the models. The round-2 ratios all include 1. The pooled rows of
+harnesses that ask each query once, above and below, are unaffected, and so
+is the table further down that reports the two rounds separately.
+
 **A fixed glibc mapping threshold, trading indexing speed for memory.** glibc
 maps a request of 128 KiB or more and returns it on free, but raises that
 threshold to the size of each mapped block it frees, up to 32 MiB. After the
@@ -1087,8 +1097,8 @@ longest-pass-first rows above, main `1d141db` against the branch at
 | metric | before | after | abs diff | % change | ratio [95% CI] |
 | --- | --- | --- | --- | --- | --- |
 | nDCG@10, 120 queries | 0.7381 | 0.7381 | 0 | 0.0% | 120 of 120 queries equal |
-| search p50 ms (per run) | 880.3 | 883.5 | +3.2 | +0.4% | 1.004 [0.937, 1.090] |
-| search p95 ms (per run) | 2,533.4 | 2,605.4 | +72.0 | +2.8% | 1.028 [0.990, 1.094] |
+| search p50 ms, round 1 (per run) | 1,818.3 | 1,868.9 | +50.6 | +2.8% | **1.028 [1.003, 1.079]**, borderline; pooled 1.038 [0.975, 1.108] |
+| search p95 ms, round 1 (per run) | 2,791.2 | 2,879.1 | +88.0 | +3.2% | 1.032 [0.947, 1.093] |
 | search server CPU sys ms/query | 18.7 | 38.3 | +19.6 | +105.1% | **2.051 [1.590, 2.383]** |
 | search VmHWM MB (process RSS) | 1,019 | 993 | −26 | −2.5% | **0.975 [0.946, 0.991]** |
 | search peak RssAnon MB | 368 | 338 | −30 | −8.1% | **0.919 [0.858, 0.963]** |
@@ -1148,8 +1158,8 @@ excluded and re-run:
 | metric | main | release | release, ranges found once | abs diff vs main | % vs main |
 | --- | --- | --- | --- | --- | --- |
 | nDCG@10, 120 queries | 0.7381 | 0.7381 | 0.7381 | 0 | 0.0% |
-| search p50 ms (per run) | 1,115.1 | 1,198.1 (1.074 [0.976, 1.199]) | 0.945 [0.802, 1.114] of release | N/A | N/A, not measured against main |
-| search p95 ms (per run) | 3,438.8 | 3,452.8 (1.004 [0.917, 1.081]) | 0.895 [0.854, 1.023] of release | N/A | N/A, not measured against main |
+| search p50 ms, round 1 (per run) | 2,384.8 | 2,415.6 (1.013 [0.919, 1.084]) | 0.975 [0.890, 1.038] of release | N/A | N/A, not measured against main |
+| search p95 ms, round 1 (per run) | 3,638.4 | 3,695.7 (1.016 [0.923, 1.155]) | 0.912 [0.884, 1.030] of release | N/A | N/A, not measured against main |
 | search server CPU sys ms/query | 82.4 | 124.3 | 89.8 (**0.744 [0.481, 0.919]** of release) | N/A | N/A, not measured against main |
 | search server reads kB/query | 1,132.6 | 2,743.2 | 1,132.6 | 0 | 0.0% |
 | **search VmHWM MB (process RSS)** | **973** | **689 (0.708 [0.693, 0.718])** | 693 (1.001 [0.973, 1.038] of release) | **−284** | **−29.2%** |
@@ -1175,21 +1185,22 @@ change is claimed.**
   they interleaved with an unrelated accuracy replay that never overlapped a
   timed run. The comparisons within each experiment hold.
 
-**Releasing after every search cost latency, so the release now waits for
-30 s of idleness.** Two later entry-point experiments measured the
-per-search release directly against main, four rotated runs an arm:
-- q74 (`740778d` against main `48448b6`): search p50 +10.4%, 1.104
-  [1.024, 1.231]; p95 −1.7%, not significant; search VmHWM −29.4%.
-- q78 (`3bc51c2` against main `b2b3bc7`): search p50 +2.6%, 1.026
-  [0.898, 1.250]; p95 +6.0%, 1.060 [0.999, 1.142]; search VmHWM −31.0%.
-  Neither latency change is significant there.
-- The cost is not the refaults: the release added about 4,300 minor faults
-  a search, on the order of milliseconds. What does cost the time is not
-  established.
+**Releasing after every search was not shown to cost latency, but its
+point estimates lean slower, so the release now waits for 30 s of
+idleness.** Two later entry-point experiments measured the per-search
+release directly against main, four rotated runs an arm:
+- q74 (`740778d` against main `48448b6`): round-1 search p50 +4.9%, 1.049
+  [0.966, 1.116]; p95 +0.4%, 1.004 [0.951, 1.117]; search VmHWM −29.4%.
+- q78 (`3bc51c2` against main `b2b3bc7`): round-1 search p50 +2.1%, 1.021
+  [0.984, 1.133]; p95 +2.8%, 1.028 [0.955, 1.161]; search VmHWM −31.0%.
+- No latency change is significant in either; the point estimates are
+  about +2% to +5%.
+- If the release costs anything, it is not the refaults: it added about
+  4,300 minor faults a search, on the order of milliseconds.
 - Mapping the weights back in one call before the passes
-  (`MADV_POPULATE_READ`, `d7ed3aa`) brought no latency back and returned the
-  search peak to main's, because the mapped data file includes the
-  word-embedding table the product reads with `pread`. It was reverted
+  (`MADV_POPULATE_READ`, `d7ed3aa`) did not measurably change latency and
+  returned the search peak to main's, because the mapped data file includes
+  the word-embedding table the product reads with `pread`. It was reverted
   (`003152b`).
 
 Latency outranks memory. An agent's queries come in bursts a few seconds
@@ -1206,8 +1217,8 @@ server's memory:
 | metric | main | idle release | abs diff | % change | ratio [95% CI] |
 | --- | --- | --- | --- | --- | --- |
 | nDCG@10, 120 queries | 0.7436 | 0.7436 | 0 | 0.0% | top-10 identical across all runs |
-| search p50 ms (per run) | 1,186.9 | 1,111.4 | −75.6 | −6.4% | 0.936 [0.854, 1.000] |
-| search p95 ms (per run) | 3,205.3 | 3,405.5 | +200.3 | +6.2% | 1.062 [0.967, 1.123] |
+| search p50 ms, round 1 (per run) | 2,224.2 | 2,325.9 | +101.7 | +4.6% | 1.046 [0.964, 1.130] |
+| search p95 ms, round 1 (per run) | 3,453.3 | 3,622.8 | +169.4 | +4.9% | 1.049 [0.941, 1.125] |
 | search server CPU user ms/query | 4,201.8 | 4,350.9 | +149.0 | +3.5% | 1.035 [0.978, 1.119] |
 | search VmHWM MB (process RSS) | 971 | 972 | +1 | +0.1% | 1.001 [0.987, 1.008] |
 | **VmRSS MB after 45 s idle** | **926** | **336** | **−590** | **−63.8%** | **0.362 [0.349, 0.390]** |
@@ -1217,7 +1228,7 @@ server's memory:
 | ingest wall s | 258.2 | 265.3 | +7.1 | +2.8% | 1.028 [0.956, 1.121] |
 
 - **Accuracy and latency.** Accuracy is identical. Neither latency change
-  is significant, and the two move in opposite directions.
+  is significant; both point estimates are slower.
 - **No release during a burst.** At the end of the timed loop, both arms
   still held both models' data files (585 MB), so back-to-back queries
   never released anything. The search peak is therefore main's.
@@ -1226,8 +1237,8 @@ server's memory:
 - **The first query after idle is not measured.** The harness re-ran
   queries it had already scored. Those were served from the reranker score
   cache without a pass, so no weights were mapped back. That search pays at
-  most what the per-search release paid on every search: p50 +2.6% (q78)
-  to +10.4% (q74).
+  most what the per-search release paid on every search, which was not
+  significant: round-1 p50 +2.1% (q78) to +4.9% (q74).
 
 Memory is the `pamin serve` process alone, with no accelerator services.
 Disk is the index directory; the prepared copies (1,668 MB) are unchanged.
@@ -1261,8 +1272,8 @@ scored, on the CPU, each arm in its own fresh evaluation home:
 | XQuAD-R single-target nDCG@10 | 0.6665 | 0.6673 | +0.0008 | +0.12% | [−0.0028, +0.0046], p = 0.67 |
 | XQuAD-R recall@50, every group | 0.9005 / 0.9613 / 0.9017 | the same | 0 | 0.0% | the reranker reorders only |
 | nDCG@10, the 120 timed queries | 0.7436 | 0.7414 | −0.0022 | −0.3% | [−0.0083, +0.0041]; 13 better, 18 worse |
-| search p50 ms (per run) | 1,015.6 | 1,003.0 | −12.7 | −1.2% | 0.988 [0.879, 1.139] |
-| search p95 ms (per run) | 2,950.0 | 2,946.9 | −3.1 | −0.1% | 0.999 [0.966, 1.182] |
+| search p50 ms, round 1 (per run) | 2,128.5 | 2,062.5 | −66.0 | −3.1% | 0.969 [0.919, 1.104] |
+| search p95 ms, round 1 (per run) | 3,125.4 | 3,157.4 | +32.0 | +1.0% | 1.010 [0.964, 1.185] |
 | search server CPU user ms/query | 3,918.4 | 3,829.8 | −88.6 | −2.3% | 0.977 [0.947, 1.094] |
 | search VmHWM MB (process RSS) | 967 | 978 | +11 | +1.1% | 1.011 [0.984, 1.020] |
 | first query s (loads both models) | 11.69 | 12.18 | +0.49 | +4.1% | 1.041 [0.791, 1.261] |
@@ -1321,8 +1332,8 @@ rotated runs an arm, main `48448b6` against `19eaa4a`:
 | metric | before | after | abs diff | % change | ratio [95% CI] |
 | --- | --- | --- | --- | --- | --- |
 | nDCG@10, 120 queries (paired) | 0.7381 | 0.7436 | +0.0054 | +0.7% | diff [−0.0009, +0.0116] |
-| search p50 ms (per run) | 1,002.6 | 1,036.0 | +33.4 | +3.3% | 1.033 [0.940, 1.103] |
-| **search p95 ms (per run)** | **3,264.8** | **3,022.8** | **−242.0** | **−7.4%** | **0.926 [0.869, 0.972]** |
+| **search p50 ms, round 1 (per run)** | **2,305.4** | **2,133.9** | **−171.4** | **−7.4%** | **0.926 [0.872, 0.971]** |
+| **search p95 ms, round 1 (per run)** | **3,523.1** | **3,267.6** | **−255.5** | **−7.3%** | **0.927 [0.867, 0.985]** |
 | **search server CPU user ms/query** | **4,275.2** | **3,964.8** | **−310.4** | **−7.3%** | **0.927 [0.887, 0.968]** |
 | search server CPU sys ms/query | 50.2 | 33.5 | −16.7 | −33.3% | **0.667 [0.404, 0.897]** |
 | search VmHWM MB (process RSS) | 988 | 971 | −17 | −1.7% | 0.983 [0.973, 1.004] |
@@ -1332,10 +1343,10 @@ rotated runs an arm, main `48448b6` against `19eaa4a`:
 | index dir MB | 26.1 | 27.2 | +1.1 | N/A | allocation noise; same index |
 | prepared copies MB | 1,668.3 | 1,668.9 | +0.66 | +0.04% | the trimmed graphs |
 
-**The slowest searches are 7% faster, and ranking does not move beyond
-noise.**
-- p95 and server CPU fall, and their CIs exclude 1. p50 does not move
-  significantly.
+**Searches are about 7% faster, typical and slowest alike, and ranking
+does not move beyond noise.**
+- p50, p95 and server CPU fall, and their CIs exclude 1. Pooled over runs,
+  round-1 p50 is 0.929 [0.855, 0.983] and p95 0.914 [0.840, 0.993].
 - nDCG@10 moves +0.0054, with 23 queries better and 9 worse. Its CI includes
   zero, so no accuracy gain is claimed.
 - In an offline replay of every XQuAD-R shortlist, no key moved
