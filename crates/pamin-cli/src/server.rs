@@ -621,8 +621,10 @@ const MAPPED_FROM: i32 = 1 << 20;
 /// entry point (q69: `pamin serve` at 1d141db against this change, same
 /// corpus and host as q51, four rotated runs an arm): search peak RSS 1,019
 /// to 993 MB, its anonymous part 368 to 338 MB, ingest peak RSS 986 to 789
-/// MB, search p50 1.004x [0.937, 1.090] and p95 1.028x [0.990, 1.094], the
-/// same top ten on every query. The price is ingest: every pass now maps and
+/// MB, round-1 search p50 1.028x [1.003, 1.079] (borderline: pooled over
+/// runs, 1.038x [0.975, 1.108]) and p95 1.032x [0.947, 1.093], the same top
+/// ten on every query. The harness asks each query twice and the repeat is
+/// served from the score cache, so only the first round runs the models. The price is ingest: every pass now maps and
 /// faults in its buffers afresh, so its system time is 5.7x and its wall time
 /// 1.061x [1.014, 1.133] -- a trade of indexing speed for memory, chosen on
 /// purpose. Trimming the heap between groups of passes instead (q69) kept
