@@ -7,11 +7,20 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# Two executables, installed together. `pamin` is the command an agent runs,
+# built from `pamin-client` alone so it links none of the engine; it starts
+# `pamin-server`, the resident server, which links all of it. Both come from
+# one package so one `cargo install` puts them side by side.
 [[bin]]
 name = "pamin"
 path = "src/main.rs"
 
+[[bin]]
+name = "pamin-server"
+path = "src/pamin_server.rs"
+
 [dependencies]
+pamin-client = { workspace = true }
 pamin-core = { workspace = true }
 pamin-engine = { workspace = true }
 pamin-index = { workspace = true }

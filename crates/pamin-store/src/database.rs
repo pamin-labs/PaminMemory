@@ -14,6 +14,7 @@ use sqlx::postgres::PgPoolOptions;
 
 use crate::error::Result;
 use crate::workspace::{LocalServer, StartedWith, Workspace};
+pub use pamin_core::settings::installation_missing;
 
 /// The database name created inside the embedded cluster.
 const DATABASE: &str = "pamin";
@@ -62,7 +63,7 @@ fn available_cores() -> u32 {
 /// What the caller decides about the cluster a workspace runs: passed in
 /// rather than read from the environment, so a test or a second caller in one
 /// process decides it for itself.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoreSettings {
     /// Let PostgreSQL compile query expressions with LLVM; see [`jit`]. A
     /// cluster setting, so it takes effect when the cluster next starts.
@@ -70,6 +71,15 @@ pub struct StoreSettings {
     /// A PostgreSQL installation prefix (holding `bin/initdb`) to use instead
     /// of installing one into the workspace; see [`supplied_installation`].
     pub postgres_dir: Option<std::path::PathBuf>,
+}
+
+impl Default for StoreSettings {
+    fn default() -> Self {
+        Self {
+            jit: pamin_core::settings::JIT,
+            postgres_dir: None,
+        }
+    }
 }
 
 impl StoreSettings {
@@ -366,17 +376,6 @@ fn supplied_installation(store: &StoreSettings) -> Result<Option<std::path::Path
         ))),
         None => Ok(Some(path)),
     }
-}
-
-/// What a PostgreSQL installation prefix lacks of what the store runs from
-/// it, `bin/initdb` and `bin/pg_ctl`, or `None` if it has both. The one
-/// check, for the store and for a caller validating a prefix before it is
-/// recorded.
-pub fn installation_missing(prefix: &std::path::Path) -> Option<String> {
-    ["initdb", "pg_ctl"]
-        .into_iter()
-        .map(|program| format!("bin/{program}{}", std::env::consts::EXE_SUFFIX))
-        .find(|relative| !prefix.join(relative).is_file())
 }
 
 /// What a bundled installation carries that nothing here will ever read.

@@ -5,30 +5,10 @@
 //! from the first release so the guarantee is executable rather than stated.
 
 use anyhow::Result;
+use pamin_client::command::reindex::{Args, Reindexed};
 use pamin_index::VectorIndex;
 
-use serde::{Deserialize, Serialize};
-
 use crate::session::Session;
-
-#[derive(clap::Args, Serialize, Deserialize)]
-pub struct Args {}
-
-#[derive(Serialize, Deserialize)]
-pub struct Reindexed {
-    /// Topics written to the projection. One document each, whatever a topic's
-    /// version history holds -- searching ranks what a topic says now.
-    indexed: usize,
-    /// Of those, topics that kept the vector the replaced index held, because
-    /// their text had not changed, rather than being embedded again.
-    reused: usize,
-    /// Topics whose current-state pointer disagreed with the ledger and was
-    /// corrected. Zero unless something stopped maintaining it.
-    repaired_pointers: u64,
-    /// Topic names restated in the index that answers which topics a memory
-    /// names.
-    names: usize,
-}
 
 pub async fn execute(
     session: &Session,
@@ -48,19 +28,4 @@ pub async fn execute(
         names: rebuilt.names,
     };
     Ok(result)
-}
-
-/// Renders the result for a person reading it.
-pub fn render(result: &Reindexed) -> String {
-    let mut rendered = format!(
-        "Rebuilt the index from postgres: {} topics ({} reusing their stored vectors), {} topic names",
-        result.indexed, result.reused, result.names
-    );
-    if result.repaired_pointers > 0 {
-        rendered.push_str(&format!(
-            "\nRepaired {} topics pointing at the wrong current state",
-            result.repaired_pointers
-        ));
-    }
-    rendered
 }

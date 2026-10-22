@@ -1852,6 +1852,7 @@ dependencies = [
  "anyhow",
  "clap",
  "futures",
+ "pamin-client",
  "pamin-core",
  "pamin-engine",
  "pamin-index",
@@ -1869,10 +1870,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "pamin-client"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures",
+ "pamin-core",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "time",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "pamin-core"
 version = "0.0.1"
 dependencies = [
  "serde",
+ "serde_json",
  "time",
  "uuid",
 ]

@@ -1,4 +1,8 @@
-//! Makes the built binary able to find the retrieval engine's native library.
+//! Makes `pamin-server` able to find the retrieval engine's native library.
+//!
+//! Only the server links it. `pamin`, the client, is built from
+//! `pamin-client` alone and records no engine library and no rpath, so
+//! everything below is scoped to the `pamin-server` binary.
 //!
 //! The engine ships as a dynamic library that the linker records by name only.
 //! Cargo's test harness happens to set a library search path, so tests pass
@@ -34,6 +38,9 @@
 
 use std::path::{Path, PathBuf};
 
+/// The one binary that links the engine.
+const SERVER: &str = "pamin-server";
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
@@ -58,8 +65,8 @@ fn main() {
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     match target_os.as_str() {
-        "macos" => println!("cargo:rustc-link-arg-bins=-Wl,-rpath,@executable_path"),
-        "linux" => println!("cargo:rustc-link-arg-bins=-Wl,-rpath,$ORIGIN"),
+        "macos" => println!("cargo:rustc-link-arg-bin={SERVER}=-Wl,-rpath,@executable_path"),
+        "linux" => println!("cargo:rustc-link-arg-bin={SERVER}=-Wl,-rpath,$ORIGIN"),
         _ => {}
     }
 
@@ -73,7 +80,10 @@ fn main() {
     if matches!(target_os.as_str(), "macos" | "linux")
         && let Some(staged) = stage_under_cargo_home(&library, name)
     {
-        println!("cargo:rustc-link-arg-bins=-Wl,-rpath,{}", staged.display());
+        println!(
+            "cargo:rustc-link-arg-bin={SERVER}=-Wl,-rpath,{}",
+            staged.display()
+        );
     }
 }
 

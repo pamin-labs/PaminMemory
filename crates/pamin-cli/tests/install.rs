@@ -1,4 +1,10 @@
-//! Checks that an installed `pamin` runs without the tree that built it.
+//! Checks that an installed `pamin` runs without the tree that built it, and
+//! that the client stays a client.
+//!
+//! `cargo install` puts two executables side by side: `pamin`, the client,
+//! and `pamin-server`, which links the engine. Both have to start from where
+//! they were installed, and `pamin` has to link none of what only the server
+//! needs, which is the whole reason it is a separate binary.
 //!
 //! The retrieval engine is a dynamic library. Cargo installs the executable
 //! and nothing beside it, so an installed binary can only work by finding the
@@ -53,19 +59,70 @@ fn an_installed_binary_runs_without_the_tree_that_built_it() {
         String::from_utf8_lossy(&install.stderr)
     );
 
-    let installed = root.path().join("bin").join("pamin");
-    let version = as_a_user_would(Command::new(&installed).arg("--version"))
-        .output()
-        .unwrap_or_else(|error| panic!("running {}: {error}", installed.display()));
+    let bin = root.path().join("bin");
+    for name in ["pamin", "pamin-server"] {
+        let installed = bin.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        let version = as_a_user_would(Command::new(&installed).arg("--version"))
+            .output()
+            .unwrap_or_else(|error| panic!("running {}: {error}", installed.display()));
 
-    assert!(
-        version.status.success(),
-        "the installed binary did not start: {}",
-        String::from_utf8_lossy(&version.stderr)
-    );
+        assert!(
+            version.status.success(),
+            "the installed {name} did not start: {}",
+            String::from_utf8_lossy(&version.stderr)
+        );
 
-    assert_no_library_comes_from_the_build_tree(&installed);
+        assert_no_library_comes_from_the_build_tree(&installed);
+    }
+
+    assert_the_client_links_nothing_heavy(&bin.join("pamin"));
 }
+
+/// Fails when the installed client records a library only the server needs.
+///
+/// `pamin` is started by every command an agent runs, and it is kept light
+/// by linking nothing that reaches the engine: not the vector engine's shared
+/// library, not TLS, and not the inference runtime, which drags in the C++
+/// runtime. A dependency added to the wrong crate puts them back and nothing
+/// else notices, because the binary still works -- it is only slower to
+/// start, every time.
+#[cfg(target_os = "linux")]
+fn assert_the_client_links_nothing_heavy(client: &Path) {
+    let dynamic = Command::new("readelf")
+        .arg("-d")
+        .arg(client)
+        .output()
+        .expect("running readelf");
+    assert!(dynamic.status.success(), "readelf failed");
+    let dynamic = String::from_utf8_lossy(&dynamic.stdout);
+    let needed: Vec<&str> = dynamic
+        .lines()
+        .filter(|line| line.contains("(NEEDED)"))
+        .collect();
+    assert!(!needed.is_empty(), "readelf listed nothing: {dynamic}");
+
+    let heavy: Vec<&&str> = needed
+        .iter()
+        .filter(|line| {
+            [
+                "libzvec",
+                "libssl",
+                "libcrypto",
+                "libstdc++",
+                "libonnxruntime",
+            ]
+            .iter()
+            .any(|library| line.contains(library))
+        })
+        .collect();
+    assert!(
+        heavy.is_empty(),
+        "the installed pamin links what only pamin-server needs:\n{heavy:#?}"
+    );
+}
+
+#[cfg(not(target_os = "linux"))]
+fn assert_the_client_links_nothing_heavy(_client: &Path) {}
 
 /// Fails when a library the installed binary needs resolves inside `target/`.
 ///

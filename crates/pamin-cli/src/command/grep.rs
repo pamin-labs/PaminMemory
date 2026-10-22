@@ -6,48 +6,13 @@
 //! on its way to becoming one.
 
 use anyhow::Result;
+use pamin_client::command::grep::{Args, Match, Matches};
 use pamin_store::repository;
-use serde::{Deserialize, Serialize};
 
 use crate::session::Session;
 
 /// Characters of surrounding text to show on each side of a match.
 const CONTEXT: usize = 60;
-
-#[derive(clap::Args, Serialize, Deserialize)]
-pub struct Args {
-    /// The exact string to find. Not a pattern.
-    pub literal: String,
-
-    /// Ignore case.
-    #[arg(short = 'i', long)]
-    pub ignore_case: bool,
-
-    /// How many matches to return.
-    #[arg(long, default_value_t = 20)]
-    pub limit: u32,
-}
-
-#[derive(Serialize, Deserialize)]
-struct Match {
-    /// Where the evidence came from.
-    source: String,
-    source_version: String,
-    version: u32,
-    /// `promoted` or `filtered`. Filtered evidence is reachable here and
-    /// nowhere else.
-    filter_decision: String,
-    /// Why the filter decided as it did.
-    filter_reason: String,
-    /// The match with surrounding text, for reading rather than for parsing.
-    excerpt: String,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct Matches {
-    literal: String,
-    matches: Vec<Match>,
-}
 
 pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Matches> {
     let database = session.database();
@@ -78,24 +43,6 @@ pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Mat
     };
 
     Ok(result)
-}
-
-/// Renders the result for a person reading it.
-pub fn render(result: &Matches) -> String {
-    if result.matches.is_empty() {
-        return format!("No evidence contains {:?}", result.literal);
-    }
-    result
-        .matches
-        .iter()
-        .map(|hit| {
-            format!(
-                "{} v{} ({})\n        {}",
-                hit.source, hit.version, hit.filter_decision, hit.excerpt
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// Renders the text around a match.
