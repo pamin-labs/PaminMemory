@@ -47,13 +47,22 @@ pub const SPAWN_LOCK: &str = "pamin.spawning";
 /// One request, and everything the server needs to serve it.
 #[derive(Serialize, Deserialize)]
 pub struct Request {
-    /// The client binary's version.
+    /// The identity of the server binary this client would start: see
+    /// [`version`].
     ///
     /// A server from another build answers with the same field names and
     /// different meanings, which is the one way this can be silently wrong
     /// rather than loudly broken. The client kills a mismatched server and
     /// starts its own.
     pub version: String,
+    /// The protocol this client speaks: [`WIRE`].
+    ///
+    /// [`Self::version`] names the server binary, so it catches a server that
+    /// was rebuilt and not a client that was -- `pamin` replaced on its own,
+    /// beside a `pamin-server` from before. Defaulted, so a request from a
+    /// build before this was sent is read, and is from another build.
+    #[serde(default)]
+    pub wire: String,
     /// The namespace to operate in. Per request rather than per connection,
     /// because the server holds many and a client speaks for one at a time.
     pub project: String,
@@ -146,22 +155,45 @@ pub enum Response {
     /// of its own rather than trusting field names that may have moved.
     Mismatch {
         server: String,
+        /// The protocol the server speaks, [`WIRE`] as it was built. Empty
+        /// from a server built before this was sent.
+        #[serde(default)]
+        wire: String,
     },
 }
 
-/// This binary's identity, for the version handshake.
+/// A fingerprint of the protocol this build speaks: a hash over the sources
+/// that define every request and result, stamped by `build.rs`.
+///
+/// `pamin` and `pamin-server` both compile it in from this crate, so a pair
+/// built together always agrees, and a request whose fingerprint differs from
+/// the server's is from another build however its binaries were installed.
+pub const WIRE: &str = env!("PAMIN_WIRE");
+
+/// The identity of the server binary this client starts, for the version
+/// handshake: [`identity`] of [`crate::client::server_exe`].
+///
+/// The server's, not the client's, because the server is the other half of
+/// the comparison: it answers with [`identity`] of its own executable, so the
+/// two agree exactly when the server running is the file this client would
+/// start. The client is a different file and can never match itself against
+/// one; whether it speaks the server's protocol is [`WIRE`]'s question.
+pub fn version() -> String {
+    identity(crate::client::server_exe().ok().as_deref())
+}
+
+/// An executable's identity, for the version handshake.
 ///
 /// The crate version is not enough. It stays `0.0.1` across every change, so
 /// during development -- which is exactly when a stale server is left listening
 /// after a rebuild -- two binaries that share nothing would agree. The
 /// executable's size and modification time distinguish them, and a rebuild
 /// always moves at least one.
-pub fn version() -> String {
+pub fn identity(executable: Option<&std::path::Path>) -> String {
     let crate_version = env!("CARGO_PKG_VERSION");
 
-    let built = std::env::current_exe()
-        .and_then(|path| path.metadata())
-        .ok()
+    let built = executable
+        .and_then(|path| path.metadata().ok())
         .map(|meta| {
             let stamp = meta
                 .modified()

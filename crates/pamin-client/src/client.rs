@@ -6,8 +6,11 @@
 //! same bargain the embedded database already makes -- `pamin init` leaves
 //! PostgreSQL running so the next command does not pay for it -- applied to the
 //! index and the model as well.
+//!
+//! The server it starts is a separate executable, `pamin-server`, installed
+//! beside `pamin`: see [`server_exe`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -16,7 +19,9 @@ use pamin_core::Workspace;
 use tokio::net::UnixStream;
 use tokio_util::codec::{Framed, LinesCodec};
 
-use crate::protocol::{Call, Request, Response, SERVER_LOG, SPAWN_LOCK, socket_path, version};
+use crate::protocol::{
+    Call, Request, Response, SERVER_LOG, SPAWN_LOCK, WIRE, socket_path, version,
+};
 
 /// How long to wait for a server we started to begin listening.
 ///
@@ -57,7 +62,14 @@ pub async fn ask(
     match exchange(&mut stream, request).await? {
         Response::Ok(value) => Ok(Some(value)),
         Response::Err(message) => bail!(message),
-        Response::Mismatch { server } => {
+        Response::Mismatch { server, wire } => {
+            // The server running is the one this would start, and still speaks
+            // another protocol: it is `pamin` that is from another build, and
+            // replacing the server would start the same one again -- after
+            // stopping it under whoever else is using it.
+            if server == version() && wire != WIRE {
+                return Err(other_build(&wire));
+            }
             // A server from another build answers with the same field names and
             // possibly different meanings. Replace it rather than reason about
             // which fields still line up.
@@ -71,7 +83,8 @@ pub async fn ask(
             match exchange(&mut fresh, request).await? {
                 Response::Ok(value) => Ok(Some(value)),
                 Response::Err(message) => bail!(message),
-                Response::Mismatch { server } => bail!(
+                Response::Mismatch { wire, .. } if wire != WIRE => Err(other_build(&wire)),
+                Response::Mismatch { server, .. } => bail!(
                     "the server at {} reports build {server}, and this one is {}; \
                      a replacement reported the same, so something else is starting it",
                     path.display(),
@@ -80,6 +93,43 @@ pub async fn ask(
             }
         }
     }
+}
+
+/// Why a client and the server beside it cannot work together: they were
+/// built from different sources, so one was installed without the other.
+fn other_build(wire: &str) -> anyhow::Error {
+    let server = server_exe().map_or_else(
+        |_| "the pamin-server beside it".to_string(),
+        |path| path.display().to_string(),
+    );
+    anyhow::anyhow!(
+        "this pamin and {server} are from different builds (protocol {WIRE} against \
+         {}); install pamin and pamin-server together, from one build",
+        if wire.is_empty() { "none" } else { wire }
+    )
+}
+
+/// The server executable a client starts: `pamin-server`, in the directory
+/// this executable really is in.
+///
+/// Really is: `current_exe` can name a symlink -- on macOS it is the path the
+/// process was started by -- and a link to `pamin` on `PATH`, the way Homebrew
+/// installs one, is in another directory from the server it was installed
+/// with. A missing server is refused here, by path, rather than left to fail
+/// as a process that would not start.
+pub fn server_exe() -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("finding this executable")?;
+    let exe = exe.canonicalize().unwrap_or(exe);
+    let server = exe.with_file_name(format!("pamin-server{}", std::env::consts::EXE_SUFFIX));
+    if !server.is_file() {
+        bail!(
+            "the pamin server is not installed: there is no {}. pamin runs commands \
+             through the pamin-server beside it; install both, as `cargo install \
+             --path crates/pamin-cli` does",
+            server.display()
+        );
+    }
+    Ok(server)
 }
 
 /// One request, one response, on a connection this owns.
@@ -141,15 +191,18 @@ async fn spawn(workspace: &Workspace, path: &Path, serve: &[std::ffi::OsString])
             .open(workspace.root().join(SERVER_LOG))
             .context("opening the server log")?;
 
-        let started = std::process::Command::new(std::env::current_exe()?)
-            .arg("--home")
-            .arg(workspace.root())
-            .arg("serve")
-            .args(serve)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::from(log.try_clone()?))
-            .stderr(std::process::Stdio::from(log))
-            .spawn();
+        let started = server_exe().and_then(|server| {
+            std::process::Command::new(server)
+                .arg("--home")
+                .arg(workspace.root())
+                .arg("serve")
+                .args(serve)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::from(log.try_clone()?))
+                .stderr(std::process::Stdio::from(log))
+                .spawn()
+                .map_err(anyhow::Error::from)
+        });
 
         match started {
             Err(error) => {
@@ -282,6 +335,7 @@ async fn stop_and_wait(path: &Path) -> Result<()> {
 fn farewell() -> Request {
     Request {
         version: String::new(),
+        wire: String::new(),
         project: String::new(),
         profile: String::new(),
         vector_index: pamin_core::VectorIndex::default().label().to_string(),
