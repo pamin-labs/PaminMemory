@@ -154,6 +154,12 @@ pamin write --topic deployment_pipeline "deploys through the ci pipeline"
 pamin search "how does deployment work"
 ```
 
+That installs two executables side by side: `pamin`, the command you run, and
+`pamin-server`, the resident server it starts. `pamin` itself links none of the
+inference runtime, the vector engine or the database driver, so each command
+costs a socket round trip rather than loading them; keep the two in one
+directory, because `pamin` starts the `pamin-server` beside it.
+
 Reading a topic's history, and what it looked like before:
 
 ```bash
@@ -452,8 +458,8 @@ Apache-2.0, in [LICENSE](LICENSE).
 
 **No model weights are redistributed.** Nothing in this repository is a
 `.onnx`, `.safetensors` or `.bin`, and a release artifact is the `pamin`
-binary plus the native libraries it links — the size budget counts exactly
-that. Weights are fetched from the Hugging Face hub by the user's own machine
+and `pamin-server` binaries plus the native libraries the server links — the
+size budget counts exactly that. Weights are fetched from the Hugging Face hub by the user's own machine
 the first time a command asks for one.
 
 [NOTICE](NOTICE) lists every model a search will download

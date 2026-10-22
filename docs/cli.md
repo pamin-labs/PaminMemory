@@ -276,12 +276,12 @@ On Linux the CUDA path has two requirements the program cannot meet for you.
 The machine needs the NVIDIA driver, CUDA 13 and cuDNN 9. And the runtime's
 provider libraries -- `libonnxruntime_providers_shared.so` and
 `libonnxruntime_providers_cuda.so`, 79 MB, built into `target/release` beside
-the binary -- have to sit in the same directory as `pamin`, which `cargo
-install` does not arrange: copy them next to the installed binary. Missing
+the binary -- have to sit in the same directory as `pamin-server`, which
+`cargo install` does not arrange: copy them next to the installed binary. Missing
 either, the reranker runs on the CPU exactly as before.
 
 On Windows the same holds for one file, `DirectML.dll` (18.5 MB), built beside
-`pamin.exe`. Without it the program still starts -- Windows 10 and later carry
+`pamin-server.exe`. Without it the program still starts -- Windows 10 and later carry
 their own copy in System32 -- but that copy can be older than the runtime
 needs, in which case the reranker quietly stays on the CPU. On Apple silicon
 nothing needs copying: Core ML is linked into the binary from the system.
@@ -1416,6 +1416,23 @@ There is no way to run a command
 in the calling process instead: `PAMIN_NO_SERVER`, which used to, was removed,
 and a command run with it set fails and says so rather than quietly going
 through the server it was set to avoid.
+
+The server is its own executable, `pamin-server`, installed beside `pamin`.
+`pamin` is only the client: it parses the command, sends it, and prints the
+answer, and it links none of the inference runtime, the vector engine, TLS or
+the database driver, so a command does not pay to load them. It starts the
+`pamin-server` in its own directory, after following a symlink to where `pamin`
+really is, and fails with the path it looked for when that file is missing.
+`pamin serve`, and `pamin stop` with no server running, hand over to that
+`pamin-server`, which takes every command `pamin` does.
+
+A client checks that the running server is the one it would start: the same
+`pamin-server` file, by size and modification time, built from the same
+protocol. A server from another build -- after a rebuild, or an upgrade -- is
+stopped and replaced before the command is answered. Install `pamin` and
+`pamin-server` together: a `pamin` from another build than the `pamin-server`
+beside it fails, saying so, rather than replacing one server with another just
+like it.
 
 So the server is the only process the command line opens an index in. It holds
 each project's index open for writing, and the index takes an exclusive lock on

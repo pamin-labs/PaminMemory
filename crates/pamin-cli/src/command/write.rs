@@ -19,9 +19,9 @@ pub async fn execute(
     let validity = args.validity.parse()?;
 
     // Standard input is read by the front end, before dispatch, because the
-    // server has none -- `main::fill_from_stdin`. So this is not a fallback:
-    // the content is already here, and reading standard input would block the
-    // server on a descriptor nobody is going to write to.
+    // server has none -- `fill_from_stdin` in `pamin_client::cli`. So this is
+    // not a fallback: the content is already here, and reading standard input
+    // would block the server on a descriptor nobody is going to write to.
     let content = args
         .content
         .context("no content: pass it as an argument or on standard input")?;
