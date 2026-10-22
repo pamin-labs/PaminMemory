@@ -55,54 +55,13 @@ impl Drop for Serving<'_> {
     }
 }
 
-/// How many indexes stay open at once.
-///
-/// An open index is not free and does not become free by being idle. It holds
-/// 27 file descriptors, which is why the bound exists: against the
-/// 1024-descriptor limit a process usually starts with, an unbounded server
-/// ran out at the thirty-seventh project and the engine refused to create its
-/// lexical indexer. Sixteen leaves that a wide margin and is large enough that
-/// a server round-robining a working set keeps it; the seventeenth project
-/// closes the one nobody has touched for longest rather than failing.
-///
-/// The descriptors are the only quantity this number bounds, and they are not
-/// the one that hurts. Memory is, and it does not follow the count:
-///
-/// | profile    | per index | sixteen of them |
-/// | ---------- | --------- | --------------- |
-/// | `speed`    | ~100 MB   | ~1.6 GB         |
-/// | `accuracy` | ~205 MB   | ~3.3 GB         |
-///
-/// The second row was measured the hard way. Two benchmark servers on the
-/// shipping profile reached 5.6 GB resident apiece -- sixteen indexes on top
-/// of a 2.3 GB floor of model and runtime -- and the kernel killed both. The
-/// figure the paragraph above used to quote, 100 MB, was the smallest
-/// profile's, and nothing said so.
-///
-/// Most of the first row is a floor rather than a function of size. The
-/// full-text store is a RocksDB with twelve column families, and zvec gives
-/// each one's memtable a hash index of a million buckets, an 8,000,000-byte
-/// array allocated and zeroed when the memtable is: 96 MB before the first
-/// memory is written. A one-memory `speed` index measured 93 MiB anonymous
-/// (98 MB), and nothing pamin configures changes the bucket count. In the
-/// hundred-project end-to-end test, one-memory `accuracy` indexes added 103 to
-/// 152 MiB apiece while the first sixteen opened.
-///
-/// A count cannot be made to mean bytes here: what an index costs depends on
-/// the model, the quantization, and how much has been written, and this
-/// process learns the last of those only by opening it. So the number stays a
-/// count, and `--open-indexes` lets whoever knows their machine say a
-/// smaller one. Sizing it from a memory budget is [ADR 0001]'s hot-set
-/// residency work, which is where it belongs.
-pub(crate) const OPEN_INDEXES: usize = 16;
-
 impl Session {
     /// Connects, migrates, and holds the result.
     ///
     /// With a resident's pool: the server holding this is the only process
     /// the CLI talks to the cluster from.
     /// `open_indexes` is how many project indexes it keeps open at once; see
-    /// [`OPEN_INDEXES`].
+    /// [`OPEN_INDEXES`](pamin_client::settings::OPEN_INDEXES).
     pub async fn open(
         workspace: &Workspace,
         settings: pamin_engine::Settings,

@@ -1,15 +1,9 @@
 //! `pamin init` — provision the local database.
 
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use pamin_client::command::init::Initialized;
 
 use crate::session::Session;
-
-#[derive(Serialize, Deserialize)]
-pub struct Initialized {
-    project: String,
-    home: String,
-}
 
 pub async fn execute(session: &Session, project: &str) -> Result<Initialized> {
     // Provisioning, starting, and migrating all happen when the session opens,
@@ -23,9 +17,4 @@ pub async fn execute(session: &Session, project: &str) -> Result<Initialized> {
     };
 
     Ok(result)
-}
-
-/// Renders the result for a person reading it.
-pub fn render(result: &Initialized) -> String {
-    format!("Initialized project {} in {}", result.project, result.home)
 }

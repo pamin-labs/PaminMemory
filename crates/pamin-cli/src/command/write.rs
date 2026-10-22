@@ -1,55 +1,12 @@
 //! `pamin write` — record a memory.
 
 use anyhow::{Context, Result};
+use pamin_client::command::validity;
+use pamin_client::command::write::{Args, Written};
 use pamin_index::VectorIndex;
-use serde::{Deserialize, Serialize};
 
-use crate::command::validity;
 use crate::session::Session;
 use pamin_engine::Owed;
-
-#[derive(clap::Args, Serialize, Deserialize)]
-pub struct Args {
-    /// The topic this memory belongs to.
-    #[arg(long)]
-    pub topic: String,
-
-    /// The memory content. Reads standard input when omitted.
-    pub content: Option<String>,
-
-    /// Record the memory without waiting for the index to catch up.
-    ///
-    /// The work is queued rather than skipped. The server runs it once no
-    /// request is being answered, and `pamin cascade drain` runs it at once.
-    #[arg(long)]
-    pub defer: bool,
-
-    #[command(flatten)]
-    pub validity: validity::Flags,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct Written {
-    topic: String,
-    /// Absent when the filter held the content in the evidence layer.
-    version: Option<u32>,
-    promoted: bool,
-    /// Why the filter decided as it did, promoted or not.
-    reason: String,
-    /// Always set: evidence is recorded whatever the filter decides.
-    source_version: u32,
-    /// Whether the projection caught up before this command returned, or the
-    /// work is still owed. Either way the memory is recorded.
-    cascade: String,
-    /// Set when the projection has fallen far enough behind to say so. The
-    /// queue is unbounded on purpose -- a write must not fail because the
-    /// index is slow -- but a backlog nobody reports looks like searches
-    /// quietly missing the newest memories.
-    cascade_lagging: bool,
-    /// The truth interval this state was asserted for, if one was given.
-    valid_from: Option<String>,
-    valid_to: Option<String>,
-}
 
 pub async fn execute(
     session: &Session,
@@ -138,15 +95,4 @@ fn still_owed(drained: pamin_engine::Drained) -> i64 {
     // outrun the queue's. Both readings mean the same thing here -- there is
     // nothing left that a search would miss.
     (drained.pending - drained.applied as i64).max(0)
-}
-
-/// Renders the result for a person reading it.
-pub fn render(result: &Written) -> String {
-    match result.version {
-        Some(version) => format!("Wrote {} v{}", result.topic, version),
-        None => format!(
-            "Held in evidence only: {}\nStored as {} source version {}",
-            result.reason, result.topic, result.source_version
-        ),
-    }
 }

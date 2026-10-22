@@ -12,6 +12,7 @@ name = "pamin"
 path = "src/main.rs"
 
 [dependencies]
+pamin-client = { workspace = true }
 pamin-core = { workspace = true }
 pamin-engine = { workspace = true }
 pamin-index = { workspace = true }

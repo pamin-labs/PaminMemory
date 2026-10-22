@@ -12,12 +12,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use futures::{SinkExt, StreamExt};
-use pamin_store::Workspace;
+use pamin_core::Workspace;
 use tokio::net::UnixStream;
 use tokio_util::codec::{Framed, LinesCodec};
 
-use crate::protocol::{Call, Request, Response, SERVER_LOG, SPAWN_LOCK, version};
-use crate::server::socket_path;
+use crate::protocol::{Call, Request, Response, SERVER_LOG, SPAWN_LOCK, socket_path, version};
 
 /// How long to wait for a server we started to begin listening.
 ///
@@ -285,7 +284,7 @@ fn farewell() -> Request {
         version: String::new(),
         project: String::new(),
         profile: String::new(),
-        vector_index: pamin_index::VectorIndex::default().label().to_string(),
+        vector_index: pamin_core::VectorIndex::default().label().to_string(),
         server: Default::default(),
         call: Call::Stop,
     }
@@ -299,7 +298,7 @@ mod tests {
     #[test]
     fn the_replacing_stop_names_a_vector_index() {
         let request = super::farewell();
-        assert!(pamin_index::VectorIndex::parse(&request.vector_index).is_some());
+        assert!(pamin_core::VectorIndex::parse(&request.vector_index).is_some());
     }
     use std::path::Path;
 
