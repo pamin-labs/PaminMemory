@@ -29,6 +29,9 @@ pub struct Settings {
     /// product, lowered by a test that has to reach the case. Never zero,
     /// which would optimize the index on every drain.
     pub unindexed_budget: std::num::NonZeroU64,
+    /// How a memory is cut into documents in an index this process creates
+    /// or rebuilds; one that exists keeps its own. See [`pamin_index::Grain`].
+    pub grain: pamin_index::Grain,
 }
 
 impl Settings {
@@ -46,6 +49,7 @@ impl Default for Settings {
             model_idle: std::num::NonZeroU64::new(pamin_core::settings::MODEL_IDLE.as_secs())
                 .expect("a model may sit idle for at least a second"),
             unindexed_budget: pamin_index::projection::UNINDEXED_BUDGET,
+            grain: pamin_index::Grain::default(),
         }
     }
 }

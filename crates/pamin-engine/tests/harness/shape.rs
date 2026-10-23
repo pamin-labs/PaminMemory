@@ -475,7 +475,7 @@ fn knob(setting: &str) -> String {
 /// The knobs that change what an index build makes of the vectors -- when
 /// a drain builds the vector graph -- but not the vectors: they name an
 /// index's stamp, not a vector cache's producer.
-const INDEX_SETTINGS: [&str; 1] = ["PAMIN_EVAL_UNINDEXED_BUDGET"];
+const INDEX_SETTINGS: [&str; 2] = ["PAMIN_EVAL_UNINDEXED_BUDGET", "PAMIN_EVAL_SPAN_TOKENS"];
 
 /// The `PAMIN_EVAL_*` knobs off that path, with why: they name a run's record
 /// (see [`settings`]), not its vectors.

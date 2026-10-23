@@ -315,6 +315,10 @@ pub trait Projection {
     /// it has to follow.
     fn passage(&self) -> Passage;
 
+    /// How a memory written to this index is cut into documents, which every
+    /// write to it has to follow.
+    fn grain(&self) -> Grain;
+
     /// Which vector index this one was built with.
     fn vector_index(&self) -> VectorIndex;
 }
@@ -349,6 +353,8 @@ pub struct ProjectionIndex {
     passage: Passage,
     /// How this index spells a topic as a primary key. See [`Keys`].
     keys: Keys,
+    /// How a memory written to this index is cut. See [`Grain`].
+    grain: Grain,
     /// Whether this collection has [`FIELD_ENCODING`]: one created before it
     /// existed does not, and its documents are written and read without it.
     encodings: bool,
@@ -834,9 +840,54 @@ pub fn vector_index_lags(documents: u64, completeness: f32, budget: std::num::No
 /// Recorded beside the model because an index keyed by something else is not
 /// stale, it is silently empty: the old scheme's identifiers are read as the
 /// new scheme's, match nothing, and every search comes back with no results
-/// and no error anywhere. Changing what a document is keyed by means changing
-/// this, which turns that silence into a message naming `pamin reindex`.
-const DOCUMENT_GRAIN: &str = "topic";
+/// and no error anywhere. A grain this build does not know -- the topic state
+/// an index was once keyed by -- is refused with a message naming
+/// `pamin reindex`.
+///
+/// Like the [`Passage`], an index keeps the grain it was built with, and a
+/// rebuild builds the one its caller asks for. Either grain is read the same
+/// way: a document is a span of a topic, keyed by [`Keys::span_key`], and a
+/// memory that is one span is keyed and embedded as a whole topic always was.
+/// What the grain decides is only how a memory is cut when it is written.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Grain {
+    /// A whole memory, cut nowhere: one document per topic. Every index built
+    /// before spans.
+    #[default]
+    Topic,
+    /// The spans a memory is cut into by [`crate::spans::pack`], each of at
+    /// most this many tokens.
+    Spans(std::num::NonZeroU32),
+}
+
+impl Grain {
+    fn label(self) -> String {
+        match self {
+            Self::Topic => "topic".to_string(),
+            Self::Spans(cap) => format!("span/{cap}/v1"),
+        }
+    }
+
+    fn parse(label: &str) -> Option<Self> {
+        match label.trim() {
+            "topic" => Some(Self::Topic),
+            label => label
+                .strip_prefix("span/")?
+                .strip_suffix("/v1")?
+                .parse()
+                .ok()
+                .map(Self::Spans),
+        }
+    }
+
+    /// The most tokens a span holds, or `None` for a memory indexed whole.
+    pub fn cap(self) -> Option<usize> {
+        match self {
+            Self::Topic => None,
+            Self::Spans(cap) => Some(cap.get() as usize),
+        }
+    }
+}
 
 /// How many neighbours each document keeps in the vector graph.
 ///
@@ -1010,6 +1061,19 @@ impl ProjectionIndex {
         access: Access,
         documents: u64,
     ) -> Result<Self> {
+        Self::open_as(dir, legacy_dir, index, access, documents, Grain::default())
+    }
+
+    /// [`open`](Self::open), creating an absent index with `grain`; an index
+    /// that exists keeps the grain it was built with.
+    pub fn open_as(
+        dir: &Path,
+        legacy_dir: &Path,
+        index: VectorIndex,
+        access: Access,
+        documents: u64,
+        grain: Grain,
+    ) -> Result<Self> {
         // A workspace built before projects had their own directory holds one
         // shared collection. Opening this project's empty directory beside it
         // would return nothing and look like an empty workspace, so it is
@@ -1018,7 +1082,7 @@ impl ProjectionIndex {
             return Err(IndexError::LegacyLayout);
         }
 
-        Self::open_sized(dir, index, access, segment_documents(documents))
+        Self::open_sized(dir, index, access, segment_documents(documents), grain)
     }
 
     /// The vector index the index at `dir` was built with, if there is one
@@ -1053,21 +1117,25 @@ impl ProjectionIndex {
     /// The size is the caller's here rather than derived from a count, because
     /// the reshape's tests have to build an index in the shape a grown project
     /// is in -- many segments -- without writing fifty thousand documents.
+    ///
+    /// `grain` is what an index created here is built with; one that exists
+    /// keeps its own.
     pub(crate) fn open_sized(
         dir: &Path,
         index: VectorIndex,
         access: Access,
         segment: u64,
+        grain: Grain,
     ) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
-        let (passage, keys) = match Marker::read(dir)? {
+        let (passage, keys, grain) = match Marker::read(dir)? {
             Some(recorded) => {
                 if recorded.model != MODEL_ID {
                     return Err(IndexError::ModelMismatch {
                         indexed: recorded.model,
                     });
                 }
-                if recorded.grain != DOCUMENT_GRAIN {
+                let Some(grain) = Grain::parse(&recorded.grain) else {
                     return Err(IndexError::GrainMismatch {
                         // A marker with no grain line was written before there
                         // was one, and everything written then was keyed by
@@ -1077,26 +1145,27 @@ impl ProjectionIndex {
                         } else {
                             recorded.grain
                         },
-                        expected: DOCUMENT_GRAIN.to_string(),
+                        expected: Grain::Topic.label(),
                     });
-                }
+                };
                 if recorded.storage != index.label() {
                     return Err(IndexError::VectorIndexMismatch {
                         indexed: recorded.storage,
                         requested: index.label().to_string(),
                     });
                 }
-                (recorded.passage, recorded.keys)
+                (recorded.passage, recorded.keys, grain)
             }
             None => {
-                Marker::current(index).write(dir)?;
-                (PASSAGE, KEYS)
+                Marker::current(index, grain).write(dir)?;
+                (PASSAGE, KEYS, grain)
             }
         };
 
         let mut opened = Self::open_with_dimensions(dir, DIMENSIONS, index, access, segment)?;
         opened.passage = passage;
         opened.keys = keys;
+        opened.grain = grain;
         Ok(opened)
     }
 
@@ -1134,7 +1203,13 @@ impl ProjectionIndex {
             ..recorded
         }
         .write(dir)?;
-        Self::open_sized(dir, index, Access::ReadWrite, segment_documents(documents))
+        Self::open_sized(
+            dir,
+            index,
+            Access::ReadWrite,
+            segment_documents(documents),
+            Grain::default(),
+        )
     }
 
     /// Opens the index at `dir` for writing, refusing to create one.
@@ -1149,7 +1224,13 @@ impl ProjectionIndex {
                 format!("no index at {}", dir.display()),
             )));
         }
-        Self::open_sized(dir, index, Access::ReadWrite, segment_documents(0))
+        Self::open_sized(
+            dir,
+            index,
+            Access::ReadWrite,
+            segment_documents(0),
+            Grain::default(),
+        )
     }
 
     fn open_with_dimensions(
@@ -1228,6 +1309,7 @@ impl ProjectionIndex {
             index,
             passage: PASSAGE,
             keys: KEYS,
+            grain: Grain::default(),
             encodings,
             optimized_files: AtomicU64::new(saved_optimize_floor(dir)),
         })
@@ -1459,10 +1541,10 @@ impl Marker {
     const FILE: &str = "profile";
 
     /// What an index built now, with this vector index, is.
-    fn current(index: VectorIndex) -> Self {
+    fn current(index: VectorIndex, grain: Grain) -> Self {
         Self {
             model: MODEL_ID.to_string(),
-            grain: DOCUMENT_GRAIN.to_string(),
+            grain: grain.label(),
             storage: index.label().to_string(),
             passage: PASSAGE,
             keys: KEYS,
@@ -1505,7 +1587,13 @@ impl Marker {
     }
 
     /// Whether a vector this index holds is the vector an index built now
-    /// would compute for the same text: same model, same encoding, same grain.
+    /// would compute for the same text: same model, same encoding.
+    ///
+    /// Not the same [`Grain`]: a vector is embedded from a span's header and
+    /// text whichever grain cut it, and a memory is lent only when the index
+    /// holds exactly the spans the rebuild would write ([`holds_spans`]) -- so
+    /// a memory a span index holds whole lends to a topic index, and the
+    /// reverse, and nothing cut differently lends at all.
     ///
     /// Not the same [`Keys`]: how a key is spelled says nothing about the
     /// vector stored under it, and the index lending it is read through its
@@ -1513,7 +1601,7 @@ impl Marker {
     /// precision, and a vector read from any of them -- or from an fp32 index
     /// built before -- rounds to the same codes the model's own output would.
     fn matches(&self, other: &Self) -> bool {
-        self.model == other.model && self.grain == other.grain && self.passage == other.passage
+        self.model == other.model && self.passage == other.passage
     }
 
     /// Whether the index this describes stores half-precision vectors, as
@@ -1560,9 +1648,10 @@ impl Previous {
     pub fn set_aside(dir: &Path) -> Result<Option<Self>> {
         let aside = dir.with_extension("previous");
         ProjectionIndex::discard(&aside)?;
-        let current = Marker::current(VectorIndex::default());
-        let Some(recorded) = Marker::read(dir)?.filter(|recorded| recorded.matches(&current))
-        else {
+        let current = Marker::current(VectorIndex::default(), Grain::default());
+        let Some(recorded) = Marker::read(dir)?.filter(|recorded| {
+            recorded.matches(&current) && Grain::parse(&recorded.grain).is_some()
+        }) else {
             ProjectionIndex::discard(dir)?;
             return Ok(None);
         };
@@ -1578,6 +1667,7 @@ impl Previous {
         )?;
         index.passage = PASSAGE;
         index.keys = recorded.keys;
+        index.grain = Grain::parse(&recorded.grain).expect("parsed when it was set aside");
         Ok(Some(Self {
             index,
             dir: aside,
@@ -1759,6 +1849,10 @@ fn holds_exactly(stored: Option<&str>, wanted: &str) -> bool {
 impl Projection for ProjectionIndex {
     fn passage(&self) -> Passage {
         self.passage
+    }
+
+    fn grain(&self) -> Grain {
+        self.grain
     }
 
     fn vector_index(&self) -> VectorIndex {
@@ -2511,7 +2605,9 @@ mod marker {
     fn an_index_reads_back_what_it_was_built_with() {
         for index in VectorIndex::ALL {
             let dir = tempfile::tempdir().expect("a directory");
-            Marker::current(index).write(dir.path()).expect("marking");
+            Marker::current(index, super::Grain::default())
+                .write(dir.path())
+                .expect("marking");
             assert_eq!(
                 ProjectionIndex::built_for(dir.path()).expect("reading"),
                 Some(index)
@@ -2536,7 +2632,7 @@ mod marker {
         let retired = tempfile::tempdir().expect("a directory");
         Marker {
             model: "intfloat/multilingual-e5-small+p1".to_string(),
-            ..Marker::current(VectorIndex::default())
+            ..Marker::current(VectorIndex::default(), super::Grain::default())
         }
         .write(retired.path())
         .expect("marking");

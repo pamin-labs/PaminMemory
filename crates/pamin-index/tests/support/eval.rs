@@ -65,6 +65,10 @@ pub const KNOBS: &[(&str, &str)] = &[
         "PAMIN_EVAL_UNINDEXED_BUDGET",
         "documents outside the vector graph before upkeep builds it (no flag)",
     ),
+    (
+        "PAMIN_EVAL_SPAN_TOKENS",
+        "cut memories into spans of at most this many tokens (no flag)",
+    ),
     ("PAMIN_EVAL_JIT", "PostgreSQL JIT, true or false (`--jit`)"),
     (
         "PAMIN_EVAL_POSTGRES_DIR",
