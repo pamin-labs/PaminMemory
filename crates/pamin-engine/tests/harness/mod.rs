@@ -224,6 +224,8 @@ pub fn settings() -> pamin_engine::Settings {
         model_idle: default.model_idle,
         unindexed_budget: eval::parsed::<std::num::NonZeroU64>("PAMIN_EVAL_UNINDEXED_BUDGET")
             .unwrap_or(default.unindexed_budget),
+        grain: eval::parsed::<std::num::NonZeroU32>("PAMIN_EVAL_SPAN_TOKENS")
+            .map_or(default.grain, pamin_index::Grain::Spans),
     }
 }
 

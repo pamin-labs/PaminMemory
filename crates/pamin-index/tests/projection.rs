@@ -2006,3 +2006,83 @@ fn a_rebuild_lends_a_memory_of_several_spans_whole_or_not_at_all() {
     assert_eq!(previous.lends(&shorter).expect("count"), 0);
     previous.discard().expect("discard");
 }
+
+/// An index keeps the grain it was built with, whatever a later open asks
+/// for, and records it; a rebuild into another grain still lends every
+/// memory both grains index the same way -- one that is a single span.
+#[test]
+fn an_index_keeps_its_grain_and_lends_across_grains() {
+    use pamin_index::{Grain, Previous};
+
+    let root = tempfile::tempdir().expect("temp dir");
+    let dir = root.path().join("index");
+    let legacy = root.path().join("legacy");
+    let spans = Grain::Spans(std::num::NonZeroU32::new(200).expect("non-zero"));
+    let index = ProjectionIndex::open_as(
+        &dir,
+        &legacy,
+        VectorIndex::default(),
+        Access::ReadWrite,
+        0,
+        Grain::Topic,
+    )
+    .expect("open");
+    assert_eq!(index.grain(), Grain::Topic);
+    let vector = separated(1);
+    index
+        .upsert_encoded(
+            &[(id(1), "a short memory", vector.as_slice())],
+            Some("cpu:one"),
+        )
+        .expect("write");
+    index.flush().expect("flush");
+    drop(index);
+
+    let reopened = ProjectionIndex::open_as(
+        &dir,
+        &legacy,
+        VectorIndex::default(),
+        Access::ReadOnly,
+        0,
+        spans,
+    )
+    .expect("reopen");
+    assert_eq!(reopened.grain(), Grain::Topic, "an open changed the grain");
+    drop(reopened);
+
+    let previous = Previous::set_aside(&dir)
+        .expect("set aside")
+        .expect("an index of whole memories lends to one of spans");
+    let rebuilt = ProjectionIndex::open_as(
+        &dir,
+        &legacy,
+        VectorIndex::default(),
+        Access::ReadWrite,
+        0,
+        spans,
+    )
+    .expect("rebuild");
+    assert_eq!(rebuilt.grain(), spans);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("profile"))
+            .expect("marker")
+            .lines()
+            .nth(1),
+        Some("span/200/v1")
+    );
+    let wanted = HashMap::from([(id(1), vec!["a short memory"])]);
+    let lent = previous
+        .lend(&wanted, 256, |documents, encoding| {
+            rebuilt.write_spans(documents, encoding)
+        })
+        .expect("lend");
+    assert_eq!(lent.len(), 1);
+    previous.discard().expect("discard");
+    drop(rebuilt);
+
+    // Read back as the grain it recorded.
+    let reopened =
+        ProjectionIndex::open(&dir, &legacy, VectorIndex::default(), Access::ReadOnly, 0)
+            .expect("reopen");
+    assert_eq!(reopened.grain(), spans);
+}

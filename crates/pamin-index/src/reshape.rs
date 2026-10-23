@@ -35,7 +35,7 @@ use pamin_core::{Scored, TopicId};
 
 use crate::error::{IndexError, Result};
 use crate::projection::{
-    Passage, Projection, ProjectionIndex, Segmentation, SpanDocument, Stored, VectorIndex,
+    Grain, Passage, Projection, ProjectionIndex, Segmentation, SpanDocument, Stored, VectorIndex,
 };
 use crate::segmentation::Segmenter;
 
@@ -258,6 +258,7 @@ impl Reshape {
             *served = Arc::new(Closed {
                 segmenter: served.segmenter(),
                 passage: served.passage(),
+                grain: served.grain(),
                 index: served.vector_index(),
                 reason: "it is being swapped for its reshaped copy".to_string(),
             });
@@ -290,6 +291,7 @@ impl Reshape {
                             *served = Arc::new(Closed {
                                 segmenter: served.segmenter(),
                                 passage: served.passage(),
+                                grain: served.grain(),
                                 index: served.vector_index(),
                                 reason: format!("{error}, and reopening it failed: {reopening}"),
                             })
@@ -524,6 +526,10 @@ impl Projection for Recording {
         self.inner.passage()
     }
 
+    fn grain(&self) -> Grain {
+        self.inner.grain()
+    }
+
     fn vector_index(&self) -> VectorIndex {
         self.inner.vector_index()
     }
@@ -537,6 +543,7 @@ impl Projection for Recording {
 struct Closed {
     segmenter: Arc<Segmenter>,
     passage: Passage,
+    grain: Grain,
     index: VectorIndex,
     reason: String,
 }
@@ -620,6 +627,10 @@ impl Projection for Closed {
         self.passage
     }
 
+    fn grain(&self) -> Grain {
+        self.grain
+    }
+
     fn vector_index(&self) -> VectorIndex {
         self.index
     }
@@ -685,6 +696,7 @@ mod tests {
             VectorIndex::default(),
             Access::ReadWrite,
             TINY_SEGMENT,
+            Grain::default(),
         )
         .expect("open the served index");
         let contents: Vec<String> = (1..=DOCUMENTS).map(content).collect();
@@ -921,6 +933,7 @@ mod tests {
             VectorIndex::default(),
             Access::ReadWrite,
             segment_documents(0),
+            Grain::default(),
         )
         .expect("open");
         let held: Arc<Held> = Arc::new(Mutex::new(Arc::new(index)));
