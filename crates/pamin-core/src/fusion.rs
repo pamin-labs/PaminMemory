@@ -197,14 +197,21 @@ pub enum Why {
 
 /// A fused result and the reasoning behind its position.
 ///
-/// A topic rather than one of its states. The channels rank topics because the
-/// projection holds one document per topic: a topic's history lives in the
-/// ledger and is read by version, never ranked against itself.
+/// A topic rather than one of its states or spans. The channels rank topics:
+/// a topic's history lives in the ledger and is read by version, never ranked
+/// against itself, and its spans are reported once, by the best.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FusedResult {
     pub topic: TopicId,
     pub score: f32,
     pub why: Vec<Why>,
+    /// Which of the topic's spans best answers the query: the one the index
+    /// channels that found it put the most weight on, summed the way the
+    /// topic's own score is. A tie goes to the earlier span. 0 for a memory of
+    /// one span and for a topic only the graph found -- the graph reaches
+    /// topics whole and has no span to vote for.
+    #[serde(default)]
+    pub span: u32,
 }
 
 /// How a candidate's places across the channels become one number.
@@ -494,7 +501,9 @@ impl Fusion {
 
     /// Fuses per-channel ranked lists into one ordered result set.
     pub fn fuse(&self, lists: &[ChannelResults]) -> Vec<FusedResult> {
-        let mut accumulated: BTreeMap<TopicId, (f32, Vec<Why>)> = BTreeMap::new();
+        // Per topic: its score, its trace, and the weight behind each span.
+        type Accumulated = (f32, Vec<Why>, BTreeMap<u32, f32>);
+        let mut accumulated: BTreeMap<TopicId, Accumulated> = BTreeMap::new();
 
         for list in lists {
             let weight = self.weight(list.channel);
@@ -513,10 +522,11 @@ impl Fusion {
             for (index, candidate) in list.candidates.iter().enumerate() {
                 let rank = index as u32 + 1;
                 let contribution = weight * self.share(scaled[index], rank);
-                let entry = accumulated
-                    .entry(candidate.topic)
-                    .or_insert((0.0, Vec::new()));
+                let entry = accumulated.entry(candidate.topic).or_default();
                 entry.0 += contribution;
+                if list.channel != Channel::Graph {
+                    *entry.2.entry(candidate.span).or_insert(0.0) += contribution;
+                }
                 entry.1.push(Why::Channel {
                     channel: list.channel,
                     rank,
@@ -529,12 +539,26 @@ impl Fusion {
 
         let mut results: Vec<FusedResult> = accumulated
             .into_iter()
-            .map(|(topic, (score, why))| FusedResult { topic, score, why })
+            .map(|(topic, (score, why, spans))| FusedResult {
+                topic,
+                score,
+                why,
+                span: best_span(&spans),
+            })
             .collect();
 
         sort_results(&mut results);
         results
     }
+}
+
+/// The span with the most weight behind it, the earlier one on a tie; 0 when
+/// none voted.
+fn best_span(spans: &BTreeMap<u32, f32>) -> u32 {
+    spans
+        .iter()
+        .max_by(|a, b| a.1.total_cmp(b.1).then(b.0.cmp(a.0)))
+        .map_or(0, |(&span, _)| span)
 }
 
 /// One candidate's score, placed on its own channel's scale.
@@ -1000,6 +1024,42 @@ mod tests {
             ChannelResults::unscored(Channel::Vector, vec![id(2)]),
         ]);
         assert_eq!(fused[0].topic, id(2));
+    }
+
+    #[test]
+    fn the_best_span_is_the_one_the_channels_weigh_most() {
+        let spanned = |channel, spans: &[(u8, u32)]| ChannelResults {
+            channel,
+            candidates: spans
+                .iter()
+                .map(|&(topic, span)| Scored::unscored(id(topic)).in_span(span))
+                .collect(),
+        };
+        // Every channel weighed alike, so the votes are the ranks alone.
+        let even = || {
+            Fusion::default()
+                .with_weight(Channel::LexicalSegmented, 1.0)
+                .with_weight(Channel::LexicalNgram, 1.0)
+                .with_weight(Channel::Graph, 1.0)
+        };
+        let fused = even().fuse(&[
+            // Topic 1: span 2 first in one channel, span 1 second in two.
+            spanned(Channel::LexicalSegmented, &[(1, 2), (2, 3)]),
+            spanned(Channel::LexicalNgram, &[(2, 3), (1, 1)]),
+            spanned(Channel::Vector, &[(2, 5), (1, 1)]),
+            // The graph reaches topics whole and does not vote.
+            spanned(Channel::Graph, &[(3, 0), (1, 0)]),
+        ]);
+        let span = |topic| fused.iter().find(|r| r.topic == id(topic)).unwrap().span;
+        assert_eq!(span(1), 1, "two second places outweigh one first");
+        assert_eq!(span(2), 3);
+        assert_eq!(span(3), 0, "found only by the graph");
+
+        let tied = even().fuse(&[
+            spanned(Channel::LexicalSegmented, &[(1, 4)]),
+            spanned(Channel::LexicalNgram, &[(1, 2)]),
+        ]);
+        assert_eq!(tied[0].span, 2, "a tie goes to the earlier span");
     }
 
     #[test]

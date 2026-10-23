@@ -3,7 +3,7 @@
 //! The vector channel sees the first 512 tokens of what it embeds and the
 //! reranker the first 256 of what it is shown, so a memory longer than that is
 //! found by its opening and by nothing after it. Cutting it into spans that
-//! each fit is what lets the rest be found. Nothing calls this yet.
+//! each fit is what lets the rest be found.
 //!
 //! The cut follows the text's own structure. A memory is read as blocks --
 //! fenced code, ATX headings, conversation turns and paragraphs -- and the

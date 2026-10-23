@@ -451,7 +451,7 @@ fn side_by_side_budget(settings: &crate::InferenceSettings) -> usize {
 /// nowhere, and costs a third more a search on MuSiQue for a reading of the
 /// seed's text that did not help; 192 is a fifth cheaper there and loses
 /// significantly on exactly the corpus where it truncates.
-pub(crate) const MAX_TOKENS: usize = 256;
+pub const MAX_TOKENS: usize = 256;
 
 /// Which export of the model to fetch, for the device it will run on.
 ///
