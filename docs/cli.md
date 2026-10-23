@@ -213,6 +213,11 @@ load or a disk that cannot spare the copy's extra size. When a copy cannot be
 written -- a full or read-only disk -- the model loads from the download and
 keeps it, and the log says why.
 
+The tokenizer vocabulary's lookup trie, about 4 MB, is kept in
+`models/tokenizers/` the first time it is built, under a name of its
+vocabulary's digest, and read from there by later loads instead of being built
+again; deleting the directory only makes the next load build it again.
+
 Where the runtime left a model's attention as separate operators -- the
 `accurate` reranker's int8 export -- the copy also gets a second graph,
 `attention.onnx`, with each layer's attention as one fused operator; it is

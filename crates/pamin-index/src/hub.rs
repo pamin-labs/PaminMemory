@@ -23,6 +23,9 @@ pub(crate) struct Repository {
     /// The commit every file is read at, once known.
     pinned: std::sync::OnceLock<String>,
     cache_dir: PathBuf,
+    /// The workspace's model directory it was opened under, which `HF_HOME`
+    /// does not move: where what this program derives from a model is kept.
+    models: PathBuf,
 }
 
 impl Repository {
@@ -42,6 +45,7 @@ impl Repository {
     }
 
     pub(crate) fn open_at(cache_dir: &Path, name: &str, revision: &str) -> Result<Self> {
+        let models = cache_dir.to_path_buf();
         let cache_dir = cache_root(cache_dir);
         let mut builder = hf_hub::api::sync::ApiBuilder::new()
             .with_cache_dir(cache_dir.clone())
@@ -58,9 +62,15 @@ impl Repository {
             revision: revision.to_string(),
             pinned: std::sync::OnceLock::new(),
             cache_dir,
+            models,
         };
         repository.pin();
         Ok(repository)
+    }
+
+    /// The workspace's model directory, even under `HF_HOME`.
+    pub(crate) fn models(&self) -> &Path {
+        &self.models
     }
 
     /// This repository's directory in the cache.
