@@ -1702,7 +1702,14 @@ the main it started from:
 | server VmHWM MiB (process RSS) | 853.5 | 853.4 | −0.0 | −0.0% |
 | `models/tokenizers/` MB on disk | 0 | 4.1 | +4.1 | N/A: the directory is new |
 
-- **Ratio:** the median ratio of the first search is 0.486 [0.472, 0.527].
+- **Aggregation:** every row but p95 is the median of 30 rounds an arm, and
+  each bracket is a 95% bootstrap CI of the median ratio after/before.
+  - First search: 0.486 [0.472, 0.527].
+  - User CPU: 0.783 [0.745, 0.831]; rounds 3.23–3.91 s before, 2.43–3.15 s
+    after.
+  - System CPU: 0.947 [0.904, 1.054], so no change is claimed there.
+  - VmHWM: rounds 853.0–854.2 MiB before, 853.0–872.0 MiB after; the median
+    ratio and its CI round to 1.000.
 - **Output:** byte-identical in 180 of 180 searches.
 - **CPU scope:** a round's CPU is the server process from its start to its
   stop. That covers startup, both model loads, the uncached first search and
@@ -1722,8 +1729,12 @@ the main it started from:
   [`q108-model-load-stack.md`](../internal-docs/pamin-memory/research/2026-10-23/q108-model-load-stack.md),
   in the private submodule.
 - **Not done:** loading a model's tokenizer and its two sessions at once
-  was tried on top and not shipped. It gave a ratio of 1.017 [0.977, 1.095],
-  with system CPU doubled.
+  was tried on top of the after arm's code (`9cbb40c`) and not shipped. Same harness, 30
+  rounds an arm, medians:
+  - cold first search wall p50 went from 1.412 to 1.436 s (+0.024 s,
+    +1.7%), ratio 1.017 [0.977, 1.095];
+  - server system CPU per round went from 0.490 to 1.075 s (+0.585 s,
+    +119.4%).
 
 **Where the rest of a search's memory was: glibc's heap arenas.** Since
 reranker passes run on threads of their own, glibc gave each contended thread
