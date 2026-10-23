@@ -205,7 +205,8 @@ deleted; see [Upgrading from profiles and tiers](#upgrading-from-profiles-and-ti
 stopped; the next load downloads the model
 again. The download is kept when `HF_HOME` is set -- that cache is shared with
 other tools -- or when the model directory, or one model's directory inside it,
-is a link to somewhere else. `--prepared false` loads from the download,
+is a link to somewhere else. A kept download is hashed once, when its record is
+first written, and not read again by later loads. `--prepared false` loads from the download,
 fetching it again if it was removed, for a measurement that needs the unmapped
 load or a disk that cannot spare the copy's extra size. When a copy cannot be
 written -- a full or read-only disk -- the model loads from the download and
