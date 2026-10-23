@@ -12,6 +12,7 @@ use pamin_core::{
     Channel, ChannelResults, EdgeKind, FilterDecision, FusedResult, Fusion, JobKind, ProjectId,
     Scored, SourceKind, TopicId, TopicState, TopicStateId, Validity, Why,
 };
+use pamin_index::spans::TokenCount;
 use pamin_index::{
     Access, Embedder, Previous, Projection, ProjectionIndex, Reranker, SpanDocument, SpanTokens,
     VectorIndex,
@@ -1937,10 +1938,21 @@ impl Engine {
             return Ok(fused.hits(limit));
         }
 
-        let shown: Vec<String> = unlexical
-            .iter()
-            .map(|position| fused.shown(&fused.results[*position]))
-            .collect();
+        // Off the runtime because a memory cut into spans is cut again here,
+        // by its tokens, and the first search loads the tokenizer to do it.
+        let grain = self.index().grain();
+        let shown: Vec<String> = off_the_runtime(|| {
+            let window = match grain.cap() {
+                Some(cap) => Some(Window::new(cap, self.models.span_tokens()?, query)),
+                None => None,
+            };
+            Ok::<_, pamin_index::IndexError>(
+                unlexical
+                    .iter()
+                    .map(|position| fused.shown(&fused.results[*position], window.as_ref()))
+                    .collect(),
+            )
+        })?;
         let documents: Vec<&str> = shown.iter().map(String::as_str).collect();
         // Finding the reranker is inside this too, not just using it. The
         // first search downloads the weights, holding the registry
@@ -2604,14 +2616,87 @@ impl Fused {
             .collect()
     }
 
-    /// What the reranker is shown of `result`.
-    fn shown(&self, result: &FusedResult) -> String {
+    /// What the reranker is shown of `result`: all of it, or -- in an index
+    /// cut into spans -- the window around its best span.
+    fn shown(&self, result: &FusedResult, window: Option<&Window>) -> String {
         let state = self.live.state(result.topic).expect("retained by `fused`");
-        shown(
-            &self.live.topic_name(result.topic),
-            &state.content,
-            seed(&self.live, &self.paths, result.topic),
-        )
+        let name = self.live.topic_name(result.topic);
+        let seed = seed(&self.live, &self.paths, result.topic);
+        match window {
+            None => shown(&name, &state.content, seed),
+            Some(window) => {
+                let seed = seed.map(|seed| window.naming(seed, &name));
+                window.shown(&name, &state.content, result.span, seed)
+            }
+        }
+    }
+}
+
+/// How a memory cut into spans is shown to the reranker: its best span under
+/// its header, and as much of the spans either side as the pair has room for.
+///
+/// **The reranker reads 256 tokens of a pair, and a memory cut into spans is
+/// longer than that by construction.** Shown whole, as a memory of one span is,
+/// it would be judged by its opening whatever span the channels found it by --
+/// the failure cutting it was meant to remove. The best span is the one fusion
+/// weighed most ([`FusedResult::span`]); the previous span and then the next
+/// are added only while the whole pair still fits, so a neighbour is context
+/// the reranker reads rather than a tail it truncates.
+///
+/// A memory of one span is shown exactly as it was before spans. So is one
+/// whose best span the ledger no longer has -- the index can lag a write -- and
+/// one too short to cut since: there is nothing to choose a window from.
+struct Window {
+    cap: usize,
+    counter: Arc<dyn TokenCount + Send + Sync>,
+    /// The passage's share of the pair: what the query and the pair's four
+    /// special tokens leave of the reranker's 256.
+    room: usize,
+}
+
+impl Window {
+    fn new(cap: usize, counter: Arc<dyn TokenCount + Send + Sync>, query: &str) -> Self {
+        let room = pamin_index::reranking::MAX_TOKENS.saturating_sub(4 + counter.count(query));
+        Self { cap, counter, room }
+    }
+
+    fn shown(&self, name: &str, content: &str, best: u32, seed: Option<&str>) -> String {
+        let spans = pamin_index::spans::pack(name, content, &*self.counter, self.cap);
+        let best = best as usize;
+        if spans.len() == 1 || best >= spans.len() {
+            return shown(name, content, seed);
+        }
+        let render = |first: usize, last: usize| {
+            let texts: Vec<&str> = spans[first..=last]
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect();
+            shown(&spans[first].header, &texts.join("\n"), seed)
+        };
+        let fits = |first, last| self.counter.count(&render(first, last)) <= self.room;
+        let (mut first, mut last) = (best, best);
+        if first > 0 && fits(first - 1, last) {
+            first -= 1;
+        }
+        if last + 1 < spans.len() && fits(first, last + 1) {
+            last += 1;
+        }
+        render(first, last)
+    }
+
+    /// Of a seed's memory, the span that names the topic the walk reached --
+    /// the sentence the edge was read from -- or all of it when no one span
+    /// does, as a seed of one span always is.
+    fn naming<'a>(&self, seed: &'a str, reached: &str) -> &'a str {
+        let wanted = reached.to_lowercase();
+        let spans = pamin_index::spans::pack("", seed, &*self.counter, self.cap);
+        if spans.len() == 1 {
+            return seed;
+        }
+        spans
+            .iter()
+            .find(|span| span.text.to_lowercase().contains(&wanted))
+            .map_or(seed, |span| &seed[span.range.clone()])
     }
 }
 
@@ -3000,11 +3085,86 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        GRAPH_SHOWN_AT_MOST, GRAPH_SHOWN_FROM, best_first, can_be_seen, is_idle, path_strength,
-        place, rerankable, runs_of_tokens, score_blend_order, seed_relevance, shown,
+        GRAPH_SHOWN_AT_MOST, GRAPH_SHOWN_FROM, Window, best_first, can_be_seen, is_idle,
+        path_strength, place, rerankable, runs_of_tokens, score_blend_order, seed_relevance, shown,
     };
     use pamin_core::settings::MODEL_IDLE;
     use pamin_core::{Channel, ChannelResults, TopicId};
+    use pamin_index::spans::TokenCount;
+    use std::sync::Arc;
+
+    /// One token a whitespace-separated word.
+    struct Words;
+
+    impl TokenCount for Words {
+        fn offsets(&self, text: &str) -> Vec<std::ops::Range<usize>> {
+            text.split_whitespace()
+                .map(|word| {
+                    let start = word.as_ptr() as usize - text.as_ptr() as usize;
+                    start..start + word.len()
+                })
+                .collect()
+        }
+    }
+
+    /// Five paragraphs of five words, which a cap of five cuts one to a span.
+    fn five_spans() -> String {
+        (0..5)
+            .map(|span| format!("p{span}a p{span}b p{span}c p{span}d p{span}e"))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    #[test]
+    fn a_memory_of_one_span_is_shown_as_before_spans() {
+        let window = Window::new(5, Arc::new(Words), "q");
+        assert_eq!(
+            window.shown("topic", "a b c", 3, Some("seed")),
+            shown("topic", "a b c", Some("seed"))
+        );
+    }
+
+    #[test]
+    fn a_window_is_the_best_span_and_what_fits_either_side() {
+        let content = five_spans();
+        let window = |room| Window {
+            cap: 5,
+            counter: Arc::new(Words),
+            room,
+        };
+        // "topic:" is one word, and each span five more.
+        assert_eq!(
+            window(6).shown("topic", &content, 2, None),
+            "topic: p2a p2b p2c p2d p2e"
+        );
+        assert_eq!(
+            window(11).shown("topic", &content, 2, None),
+            "topic: p1a p1b p1c p1d p1e\np2a p2b p2c p2d p2e",
+            "the previous span first"
+        );
+        assert_eq!(
+            window(16).shown("topic", &content, 2, None),
+            "topic: p1a p1b p1c p1d p1e\np2a p2b p2c p2d p2e\np3a p3b p3c p3d p3e"
+        );
+        assert_eq!(
+            window(11).shown("topic", &content, 0, None),
+            "topic: p0a p0b p0c p0d p0e\np1a p1b p1c p1d p1e",
+            "the next when there is no previous"
+        );
+        assert_eq!(
+            window(6).shown("topic", &content, 9, None),
+            shown("topic", &content, None),
+            "a span the content no longer has"
+        );
+    }
+
+    #[test]
+    fn a_seed_is_shown_by_the_span_that_names_the_find() {
+        let window = Window::new(5, Arc::new(Words), "q");
+        assert_eq!(window.naming(&five_spans(), "P3C"), "p3a p3b p3c p3d p3e");
+        assert_eq!(window.naming(&five_spans(), "absent"), five_spans());
+        assert_eq!(window.naming("a b", "absent"), "a b");
+    }
 
     /// A load started ahead of its need returns at once, is waited for by
     /// settling, and once finished is not held by a server that never settles.
