@@ -98,6 +98,18 @@ enum Vocabulary {
 /// process has loaded, which is one or two.
 static LOADED: Mutex<Vec<([u8; 32], Weak<Vocabulary>)>> = Mutex::new(Vec::new());
 
+thread_local! {
+    /// Where [`load`] on this thread keeps built tries, for the model it is
+    /// deserializing to find: `None` outside a load, as in tests.
+    static TRIES: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// What a stored trie's file name says it was built by, after its
+/// vocabulary's digest: bumped whenever [`Unigram::new`] would build a
+/// different trie from the same vocabulary, or a `yada` release lays one out
+/// differently.
+const TRIE_FORMAT: &str = "yada-0.7.v1";
+
 impl<'de> Deserialize<'de> for Shared {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         let described = canonical(serde_json::Value::deserialize(deserializer)?);
@@ -116,7 +128,15 @@ impl<'de> Deserialize<'de> for Shared {
         {
             return Ok(Self(model));
         }
-        let model = Arc::new(Vocabulary::new(described).map_err(serde::de::Error::custom)?);
+        let stored = TRIES.with_borrow(|tries| {
+            let name: String = key.iter().map(|byte| format!("{byte:02x}")).collect();
+            tries
+                .as_ref()
+                .map(|tries| tries.join(format!("{name}.{TRIE_FORMAT}")))
+        });
+        let model = Arc::new(
+            Vocabulary::new(described, stored.as_deref()).map_err(serde::de::Error::custom)?,
+        );
         loaded.push((key, Arc::downgrade(&model)));
         Ok(Self(model))
     }
@@ -155,7 +175,10 @@ impl Vocabulary {
     ///
     /// A Unigram vocabulary [`Unigram::new`] cannot hold, and every other
     /// type, is built by `tokenizers`.
-    fn new(described: serde_json::Value) -> serde_json::Result<Self> {
+    ///
+    /// A Unigram trie is read from `stored` when it holds one, and written
+    /// there when it is built; see [`Unigram::new`].
+    fn new(described: serde_json::Value, stored: Option<&Path>) -> serde_json::Result<Self> {
         #[derive(Deserialize)]
         struct Fields {
             vocab: Vec<(String, f64)>,
@@ -172,7 +195,7 @@ impl Vocabulary {
             unk_id,
             byte_fallback,
         } = Fields::deserialize(described)?;
-        Ok(match Unigram::new(&vocab, unk_id, byte_fallback) {
+        Ok(match Unigram::new(&vocab, unk_id, byte_fallback, stored) {
             Some(model) => Self::Unigram(model),
             None => Self::Other(
                 tokenizers::models::unigram::Unigram::from(vocab, unk_id, byte_fallback)
@@ -216,7 +239,18 @@ impl Unigram {
     /// trie never offers the first as a match and does hold the second, so a
     /// vocabulary with either is left to it. No model this crate loads has
     /// one.
-    fn new(vocab: &[(String, f64)], unk_id: Option<usize>, byte_fallback: bool) -> Option<Self> {
+    ///
+    /// Building the trie is most of loading a vocabulary: about 700 ms of the
+    /// 1 s BGE-M3's took on host A, on the path of every model load (q105).
+    /// So the built trie is kept at `stored`, named by its vocabulary's digest
+    /// and [`TRIE_FORMAT`], and read from there instead while its own digest
+    /// still matches; anything else there is built over.
+    fn new(
+        vocab: &[(String, f64)],
+        unk_id: Option<usize>,
+        byte_fallback: bool,
+        stored: Option<&Path>,
+    ) -> Option<Self> {
         if vocab.is_empty()
             || u32::try_from(vocab.len()).is_err()
             || unk_id.is_some_and(|id| id >= vocab.len())
@@ -226,17 +260,24 @@ impl Unigram {
         {
             return None;
         }
-        let mut keys: Vec<(&[u8], u32)> = (0..)
-            .zip(vocab)
-            .map(|(id, (piece, _))| (piece.as_bytes(), id))
-            .collect();
-        // Sorted by key, the later id of a key first, so deduplicating keeps
-        // the later.
-        keys.sort_unstable_by(|a, b| a.0.cmp(b.0).then(b.1.cmp(&a.1)));
-        keys.dedup_by(|next, kept| next.0 == kept.0);
-        let trie =
-            yada::DoubleArray::new(yada::builder::DoubleArrayBuilder::build(&keys).ok()?).ok()?;
-        drop(keys);
+        let trie = match stored.and_then(read_trie) {
+            Some(trie) => trie,
+            None => {
+                let mut keys: Vec<(&[u8], u32)> = (0..)
+                    .zip(vocab)
+                    .map(|(id, (piece, _))| (piece.as_bytes(), id))
+                    .collect();
+                // Sorted by key, the later id of a key first, so deduplicating
+                // keeps the later.
+                keys.sort_unstable_by(|a, b| a.0.cmp(b.0).then(b.1.cmp(&a.1)));
+                keys.dedup_by(|next, kept| next.0 == kept.0);
+                let built = yada::builder::DoubleArrayBuilder::build(&keys).ok()?;
+                if let Some(stored) = stored {
+                    write_trie(stored, &built);
+                }
+                yada::DoubleArray::new(built).ok()?
+            }
+        };
 
         let mut pieces = String::with_capacity(vocab.iter().map(|(piece, _)| piece.len()).sum());
         let mut ends = Vec::with_capacity(vocab.len());
@@ -420,6 +461,40 @@ impl Unigram {
     }
 }
 
+/// The trie stored at `path`: its SHA-256, then its bytes. `None` for a file
+/// that is missing, or whose bytes are not the ones its digest names.
+fn read_trie(path: &Path) -> Option<yada::DoubleArray<Vec<u8>>> {
+    let mut stored = std::fs::read(path).ok()?;
+    let bytes = stored.split_off(32.min(stored.len()));
+    if stored[..] != Sha256::digest(&bytes)[..] {
+        return None;
+    }
+    yada::DoubleArray::new(bytes).ok()
+}
+
+/// Keeps `trie` at `path` for [`read_trie`], written beside it and renamed
+/// into place so that no reader sees part of one. A trie that cannot be kept
+/// is built again by the next load, which costs time and nothing else.
+fn write_trie(path: &Path, trie: &[u8]) {
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let partial = path.with_extension(format!(
+        "{}-{}.partial",
+        std::process::id(),
+        WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let written = (|| -> std::io::Result<()> {
+        std::fs::create_dir_all(path.parent().unwrap_or(path))?;
+        let mut file = Sha256::digest(trie).to_vec();
+        file.extend_from_slice(trie);
+        std::fs::write(&partial, file)?;
+        std::fs::rename(&partial, path)
+    })();
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&partial);
+        tracing::debug!(trie = %path.display(), %error, "could not keep a built tokenizer trie");
+    }
+}
+
 /// Every method answers as the model `tokenizers` would build from the same
 /// section answers.
 impl Model for Shared {
@@ -485,6 +560,14 @@ impl Model for Shared {
 /// A model repository's tokenizer, truncating at `max_length` tokens.
 pub(crate) fn load(repository: &Repository, max_length: usize) -> Result<Tokenizer> {
     let read = |file: &str| -> Result<Vec<u8>> { Ok(std::fs::read(repository.get(file)?)?) };
+    struct Kept;
+    impl Drop for Kept {
+        fn drop(&mut self) {
+            TRIES.set(None);
+        }
+    }
+    TRIES.set(Some(repository.models().join("tokenizers")));
+    let _kept = Kept;
     build(
         &read("tokenizer.json")?,
         &read("config.json")?,
@@ -695,6 +778,67 @@ pub(crate) mod tests {
         );
     }
 
+    /// A built trie is kept and read back in place of building it, segments
+    /// alike either way, and one whose bytes no longer match its digest is
+    /// built over.
+    #[test]
+    fn a_stored_trie_is_read_in_place_of_building_it() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let stored = directory
+            .path()
+            .join("tries")
+            .join(format!("vocabulary.{TRIE_FORMAT}"));
+        let vocab: Vec<(String, f64)> = [
+            "<unk>",
+            "▁",
+            "▁mem",
+            "▁memory",
+            "ory",
+            "m",
+            "e",
+            "o",
+            "r",
+            "y",
+        ]
+        .iter()
+        .zip([0.0, -3.0, -2.0, -1.0, -2.0, -4.0, -4.0, -4.0, -4.0, -4.0])
+        .map(|(piece, score)| (piece.to_string(), score))
+        .collect();
+        let segments = |model: Unigram| -> Vec<u32> {
+            model
+                .tokenize("▁memory▁mem▁ory▁x")
+                .expect("tokenize")
+                .iter()
+                .map(|token| token.id)
+                .collect()
+        };
+        let built = segments(Unigram::new(&vocab, Some(0), false, None).expect("built"));
+
+        assert!(!stored.exists());
+        assert_eq!(
+            segments(Unigram::new(&vocab, Some(0), false, Some(&stored)).expect("kept")),
+            built
+        );
+        let kept = std::fs::read(&stored).expect("the trie was kept");
+        assert!(read_trie(&stored).is_some());
+        assert_eq!(
+            segments(Unigram::new(&vocab, Some(0), false, Some(&stored)).expect("read")),
+            built
+        );
+
+        let mut corrupt = kept.clone();
+        *corrupt.last_mut().expect("bytes") ^= 1;
+        std::fs::write(&stored, &corrupt).expect("corrupt it");
+        assert!(read_trie(&stored).is_none());
+        assert_eq!(
+            segments(Unigram::new(&vocab, Some(0), false, Some(&stored)).expect("rebuilt")),
+            built
+        );
+        assert_eq!(std::fs::read(&stored).expect("written again"), kept);
+        std::fs::write(&stored, b"short").expect("truncate it");
+        assert!(read_trie(&stored).is_none());
+    }
+
     /// Once no tokenizer holds a model, it is freed rather than kept by the
     /// registry.
     #[test]
@@ -873,7 +1017,7 @@ pub(crate) mod tests {
                 tokenizers::models::unigram::Unigram::from(vocab.clone(), unk_id, byte_fallback)
                     .expect("their model");
             let ours = Shared(Arc::new(Vocabulary::Unigram(
-                Unigram::new(&vocab, unk_id, byte_fallback).expect("our model"),
+                Unigram::new(&vocab, unk_id, byte_fallback, None).expect("our model"),
             )));
             let context = format!("unk_id {unk_id:?}, byte_fallback {byte_fallback}");
 
@@ -938,12 +1082,12 @@ pub(crate) mod tests {
             canonical(serde_json::json!({"type": "Unigram", "unk_id": 0, "vocab": vocab}))
         };
         assert!(matches!(
-            Vocabulary::new(section(&["<unk>", "a"])),
+            Vocabulary::new(section(&["<unk>", "a"]), None),
             Ok(Vocabulary::Unigram(_))
         ));
         for pieces in [&["<unk>", "a\0"][..], &["<unk>", ""]] {
             assert!(matches!(
-                Vocabulary::new(section(pieces)),
+                Vocabulary::new(section(pieces), None),
                 Ok(Vocabulary::Other(ModelWrapper::Unigram(_)))
             ));
         }
