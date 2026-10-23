@@ -1087,9 +1087,25 @@ fn executable_identity() -> Option<&'static str> {
 }
 
 fn mapped_image_identity() -> Option<String> {
+    // The linker's GNU build id where there is one: a hash it took over the
+    // linked output, read from a note in the first pages. Hashing the whole
+    // executable took about 210 ms of every process's first model load on
+    // host A (q104), with both models' loads waiting for it.
     #[cfg(target_os = "linux")]
     {
-        executable_hash(Path::new("/proc/self/exe")).map(|hash| format!("elf:{hash}"))
+        use std::os::unix::fs::FileExt;
+        let path = Path::new("/proc/self/exe");
+        std::fs::File::open(path)
+            .ok()
+            .and_then(|file| {
+                elf_build_id(|offset, length| {
+                    let mut bytes = vec![0; length];
+                    file.read_exact_at(&mut bytes, offset).ok()?;
+                    Some(bytes)
+                })
+            })
+            .map(|id| format!("elf-build-id:{id}"))
+            .or_else(|| executable_hash(path).map(|hash| format!("elf:{hash}")))
     }
     #[cfg(target_os = "macos")]
     {
@@ -1140,6 +1156,57 @@ fn mach_uuid(commands: &[u8]) -> Option<[u8; 16]> {
             return data[8..24].try_into().ok();
         }
         offset += size;
+    }
+    None
+}
+
+/// The GNU build id of a 64-bit little-endian ELF image, in hex, reading
+/// `length` bytes at an offset through `read`: the descriptor of the first
+/// `NT_GNU_BUILD_ID` note of a `PT_NOTE` segment. `None` for any other image,
+/// or one linked without the note.
+#[cfg(any(target_os = "linux", test))]
+fn elf_build_id(read: impl Fn(u64, usize) -> Option<Vec<u8>>) -> Option<String> {
+    let u16_at =
+        |bytes: &[u8], at: usize| Some(u16::from_le_bytes(bytes.get(at..at + 2)?.try_into().ok()?));
+    let u32_at =
+        |bytes: &[u8], at: usize| Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
+    let u64_at =
+        |bytes: &[u8], at: usize| Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?));
+    let header = read(0, 64)?;
+    if header[..4] != *b"\x7fELF" || header[4] != 2 || header[5] != 1 {
+        return None;
+    }
+    let (table, entry, entries) = (
+        u64_at(&header, 0x20)?,
+        u64::from(u16_at(&header, 0x36)?),
+        u16_at(&header, 0x38)?,
+    );
+    for index in 0..u64::from(entries) {
+        let program = read(table.checked_add(index.checked_mul(entry)?)?, 56)?;
+        if u32_at(&program, 0)? != 4 {
+            continue;
+        }
+        let size = usize::try_from(u64_at(&program, 0x20)?).ok()?;
+        if size > 1 << 20 {
+            continue;
+        }
+        let notes = read(u64_at(&program, 8)?, size)?;
+        let mut at = 0;
+        while at + 12 <= notes.len() {
+            let name_size = u32_at(&notes, at)? as usize;
+            let description_size = u32_at(&notes, at + 4)? as usize;
+            let name = at + 12;
+            let description = name.checked_add(name_size.next_multiple_of(4))?;
+            let end = description.checked_add(description_size.next_multiple_of(4))?;
+            if u32_at(&notes, at + 8)? == 3
+                && notes.get(name..name + name_size)? == b"GNU\0"
+                && description_size > 0
+            {
+                let id = notes.get(description..description + description_size)?;
+                return Some(id.iter().map(|byte| format!("{byte:02x}")).collect());
+            }
+            at = end;
+        }
     }
     None
 }
@@ -3343,6 +3410,59 @@ mod tests {
             InventoryPermit::acquire(busy).is_some(),
             "spawn failure retained inventory admission"
         );
+    }
+
+    /// A build id is read from a note segment after another program header,
+    /// past a note of another type; a different id is a different identity,
+    /// and an image that is not one or is cut short has none.
+    #[test]
+    fn an_elf_build_id_is_read_from_its_note() {
+        let image = |id: u8| {
+            let note = |kind: u32, name: &[u8], description: &[u8]| {
+                let mut note = Vec::new();
+                note.extend_from_slice(&(name.len() as u32).to_le_bytes());
+                note.extend_from_slice(&(description.len() as u32).to_le_bytes());
+                note.extend_from_slice(&kind.to_le_bytes());
+                note.extend_from_slice(name);
+                note.resize(note.len().next_multiple_of(4), 0);
+                note.extend_from_slice(description);
+                note.resize(note.len().next_multiple_of(4), 0);
+                note
+            };
+            let mut notes = note(1, b"GNU\0", &[9; 16]);
+            notes.extend(note(3, b"GNU\0", &[id; 20]));
+            let mut image = vec![0u8; 64];
+            image[..6].copy_from_slice(b"\x7fELF\x02\x01");
+            image[0x20..0x28].copy_from_slice(&64u64.to_le_bytes());
+            image[0x36..0x38].copy_from_slice(&56u16.to_le_bytes());
+            image[0x38..0x3a].copy_from_slice(&2u16.to_le_bytes());
+            let mut load = vec![0u8; 56];
+            load[..4].copy_from_slice(&1u32.to_le_bytes());
+            let mut segment = vec![0u8; 56];
+            segment[..4].copy_from_slice(&4u32.to_le_bytes());
+            segment[8..16].copy_from_slice(&(64u64 + 112).to_le_bytes());
+            segment[0x20..0x28].copy_from_slice(&(notes.len() as u64).to_le_bytes());
+            image.extend(load);
+            image.extend(segment);
+            image.extend(notes);
+            image
+        };
+        let read = |image: Vec<u8>| {
+            move |offset: u64, length: usize| {
+                image
+                    .get(offset as usize..offset as usize + length)
+                    .map(<[u8]>::to_vec)
+            }
+        };
+        assert_eq!(elf_build_id(read(image(0xab))), Some("ab".repeat(20)));
+        assert_ne!(
+            elf_build_id(read(image(0xab))),
+            elf_build_id(read(image(0xcd)))
+        );
+        let mut short = image(0xab);
+        short.truncate(200);
+        assert_eq!(elf_build_id(read(short)), None);
+        assert_eq!(elf_build_id(read(b"#!/bin/sh".repeat(10))), None);
     }
 
     #[test]
