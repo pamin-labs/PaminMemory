@@ -1668,8 +1668,9 @@ Each was measured against its own parent. The merged result, measured against
 the main it started from:
 
 - **Entry point:** start `pamin-server`, run three `pamin search` calls, stop
-  it. All three ask "why was the deployment rolled back" with `--limit 10`;
-  the second and third are answered from the result cache.
+  it. All three ask "why was the deployment rolled back" with `--limit 10`.
+  The second and third reuse the first's query vector and reranker scores
+  from their caches; retrieval and fusion still run.
 - **Home:** a persisted home in the default layout, with downloads already
   released. Its project holds the 8 records of the timing warm-up corpus.
   `inference_threads = 4`, split word embeddings on, no persisted compute
@@ -1682,6 +1683,8 @@ the main it started from:
 - **Arms:** main `8087b4d` against `032d544`, 30 rounds an arm in three
   rotations (`before after after before ...`), one untimed warm-up per arm
   per rotation.
+- **Host load:** the 1-minute load at round start was 1.22–2.00, and no
+  build or other experiment ran during timing.
 - **Warmth:** the process is cold every round and the page cache warm. The
   tokenizer tries were already written: the after arm's warm-up wrote them,
   and every round found them unchanged. So this is a restart of an upgraded
@@ -1693,7 +1696,7 @@ the main it started from:
 | search output | identical | identical | 0 | 0% |
 | cold first search wall p50 s | 3.052 | 1.484 | −1.568 | −51.4% |
 | cold first search wall p95 s | 3.330 | 2.101 | −1.230 | −36.9% |
-| second search wall p50 ms (result cache) | 25.2 | 27.1 | +1.9 | +7.4%, ratio 1.074 [0.967, 1.172] |
+| second search wall p50 ms (cached query vector and scores) | 25.2 | 27.1 | +1.9 | +7.4%, ratio 1.074 [0.967, 1.172] |
 | server CPU user s per round | 3.550 | 2.780 | −0.770 | −21.7% |
 | server CPU system s per round | 0.565 | 0.535 | −0.030 | −5.3% |
 | server VmHWM MiB (process RSS) | 853.5 | 853.4 | −0.0 | −0.0% |
@@ -1706,7 +1709,9 @@ the main it started from:
   the two cached ones. It was not split by phase, so it is not evidence about
   model loading alone.
 - **Disk scope:** the rest of the home, the prepared model copies and the
-  index included, is unchanged.
+  index included, is unchanged. Only final contents were measured: the
+  first build writes each trie to a `.partial` file and renames it, and that
+  transient peak is N/A, not measured.
 - **Not measured here:** the download-hash change does nothing on this
   layout, where the downloads are already gone. It was measured on its own on
   a home whose model cache is a link, with the same harness, main `8087b4d`
