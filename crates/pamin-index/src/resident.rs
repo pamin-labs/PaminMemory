@@ -18,17 +18,73 @@ use std::time::{Duration, Instant};
 
 use crate::error::Result;
 
-/// Held across every session load from a file, so the mappings that appear
-/// while one loads are that session's own. See [`loading`].
+/// The directories sessions are loading from now, so the mappings that appear
+/// under one while a session loads are that session's own. See [`loading`].
 #[cfg(target_os = "linux")]
-static LOADS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static LOADS: Loads = Loads {
+    directories: std::sync::Mutex::new(Vec::new()),
+    finished: std::sync::Condvar::new(),
+};
+
+#[cfg(target_os = "linux")]
+struct Loads {
+    directories: std::sync::Mutex<Vec<std::path::PathBuf>>,
+    finished: std::sync::Condvar,
+}
+
+/// A load from one directory, from when no other load overlaps it until it
+/// is dropped.
+#[cfg(target_os = "linux")]
+struct Load(std::path::PathBuf);
+
+#[cfg(target_os = "linux")]
+impl Load {
+    /// Waits until no load is running from `directory`, or from a directory
+    /// inside it or around it, whose new mappings `directory`'s would include
+    /// or fall in; loads from other directories run alongside.
+    fn start(directory: &Path) -> Self {
+        let mut loading = LOADS
+            .directories
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while loading
+            .iter()
+            .any(|other| other.starts_with(directory) || directory.starts_with(other))
+        {
+            loading = LOADS
+                .finished
+                .wait(loading)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        loading.push(directory.to_path_buf());
+        Self(directory.to_path_buf())
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for Load {
+    fn drop(&mut self) {
+        let mut loading = LOADS
+            .directories
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(at) = loading.iter().position(|other| *other == self.0) {
+            loading.swap_remove(at);
+        }
+        LOADS.finished.notify_all();
+    }
+}
 
 /// What `load` returns, and the `[start, end)` address ranges of the clean
 /// mappings of files under `directory` that it created, for
 /// [`Resident::extend`].
 ///
-/// Every session load from a file goes through here, one at a time, so the
-/// mappings that appear during `load` are the loaded session's and no other's.
+/// Every session load from a file goes through here, and no two from the same
+/// directory, or from one inside the other, run at once, so the mappings of
+/// `directory` that appear during `load` are the loaded session's and no
+/// other's. Loads from other directories run alongside it: a mapping is
+/// counted only under the directory of its file, so theirs are never counted
+/// here (q106).
 /// They are unmapped only when that session is dropped, so whoever holds the
 /// session may release its ranges for as long as it holds it. Ranges found by
 /// looking at a directory instead could belong to another session over the
@@ -47,12 +103,11 @@ pub(crate) fn loading<T>(
     directory: &Path,
     load: impl FnOnce() -> Result<T>,
 ) -> Result<(T, Vec<(usize, usize)>)> {
-    let _loading = LOADS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // smaps names a mapping by its resolved path, so a directory reached
     // through a symbolic link would match nothing.
-    let directory = std::fs::canonicalize(directory).ok();
+    let resolved = std::fs::canonicalize(directory).ok();
+    let _loading = Load::start(resolved.as_deref().unwrap_or(directory));
+    let directory = resolved;
     let before = directory.as_deref().and_then(|directory| {
         Some(mapped(
             &std::fs::read_to_string("/proc/self/maps").ok()?,
@@ -455,5 +510,41 @@ Anonymous:            16 kB
     #[test]
     fn an_anonymous_mapping_is_never_under_a_directory() {
         assert!(clean_mappings(SMAPS, Path::new("/")).len() == 2);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn loads_wait_only_for_their_own_directory() {
+        use std::sync::mpsc::channel;
+        let root = std::env::temp_dir().join(format!("pamin-loads-{}", std::process::id()));
+        let (outer, inner, other) = (root.join("a"), root.join("a/b"), root.join("c"));
+        let (outer, inner) = (&outer, &inner);
+        let (entered, inside) = channel();
+        let (finish, finished) = channel::<()>();
+        std::thread::scope(|scope| {
+            let holder = scope.spawn(move || {
+                loading(outer, || {
+                    entered.send(()).unwrap();
+                    finished.recv().unwrap();
+                    Ok(())
+                })
+            });
+            inside.recv().unwrap();
+            // Another directory loads while `outer`'s load is still running.
+            assert!(loading(&other, || Ok(())).is_ok());
+            // One inside it waits for that load to finish.
+            let (started, start) = channel();
+            let nested = scope.spawn(move || {
+                loading(inner, || {
+                    started.send(()).unwrap();
+                    Ok(())
+                })
+            });
+            assert!(start.recv_timeout(Duration::from_millis(200)).is_err());
+            finish.send(()).unwrap();
+            start.recv_timeout(Duration::from_secs(10)).unwrap();
+            holder.join().unwrap().unwrap();
+            nested.join().unwrap().unwrap();
+        });
     }
 }
