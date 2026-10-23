@@ -2373,3 +2373,97 @@ fn changing_the_vector_index_takes_a_reindex_and_reuses_every_vector() {
         "the default now has to be refused the other way: {refused}"
     );
 }
+
+/// Writes `text` to `path`, creating its directory.
+fn put(path: &Path, text: &str) {
+    std::fs::create_dir_all(path.parent().expect("a parent")).expect("creating the directory");
+    std::fs::write(path, text).expect("writing the file");
+}
+
+/// A file ingested is findable section by section, and ingesting it again
+/// records only what changed.
+///
+/// What only the binary shows: that the client resolves the paths before the
+/// server reads them, so a relative path from another directory names the same
+/// sections; and that a second ingest of an unchanged tree is a no-op rather
+/// than a second copy of it held as evidence.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn an_ingested_file_is_found_by_section_and_re_ingested_by_change() {
+    let cli = Cli::new();
+    let mut server = cli.serve();
+    cli.run(&["init"]);
+
+    let tree = tempfile::tempdir().expect("temp tree");
+    std::fs::create_dir_all(tree.path().join(".git")).expect("a repository root");
+    let ops = tree.path().join("docs/ops.md");
+    // Named from the repository's root, the root's own name first.
+    let rollback_section = format!(
+        "{}/docs/ops.md › Deploy › Rollback",
+        tree.path()
+            .file_name()
+            .expect("a name")
+            .to_str()
+            .expect("utf-8")
+    );
+    let deploy = "The deployment pipeline builds every commit on the main branch, runs \
+                  the integration suite against a staging cluster, and promotes the build \
+                  to production through argo cd once the canary has served traffic for \
+                  thirty minutes without raising its error budget alarm.";
+    let rollback = "A rollback reverts the deployment pipeline to the previous release tag. \
+                    The oncall engineer starts it from the release dashboard, and the \
+                    previous build is serving again within ten minutes because its image \
+                    is still cached on every node in the cluster.";
+    put(
+        &ops,
+        &format!("# Deploy\n\n{deploy}\n\n## Rollback\n\n{rollback}\n"),
+    );
+    put(&tree.path().join("docs/image.png"), "not text");
+
+    let docs = tree.path().join("docs");
+    let first = cli.json(&["ingest", docs.to_str().expect("a path")]);
+    assert_eq!(first["files"], 1, "{first}");
+    assert_eq!(first["sections"], 2, "{first}");
+    assert_eq!(first["written"], 2, "{first}");
+
+    let found = cli.json(&["search", "how do we roll back to the previous release"]);
+    assert_eq!(
+        found["hits"][0]["topic"],
+        rollback_section.as_str(),
+        "the rollback section was not the first hit: {found}"
+    );
+
+    // The same tree named relatively from inside it: the same sections,
+    // nothing to record.
+    let relative = Command::new(env!("CARGO_BIN_EXE_pamin"))
+        .args(["ingest", "docs", "--json"])
+        .current_dir(tree.path())
+        .env("PAMIN_HOME", cli.home())
+        .output()
+        .expect("running ingest");
+    assert!(relative.status.success(), "{relative:?}");
+    let again: Value = serde_json::from_slice(&relative.stdout).expect("json output");
+    assert_eq!(again["unchanged"], 2, "{again}");
+    assert_eq!(again["written"], 0, "{again}");
+    assert_eq!(
+        again["held"], 0,
+        "an unchanged section was recorded as held: {again}"
+    );
+
+    // One section edited, one removed and reported.
+    put(
+        &ops,
+        &format!("# Deploy\n\n{deploy} Releases are cut every tuesday morning.\n"),
+    );
+    let edited = cli.json(&["ingest", ops.to_str().expect("a path")]);
+    assert_eq!(edited["sections"], 1, "{edited}");
+    assert_eq!(edited["written"], 1, "{edited}");
+    assert_eq!(
+        edited["missing"],
+        serde_json::json!([rollback_section]),
+        "{edited}"
+    );
+
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
+}
