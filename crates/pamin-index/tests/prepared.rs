@@ -1,5 +1,6 @@
-//! A prepared copy of a model scores exactly as the file it came from, and the
-//! weights it holds are mapped rather than copied.
+//! A prepared copy of a model scores exactly as the file it came from -- the
+//! `accurate` reranker's copy ranks as it does, on a graph trimmed by design --
+//! and the weights it holds are mapped rather than copied.
 //!
 //! Ignored by default: it needs the `accurate` reranker and the
 //! BGE-M3 embedder, 1.1 GB between them, and writes a copy of each. Run with
@@ -109,20 +110,41 @@ fn a_prepared_copy_scores_the_same_and_holds_less() {
         }
 
         assert_eq!(
-            source.bits, writing.bits,
+            prepared.bits, writing.bits,
             "the {model} copy, loaded in the process that wrote it, is not bit-identical \
-             to the source"
+             to the copy loaded on its own"
         );
-        assert_eq!(
-            source.bits, prepared.bits,
-            "the {model} copy is not bit-identical to the source"
-        );
+        // The `accurate` copy scores a pair a pass, on a graph that computes
+        // its last layer for the classification token alone, and the source
+        // pads its pairs into one batch on the whole graph: the int8 matrix
+        // products quantize activations with one scale over the rows they
+        // see, so the scores differ by design (see `docs/measured.md`). The
+        // ranking they give must not.
+        if *model == "accurate" {
+            assert_eq!(
+                order(&source.bits[..TEXTS.len()]),
+                order(&prepared.bits[..TEXTS.len()]),
+                "the {model} copy ranks the texts differently from the source"
+            );
+        } else {
+            assert_eq!(
+                source.bits, prepared.bits,
+                "the {model} copy is not bit-identical to the source"
+            );
+        }
 
         // Which graph it split, if any. Both exports gather their word
         // embeddings from one quantized table, which is the pattern the split
         // was written for, so a copy of either that stopped splitting has
-        // lost the saving without any score saying so.
-        let graph = if fused { "attention" } else { "model" };
+        // lost the saving without any score saying so. A copy whose passes
+        // take one pair splits the trimmed graph it loads for them.
+        let graph = if copy.join("attention.cls1.onnx").exists() {
+            "attention.cls1"
+        } else if fused {
+            "attention"
+        } else {
+            "model"
+        };
         let split = copy.join(format!("{graph}.split1.onnx")).exists();
         let unsplit_reason =
             std::fs::read_to_string(copy.join(format!("{graph}.split1.unsplit"))).ok();
@@ -140,7 +162,7 @@ fn a_prepared_copy_scores_the_same_and_holds_less() {
         );
 
         println!(
-            "  {model}: {} outputs bit-identical; anonymous MiB, source against copy: \
+            "  {model}: {} outputs checked against the source; anonymous MiB, source against copy: \
              after load {} / {}, after a pass {} / {}, live {} / {}; copy data file {} MiB; \
              attention {}; word embeddings split, live anonymous MiB unsplit against split \
              {} / {}",
@@ -184,6 +206,13 @@ fn a_prepared_copy_scores_the_same_and_holds_less() {
         // The next model's copy is written on a disk that need not hold both.
         std::fs::remove_dir_all(&copies).expect("remove the copies");
     }
+}
+
+/// The positions of `bits`, read as `f32` scores, from highest to lowest.
+fn order(bits: &[u32]) -> Vec<usize> {
+    let mut positions: Vec<usize> = (0..bits.len()).collect();
+    positions.sort_by(|&a, &b| f32::from_bits(bits[b]).total_cmp(&f32::from_bits(bits[a])));
+    positions
 }
 
 /// What one child load returned.
