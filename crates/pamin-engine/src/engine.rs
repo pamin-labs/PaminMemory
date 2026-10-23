@@ -119,7 +119,11 @@ fn unheld(index: &dyn Projection, wanted: &[(TopicId, &str)], encoding: Option<&
     let Some(encoding) = encoding else {
         return vec![true; wanted.len()];
     };
-    match index.holds(wanted, encoding) {
+    let spans: Vec<(TopicId, &[&str])> = wanted
+        .iter()
+        .map(|(topic, text)| (*topic, std::slice::from_ref(text)))
+        .collect();
+    match index.holds(&spans, encoding) {
         Ok(held) => held.into_iter().map(|held| !held).collect(),
         Err(error) => {
             tracing::warn!(%error, "could not read the index back; writing every state");
@@ -2214,9 +2218,9 @@ impl Engine {
         };
 
         let reused = off_the_runtime(|| {
-            let wanted: std::collections::HashMap<TopicId, &str> = states
+            let wanted: std::collections::HashMap<TopicId, Vec<&str>> = states
                 .iter()
-                .map(|state| (state.topic_id, state.content.as_str()))
+                .map(|state| (state.topic_id, vec![state.content.as_str()]))
                 .collect();
             // Counted before any lock is taken, so a rebuild that can reuse
             // every vector never loads the model at all.
@@ -2244,7 +2248,7 @@ impl Engine {
             let lent = match &previous {
                 Some(previous) => {
                     previous.lend(&wanted, REINDEX_BATCH, |documents, encoding| {
-                        index.upsert_encoded(documents, encoding)
+                        index.write_spans(documents, encoding)
                     })?
                 }
                 None => std::collections::HashSet::new(),
@@ -3665,7 +3669,7 @@ mod tests {
                 .stored(topics)
                 .expect("read back")
                 .into_iter()
-                .map(|stored| stored.expect("stored").encoding)
+                .map(|stored| stored.into_iter().next().expect("stored").encoding)
                 .collect::<Vec<_>>()
         };
 

@@ -35,7 +35,7 @@ use pamin_core::{Scored, TopicId};
 
 use crate::error::{IndexError, Result};
 use crate::projection::{
-    Passage, Projection, ProjectionIndex, Segmentation, Stored, VectorDocument, VectorIndex,
+    Passage, Projection, ProjectionIndex, Segmentation, SpanDocument, Stored, VectorIndex,
 };
 use crate::segmentation::Segmenter;
 
@@ -325,35 +325,36 @@ impl Reshape {
     /// each one it holds, and the removal of each one it does not.
     ///
     /// Returns how many it wrote.
-    fn apply(&self, topics: &[TopicId], stored: &[Option<Stored>]) -> Result<u64> {
+    ///
+    /// Every span of each, and then each topic cut at its last span, so a
+    /// topic the served index now holds fewer spans of than it did when it was
+    /// first copied loses the rest here too -- and one it no longer holds at
+    /// all is cut at its first.
+    fn apply(&self, topics: &[TopicId], stored: &[Vec<Stored>]) -> Result<u64> {
         // Grouped by what produced the vectors, so the copy records it as the
         // served index did: a copy that dropped it would leave every document
         // one a served write has to embed again.
-        let mut present: BTreeMap<Option<&str>, Vec<VectorDocument<'_>>> = BTreeMap::new();
-        let mut absent: Vec<TopicId> = Vec::new();
-        for (topic, document) in topics.iter().zip(stored) {
-            match document {
-                Some(document) => present
-                    .entry(document.encoding.as_deref())
-                    .or_default()
-                    .push((
-                        *topic,
-                        document.content.as_str(),
-                        document.embedding.as_slice(),
-                    )),
-                None => absent.push(*topic),
+        let mut present: BTreeMap<Option<&str>, Vec<SpanDocument<'_>>> = BTreeMap::new();
+        let mut ends: Vec<(TopicId, u32)> = Vec::with_capacity(topics.len());
+        let mut copied = 0;
+        for (topic, spans) in topics.iter().zip(stored) {
+            for (ordinal, span) in spans.iter().enumerate() {
+                present.entry(span.encoding.as_deref()).or_default().push((
+                    *topic,
+                    ordinal as u32,
+                    span.content.as_str(),
+                    span.embedding.as_slice(),
+                ));
             }
+            ends.push((*topic, spans.len() as u32));
+            copied += u64::from(!spans.is_empty());
         }
 
         let next = self.next();
-        let mut copied = 0;
         for (encoding, documents) in &present {
-            next.upsert_encoded(documents, *encoding)?;
-            copied += documents.len() as u64;
+            next.write_spans(documents, *encoding)?;
         }
-        if !absent.is_empty() {
-            next.delete(&absent)?;
-        }
+        next.truncate(&ends)?;
         Ok(copied)
     }
 
@@ -445,18 +446,14 @@ impl Projection for Recording {
         self.inner.segmenter()
     }
 
-    fn upsert_batch(&self, documents: &[VectorDocument<'_>]) -> Result<()> {
+    fn write_spans(&self, documents: &[SpanDocument<'_>], encoding: Option<&str>) -> Result<()> {
         self.touch(documents.iter().map(|(topic, ..)| *topic));
-        self.inner.upsert_batch(documents)
+        self.inner.write_spans(documents, encoding)
     }
 
-    fn upsert_encoded(
-        &self,
-        documents: &[VectorDocument<'_>],
-        encoding: Option<&str>,
-    ) -> Result<()> {
-        self.touch(documents.iter().map(|(topic, ..)| *topic));
-        self.inner.upsert_encoded(documents, encoding)
+    fn truncate(&self, topics: &[(TopicId, u32)]) -> Result<()> {
+        self.touch(topics.iter().map(|(topic, _)| *topic));
+        self.inner.truncate(topics)
     }
 
     fn recall_segmented(&self, query: &str, limit: u32) -> Result<Vec<Scored>> {
@@ -475,7 +472,7 @@ impl Projection for Recording {
         self.inner.recall_vector_at(embedding, limit, effort)
     }
 
-    fn stored(&self, topics: &[TopicId]) -> Result<Vec<Option<Stored>>> {
+    fn stored(&self, topics: &[TopicId]) -> Result<Vec<Vec<Stored>>> {
         self.inner.stored(topics)
     }
 
@@ -555,7 +552,11 @@ impl Projection for Closed {
         Arc::clone(&self.segmenter)
     }
 
-    fn upsert_batch(&self, _: &[VectorDocument<'_>]) -> Result<()> {
+    fn write_spans(&self, _: &[SpanDocument<'_>], _: Option<&str>) -> Result<()> {
+        self.refuse()
+    }
+
+    fn truncate(&self, _: &[(TopicId, u32)]) -> Result<()> {
         self.refuse()
     }
 
@@ -575,7 +576,7 @@ impl Projection for Closed {
         self.refuse()
     }
 
-    fn stored(&self, _: &[TopicId]) -> Result<Vec<Option<Stored>>> {
+    fn stored(&self, _: &[TopicId]) -> Result<Vec<Vec<Stored>>> {
         self.refuse()
     }
 
@@ -688,7 +689,7 @@ mod tests {
         .expect("open the served index");
         let contents: Vec<String> = (1..=DOCUMENTS).map(content).collect();
         let vectors: Vec<Vec<f32>> = (1..=DOCUMENTS).map(vector).collect();
-        let documents: Vec<VectorDocument<'_>> = (1..=DOCUMENTS)
+        let documents: Vec<crate::VectorDocument<'_>> = (1..=DOCUMENTS)
             .map(|n| {
                 let at = (n - 1) as usize;
                 (topic(n), contents[at].as_str(), vectors[at].as_slice())
@@ -791,36 +792,37 @@ mod tests {
             "the copy does not record what the served index recorded"
         );
 
-        let mut expected: Vec<(TopicId, Option<Stored>)> = (1..=DOCUMENTS + 1)
+        let mut expected: Vec<(TopicId, Vec<Stored>)> = (1..=DOCUMENTS + 1)
             .map(|n| {
                 (
                     topic(n),
-                    Some(Stored {
+                    vec![Stored {
                         content: content(n),
                         embedding: crate::as_stored(&vector(n)),
                         encoding: Some(SERVED_ENCODING.to_string()),
-                    }),
+                    }],
                 )
             })
             .collect();
-        expected[4].1 = Some(Stored {
+        expected[4].1 = vec![Stored {
             content: "memory number 5 was edited".to_string(),
             embedding: crate::as_stored(&vector(1005)),
             encoding: Some("cuda:edited".to_string()),
-        });
+        }];
         // Written with nothing recorded, and copied the same way.
-        if let Some((_, Some(written))) = expected.last_mut() {
-            written.encoding = None;
+        if let Some((_, written)) = expected.last_mut() {
+            written[0].encoding = None;
         }
-        expected[6].1 = None;
+        expected[6].1 = Vec::new();
         let topics: Vec<TopicId> = expected.iter().map(|(topic, _)| *topic).collect();
         let stored = served.stored(&topics).expect("read back");
         for ((topic, want), got) in expected.iter().zip(&stored) {
             assert!(
                 got == want,
                 "topic {topic} did not survive the reshape: it holds {:?}",
-                got.as_ref()
+                got.iter()
                     .map(|document| (&document.content, &document.encoding))
+                    .collect::<Vec<_>>()
             );
         }
 

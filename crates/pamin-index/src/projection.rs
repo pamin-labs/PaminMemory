@@ -102,9 +102,16 @@ pub enum Access {
     ReadWrite,
 }
 
-/// A topic, its text and its vector.
+/// A topic, its text and its vector: a memory indexed whole, as its one span.
 pub type VectorDocument<'a> = (TopicId, &'a str, &'a [f32]);
-type PendingVectorDocument<'a> = (TopicId, &'a str, Vec<f32>);
+
+/// Span `ordinal` of a topic, its text and its vector.
+///
+/// A memory is indexed as the spans it is cut into (see [`crate::spans`]),
+/// each its own document, numbered from 0 with no gap. A memory that fits in
+/// one span is one document under ordinal 0, keyed as its topic always was.
+pub type SpanDocument<'a> = (TopicId, u32, &'a str, &'a [f32]);
+type PendingSpanDocument<'a> = (TopicId, u32, &'a str, Vec<f32>);
 
 /// What the layer above needs a projection to do.
 ///
@@ -134,28 +141,55 @@ pub trait Projection {
     /// borrow would keep that lock held for work that never needed it.
     fn segmenter(&self) -> Arc<Segmenter>;
 
-    /// Adds or replaces one topic.
+    /// Adds or replaces one topic, as one span.
     fn upsert(&self, topic: TopicId, content: &str, embedding: &[f32]) -> Result<()> {
         self.upsert_batch(&[(topic, content, embedding)])
     }
 
-    /// Adds or replaces many.
-    fn upsert_batch(&self, documents: &[VectorDocument<'_>]) -> Result<()>;
+    /// Adds or replaces many, each as one span.
+    fn upsert_batch(&self, documents: &[VectorDocument<'_>]) -> Result<()> {
+        self.upsert_encoded(documents, None)
+    }
 
     /// [`upsert_batch`](Self::upsert_batch), recording beside every
     /// document what produced its vectors ([`Stored::encoding`]).
-    ///
-    /// By default the record is dropped, which is the safe direction: a
-    /// document whose encoding is unknown is one [`holds`](Self::holds) never
-    /// matches, so it is embedded again rather than kept.
     fn upsert_encoded(
         &self,
         documents: &[VectorDocument<'_>],
         encoding: Option<&str>,
     ) -> Result<()> {
-        let _ = encoding;
-        self.upsert_batch(documents)
+        let spans: Vec<SpanDocument<'_>> = documents
+            .iter()
+            .map(|(topic, content, embedding)| (*topic, 0, *content, *embedding))
+            .collect();
+        self.replace(&spans, encoding)
     }
+
+    /// Adds or replaces whole topics: `documents` holds every span of each
+    /// topic in it, and whatever spans past those an earlier write of the
+    /// topic left behind are removed. A memory rewritten shorter would
+    /// otherwise go on being found by text it no longer has.
+    fn replace(&self, documents: &[SpanDocument<'_>], encoding: Option<&str>) -> Result<()> {
+        self.write_spans(documents, encoding)?;
+        let mut ends: BTreeMap<TopicId, u32> = BTreeMap::new();
+        for (topic, ordinal, ..) in documents {
+            let end = ends.entry(*topic).or_default();
+            *end = (*end).max(ordinal + 1);
+        }
+        self.truncate(&ends.into_iter().collect::<Vec<_>>())
+    }
+
+    /// Writes these spans, recording beside each what produced its vector
+    /// ([`Stored::encoding`]), and leaves every other span alone.
+    ///
+    /// So a topic can be written in parts -- a rebuild lends some of its spans
+    /// and embeds the rest -- without the first part cutting the topic short;
+    /// [`replace`](Self::replace) is the write that says where a topic ends.
+    fn write_spans(&self, documents: &[SpanDocument<'_>], encoding: Option<&str>) -> Result<()>;
+
+    /// Removes every span of each topic from ordinal `from` on, for each
+    /// `(topic, from)`.
+    fn truncate(&self, topics: &[(TopicId, u32)]) -> Result<()>;
 
     /// Word-level lexical recall, best first.
     fn recall_segmented(&self, query: &str, limit: u32) -> Result<Vec<Scored>>;
@@ -192,16 +226,18 @@ pub trait Projection {
     fn recall_vector_at(&self, embedding: &[f32], limit: u32, effort: u32) -> Result<Vec<Scored>>;
 
     /// What this index holds for these topics, as it was written, in the
-    /// order asked; `None` for a topic it does not hold.
+    /// order asked: each topic's spans in order, and none for a topic it does
+    /// not hold.
     ///
     /// Reading a document back is what lets an index be copied rather than
     /// rebuilt: the vector is the one expensive part of a document, and the
     /// index already holds it. A write the index has buffered and not yet
     /// flushed is read back like any other, because a query sees it too.
-    fn stored(&self, topics: &[TopicId]) -> Result<Vec<Option<Stored>>>;
+    fn stored(&self, topics: &[TopicId]) -> Result<Vec<Vec<Stored>>>;
 
-    /// Whether this index already holds each topic with exactly the text
-    /// given for it, embedded under exactly `encoding`, in the order asked.
+    /// Whether this index already holds each topic with exactly the spans
+    /// given for it -- each with exactly its text, and none past them --
+    /// embedded under exactly `encoding`, in the order asked.
     ///
     /// The rule a rebuild lends a stored vector by ([`Previous::lend`]), asked
     /// of a served index, and narrowed to the plan that produced the vector: a
@@ -213,28 +249,34 @@ pub trait Projection {
     /// recorded. Read through [`stored`](Self::stored), so a buffered write
     /// counts, a deleted topic does not, and a document missing a vector it
     /// should have is an error rather than a match.
-    fn holds(&self, wanted: &[(TopicId, &str)], encoding: &str) -> Result<Vec<bool>> {
+    fn holds(&self, wanted: &[(TopicId, &[&str])], encoding: &str) -> Result<Vec<bool>> {
         let topics: Vec<TopicId> = wanted.iter().map(|(topic, _)| *topic).collect();
         Ok(self
             .stored(&topics)?
             .iter()
             .zip(wanted)
-            .map(|(stored, (_, text))| {
-                stored.as_ref().is_some_and(|stored| {
-                    holds_exactly(Some(stored.content.as_str()), text)
-                        && stored.encoding.as_deref() == Some(encoding)
-                })
+            .map(|(stored, (_, texts))| {
+                holds_spans(
+                    stored
+                        .iter()
+                        .map(|span| (Some(span.content.as_str()), span.encoding.as_deref())),
+                    texts,
+                    encoding,
+                )
             })
             .collect())
     }
 
-    /// Removes these topics.
+    /// Removes these topics, every span of each.
     ///
     /// The projection had no way to shrink: the only route out was deleting the
     /// whole directory. A soft-deleted state therefore stayed in every channel's
     /// candidate budget, so removing content from the ledger quietly reduced how
     /// much a search could find.
-    fn delete(&self, topics: &[TopicId]) -> Result<()>;
+    fn delete(&self, topics: &[TopicId]) -> Result<()> {
+        let from: Vec<(TopicId, u32)> = topics.iter().map(|topic| (*topic, 0)).collect();
+        self.truncate(&from)
+    }
 
     /// Makes buffered writes visible to later queries.
     fn flush(&self) -> Result<()>;
@@ -277,11 +319,12 @@ pub trait Projection {
     fn vector_index(&self) -> VectorIndex;
 }
 
-/// One document as an index holds it.
+/// One span of a memory as an index holds it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stored {
-    /// The memory's text, exactly as written. The segmented field is derived
-    /// from it, so it is all a copy needs to rebuild both lexical fields.
+    /// The span's text, exactly as written: for a memory of one span, the
+    /// memory's whole content. The segmented field is derived from it, so it
+    /// is all a copy needs to rebuild both lexical fields.
     pub content: String,
     /// The vector, as it was embedded under the index's [`Passage`] and then
     /// stored: each component rounded to half precision (see [`crate::as_stored`]).
@@ -413,7 +456,8 @@ impl Keys {
         }
     }
 
-    /// The primary key `topic` is stored under.
+    /// The primary key `topic`'s first span is stored under.
+    #[cfg(test)]
     fn key(self, topic: TopicId) -> String {
         self.span_key(topic, 0)
     }
@@ -431,16 +475,18 @@ impl Keys {
 
     /// The topic stored under `key`, whichever of its spans the key is, or
     /// `None` for a key this crate did not write.
-    ///
-    /// Every channel reads its topics through this, and drops a key it
-    /// returns `None` for without a word -- so a span key read as anything
-    /// but its topic would lose that span from search silently.
+    #[cfg(test)]
     fn topic(self, key: &str) -> Option<TopicId> {
         self.span(key).map(|(topic, _)| topic)
     }
 
-    /// The topic and span ordinal stored under `key`. Only the spelling
+    /// The topic and span ordinal stored under `key`, or `None` for a key
+    /// this crate did not write. Only the spelling
     /// [`span_key`](Self::span_key) writes is read: no `#0`, no leading zero.
+    ///
+    /// Every channel reads its topics through this, and drops a key it
+    /// returns `None` for without a word -- so a span key read as anything
+    /// but its topic would lose that span from search silently.
     fn span(self, key: &str) -> Option<(TopicId, u32)> {
         let (key, ordinal) = match key.split_once('#') {
             None => (key, 0),
@@ -1189,13 +1235,11 @@ impl ProjectionIndex {
 
     fn document(
         &self,
-        topic: TopicId,
-        content: &str,
-        embedding: &[f32],
+        (topic, ordinal, content, embedding): SpanDocument<'_>,
         encoding: Option<&str>,
     ) -> Result<Doc> {
         let mut doc = Doc::new()?;
-        let key = self.keys.key(topic);
+        let key = self.keys.span_key(topic, ordinal);
         doc.set_pk(&key);
         doc.add_string(FIELD_ID, &key)?;
         doc.add_string(FIELD_SEGMENTED, &self.segmenter.segment_for_index(content))?;
@@ -1221,40 +1265,41 @@ impl ProjectionIndex {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let candidates = limit.saturating_mul(RESCORE);
-        let mut search =
-            SearchQuery::new(field, &crate::half::query(embedding), candidates as i32)?;
-        search.set_output_fields(&[FIELD_ID])?;
-        search.set_include_vector(true)?;
-        self.index.ask(&mut search, candidates, effort)?;
-
         let length = dot(embedding, embedding).sqrt();
-        let mut scored = Vec::with_capacity(candidates as usize);
-        for doc in self.collection.query(&search)? {
-            let Some(topic) = doc.get_pk().and_then(|key| self.keys.topic(key)) else {
-                continue;
-            };
-            let vector = crate::half::get(&doc, field)?.ok_or_else(|| {
-                IndexError::Engine(format!(
-                    "a candidate for topic {topic} came without its {field} vector"
-                ))
-            })?;
-            let lengths = length * dot(&vector, &vector).sqrt();
-            let similarity = if lengths > 0.0 {
-                dot(embedding, &vector) / lengths
-            } else {
-                0.0
-            };
-            scored.push(Scored::new(topic, similarity));
-        }
-        scored.sort_by(|left, right| {
-            right
-                .score
-                .unwrap_or(f32::MIN)
-                .total_cmp(&left.score.unwrap_or(f32::MIN))
-        });
-        scored.truncate(limit as usize);
-        Ok(scored)
+        deepening(limit, |depth| {
+            let candidates = depth.saturating_mul(RESCORE);
+            let mut search =
+                SearchQuery::new(field, &crate::half::query(embedding), candidates as i32)?;
+            search.set_output_fields(&[FIELD_ID])?;
+            search.set_include_vector(true)?;
+            self.index.ask(&mut search, candidates, effort)?;
+
+            let docs = self.collection.query(&search)?;
+            let full = docs.len() >= candidates as usize;
+            let mut scored = Vec::with_capacity(docs.len());
+            for doc in docs {
+                let Some((topic, ordinal)) = doc.get_pk().and_then(|key| self.keys.span(key))
+                else {
+                    continue;
+                };
+                let vector = crate::half::get(&doc, field)?.ok_or_else(|| {
+                    IndexError::Engine(format!(
+                        "a candidate for topic {topic} came without its {field} vector"
+                    ))
+                })?;
+                let lengths = length * dot(&vector, &vector).sqrt();
+                let similarity = if lengths > 0.0 {
+                    dot(embedding, &vector) / lengths
+                } else {
+                    0.0
+                };
+                scored.push((topic, ordinal, similarity));
+            }
+            // Stable, so spans the cosine cannot tell apart keep the order
+            // the index proposed them in, as topics always did.
+            scored.sort_by(|left, right| right.2.total_cmp(&left.2));
+            Ok((collapse(scored), full))
+        })
     }
 
     /// Lexical recall, either ranking whatever matches or requiring every term.
@@ -1269,27 +1314,30 @@ impl ProjectionIndex {
             return Ok(Vec::new());
         }
 
-        let mut fts = Fts::new()?;
-        fts.set_match_string(query)?;
-        let mut search = SearchQuery::fts(field, &fts, limit as i32)?;
-        search.set_output_fields(&[FIELD_ID])?;
-        if every_term {
-            search.set_fts_params(FtsQueryParams::new(Some("AND"))?)?;
-        }
+        deepening(limit, |depth| {
+            let mut fts = Fts::new()?;
+            fts.set_match_string(query)?;
+            let mut search = SearchQuery::fts(field, &fts, depth as i32)?;
+            search.set_output_fields(&[FIELD_ID])?;
+            if every_term {
+                search.set_fts_params(FtsQueryParams::new(Some("AND"))?)?;
+            }
 
-        // The BM25 score leaves with each candidate. It is still not
-        // comparable with a vector distance, and fusion still combines the
-        // channels by rank for exactly that reason -- but this function used to
-        // destroy the score instead of merely declining to compare it, which
-        // left every layer above unable to tell a channel that found the answer
-        // from one that returned the least bad of fifty wrong documents. Reading
-        // it costs one accessor per candidate on a result set already in memory.
-        // BM25, where larger is already better.
-        Ok(collect_scored(
-            self.keys,
-            self.collection.query(&search)?,
-            |score| score,
-        ))
+            // The BM25 score leaves with each candidate. It is still not
+            // comparable with a vector distance, and fusion still combines the
+            // channels by rank for exactly that reason -- but this function used to
+            // destroy the score instead of merely declining to compare it, which
+            // left every layer above unable to tell a channel that found the answer
+            // from one that returned the least bad of fifty wrong documents. Reading
+            // it costs one accessor per candidate on a result set already in memory.
+            // BM25, where larger is already better.
+            let docs = self.collection.query(&search)?;
+            let full = docs.len() >= depth as usize;
+            Ok((
+                collapse(collect_scored(self.keys, docs, |score| score)),
+                full,
+            ))
+        })
     }
 
     /// The scalar fields [`fetch`](Self::fetch) reads back: the text, and what
@@ -1321,21 +1369,55 @@ impl ProjectionIndex {
     /// open. The text comes from the n-gram field, which holds the content
     /// verbatim; the segmented one is derived from it. `vectors` says whether
     /// to bring the vectors along, which only a caller that copies them needs.
-    fn fetch(&self, topics: &[TopicId], vectors: bool) -> Result<HashMap<TopicId, Doc>> {
-        let keys: Vec<String> = topics.iter().map(|topic| self.keys.key(*topic)).collect();
-        let mut stored: HashMap<TopicId, Doc> = HashMap::with_capacity(keys.len());
-        for chunk in keys.chunks(WRITE_BATCH) {
-            let chunk: Vec<&str> = chunk.iter().map(String::as_str).collect();
-            for doc in
-                self.collection
-                    .fetch_with_options(&chunk, Some(self.stored_fields()), vectors)?
-            {
-                if let Some(topic) = doc.get_pk().and_then(|key| self.keys.topic(key)) {
-                    stored.insert(topic, doc);
-                }
+    ///
+    /// Every span of each topic, in order. Ordinals are written from 0 with
+    /// no gap, so a topic's spans end at the first ordinal it does not hold,
+    /// and each round asks only for the next ordinal of the topics that
+    /// still had one.
+    fn fetch(&self, topics: &[TopicId], vectors: bool) -> Result<HashMap<TopicId, Vec<Doc>>> {
+        let mut stored: HashMap<TopicId, Vec<Doc>> = HashMap::with_capacity(topics.len());
+        let mut asked = HashSet::with_capacity(topics.len());
+        let mut next: Vec<(TopicId, u32)> = topics
+            .iter()
+            .filter(|topic| asked.insert(**topic))
+            .map(|topic| (*topic, 0))
+            .collect();
+        while !next.is_empty() {
+            let mut found = self.fetch_keys(&next, Some(self.stored_fields()), vectors)?;
+            next.retain(|span| found.contains_key(span));
+            for span in &mut next {
+                let doc = found.remove(span).expect("retained as found");
+                stored.entry(span.0).or_default().push(doc);
+                span.1 += 1;
             }
         }
         Ok(stored)
+    }
+
+    /// The documents stored under these spans' keys, by span.
+    fn fetch_keys(
+        &self,
+        spans: &[(TopicId, u32)],
+        fields: Option<&[&str]>,
+        vectors: bool,
+    ) -> Result<HashMap<(TopicId, u32), Doc>> {
+        let keys: Vec<String> = spans
+            .iter()
+            .map(|(topic, ordinal)| self.keys.span_key(*topic, *ordinal))
+            .collect();
+        let mut found = HashMap::with_capacity(keys.len());
+        for chunk in keys.chunks(WRITE_BATCH) {
+            let chunk: Vec<&str> = chunk.iter().map(String::as_str).collect();
+            for doc in self
+                .collection
+                .fetch_with_options(&chunk, fields, vectors)?
+            {
+                if let Some(span) = doc.get_pk().and_then(|key| self.keys.span(key)) {
+                    found.insert(span, doc);
+                }
+            }
+        }
+        Ok(found)
     }
 
     /// Deletes the index directory so the next open starts empty.
@@ -1506,20 +1588,16 @@ impl Previous {
     /// How many of these topics [`lend`](Self::lend) would supply, without
     /// reading a vector.
     ///
-    /// `wanted` maps each topic to the text the rebuild will write for it.
-    pub fn lends(&self, wanted: &HashMap<TopicId, &str>) -> Result<usize> {
-        let mut lendable = 0;
-        self.each(wanted, false, |_, _| {
-            lendable += 1;
-            Ok(())
-        })?;
-        Ok(lendable)
+    /// `wanted` maps each topic to the texts of the spans the rebuild will
+    /// write for it, in order.
+    pub fn lends(&self, wanted: &HashMap<TopicId, Vec<&str>>) -> Result<usize> {
+        Ok(self.whole(wanted)?.len())
     }
 
     /// Hands `take` every document this index can lend, at most `batch` at a
-    /// time, as the topic, the text wanted for it and its stored vector, with
+    /// time, as the span, the text wanted for it and its stored vector, with
     /// what produced those vectors ([`Stored::encoding`]); returns the topics
-    /// it lent.
+    /// it lent, every span of each.
     ///
     /// Each batch shares one encoding, so the caller can record it as this
     /// index did: a rebuild that dropped it would leave every lent document
@@ -1529,8 +1607,11 @@ impl Previous {
     /// vectors at once. So whenever `batch` documents are waiting in all,
     /// every encoding's are handed over.
     ///
-    /// A topic is lent when this index holds it with exactly the text in
-    /// `wanted`; everything else is the caller's to embed. In the order this
+    /// A topic is lent when this index holds it with exactly the spans in
+    /// `wanted` (see [`holds_spans`]); everything else is the caller's to
+    /// embed, and nothing of it is lent. The documents are written with
+    /// [`Projection::write_spans`], so a topic whose spans arrive in two
+    /// batches is not cut short by the first. In the order this
     /// index holds its documents rather than the caller's, because that is
     /// the order they are read in: one pass over the collection rather than a
     /// keyed fetch per batch. Over MIRACL's 131,924 documents a pass takes
@@ -1538,24 +1619,29 @@ impl Previous {
     /// resident set and identical vectors and text (ADR 0001).
     pub fn lend(
         &self,
-        wanted: &HashMap<TopicId, &str>,
+        wanted: &HashMap<TopicId, Vec<&str>>,
         batch: usize,
-        mut take: impl FnMut(&[VectorDocument<'_>], Option<&str>) -> Result<()>,
+        mut take: impl FnMut(&[SpanDocument<'_>], Option<&str>) -> Result<()>,
     ) -> Result<HashSet<TopicId>> {
-        let mut lent = HashSet::new();
-        let mut pending: BTreeMap<Option<String>, Vec<PendingVectorDocument<'_>>> = BTreeMap::new();
+        let lent = self.whole(wanted)?;
+        let mut pending: BTreeMap<Option<String>, Vec<PendingSpanDocument<'_>>> = BTreeMap::new();
         let mut waiting = 0;
         let mut hand_over =
-            |encoding: &Option<String>, pending: &mut Vec<PendingVectorDocument<'_>>| {
-                let documents: Vec<VectorDocument<'_>> = pending
+            |encoding: &Option<String>, pending: &mut Vec<PendingSpanDocument<'_>>| {
+                let documents: Vec<SpanDocument<'_>> = pending
                     .iter()
-                    .map(|(topic, content, vector)| (*topic, *content, vector.as_slice()))
+                    .map(|(topic, ordinal, content, vector)| {
+                        (*topic, *ordinal, *content, vector.as_slice())
+                    })
                     .collect();
                 take(&documents, encoding.as_deref())?;
                 pending.clear();
                 Ok::<_, IndexError>(())
             };
-        self.each(wanted, true, |topic, doc| {
+        self.each(true, |(topic, ordinal), doc| {
+            if !lent.contains(&topic) {
+                return Ok(());
+            }
             // The vector field is not nullable and every write here carries
             // one, so a document without it is an engine fault -- and the
             // engine's iterator fails before handing one over anyway.
@@ -1568,11 +1654,12 @@ impl Previous {
                 IndexError::Engine(format!("the document for topic {topic} has no vector"))
             })?;
             let encoding = self.index.encoding_of(&doc)?;
-            lent.insert(topic);
-            pending
-                .entry(encoding)
-                .or_default()
-                .push((topic, wanted[&topic], vector));
+            pending.entry(encoding).or_default().push((
+                topic,
+                ordinal,
+                wanted[&topic][ordinal as usize],
+                vector,
+            ));
             waiting += 1;
             if waiting == batch {
                 for (encoding, group) in &mut pending {
@@ -1592,8 +1679,38 @@ impl Previous {
         Ok(lent)
     }
 
-    /// Calls `visit` for every document this index holds with exactly the
-    /// text `wanted` gives its topic.
+    /// The topics of `wanted` this index holds with exactly the spans given
+    /// for them: every one, each with its text, and none past them.
+    ///
+    /// A pass of its own, without vectors, before any is lent: a topic is
+    /// lent whole or not at all, and whether it is whole is known only once
+    /// every document has been seen.
+    fn whole(&self, wanted: &HashMap<TopicId, Vec<&str>>) -> Result<HashSet<TopicId>> {
+        let mut matched: HashMap<TopicId, usize> = HashMap::new();
+        let mut spoiled: HashSet<TopicId> = HashSet::new();
+        self.each(false, |(topic, ordinal), doc| {
+            let Some(texts) = wanted.get(&topic) else {
+                return Ok(());
+            };
+            match texts.get(ordinal as usize) {
+                Some(text) if holds_exactly(doc.get_string(FIELD_NGRAM)?.as_deref(), text) => {
+                    *matched.entry(topic).or_default() += 1;
+                }
+                _ => {
+                    spoiled.insert(topic);
+                }
+            }
+            Ok(())
+        })?;
+        Ok(matched
+            .into_iter()
+            .filter(|(topic, count)| *count == wanted[topic].len() && !spoiled.contains(topic))
+            .map(|(topic, _)| topic)
+            .collect())
+    }
+
+    /// Calls `visit` for every document this index holds, with the span it
+    /// is.
     ///
     /// Through the engine's document iterator, which reads a snapshot and has
     /// three constraints this meets by construction: made on a writable
@@ -1604,9 +1721,8 @@ impl Previous {
     /// for, which the schema does not allow.
     fn each(
         &self,
-        wanted: &HashMap<TopicId, &str>,
         vectors: bool,
-        mut visit: impl FnMut(TopicId, Doc) -> Result<()>,
+        mut visit: impl FnMut((TopicId, u32), Doc) -> Result<()>,
     ) -> Result<()> {
         let index = &self.index;
         for doc in index
@@ -1614,15 +1730,10 @@ impl Previous {
             .iter_with_options(Some(index.stored_fields()), vectors)?
         {
             let doc = doc?;
-            let Some(topic) = doc.get_pk().and_then(|key| index.keys.topic(key)) else {
+            let Some(span) = doc.get_pk().and_then(|key| index.keys.span(key)) else {
                 continue;
             };
-            let Some(content) = wanted.get(&topic) else {
-                continue;
-            };
-            if holds_exactly(doc.get_string(FIELD_NGRAM)?.as_deref(), content) {
-                visit(topic, doc)?;
-            }
+            visit(span, doc)?;
         }
         Ok(())
     }
@@ -1664,7 +1775,7 @@ impl Projection for ProjectionIndex {
         Arc::clone(&self.segmenter)
     }
 
-    /// Adds or replaces many topics.
+    /// Writes these spans.
     ///
     /// Chunked because the engine refuses a write of more than [`WRITE_BATCH`]
     /// documents. Rebuilding used to write one document per call, which pays
@@ -1673,21 +1784,11 @@ impl Projection for ProjectionIndex {
     /// No flush: a caller writing in batches decides when the result becomes
     /// visible, and flushing between batches would make that decision for them
     /// once per batch.
-    fn upsert_batch(&self, documents: &[VectorDocument<'_>]) -> Result<()> {
-        self.upsert_encoded(documents, None)
-    }
-
-    fn upsert_encoded(
-        &self,
-        documents: &[VectorDocument<'_>],
-        encoding: Option<&str>,
-    ) -> Result<()> {
+    fn write_spans(&self, documents: &[SpanDocument<'_>], encoding: Option<&str>) -> Result<()> {
         for chunk in documents.chunks(WRITE_BATCH) {
             let docs = chunk
                 .iter()
-                .map(|(topic, content, embedding)| {
-                    self.document(*topic, content, embedding, encoding)
-                })
+                .map(|document| self.document(*document, encoding))
                 .collect::<Result<Vec<_>>>()?;
 
             let refs: Vec<&Doc> = docs.iter().collect();
@@ -1697,29 +1798,59 @@ impl Projection for ProjectionIndex {
         Ok(())
     }
 
+    /// One keyed read per ordinal, of only the topics that still had one:
+    /// ordinals have no gap, so a topic's spans end at the first one missing,
+    /// and what is deleted is only what was found. A write of memories that
+    /// were one span and still are reads one key each and deletes nothing.
+    fn truncate(&self, topics: &[(TopicId, u32)]) -> Result<()> {
+        let mut next: Vec<(TopicId, u32)> = topics.to_vec();
+        while !next.is_empty() {
+            let found = self.fetch_keys(&next, Some(&[FIELD_ID]), false)?;
+            next.retain(|span| found.contains_key(span));
+            for chunk in next.chunks(WRITE_BATCH) {
+                let keys: Vec<String> = chunk
+                    .iter()
+                    .map(|(topic, ordinal)| self.keys.span_key(*topic, *ordinal))
+                    .collect();
+                let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+                self.collection.delete(&keys)?;
+            }
+            for span in &mut next {
+                span.1 += 1;
+            }
+        }
+
+        Ok(())
+    }
+
     /// A document without its text or its vector is refused rather than read
     /// as absent: a copy that took it for absent would drop it without a word.
-    fn stored(&self, topics: &[TopicId]) -> Result<Vec<Option<Stored>>> {
-        let stored = self.fetch(topics, true)?;
+    fn stored(&self, topics: &[TopicId]) -> Result<Vec<Vec<Stored>>> {
+        let mut stored = self.fetch(topics, true)?;
         topics
             .iter()
             .map(|topic| {
-                let Some(doc) = stored.get(topic) else {
-                    return Ok(None);
-                };
-                match (
-                    doc.get_string(FIELD_NGRAM)?,
-                    crate::half::get(doc, FIELD_VECTOR)?,
-                ) {
-                    (Some(content), Some(embedding)) => Ok(Some(Stored {
-                        content,
-                        embedding,
-                        encoding: self.encoding_of(doc)?,
-                    })),
-                    _ => Err(IndexError::Engine(format!(
-                        "the document for topic {topic} came back without its text or its vector"
-                    ))),
-                }
+                stored
+                    .remove(topic)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|doc| {
+                        match (
+                            doc.get_string(FIELD_NGRAM)?,
+                            crate::half::get(doc, FIELD_VECTOR)?,
+                        ) {
+                            (Some(content), Some(embedding)) => Ok(Stored {
+                                content,
+                                embedding,
+                                encoding: self.encoding_of(doc)?,
+                            }),
+                            _ => Err(IndexError::Engine(format!(
+                                "a document for topic {topic} came back without its text or its \
+                                 vector"
+                            ))),
+                        }
+                    })
+                    .collect()
             })
             .collect()
     }
@@ -1730,30 +1861,25 @@ impl Projection for ProjectionIndex {
     /// decoded a primary and a secondary vector per document only to drop
     /// them. A buffered write still counts and a deleted topic still does
     /// not, because both go through the same keyed fetch.
-    fn holds(&self, wanted: &[(TopicId, &str)], encoding: &str) -> Result<Vec<bool>> {
+    fn holds(&self, wanted: &[(TopicId, &[&str])], encoding: &str) -> Result<Vec<bool>> {
         let topics: Vec<TopicId> = wanted.iter().map(|(topic, _)| *topic).collect();
         let stored = self.fetch(&topics, false)?;
         wanted
             .iter()
-            .map(|(topic, text)| {
-                let Some(doc) = stored.get(topic) else {
-                    return Ok(false);
-                };
-                Ok(holds_exactly(doc.get_string(FIELD_NGRAM)?.as_deref(), text)
-                    && self.encoding_of(doc)?.as_deref() == Some(encoding))
+            .map(|(topic, texts)| {
+                let docs = stored.get(topic).map_or(&[][..], Vec::as_slice);
+                let read = docs
+                    .iter()
+                    .map(|doc| Ok((doc.get_string(FIELD_NGRAM)?, self.encoding_of(doc)?)))
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(holds_spans(
+                    read.iter()
+                        .map(|(text, encoding)| (text.as_deref(), encoding.as_deref())),
+                    texts,
+                    encoding,
+                ))
             })
             .collect()
-    }
-
-    /// Removes these topics.
-    fn delete(&self, topics: &[TopicId]) -> Result<()> {
-        for chunk in topics.chunks(WRITE_BATCH) {
-            let keys: Vec<String> = chunk.iter().map(|topic| self.keys.key(*topic)).collect();
-            let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
-            self.collection.delete(&keys)?;
-        }
-
-        Ok(())
     }
 
     /// Word-level lexical recall, ranked by BM25.
@@ -2012,13 +2138,81 @@ fn jittered(wait: Duration) -> Duration {
 /// is what [`Scored`] requires of every channel. It is the identity for BM25
 /// and `1 - score` for a cosine index, and it is a parameter rather than a
 /// branch on the field so that adding a channel cannot forget it.
-fn collect_scored(keys: Keys, docs: Vec<Doc>, orient: impl Fn(f32) -> f32) -> Vec<Scored> {
+fn collect_scored(
+    keys: Keys,
+    docs: Vec<Doc>,
+    orient: impl Fn(f32) -> f32,
+) -> Vec<(TopicId, u32, f32)> {
     docs.iter()
         .filter_map(|doc| {
-            let topic = keys.topic(doc.get_pk()?)?;
-            Some(Scored::new(topic, orient(doc.get_score())))
+            let (topic, ordinal) = keys.span(doc.get_pk()?)?;
+            Some((topic, ordinal, orient(doc.get_score())))
         })
         .collect()
+}
+
+/// Each topic once, by the best of its spans, best first.
+///
+/// What an index channel ranks is spans and what fusion ranks is topics, so a
+/// topic is as good as its best span -- the max over spans -- and its other
+/// spans give up their places to the next topic. A list where every topic is
+/// one span comes back as it went in.
+fn collapse(spans: Vec<(TopicId, u32, f32)>) -> Vec<Scored> {
+    let mut seen = HashSet::with_capacity(spans.len());
+    spans
+        .into_iter()
+        .filter(|(topic, ..)| seen.insert(*topic))
+        .map(|(topic, ordinal, score)| Scored::new(topic, score).in_span(ordinal))
+        .collect()
+}
+
+/// How much deeper than asked a channel will look for `limit` distinct
+/// topics, at most.
+const DEEPEST: u32 = 8;
+
+/// `limit` topics from `ask`, which ranks `depth` spans and collapses them
+/// ([`collapse`]), also saying whether the index had that many to give.
+///
+/// Spans of one topic crowd others out of a list of `depth`, so a list that
+/// collapsed to fewer than `limit` topics while the index still had more to
+/// give is asked again twice as deep, up to [`DEEPEST`] times what was asked.
+/// Only then: where every topic is one span nothing is ever asked twice, so
+/// the candidates are the ones a topic-grain index proposed -- a deeper ask
+/// changes what an approximate search proposes and what the rescore sees.
+fn deepening(
+    limit: u32,
+    mut ask: impl FnMut(u32) -> Result<(Vec<Scored>, bool)>,
+) -> Result<Vec<Scored>> {
+    let mut depth = limit;
+    loop {
+        let (mut topics, full) = ask(depth)?;
+        if topics.len() >= limit as usize || !full || depth >= limit.saturating_mul(DEEPEST) {
+            topics.truncate(limit as usize);
+            return Ok(topics);
+        }
+        depth = depth.saturating_mul(2);
+    }
+}
+
+/// Whether the spans an index holds for a topic -- their texts and what
+/// produced their vectors, in order -- are exactly `wanted`, all embedded
+/// under `encoding`: the same number, each with exactly its text.
+///
+/// Whole topics, not span by span. A span's vector is embedded from its
+/// header as well as its text, and the header is read off the spans before
+/// it -- the heading it sits under, the turn it continues -- so the same text
+/// is the same passage only when everything before it is the same too. A
+/// topic's name never changes, so with every span the same, every header is.
+fn holds_spans<'a>(
+    stored: impl ExactSizeIterator<Item = (Option<&'a str>, Option<&'a str>)>,
+    wanted: &[&str],
+    encoding: &str,
+) -> bool {
+    stored.len() == wanted.len()
+        && !wanted.is_empty()
+        && stored.zip(wanted).all(|((text, recorded), wanted)| {
+            holds_exactly(text, wanted) && recorded == Some(encoding)
+        })
 }
 
 #[cfg(test)]
