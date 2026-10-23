@@ -850,15 +850,32 @@ pub fn vector_index_lags(documents: u64, completeness: f32, budget: std::num::No
 /// memory that is one span is keyed and embedded as a whole topic always was.
 /// What the grain decides is how a memory is cut when it is written, and so
 /// how deep an exact channel asks to find enough topics ([`deepest`]).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Grain {
     /// A whole memory, cut nowhere: one document per topic. Every index built
     /// before spans.
-    #[default]
     Topic,
     /// The spans a memory is cut into by [`crate::spans::pack`], each of at
     /// most this many tokens.
     Spans(std::num::NonZeroU32),
+}
+
+/// The grain a new or rebuilt index is cut at: spans of at most 200 tokens.
+///
+/// A memory written the way an agent writes one -- a whole session -- runs
+/// past the 256 tokens the reranker reads and the 512 the embedder does, so
+/// indexed whole it was judged by its opening. Measured on LoCoMo with one
+/// memory per session (1,442 questions, all ten conversations), spans of 200
+/// against whole memories: nDCG@10 0.527 to 0.873, every category better
+/// (p = 0.002 over conversations), and the first five hits return 56% fewer
+/// bytes, for an index 56% larger on disk. Spans of 128 were no better on
+/// nDCG@10 (+0.008, p = 0.25), covered the answer less often in the first
+/// five hits (-0.053, p = 0.002) and made the index larger still. A memory
+/// short enough to be one span is indexed exactly as before.
+impl Default for Grain {
+    fn default() -> Self {
+        Self::Spans(std::num::NonZeroU32::new(200).expect("200 is not zero"))
+    }
 }
 
 impl Grain {
