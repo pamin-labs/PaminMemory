@@ -33,6 +33,7 @@ sql_enum!(FilterDecision {
 
 sql_enum!(SourceKind {
     Manual => "manual",
+    File => "file",
 });
 
 sql_enum!(EdgeKind {
@@ -495,6 +496,32 @@ pub async fn create_topic_named(
     key: &str,
     tokens: usize,
 ) -> Result<LockedTopic> {
+    create_topic(connection, project, name, Some((key, tokens))).await
+}
+
+/// [`create_topic_named`] for a topic no memory is expected to name: one cut
+/// out of a file, whose name is its path and headings.
+///
+/// Left out of the name index rather than filed there, because a name in it is
+/// a cost every later write pays and not only its own: mention derivation
+/// compares every run of a memory's tokens up to the widest name in the
+/// project, so one name of twenty tokens makes every memory written afterwards
+/// build four times the runs one of five did. A path no prose quotes in full
+/// buys nothing for that.
+pub async fn create_topic_unnamed(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    name: &str,
+) -> Result<LockedTopic> {
+    create_topic(connection, project, name, None).await
+}
+
+async fn create_topic(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    name: &str,
+    named: Option<(&str, usize)>,
+) -> Result<LockedTopic> {
     let inserted = sqlx::query(
         "WITH topic AS (
              INSERT INTO topics (id, project_id, name, created_at)
@@ -503,7 +530,7 @@ pub async fn create_topic_named(
              RETURNING id, name, path, created_at, current_state_id
          ), named AS (
              INSERT INTO topic_name_tokens (project_id, topic_id, name_key, token_count)
-             SELECT $2, id, $5, $6 FROM topic
+             SELECT $2, id, $5, $6 FROM topic WHERE $5::text IS NOT NULL
          )
          SELECT id, name, path, created_at, current_state_id FROM topic",
     )
@@ -511,8 +538,8 @@ pub async fn create_topic_named(
     .bind(project.0)
     .bind(name)
     .bind(OffsetDateTime::now_utc())
-    .bind(key)
-    .bind(tokens as i16)
+    .bind(named.map(|(key, _)| key))
+    .bind(named.map(|(_, tokens)| tokens as i16))
     .fetch_optional(&mut *connection)
     .await?;
 
@@ -1005,6 +1032,29 @@ pub async fn repair_current_state_pointers(pool: &PgPool, project: ProjectId) ->
     Ok(repaired.rows_affected())
 }
 
+/// The content hash of the newest evidence filed under `locator`, if any.
+///
+/// For a caller that has to know whether it is about to record what is
+/// already there, and has the locator rather than the source's id.
+pub async fn latest_hash_at(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    locator: &str,
+) -> Result<Option<String>> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT sv.content_hash FROM sources s
+           JOIN source_versions sv ON sv.project_id = s.project_id AND sv.source_id = s.id
+         WHERE s.project_id = $1 AND s.locator = $2
+         ORDER BY sv.version DESC LIMIT 1",
+    )
+    .bind(project.0)
+    .bind(locator)
+    .fetch_optional(executor)
+    .await?;
+
+    Ok(row.map(|(hash,)| hash))
+}
+
 /// Loads the newest evidence version for a source.
 ///
 /// Reads back the filter verdict, which is how a caller confirms that filtered
@@ -1271,6 +1321,71 @@ pub async fn names_matching(
             )
         })
         .collect())
+}
+
+/// Every topic in a project that belongs in the name index: all of them but
+/// the sections `pamin ingest` cut out of files, which
+/// [`create_topic_unnamed`] keeps out of it.
+///
+/// Told apart by their sources rather than their name. A section's evidence is
+/// filed under `file:{name}` and a manual memory's under `manual:{name}`, and
+/// the unique key on `(project_id, locator)` answers both for each topic,
+/// where a rule about what a name looks like would also catch a topic someone
+/// wrote by hand. A topic with both was written by hand as well as ingested,
+/// and keeps its name.
+pub async fn topics_to_name(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+) -> Result<Vec<Topic>> {
+    let rows = sqlx::query(
+        "SELECT t.id, t.name, t.path, t.created_at FROM topics t
+         WHERE t.project_id = $1
+           AND (NOT EXISTS (
+                    SELECT 1 FROM sources s
+                     WHERE s.project_id = t.project_id
+                       AND s.locator = 'file:' || t.name)
+                OR EXISTS (
+                    SELECT 1 FROM sources s
+                     WHERE s.project_id = t.project_id
+                       AND s.locator = 'manual:' || t.name))
+         ORDER BY t.name ASC",
+    )
+    .bind(project.0)
+    .fetch_all(executor)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|row| Topic {
+            id: row.get::<uuid::Uuid, _>("id").into(),
+            project_id: project,
+            name: row.get("name"),
+            path: row.get("path"),
+            created_at: row.get("created_at"),
+        })
+        .collect())
+}
+
+/// The names of every topic `pamin ingest` has put on the retrieval surface in
+/// this project.
+///
+/// One read for a whole ingest, rather than one per file: an ingest compares
+/// each file's sections against what an earlier ingest left under that file,
+/// and asking once per file would scan the project's sources once per file.
+pub async fn file_topic_names(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+) -> Result<Vec<String>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT t.name FROM sources s
+           JOIN topics t ON t.project_id = s.project_id AND t.name = substr(s.locator, 6)
+         WHERE s.project_id = $1 AND s.kind = 'file' AND t.current_state_id IS NOT NULL",
+    )
+    .bind(project.0)
+    .fetch_all(executor)
+    .await?;
+
+    Ok(rows.into_iter().map(|(name,)| name).collect())
 }
 
 /// Lists every topic in a project.
