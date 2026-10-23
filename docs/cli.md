@@ -278,10 +278,11 @@ provider libraries -- `libonnxruntime_providers_shared.so` and
 `libonnxruntime_providers_cuda.so`, 79 MB, built into `target/release` beside
 the binary -- have to sit in the same directory as `pamin-server`, which
 `cargo install` does not arrange: copy them next to the installed binary. Missing
-either, the reranker runs on the CPU exactly as before. Without the driver's
-device node (`/dev/nvidiactl`, or `/dev/dxg` under WSL 2), CUDA is not tried at
-all, so a CPU-only machine does not pay a failed provider registration on each
-server start.
+either, the reranker runs on the CPU exactly as before. Where there is no sign
+of an NVIDIA driver or GPU -- no `/dev/nvidiactl`, no `/dev/dxg` (WSL 2), no
+`/proc/driver/nvidia`, and no NVIDIA PCI device -- CUDA is not tried at all, so a
+CPU-only machine does not pay a failed provider registration on each server
+start.
 
 On Windows the same holds for one file, `DirectML.dll` (18.5 MB), built beside
 `pamin-server.exe`. Without it the program still starts -- Windows 10 and later carry
