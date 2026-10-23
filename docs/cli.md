@@ -140,9 +140,9 @@ them the other way on the CPU: each pass has one thread, and this many passes
 run at once, as do the passes of one rerank, one pair each when this is more
 than one (at one, a pass takes up to four pairs). A BGE-M3 query, and a rerank
 of a single pass, still get one pass of this many threads. Those passes share
-one single-threaded session over the model's mapped copy (below), loaded the
-first time more than one text is stored or more than one pass reranked, and
-kept from then on; at one thread, or when the model loads from its download
+one single-threaded session over the model's mapped copy (below), loaded
+with the reranker, and by the embedder the first time more than one text is
+stored, and kept from then on; at one thread, or when the model loads from its download
 rather than a copy, every pass runs one after another on the model's own
 session instead.
 
@@ -168,9 +168,10 @@ vocabulary, which the embedder and every reranker share. It is now held in a
 compact layout: with both loaded, the two hold 47 MiB of anonymous memory after
 use, where the previous layout held 314 MiB in the same measurement (and
 582 MiB when each model built its own copy). The per-model figures above were taken
-with the previous layout, and with each model's one session: the first time
-passes run side by side, a model also loads one shared single-threaded session
-for them, which those figures leave out. [measured.md](measured.md) has what a
+with the previous layout, and with each model's one session: a model also
+loads one shared single-threaded session for the passes it runs side by side
+-- the reranker when it loads, the embedder the first time it stores more than
+one text -- which those figures leave out. [measured.md](measured.md) has what a
 whole server holds with it. What it costs is disk. Each copy is larger than the
 model it came from, because the weights are also stored in the layout the CPU's
 kernels use -- a data file of 874 MB for the 570 MB reranker, and about as
