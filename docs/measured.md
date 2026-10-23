@@ -1143,8 +1143,10 @@ why that changed, and the idle release's own measurement, follow it.
   minor faults.
 - A mapping with any written page is skipped.
 - Only the mappings an encoder's own sessions created are released. They are
-  found once, as each session loads: loads run one at a time, and
-  `/proc/self/maps` before is compared with `/proc/self/smaps` after. A
+  found once, as each session loads: no two loads from the same model
+  directory run at once (loads from different directories do), and that
+  directory's mappings in `/proc/self/maps` before are compared with those
+  in `/proc/self/smaps` after. A
   released range is therefore never the address of another session's
   mapping, which may be unmapped and its addresses reused.
 - Finding them once, not after every pass, matters because reading
