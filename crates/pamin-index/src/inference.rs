@@ -2409,18 +2409,77 @@ fn requested(
 }
 
 fn gpu_providers() -> Vec<(Device, ExecutionProviderDispatch)> {
-    vec![
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        (Device::Cuda, ort::ep::CUDA::default().build()),
+    let providers = vec![
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         (Device::CoreMl, coreml().build()),
         #[cfg(target_os = "windows")]
         (Device::DirectMl, ort::ep::DirectML::default().build()),
-    ]
+    ];
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    let providers = {
+        let mut providers = providers;
+        if nvidia_driver(|node| node.exists()) || nvidia_gpu(pci_vendors()) {
+            providers.push((Device::Cuda, ort::ep::CUDA::default().build()));
+        }
+        providers
+    };
+    providers
+}
+
+/// Whether this host has an NVIDIA driver for CUDA to run on: a device node
+/// the driver creates, `/dev/nvidiactl`, or `/dev/dxg` where WSL 2 passes a
+/// GPU through; or `/proc/driver/nvidia`, there once the kernel module is
+/// loaded, for a headless host where the first CUDA process creates the nodes
+/// through `nvidia-modprobe`. Without a driver, registering the CUDA provider
+/// can only fail, and it fails slowly: about 3 s on every server start on a
+/// CPU-only host, since a plan naming CUDA persists only with a GPU inventory
+/// read (q101).
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn nvidia_driver(exists: impl Fn(&Path) -> bool) -> bool {
+    ["/dev/nvidiactl", "/dev/dxg", "/proc/driver/nvidia"]
+        .into_iter()
+        .any(|node| exists(Path::new(node)))
+}
+
+/// Whether one of `vendors`, PCI vendor ids as sysfs spells them, is NVIDIA's:
+/// a GPU whose module is not loaded yet, which `nvidia-modprobe` also loads
+/// for the first CUDA process.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn nvidia_gpu(vendors: impl IntoIterator<Item = String>) -> bool {
+    vendors.into_iter().any(|vendor| vendor.trim() == "0x10de")
+}
+
+/// The vendor id of every PCI device sysfs lists.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn pci_vendors() -> impl Iterator<Item = String> {
+    std::fs::read_dir("/sys/bus/pci/devices")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|device| std::fs::read_to_string(device.path().join("vendor")).ok())
 }
 
 #[cfg(test)]
 mod tests {
+    /// CUDA is a candidate only where there is an NVIDIA driver or GPU: a
+    /// device node, natively or through WSL 2, the loaded kernel module, or an
+    /// NVIDIA PCI device.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn cuda_is_planned_only_with_an_nvidia_driver() {
+        use std::path::Path;
+        let only = |present: &'static str| move |node: &Path| node == Path::new(present);
+        assert!(super::nvidia_driver(only("/dev/nvidiactl")));
+        assert!(super::nvidia_driver(only("/dev/dxg")));
+        assert!(super::nvidia_driver(only("/proc/driver/nvidia")));
+        assert!(!super::nvidia_driver(only("/dev/dri/renderD128")));
+        assert!(!super::nvidia_driver(|_: &Path| false));
+        let vendors = |ids: &[&str]| ids.iter().map(|id| format!("{id}\n")).collect::<Vec<_>>();
+        assert!(super::nvidia_gpu(vendors(&["0x8086", "0x10de"])));
+        assert!(!super::nvidia_gpu(vendors(&["0x8086", "0x1af4", "0x1002"])));
+        assert!(!super::nvidia_gpu(vendors(&[])));
+    }
+
     /// A caller plans on the plugins it named and the built-in providers, and
     /// not on a plugin only another caller named.
     #[test]
