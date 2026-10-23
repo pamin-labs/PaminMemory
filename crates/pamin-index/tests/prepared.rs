@@ -114,13 +114,28 @@ fn a_prepared_copy_scores_the_same_and_holds_less() {
             "the {model} copy, loaded in the process that wrote it, is not bit-identical \
              to the copy loaded on its own"
         );
-        // The `accurate` copy scores a pair a pass, on a graph that computes
-        // its last layer for the classification token alone, and the source
-        // pads its pairs into one batch on the whole graph: the int8 matrix
-        // products quantize activations with one scale over the rows they
-        // see, so the scores differ by design (see `docs/measured.md`). The
-        // ranking they give must not.
-        if *model == "accurate" {
+        // A copy whose passes take one pair loads a graph that computes its
+        // last layer for the classification token alone, when its attention
+        // was fused. That graph is the speed-up, so a copy that fell back to
+        // the whole graph has lost it without any score saying so: it must
+        // have been written.
+        let trimmed = prepared.one_row == Some(true) && fused;
+        if trimmed {
+            let untrimmed = std::fs::read_to_string(copy.join("attention.cls1.untrimmed")).ok();
+            assert!(
+                copy.join("attention.cls1.onnx").exists(),
+                "the {model} copy's passes take one pair, but its graph was not trimmed: {}",
+                untrimmed.as_deref().unwrap_or("no reason recorded").trim()
+            );
+        }
+        // The trimmed graph scores a pair a pass, and the source pads its
+        // pairs into one batch on the whole graph: the int8 matrix products
+        // quantize activations with one scale over the rows they see, so the
+        // scores differ by design (see `docs/measured.md`). The ranking they
+        // give must not. Every other copy -- the embedder's, and a reranker's
+        // whose passes are padded -- loads the graph it came from, and must
+        // score exactly as the source.
+        if trimmed {
             assert_eq!(
                 order(&source.bits[..TEXTS.len()]),
                 order(&prepared.bits[..TEXTS.len()]),
@@ -138,7 +153,7 @@ fn a_prepared_copy_scores_the_same_and_holds_less() {
         // was written for, so a copy of either that stopped splitting has
         // lost the saving without any score saying so. A copy whose passes
         // take one pair splits the trimmed graph it loads for them.
-        let graph = if copy.join("attention.cls1.onnx").exists() {
+        let graph = if trimmed {
             "attention.cls1"
         } else if fused {
             "attention"
@@ -226,6 +241,9 @@ struct Arm {
     loaded: Option<u64>,
     scored: Option<u64>,
     held: Option<u64>,
+    /// Whether the reranker plans a pass a pair, which is when its copy
+    /// loads the trimmed graph. `None` for the embedder.
+    one_row: Option<bool>,
 }
 
 /// Runs one load in a fresh process, from the prepared copy or from the source,
@@ -271,6 +289,7 @@ fn run(model: &str, cache: &Path, prepared: bool, split: bool) -> Arm {
     let mut fields = line.split_whitespace();
     let mut memory = || fields.next().expect("a memory field").parse::<u64>().ok();
     let (loaded, scored, held) = (memory(), memory(), memory());
+    let one_row = fields.next().expect("a passes field").parse::<bool>().ok();
     let bits = fields
         .map(|bits| u32::from_str_radix(bits, 16).expect("hex bits"))
         .collect();
@@ -279,6 +298,7 @@ fn run(model: &str, cache: &Path, prepared: bool, split: bool) -> Arm {
         loaded,
         scored,
         held,
+        one_row,
     }
 }
 
@@ -293,11 +313,14 @@ fn child(model: &str, cache: &Path) {
 
     // Kept alive until every figure below is taken: dropped any earlier, the
     // last of them would measure a process that no longer holds a model.
+    let mut one_row = None;
     let mut score: Box<dyn FnMut() -> Vec<f32>> = match model {
         "accurate" => {
             let mut reranker =
                 Reranker::load(cache, &support::inference()).expect("load the reranker");
             assert_eq!(reranker.device(), Device::Cpu, "the copy is for the CPU");
+            let lengths = reranker.lengths(QUERY, TEXTS).expect("encode the pairs");
+            one_row = Some(reranker.plan(&lengths).iter().all(|pass| pass.len() == 1));
             Box::new(move || {
                 // A pair a batch, side by side; then one batch alone, on the
                 // session of the whole budget, of a pair not scored yet.
@@ -341,10 +364,11 @@ fn child(model: &str, cache: &Path) {
         .map(|value| format!("{:08x}", value.to_bits()))
         .collect();
     println!(
-        "{MARK} {} {} {} {}",
+        "{MARK} {} {} {} {} {}",
         memory(loaded),
         memory(scored),
         memory(held),
+        one_row.map_or_else(|| "-".to_string(), |one_row| one_row.to_string()),
         bits.join(" ")
     );
     drop(score);
