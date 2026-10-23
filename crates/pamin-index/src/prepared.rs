@@ -398,11 +398,18 @@ pub(crate) fn release(
             std::process::id(),
             WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
+        // A download this release cannot remove -- one under `HF_HOME` or a
+        // linked cache -- is released again on every load. Its record already
+        // names the digest of a source of this name, length and time, so that
+        // is taken rather than hashing the half a gigabyte again (q102).
+        let known = read_record(&record)
+            .filter(|old| old.source.record() == identity.record())
+            .and_then(|old| old.digest);
         std::fs::write(
             &partial,
             format!(
                 "{}{REVISION}{}\n",
-                identity.record_with_digest(&source)?,
+                identity.record_with_digest(&source, known)?,
                 download.revision()
             ),
         )?;
@@ -1424,10 +1431,12 @@ impl Source {
 
     /// Preserve byte provenance before release deletes the original file.
     /// The first three metadata lines and cache key stay compatible with old records.
-    fn record_with_digest(&self, source: &Path) -> Result<String> {
-        let digest = match &self.digest {
-            Some(digest) => digest.clone(),
-            None => source_digest(source)?,
+    /// `known` is the digest a record of this source already names.
+    fn record_with_digest(&self, source: &Path, known: Option<String>) -> Result<String> {
+        let digest = match (&self.digest, known) {
+            (Some(digest), _) => digest.clone(),
+            (None, Some(known)) => known,
+            (None, None) => source_digest(source)?,
         };
         Ok(format!("{}{DIGEST}{digest}\n", self.record()))
     }
@@ -1854,7 +1863,7 @@ mod tests {
         // Its record keys as it does, and one without the digest finds no
         // copy rather than one of other bytes.
         let path = dir.path().join("old/model.onnx");
-        let recorded = Source::parse(&old.record_with_digest(&path).unwrap()).unwrap();
+        let recorded = Source::parse(&old.record_with_digest(&path, None).unwrap()).unwrap();
         assert_eq!(recorded.key().0, old.key().0);
         assert_eq!(Source::parse(&old.record()), None);
     }
@@ -2313,7 +2322,7 @@ mod tests {
         let path = directory.path().join("model_int8.onnx");
         std::fs::write(&path, b"abc").unwrap();
         let source = Source::of(&path).unwrap();
-        let record = source.record_with_digest(&path).unwrap();
+        let record = source.record_with_digest(&path, None).unwrap();
         assert_eq!(record.lines().next(), Some("model_int8.onnx"));
         assert_eq!(
             record.lines().nth(3),
@@ -2323,6 +2332,23 @@ mod tests {
         assert_eq!(Source::parse(&record), Some(source));
     }
 
+    /// A content-named source takes the digest its record already names
+    /// instead of reading the file again; the file is gone to prove it.
+    #[test]
+    fn a_known_digest_is_not_hashed_again() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("a".repeat(64));
+        std::fs::write(&path, b"abc").unwrap();
+        let source = Source::of(&path).unwrap();
+        assert_eq!(source.digest, None);
+        std::fs::remove_file(&path).unwrap();
+        let record = source
+            .record_with_digest(&path, Some("recorded".into()))
+            .unwrap();
+        assert_eq!(record.lines().nth(3), Some("sha256 recorded"));
+        assert!(source.record_with_digest(&path, None).is_err());
+    }
+
     #[test]
     fn digest_provenance_tracks_equal_length_timestamp_preserving_replacement() {
         let temporary = tempfile::tempdir().unwrap();
@@ -2330,7 +2356,7 @@ mod tests {
         std::fs::write(&path, b"abc").unwrap();
         let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
         let identity = Source::of(&path).unwrap();
-        let before = identity.record_with_digest(&path).unwrap();
+        let before = identity.record_with_digest(&path, None).unwrap();
         std::fs::write(&path, b"def").unwrap();
         std::fs::File::options()
             .write(true)
@@ -2340,7 +2366,7 @@ mod tests {
             .unwrap();
         let replaced = Source::of(&path).unwrap();
         assert_ne!(replaced.key().0, identity.key().0);
-        let after = replaced.record_with_digest(&path).unwrap();
+        let after = replaced.record_with_digest(&path, None).unwrap();
         assert_ne!(before.lines().nth(3), after.lines().nth(3));
         assert_eq!(
             after.lines().nth(3).unwrap(),
@@ -2362,7 +2388,7 @@ mod tests {
         assert_ne!(key(&one), key(&other));
 
         let source = Source::of(&one).expect("describe");
-        let record = source.record_with_digest(&one).expect("record");
+        let record = source.record_with_digest(&one, None).expect("record");
         assert_eq!(Source::parse(&record), Some(source));
         assert_eq!(Source::parse("name\nnot a length\n1\n"), None);
     }
@@ -2564,7 +2590,8 @@ mod tests {
         let root = dir.path().join("prepared");
         std::fs::create_dir_all(&root).expect("the copies' directory");
         let record = root.join("someone--model--onnx--model.onnx.source");
-        std::fs::write(&record, source.record_with_digest(&model).unwrap()).expect("the record");
+        std::fs::write(&record, source.record_with_digest(&model, None).unwrap())
+            .expect("the record");
         let now = SystemTime::now();
         let long_ago = now - 60 * DAY;
 
