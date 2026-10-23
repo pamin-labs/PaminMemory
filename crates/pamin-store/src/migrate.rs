@@ -92,6 +92,11 @@ fn migrations() -> Vec<Migration> {
             "source_versions_index_once",
             include_str!("../migrations/V14__source_versions_index_once.sql"),
         ),
+        migration(
+            15,
+            "source_kind_known",
+            include_str!("../migrations/V15__source_kind_known.sql"),
+        ),
     ]
 }
 
