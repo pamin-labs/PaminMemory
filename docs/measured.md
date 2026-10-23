@@ -1668,13 +1668,25 @@ Each was measured against its own parent. The merged result, measured against
 the main it started from:
 
 - **Entry point:** start `pamin-server`, run three `pamin search` calls, stop
-  it.
+  it. All three ask "why was the deployment rolled back" with `--limit 10`;
+  the second and third are answered from the result cache.
 - **Home:** a persisted home in the default layout, with downloads already
-  released.
-- **Host:** host A, 4 vCPU, ONNX Runtime 1.28.0, CPU EP, 4 threads.
+  released. Its project holds the 8 records of the timing warm-up corpus.
+  `inference_threads = 4`, split word embeddings on, no persisted compute
+  plan (a CPU-only host keeps none).
+- **Models:** `gpahal/bge-m3-onnx-int8` at `2b34e84` and
+  `pamin-labs/bge-reranker-v2-m3-sq-int8-onnx` at `eb7411f`, both int8, from
+  their prepared copies.
+- **Host:** host A, a 4-vCPU Xeon with AVX-512 VNNI and no GPU, ONNX Runtime
+  1.28.0, CPU EP.
 - **Arms:** main `8087b4d` against `032d544`, 30 rounds an arm in three
-  rotations.
-- **Warmth:** the process is cold every round and the page cache warm.
+  rotations (`before after after before ...`), one untimed warm-up per arm
+  per rotation.
+- **Warmth:** the process is cold every round and the page cache warm. The
+  tokenizer tries were already written: the after arm's warm-up wrote them,
+  and every round found them unchanged. So this is a restart of an upgraded
+  install, not its first start. The first start after the upgrade builds and
+  writes the tries once, as the before arm builds them every time.
 
 | metric | before | after | abs diff | % change |
 | --- | ---: | ---: | ---: | ---: |
@@ -1683,17 +1695,27 @@ the main it started from:
 | cold first search wall p95 s | 3.330 | 2.101 | −1.230 | −36.9% |
 | second search wall p50 ms (result cache) | 25.2 | 27.1 | +1.9 | +7.4%, ratio 1.074 [0.967, 1.172] |
 | server CPU user s per round | 3.550 | 2.780 | −0.770 | −21.7% |
+| server CPU system s per round | 0.565 | 0.535 | −0.030 | −5.3% |
 | server VmHWM MiB (process RSS) | 853.5 | 853.4 | −0.0 | −0.0% |
-| disk | — | +4.1 MB | +4.1 MB | the stored tokenizer tries |
+| `models/tokenizers/` MB on disk | 0 | 4.1 | +4.1 | N/A: the directory is new |
 
 - **Ratio:** the median ratio of the first search is 0.486 [0.472, 0.527].
 - **Output:** byte-identical in 180 of 180 searches.
-- **Not measured:** the download-hash change does nothing on this layout,
-  where the downloads are already gone; on a home whose model cache is a link
-  or shared through `HF_HOME` it was measured on its own at −54.1%.
+- **CPU scope:** a round's CPU is the server process from its start to its
+  stop. That covers startup, both model loads, the uncached first search and
+  the two cached ones. It was not split by phase, so it is not evidence about
+  model loading alone.
+- **Disk scope:** the rest of the home, the prepared model copies and the
+  index included, is unchanged.
+- **Not measured here:** the download-hash change does nothing on this
+  layout, where the downloads are already gone. It was measured on its own on
+  a home whose model cache is a link, with the same harness, main `8087b4d`
+  against `d3ae571`. The cold first search wall p50 went from 5.822 s to
+  2.673 s, a difference of −3.149 s (−54.1%), ratio 0.459 [0.449, 0.466].
 - **Second search:** the second search's CI includes 1.0.
 - **Evidence:** the write-up and raw rows are in
-  `internal-docs/pamin-memory/research/2026-10-23/q108-model-load-stack.md`.
+  [`q108-model-load-stack.md`](../internal-docs/pamin-memory/research/2026-10-23/q108-model-load-stack.md),
+  in the private submodule.
 - **Not done:** loading a model's tokenizer and its two sessions at once
   was tried on top and not shipped. It gave a ratio of 1.017 [0.977, 1.095],
   with system CPU doubled.
