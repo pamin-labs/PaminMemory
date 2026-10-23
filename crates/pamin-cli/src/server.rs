@@ -841,6 +841,9 @@ async fn answer(session: &Arc<Session>, request: Request) -> Result<Payload> {
         Call::Import(args) => {
             json(command::import::execute(session, &project, vector_index, args).await?)?
         }
+        Call::Ingest(args) => {
+            json(command::ingest::execute(session, &project, vector_index, args).await?)?
+        }
         Call::Read(args) => {
             json(command::read::execute(session, &project, vector_index, args).await?)?
         }
