@@ -607,6 +607,114 @@ says whether that happened.
 
 `--valid-from` and `--valid-to` apply to every memory in the file.
 
+## `pamin ingest`
+
+Records Markdown and text files as memories, one per section. Here, in a git
+repository `handbook` whose `docs/ops.md` holds a `# Deploy` section with a
+`## Rollback` under it:
+
+```console
+$ pamin ingest docs
+Ingested 1 files as 2 sections: 2 written, 0 unchanged, 0 held in evidence only
+```
+
+A path is a file or a directory. A directory is read recursively for `.md`,
+`.markdown` and `.txt` files, skipping hidden entries — `.git` among them — and
+symbolic links. A file named on the command line is read whatever it is called
+and wherever a link it is leads, and is cut as Markdown whatever it holds, so
+`# ` at the start of a line of code is a heading to it. The paths are made
+absolute by the client before the request leaves, because the server reading
+them may have been started from another directory.
+
+**A file is cut where its headings are.** An ATX heading (`#` to `######`)
+outside a fenced block opens a section, and the section's topic is the file's
+path and the headings above it, each cut to 80 characters, joined by ` › `:
+
+```console
+$ pamin search "how do we roll back a release" --limit 2    # second hit trimmed
+0.1136  handbook/docs/ops.md › Deploy › Rollback v1  ## Rollback
+
+A rollback reverts the deployment pipeline to the previous release tag. The
+oncall engineer starts it from the release dashboard, and the previous build is
+serving again within ten minutes because its image is still cached on every
+node in the cluster.
+        lexical_segmented#1 lexical_ngram#1 vector#1 reranked
+0.1042  handbook/docs/ops.md › Deploy v1  # Deploy
+…
+```
+
+The path runs from the root of the git repository the file is in — a
+submodule's being its superproject's — the root's own name first, so ingesting a tree and ingesting one file of it name that file
+alike, and two repositories' `README.md` are two files. Outside a repository it
+runs from the directory named, or for a file named on its own, from the
+directory it is in. Two files that would still go by one name are refused
+rather than recorded under one topic.
+
+The topic is also what each section is embedded and reranked under, as
+`{topic}: {content}`, so a section about "Rollback" in `docs/ops.md` is read
+with both. The heading line stays in the section's content too, which is what
+the two lexical channels index.
+
+**A section is sized so the reranker reads all of it**: at most the reranker's
+256-token window less the pair's four special tokens, a 48-token allowance for
+the query, and the topic with room for a number and a part — but never fewer
+than 64 tokens, so under a very long topic a section can run past the window.
+A longer section is cut at its paragraphs, code blocks and sentences, and a
+sentence still too long at its tokens, into parts named `(2)`, `(3)` and on,
+with no overlap. A section of fewer than 48 tokens joins a neighbour — a heading
+with nothing under it the section after it, a short opening at the top of the
+file the section after it, anything else the one before — and so does a part
+that small, the two divided again at a sentence or a space if they do not fit
+together. Two sections under the same headings are numbered `#2`, `#3`. YAML
+front matter is left out when its first line is a `key:` and it holds no blank
+line.
+
+```console
+$ sed -i 's/ten minutes/fifteen minutes/' docs/ops.md
+$ pamin ingest docs
+Ingested 1 files as 2 sections: 1 written, 1 unchanged, 0 held in evidence only
+$ sed -i 's/## Rollback/## Rolling back/' docs/ops.md
+$ pamin ingest docs
+Ingested 1 files as 2 sections: 1 written, 1 unchanged, 0 held in evidence only
+1 sections from an earlier ingest are no longer in these files and are still searchable:
+  handbook/docs/ops.md › Deploy › Rollback
+```
+
+**Ingesting again records only what changed.** A section that says what its
+topic already does is left as it is, with nothing written; a changed section is
+a new version of its topic, as any write is, and only it is embedded again. An
+edit to a section's text changes that section, and for a section split into
+parts, the part it is in and those after it. Renaming a heading renames every
+section under it: each is recorded afresh under its new name, and the old ones
+are what `missing` lists. On this repository's own 105 Markdown and text files,
+cut into 4,090 sections, an unchanged re-ingest took 4 to 7 seconds and wrote
+nothing, and a one-word edit wrote one to three sections
+([measured](../benchmarks/results/ingest/ingest-cost-2026-10-23.md)).
+
+A section that is no longer in a file — its heading renamed or removed — is
+listed under `missing` and stays searchable: nothing in Påmin removes a memory
+yet. A section cut down below the filter's eight characters is likewise left
+saying what it said, and for as long as that lasts it is held on every ingest,
+counted under `held`, and its evidence recorded again each time.
+
+`missing` only looks under the files the command read. A file that moved, or a
+repository whose directory was renamed or checked out under another name, is
+recorded afresh under its new names, and its old sections stay searchable
+without being listed anywhere. And two directories of the same name ingested
+by separate commands outside any repository name their files alike, so the
+second records its sections as new versions of the first's.
+
+Ingested topics are kept out of the name index the graph channel matches
+memories against. A path and its headings are a name no memory spells out in
+full, and a wide name makes every later write compare longer runs of its text.
+A memory naming an ingested section therefore derives no edge to it, while a
+section naming a topic written by hand does. A topic written by hand keeps its
+name if it is later ingested; one ingested first and then written by hand is
+named from the next `pamin reindex`.
+
+`--json` carries every count, the `missing` and `skipped` lists, and the same
+`cascade` and `cascade_lagging` as `import`.
+
 ## `pamin read`
 
 Reads a topic at a version. `--version-offset` counts back from the current one.
