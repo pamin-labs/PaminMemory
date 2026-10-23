@@ -1485,8 +1485,17 @@ the test prints it:
 
 Every score and every vector is bit-identical, and the figures repeated to the
 megabyte across two runs. Each load is one session over the copy; the shared
-single-threaded session side-by-side passes add on first use is not in them,
-and the shared-session table above has what a whole server holds with it. What the copy leaves is mostly not the weights: a
+single-threaded session side-by-side passes run on is not in them, and the
+shared-session table above has what a whole server holds with it. The
+reranker now loads that session with the model rather than at its first
+rerank, so this test's `loaded` figure for it includes the session. Measured
+through the test's own child process on host A (4 vCPU, the `accurate` copy
+of the current export, 12 fresh processes an arm, scores bit-identical), that
+added nothing measurable at load -- 67.6 MiB live anonymous memory with the
+session loaded and without, because its weights are the same mapped copy --
+nor after scoring (108.3 MiB in both); after `malloc_trim` the process held a
+median of 58.5 MiB (54.3 to 62.1) rather than 54.4. The table's figures were
+taken before then and have not been re-run. What the copy leaves is mostly not the weights: a
 bare runtime session adds 139 MB loading the `fast` reranker's download and
 12 MB loading its copy, so most of the 268 is what a load holds besides its
 session. The data file is the price, on disk rather than in memory -- larger
