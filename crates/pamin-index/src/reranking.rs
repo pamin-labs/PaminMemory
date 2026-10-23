@@ -886,7 +886,15 @@ impl Reranker {
     /// Through the same cache as the embedding model, so a workspace holds one
     /// directory of weights rather than two.
     pub fn load(cache_dir: &Path, settings: &crate::InferenceSettings) -> Result<Self> {
-        let (model, device) = load_model(cache_dir, settings)?;
+        let (mut model, device) = load_model(cache_dir, settings)?;
+        // The session its passes run on side by side, loaded with it rather
+        // than by the first search: every search scores its candidates in
+        // several passes, so the first would load it anyway, after the
+        // embedder and in front of its own reranking. Loaded here, it loads
+        // while the embedder -- the longer of the two loads -- is still
+        // loading (q103). One that will not load leaves the passes to the
+        // model's own session, as it would have at the first search.
+        model.ready(usize::MAX)?;
 
         Ok(Self {
             cache_dir: cache_dir.to_path_buf(),
