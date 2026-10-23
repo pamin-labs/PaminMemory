@@ -148,6 +148,7 @@ pub fn replay(hits: &[SearchHit]) -> Vec<ChannelResults> {
                     Scored {
                         topic: hit.result.topic,
                         score: *score,
+                        span: 0,
                     },
                 ));
             }
