@@ -3,6 +3,8 @@
 use pamin_core::{Channel, Depths, Derivation, EdgeKind, Why};
 use serde::{Deserialize, Serialize};
 
+pub use super::read::Span;
+
 #[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
     /// What to search for, in any language.
@@ -180,6 +182,12 @@ pub struct Hit {
     /// When it stops holding, RFC 3339, absent when open.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub valid_to: Option<String>,
+    /// For a memory the index cut into spans, which of them `content` is: the
+    /// span the search matched best and one either side. Absent for a memory
+    /// of one span, whose `content` is all of it. `pamin read --span` reads
+    /// more of the memory around it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<Span>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -197,8 +205,12 @@ pub fn render(results: &Results) -> String {
         .hits
         .iter()
         .map(|hit| {
+            // The span's own flag, so the line says what to read more of.
+            let span = hit.span.as_ref().map_or(String::new(), |span| {
+                format!(" --span {} (of {}) {}:", span.ordinal, span.of, span.header)
+            });
             format!(
-                "{:.4}  {} v{}  {}\n        {}",
+                "{:.4}  {} v{}{span}  {}\n        {}",
                 hit.score,
                 hit.topic,
                 hit.version,

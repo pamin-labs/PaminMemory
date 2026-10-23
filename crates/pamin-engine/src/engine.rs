@@ -1924,8 +1924,9 @@ impl Engine {
         // and the seed's content, copied -- which is made only for what the
         // caller is given; the reranker reads the few it is shown in place.
         let mut fused = self.fused(query, depths, fusion).await?;
+        let window = self.window(query)?;
         if fused.results.is_empty() {
-            return Ok(fused.hits(limit));
+            return Ok(fused.hits(limit, window.as_ref()));
         }
 
         let traces: Vec<&[Why]> = fused
@@ -1935,24 +1936,17 @@ impl Engine {
             .collect();
         let unlexical = rerankable(&traces, depths.rerank.get());
         if !can_be_seen(&unlexical, limit) {
-            return Ok(fused.hits(limit));
+            return Ok(fused.hits(limit, window.as_ref()));
         }
 
         // Off the runtime because a memory cut into spans is cut again here,
-        // by its tokens, and the first search loads the tokenizer to do it.
-        let grain = self.index().grain();
+        // by its tokens.
         let shown: Vec<String> = off_the_runtime(|| {
-            let window = match grain.cap() {
-                Some(cap) => Some(Window::new(cap, self.models.span_tokens()?, query)),
-                None => None,
-            };
-            Ok::<_, pamin_index::IndexError>(
-                unlexical
-                    .iter()
-                    .map(|position| fused.shown(&fused.results[*position], window.as_ref()))
-                    .collect(),
-            )
-        })?;
+            unlexical
+                .iter()
+                .map(|position| fused.shown(&fused.results[*position], window.as_ref()))
+                .collect()
+        });
         let documents: Vec<&str> = shown.iter().map(String::as_str).collect();
         // Finding the reranker is inside this too, not just using it. The
         // first search downloads the weights, holding the registry
@@ -1998,7 +1992,7 @@ impl Engine {
             depths.rerank.get(),
             &best_first,
         );
-        Ok(fused.hits(limit))
+        Ok(fused.hits(limit, window.as_ref()))
     }
 
     /// The same search, with the fusion settings supplied.
@@ -2020,7 +2014,31 @@ impl Engine {
         depths: Depths,
         fusion: Fusion,
     ) -> Result<Vec<SearchHit>> {
-        Ok(self.fused(query, depths, fusion).await?.hits(limit))
+        let fused = self.fused(query, depths, fusion).await?;
+        let window = self.window(query)?;
+        Ok(fused.hits(limit, window.as_ref()))
+    }
+
+    /// How a search for `query` shows a memory cut into spans, if this
+    /// project's index cuts them. The first in a process loads the tokenizer.
+    fn window(&self, query: &str) -> Result<Option<Window>> {
+        let Some(cap) = self.index().grain().cap() else {
+            return Ok(None);
+        };
+        let counter = off_the_runtime(|| self.models.span_tokens())?;
+        Ok(Some(Window::new(cap, counter, query)))
+    }
+
+    /// The spans this project's index cuts a memory named `name` into: one,
+    /// the whole of it, when the index does not cut memories at all.
+    pub fn cut(&self, name: &str, content: &str) -> Result<Vec<pamin_index::spans::Span>> {
+        let cap = self.index().grain().cap().unwrap_or(usize::MAX);
+        Ok(off_the_runtime(|| {
+            let counter = self.models.span_tokens()?;
+            Ok::<_, pamin_index::IndexError>(pamin_index::spans::pack(
+                name, content, &*counter, cap,
+            ))
+        })?)
     }
 
     /// Every fused result, ranked and explained, with what it takes to make
@@ -2578,6 +2596,42 @@ pub struct SearchHit {
     /// reranker is shown it. Taken from every state the search resolved rather
     /// than from the results, so it does not depend on how many were asked for.
     pub seed: Option<String>,
+    /// For a memory the index cut into more than one span, the window of it
+    /// this hit is about: its best span and one either side. `None` for a
+    /// memory of one span, which is the whole of it.
+    pub span: Option<SpanView>,
+}
+
+/// Where in a memory a span, or a run of them, lies.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpanView {
+    /// The span asked about, from 0.
+    pub ordinal: u32,
+    /// How many spans the memory is cut into.
+    pub of: u32,
+    /// What the run lost by being cut out: the memory's name, and the heading
+    /// and turn its first span continues.
+    pub header: String,
+    /// The run's bytes in the memory's content, from the first span's start
+    /// to the last's end.
+    pub range: std::ops::Range<usize>,
+}
+
+impl SpanView {
+    /// Span `ordinal` of `spans` and up to `around` either side, or `None`
+    /// when there is no such span.
+    pub fn around(spans: &[pamin_index::spans::Span], ordinal: u32, around: u32) -> Option<Self> {
+        let at = ordinal as usize;
+        spans.get(at)?;
+        let first = &spans[at.saturating_sub(around as usize)];
+        let last = &spans[(at + around as usize).min(spans.len() - 1)];
+        Some(Self {
+            ordinal,
+            of: spans.len() as u32,
+            header: first.header.clone(),
+            range: first.range.start..last.range.end,
+        })
+    }
 }
 
 /// A search's fused results, best first, and what it resolved on the way.
@@ -2594,7 +2648,7 @@ struct Fused {
 
 impl Fused {
     /// The first `limit` results as hits.
-    fn hits(self, limit: u32) -> Vec<SearchHit> {
+    fn hits(self, limit: u32, window: Option<&Window>) -> Vec<SearchHit> {
         let Self {
             results,
             live,
@@ -2606,11 +2660,15 @@ impl Fused {
             .map(|result| {
                 let state = live.state(result.topic).expect("retained by `fused`");
                 let seed = seed(&live, &paths, result.topic).map(str::to_string);
+                let topic = live.topic_name(result.topic);
+                let span =
+                    window.and_then(|window| window.view(&topic, &state.content, result.span));
                 SearchHit {
-                    topic: live.topic_name(result.topic),
+                    topic,
                     state: state.clone(),
                     result,
                     seed,
+                    span,
                 }
             })
             .collect()
@@ -2682,6 +2740,17 @@ impl Window {
             last += 1;
         }
         render(first, last)
+    }
+
+    /// The window a caller is shown of a memory cut into more than one span:
+    /// span `best` and one either side. `None` for a memory of one span, and
+    /// for one whose best span the ledger no longer has.
+    fn view(&self, name: &str, content: &str, best: u32) -> Option<SpanView> {
+        let spans = pamin_index::spans::pack(name, content, &*self.counter, self.cap);
+        if spans.len() == 1 {
+            return None;
+        }
+        SpanView::around(&spans, best, 1)
     }
 
     /// Of a seed's memory, the span that names the topic the walk reached --
@@ -3155,6 +3224,29 @@ mod tests {
             window(6).shown("topic", &content, 9, None),
             shown("topic", &content, None),
             "a span the content no longer has"
+        );
+    }
+
+    #[test]
+    fn a_hit_on_a_memory_of_several_spans_carries_its_window() {
+        let window = Window::new(5, Arc::new(Words), "q");
+        let content = five_spans();
+        let view = window.view("topic", &content, 0).unwrap();
+        assert_eq!((view.ordinal, view.of), (0, 5));
+        assert_eq!(
+            &content[view.range],
+            "p0a p0b p0c p0d p0e\n\np1a p1b p1c p1d p1e"
+        );
+        let view = window.view("topic", &content, 4).unwrap();
+        assert_eq!(
+            &content[view.range],
+            "p3a p3b p3c p3d p3e\n\np4a p4b p4c p4d p4e"
+        );
+        assert_eq!(window.view("topic", &content, 5), None, "a stale span");
+        assert_eq!(
+            window.view("topic", "a b c", 0),
+            None,
+            "one span is the whole"
         );
     }
 
