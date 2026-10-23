@@ -2139,6 +2139,32 @@ under `memory`.
 The table, the tuning and the write-path measurement are in
 [the ADR](adr/0001-tech-selection.md#two-vector-indexes-both-half-precision-memory-by-default).
 
+**Re-ingesting an unchanged tree appends no evidence, and costs seconds.** This
+repository's 105 tracked Markdown and text files, cut into 4,090 sections,
+through the release `pamin ingest` at `cf4a771` on four shared cores: six
+unchanged re-ingests across two runs took 4.20 to 6.72 s each and appended no
+evidence, and a one-word edit to prose wrote one to three sections, three when
+it fell in a section split into parts. Re-importing the same 4,090 memories
+with `pamin import` appended 4,090 evidence rows, 4 MB.
+
+| | `import` | `ingest` | difference | change |
+| --- | ---: | ---: | ---: | ---: |
+| evidence rows an unchanged re-run appended | 4,090 | 0 | −4,090 | −100% |
+| database growth from that re-run | +4.0 MiB | +0.0 MiB | −4.0 MiB | −100% |
+| that re-run, wall (n = 1 each) | 2.52 s | 4.20 s | +1.68 s | +66.4%, inside ingest's own 4.20–6.72 s spread |
+| cold, wall (n = 1 each) | 505.2 s | 565.1 s | +59.9 s | +11.9%, inside the 351.5–671.9 s spread |
+
+Only the first two rows are a difference that holds: they are counts, the same
+on every run. The timings are one sample each, and a cold ingest of this tree
+ran 351.5, 671.9 and 565.1 s on three runs of the day. Nor is the cold pair the
+same work: ingest keeps its topics out of the name index and owes them no
+backfill, where import files 4,090 path-and-heading names and backfills each.
+Server CPU excludes PostgreSQL's backends and includes whatever index upkeep
+the server ran during an arm. Accuracy over ingested documents is not measured
+-- no benchmark here holds long documents with questions about them -- and
+nothing on the search path changed. Conditions, every arm and the raw rows are
+in [benchmarks/results/ingest/](../benchmarks/results/ingest/ingest-cost-2026-10-23.md).
+
 **Above this, nothing is measured.** The largest corpus here is 131,924
 documents. A million and beyond is untested — not projected, not extrapolated,
 untested — and the descriptor count is the first thing that would break: this
