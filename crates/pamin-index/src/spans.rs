@@ -340,7 +340,7 @@ fn lines(content: &str, range: Range<usize>) -> Vec<Range<usize>> {
 /// The sentences of `range`, trimmed, by Unicode's sentence boundaries --
 /// which also break after every line ending, and after `。！？` in text
 /// written without spaces.
-fn sentences(content: &str, range: Range<usize>) -> Vec<Range<usize>> {
+pub(crate) fn sentences(content: &str, range: Range<usize>) -> Vec<Range<usize>> {
     let text = &content[range.clone()];
     let boundaries: Vec<usize> = SentenceSegmenter::new(SentenceBreakInvariantOptions::default())
         .segment_str(text)
@@ -356,7 +356,7 @@ fn sentences(content: &str, range: Range<usize>) -> Vec<Range<usize>> {
 /// pieces of near equal size that each fit -- `ceil(n / cap)` of them unless
 /// counting a piece on its own finds more tokens than it held in place -- so
 /// that no piece is a sliver.
-fn cut(
+pub(crate) fn cut(
     content: &str,
     range: Range<usize>,
     counter: &dyn TokenCount,
@@ -442,7 +442,7 @@ fn header(
 }
 
 /// `range` without the whitespace at either end.
-fn trim(content: &str, range: Range<usize>) -> Range<usize> {
+pub(crate) fn trim(content: &str, range: Range<usize>) -> Range<usize> {
     let text = &content[range.clone()];
     let start = range.start + (text.len() - text.trim_start().len());
     let end = (range.start + text.trim_end().len()).max(start);
@@ -454,13 +454,13 @@ fn blank(line: &str) -> bool {
 }
 
 /// Up to three spaces of indentation, as Markdown allows before a block.
-fn indented(line: &str) -> Option<&str> {
+pub(crate) fn indented(line: &str) -> Option<&str> {
     let rest = line.trim_start_matches(' ');
     (line.len() - rest.len() <= 3).then_some(rest)
 }
 
 /// The character and length of the fence `line` opens, if it opens one.
-fn fence(line: &str) -> Option<(char, usize)> {
+pub(crate) fn fence(line: &str) -> Option<(char, usize)> {
     let rest = indented(line)?;
     let marker = rest.chars().next().filter(|c| matches!(c, '`' | '~'))?;
     let length = rest.len() - rest.trim_start_matches(marker).len();
@@ -468,7 +468,7 @@ fn fence(line: &str) -> Option<(char, usize)> {
 }
 
 /// Whether `line` closes a fence opened with `opening`.
-fn closes(line: &str, (marker, length): (char, usize)) -> bool {
+pub(crate) fn closes(line: &str, (marker, length): (char, usize)) -> bool {
     indented(line).is_some_and(|rest| {
         let after = rest.trim_start_matches(marker);
         rest.len() - after.len() >= length && blank(after)
@@ -477,7 +477,7 @@ fn closes(line: &str, (marker, length): (char, usize)) -> bool {
 
 /// The text of the ATX heading `line` is, if it is one. Setext headings are
 /// not recognized.
-fn heading(line: &str) -> Option<&str> {
+pub(crate) fn heading(line: &str) -> Option<&str> {
     let rest = indented(line)?;
     let text = rest.trim_start_matches('#');
     let level = rest.len() - text.len();
@@ -525,13 +525,13 @@ fn turn(line: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::Passage;
 
     /// One token per run of ASCII that is not whitespace, and one per other
     /// character that is not: words in English, characters in Chinese.
-    struct Words;
+    pub(crate) struct Words;
 
     impl TokenCount for Words {
         fn offsets(&self, text: &str) -> Vec<Range<usize>> {
