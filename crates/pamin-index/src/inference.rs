@@ -2409,18 +2409,50 @@ fn requested(
 }
 
 fn gpu_providers() -> Vec<(Device, ExecutionProviderDispatch)> {
-    vec![
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        (Device::Cuda, ort::ep::CUDA::default().build()),
+    let providers = vec![
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         (Device::CoreMl, coreml().build()),
         #[cfg(target_os = "windows")]
         (Device::DirectMl, ort::ep::DirectML::default().build()),
-    ]
+    ];
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    let providers = {
+        let mut providers = providers;
+        if nvidia_driver(|node| node.exists()) {
+            providers.push((Device::Cuda, ort::ep::CUDA::default().build()));
+        }
+        providers
+    };
+    providers
+}
+
+/// Whether this host has an NVIDIA driver for CUDA to run on: a device node
+/// the driver creates, `/dev/nvidiactl`, or `/dev/dxg` where WSL 2 passes a
+/// GPU through. Without one, registering the CUDA provider can only fail,
+/// and it fails slowly: about 3 s on every server start on a CPU-only host,
+/// since a plan naming CUDA persists only with a GPU inventory read (q101).
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn nvidia_driver(exists: impl Fn(&Path) -> bool) -> bool {
+    ["/dev/nvidiactl", "/dev/dxg"]
+        .into_iter()
+        .any(|node| exists(Path::new(node)))
 }
 
 #[cfg(test)]
 mod tests {
+    /// CUDA is a candidate only where an NVIDIA driver made its device node:
+    /// natively, or through WSL 2.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn cuda_is_planned_only_with_an_nvidia_driver() {
+        use std::path::Path;
+        let only = |present: &'static str| move |node: &Path| node == Path::new(present);
+        assert!(super::nvidia_driver(only("/dev/nvidiactl")));
+        assert!(super::nvidia_driver(only("/dev/dxg")));
+        assert!(!super::nvidia_driver(only("/dev/dri/renderD128")));
+        assert!(!super::nvidia_driver(|_: &Path| false));
+    }
+
     /// A caller plans on the plugins it named and the built-in providers, and
     /// not on a plugin only another caller named.
     #[test]
