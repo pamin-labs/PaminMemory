@@ -1655,6 +1655,49 @@ and the conditions are retained for maintainers in the private submodule (see
 [internal-docs.md](internal-docs.md)), at
 `internal-docs/pamin-memory/research/2026-10-13/raw/t1-tokenizer-memory/`.
 
+**A cold server's first search, halved by loading models without repeated
+work.** Five changes take work off the model loads a server's first search
+waits on:
+- a kept download is hashed once, not on every load;
+- the reranker's side-by-side session loads with the model;
+- the executable is identified by its ELF build id instead of hashing it;
+- the built tokenizer trie is kept in `models/tokenizers/`;
+- sessions from different model directories load at once.
+
+Each was measured against its own parent. The merged result, measured against
+the main it started from:
+
+- **Entry point:** start `pamin-server`, run three `pamin search` calls, stop
+  it.
+- **Home:** a persisted home in the default layout, with downloads already
+  released.
+- **Host:** host A, 4 vCPU, ONNX Runtime 1.28.0, CPU EP, 4 threads.
+- **Arms:** main `8087b4d` against `032d544`, 30 rounds an arm in three
+  rotations.
+- **Warmth:** the process is cold every round and the page cache warm.
+
+| metric | before | after | abs diff | % change |
+| --- | ---: | ---: | ---: | ---: |
+| search output | identical | identical | 0 | 0% |
+| cold first search wall p50 s | 3.052 | 1.484 | −1.568 | −51.4% |
+| cold first search wall p95 s | 3.330 | 2.101 | −1.230 | −36.9% |
+| second search wall p50 ms (result cache) | 25.2 | 27.1 | +1.9 | +7.4%, ratio 1.074 [0.967, 1.172] |
+| server CPU user s per round | 3.550 | 2.780 | −0.770 | −21.7% |
+| server VmHWM MiB (process RSS) | 853.5 | 853.4 | −0.0 | −0.0% |
+| disk | — | +4.1 MB | +4.1 MB | the stored tokenizer tries |
+
+- **Ratio:** the median ratio of the first search is 0.486 [0.472, 0.527].
+- **Output:** byte-identical in 180 of 180 searches.
+- **Not measured:** the download-hash change does nothing on this layout,
+  where the downloads are already gone; on a home whose model cache is a link
+  or shared through `HF_HOME` it was measured on its own at −54.1%.
+- **Second search:** the second search's CI includes 1.0.
+- **Evidence:** the write-up and raw rows are in
+  `internal-docs/pamin-memory/research/2026-10-23/q108-model-load-stack.md`.
+- **Not done:** loading a model's tokenizer and its two sessions at once
+  was tried on top and not shipped. It gave a ratio of 1.017 [0.977, 1.095],
+  with system CPU doubled.
+
 **Where the rest of a search's memory was: glibc's heap arenas.** Since
 reranker passes run on threads of their own, glibc gave each contended thread
 an arena of its own (up to eight per core) and each arena kept what it freed.
