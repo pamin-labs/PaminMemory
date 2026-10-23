@@ -7,7 +7,7 @@ AI agents, coding assistants, research tools, and knowledge-heavy applications.
 
 It is designed to turn durable evidence into versioned knowledge that agents can retrieve through structure, meaning, relationships, and time. Instead of treating memory as a pile of extracted snippets, Påmin Memory keeps the source trail intact, tracks how facts evolve, and explains why each piece of context was selected.
 
-> **Early, and measured.** Retrieval, the version ledger, the relationship graph and the resident server all work and are benchmarked below. Source ingestion, page trees, curated notes and the MCP surface are not built. See [Scope](#scope).
+> **Early, and measured.** Retrieval, the version ledger, the relationship graph and the resident server all work and are benchmarked below, and Markdown and text files can be ingested a section at a time. Ingestion of other sources, page trees, curated notes and the MCP surface are not built. See [Scope](#scope).
 
 ## What It Does
 
@@ -176,6 +176,8 @@ pamin search "deployment" --json
 `pamin stop` shuts down the local database and the resident server. Both are deliberately left running between commands so an agent invoking the CLI repeatedly does not pay startup each time.
 
 `pamin grep` searches the evidence itself — verbatim, unranked, and including content the filter held and no index ever saw.
+
+`pamin ingest docs` records Markdown and text files as memories, one per section, named by the file's path and its headings; running it again records only the sections that changed.
 
 Every command, its options, and its JSON shape are in [docs/cli.md](docs/cli.md).
 
@@ -386,9 +388,13 @@ untested.
 ## Scope
 
 Everything the architecture above describes is built; what has been measured,
-and what has not, is stated in [Measured](#measured). Not built yet: source
-ingestion and page trees; curated notes and the session brief; passive
-optimization and forgetting; the MCP surface.
+and what has not, is stated in [Measured](#measured). Source ingestion is
+built for Markdown and plain-text files: `pamin ingest` cuts each one into a
+memory per section, sized for the reranker to read whole, and records only the
+sections that changed when it is run again. Not built yet: ingestion of code,
+chat logs and other formats, and page trees; removing a section a file no
+longer has; curated notes and the session brief; passive optimization and
+forgetting; the MCP surface.
 
 ### Known and not done
 
