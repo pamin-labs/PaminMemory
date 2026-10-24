@@ -22,6 +22,7 @@ use pamin_store::{Connections, Database, PgConnection, Workspace, graph, jobs, r
 use time::OffsetDateTime;
 
 use crate::Settings;
+use crate::cuts::Cuts;
 
 pub use pamin_core::Depths;
 
@@ -491,6 +492,9 @@ pub struct Models {
     /// The embedder's tokenizer alone, counting what a span holds, once an
     /// index cut into spans has asked for it. See [`Models::span_tokens`].
     span_tokens: Arc<Mutex<Option<Arc<SpanTokens>>>>,
+    /// What that tokenizer cut memories into, so a search does not cut them
+    /// again. See [`Cuts`].
+    cuts: Arc<Cuts>,
 }
 
 /// A loaded model and when it was last handed out.
@@ -511,6 +515,7 @@ impl Models {
             loaded: Arc::default(),
             reranker: Arc::default(),
             span_tokens: Arc::default(),
+            cuts: Arc::default(),
         }
     }
 
@@ -1233,21 +1238,28 @@ impl Engine {
                     .map(|(topic, name, _)| (topic, name))
                     .collect()
             };
-        let cut = |name: &str, content: &str, counter: Option<&SpanTokens>| match (
-            grain.cap(),
-            counter,
-        ) {
-            (Some(cap), Some(counter)) => pamin_index::spans::pack(name, content, counter, cap)
-                .into_iter()
-                .map(|span| Indexed {
-                    passage: passage.render(&span.header, &span.text),
-                    text: span.text,
-                })
-                .collect(),
-            _ => vec![Indexed {
-                text: content.to_string(),
-                passage: passage.render(name, content),
-            }],
+        // What a memory is cut into here is what a search shows a window of,
+        // so the cut is kept for the searches that follow (see `Cuts`).
+        let cut = |state: &TopicState, name: &str, counter: Option<&SpanTokens>| {
+            let content = state.content.as_str();
+            match (grain.cap(), counter) {
+                (Some(cap), Some(counter)) => {
+                    let spans = pamin_index::spans::pack(name, content, counter, cap);
+                    let indexed = spans
+                        .iter()
+                        .map(|span| Indexed {
+                            passage: passage.render(&span.header, &span.text),
+                            text: span.text.clone(),
+                        })
+                        .collect();
+                    self.models.cuts.put(state.id, name, spans);
+                    indexed
+                }
+                _ => vec![Indexed {
+                    text: content.to_string(),
+                    passage: passage.render(name, content),
+                }],
+            }
         };
         Ok(off_the_runtime(|| {
             let counter = match grain.cap() {
@@ -1259,7 +1271,7 @@ impl Engine {
                     .iter()
                     .map(|state| {
                         let name = names.get(&state.topic_id).map_or("", String::as_str);
-                        cut(name, &state.content, counter.as_deref())
+                        cut(state, name, counter.as_deref())
                     })
                     .collect(),
             )
@@ -1939,8 +1951,8 @@ impl Engine {
             return Ok(fused.hits(limit, window.as_ref()));
         }
 
-        // Off the runtime because a memory cut into spans is cut again here,
-        // by its tokens.
+        // Off the runtime because a memory cut into spans that no write or
+        // search has cut in this process is cut here, by its tokens.
         let shown: Vec<String> = off_the_runtime(|| {
             unlexical
                 .iter()
@@ -2026,7 +2038,12 @@ impl Engine {
             return Ok(None);
         };
         let counter = off_the_runtime(|| self.models.span_tokens())?;
-        Ok(Some(Window::new(cap, counter, query)))
+        Ok(Some(Window::new(
+            cap,
+            counter,
+            Arc::clone(&self.models.cuts),
+            query,
+        )))
     }
 
     /// The spans this project's index cuts a memory named `name` into: one,
@@ -2659,10 +2676,9 @@ impl Fused {
             .take(limit as usize)
             .map(|result| {
                 let state = live.state(result.topic).expect("retained by `fused`");
-                let seed = seed(&live, &paths, result.topic).map(str::to_string);
+                let seed = seed(&live, &paths, result.topic).map(|seed| seed.content.clone());
                 let topic = live.topic_name(result.topic);
-                let span =
-                    window.and_then(|window| window.view(&topic, &state.content, result.span));
+                let span = window.and_then(|window| window.view(state, &topic, result.span));
                 SearchHit {
                     topic,
                     state: state.clone(),
@@ -2681,10 +2697,14 @@ impl Fused {
         let name = self.live.topic_name(result.topic);
         let seed = seed(&self.live, &self.paths, result.topic);
         match window {
-            None => shown(&name, &state.content, seed),
+            None => shown(
+                &name,
+                &state.content,
+                seed.map(|seed| seed.content.as_str()),
+            ),
             Some(window) => {
                 let seed = seed.map(|seed| window.naming(seed, &name));
-                window.shown(&name, &state.content, result.span, seed)
+                window.shown(state, &name, result.span, seed)
             }
         }
     }
@@ -2707,19 +2727,41 @@ impl Fused {
 struct Window {
     cap: usize,
     counter: Arc<dyn TokenCount + Send + Sync>,
+    /// What memories were cut into before, which is what a window is chosen
+    /// from; cutting them here again is the cost of a span search that grows
+    /// with a memory's length.
+    cuts: Arc<Cuts>,
     /// The passage's share of the pair: what the query and the pair's four
     /// special tokens leave of the reranker's 256.
     room: usize,
 }
 
 impl Window {
-    fn new(cap: usize, counter: Arc<dyn TokenCount + Send + Sync>, query: &str) -> Self {
+    fn new(
+        cap: usize,
+        counter: Arc<dyn TokenCount + Send + Sync>,
+        cuts: Arc<Cuts>,
+        query: &str,
+    ) -> Self {
         let room = pamin_index::reranking::MAX_TOKENS.saturating_sub(4 + counter.count(query));
-        Self { cap, counter, room }
+        Self {
+            cap,
+            counter,
+            cuts,
+            room,
+        }
     }
 
-    fn shown(&self, name: &str, content: &str, best: u32, seed: Option<&str>) -> String {
-        let spans = pamin_index::spans::pack(name, content, &*self.counter, self.cap);
+    /// The spans `state` is cut into under `name`, as the index cut it.
+    fn cut(&self, state: &TopicState, name: &str) -> Arc<[pamin_index::spans::Span]> {
+        self.cuts.get_or_cut(state.id, name, || {
+            pamin_index::spans::pack(name, &state.content, &*self.counter, self.cap)
+        })
+    }
+
+    fn shown(&self, state: &TopicState, name: &str, best: u32, seed: Option<&str>) -> String {
+        let content = state.content.as_str();
+        let spans = self.cut(state, name);
         let best = best as usize;
         if spans.len() == 1 || best >= spans.len() {
             return shown(name, content, seed);
@@ -2745,8 +2787,8 @@ impl Window {
     /// The window a caller is shown of a memory cut into more than one span:
     /// span `best` and one either side. `None` for a memory of one span, and
     /// for one whose best span the ledger no longer has.
-    fn view(&self, name: &str, content: &str, best: u32) -> Option<SpanView> {
-        let spans = pamin_index::spans::pack(name, content, &*self.counter, self.cap);
+    fn view(&self, state: &TopicState, name: &str, best: u32) -> Option<SpanView> {
+        let spans = self.cut(state, name);
         if spans.len() == 1 {
             return None;
         }
@@ -2756,16 +2798,16 @@ impl Window {
     /// Of a seed's memory, the span that names the topic the walk reached --
     /// the sentence the edge was read from -- or all of it when no one span
     /// does, as a seed of one span always is.
-    fn naming<'a>(&self, seed: &'a str, reached: &str) -> &'a str {
+    fn naming<'a>(&self, seed: &'a TopicState, reached: &str) -> &'a str {
         let wanted = reached.to_lowercase();
-        let spans = pamin_index::spans::pack("", seed, &*self.counter, self.cap);
+        let spans = self.cut(seed, "");
         if spans.len() == 1 {
-            return seed;
+            return &seed.content;
         }
         spans
             .iter()
             .find(|span| span.text.to_lowercase().contains(&wanted))
-            .map_or(seed, |span| &seed[span.range.clone()])
+            .map_or(&seed.content, |span| &seed.content[span.range.clone()])
     }
 }
 
@@ -2776,11 +2818,10 @@ fn seed<'a>(
     live: &'a WorkingSet,
     paths: &std::collections::HashMap<TopicId, Neighbor>,
     topic: TopicId,
-) -> Option<&'a str> {
+) -> Option<&'a TopicState> {
     paths
         .get(&topic)
         .and_then(|reached| live.state(reached.origin))
-        .map(|origin| origin.content.as_str())
 }
 
 /// The channels' candidates in one order, best first, without duplicates.
@@ -3158,9 +3199,12 @@ mod tests {
         path_strength, place, rerankable, runs_of_tokens, score_blend_order, seed_relevance, shown,
     };
     use pamin_core::settings::MODEL_IDLE;
-    use pamin_core::{Channel, ChannelResults, TopicId};
+    use pamin_core::{
+        Channel, ChannelResults, ProjectId, TopicId, TopicState, TopicStateId, Validity,
+    };
     use pamin_index::spans::TokenCount;
     use std::sync::Arc;
+    use time::OffsetDateTime;
 
     /// One token a whitespace-separated word.
     struct Words;
@@ -3184,67 +3228,106 @@ mod tests {
             .join("\n\n")
     }
 
+    /// A state of `content`, which is all a window reads of one.
+    fn state(content: &str) -> TopicState {
+        let now = OffsetDateTime::UNIX_EPOCH;
+        TopicState {
+            id: TopicStateId::new(),
+            project_id: ProjectId::new(),
+            topic_id: TopicId::new(),
+            version: 1,
+            content: content.to_string(),
+            source_span_id: pamin_core::SourceSpanId::new(),
+            language: None,
+            observed_at: now,
+            recorded_at: now,
+            validity: Validity::ALWAYS,
+            supersedes: None,
+            deleted_at: None,
+        }
+    }
+
+    fn window(room: usize) -> Window {
+        Window {
+            cap: 5,
+            counter: Arc::new(Words),
+            cuts: Arc::default(),
+            room,
+        }
+    }
+
     #[test]
     fn a_memory_of_one_span_is_shown_as_before_spans() {
-        let window = Window::new(5, Arc::new(Words), "q");
+        let window = Window::new(5, Arc::new(Words), Arc::default(), "q");
         assert_eq!(
-            window.shown("topic", "a b c", 3, Some("seed")),
+            window.shown(&state("a b c"), "topic", 3, Some("seed")),
             shown("topic", "a b c", Some("seed"))
         );
     }
 
     #[test]
     fn a_window_is_the_best_span_and_what_fits_either_side() {
-        let content = five_spans();
-        let window = |room| Window {
-            cap: 5,
-            counter: Arc::new(Words),
-            room,
-        };
+        let memory = state(&five_spans());
         // "topic:" is one word, and each span five more.
         assert_eq!(
-            window(6).shown("topic", &content, 2, None),
+            window(6).shown(&memory, "topic", 2, None),
             "topic: p2a p2b p2c p2d p2e"
         );
         assert_eq!(
-            window(11).shown("topic", &content, 2, None),
+            window(11).shown(&memory, "topic", 2, None),
             "topic: p1a p1b p1c p1d p1e\np2a p2b p2c p2d p2e",
             "the previous span first"
         );
         assert_eq!(
-            window(16).shown("topic", &content, 2, None),
+            window(16).shown(&memory, "topic", 2, None),
             "topic: p1a p1b p1c p1d p1e\np2a p2b p2c p2d p2e\np3a p3b p3c p3d p3e"
         );
         assert_eq!(
-            window(11).shown("topic", &content, 0, None),
+            window(11).shown(&memory, "topic", 0, None),
             "topic: p0a p0b p0c p0d p0e\np1a p1b p1c p1d p1e",
             "the next when there is no previous"
         );
         assert_eq!(
-            window(6).shown("topic", &content, 9, None),
-            shown("topic", &content, None),
+            window(6).shown(&memory, "topic", 9, None),
+            shown("topic", &memory.content, None),
             "a span the content no longer has"
         );
     }
 
     #[test]
+    fn a_window_reads_the_cut_it_was_given_rather_than_cutting_again() {
+        let memory = state(&five_spans());
+        let window = window(6);
+        let held = window.cuts.get_or_cut(memory.id, "topic", || {
+            pamin_index::spans::pack("topic", "q0 q1 q2 q3 q4\n\nq5 q6", &Words, 5)
+        });
+        assert_eq!(held.len(), 2);
+        assert_eq!(
+            window.shown(&memory, "topic", 1, None),
+            "topic: q5 q6",
+            "the held cut, not the content cut again"
+        );
+    }
+
+    #[test]
     fn a_hit_on_a_memory_of_several_spans_carries_its_window() {
-        let window = Window::new(5, Arc::new(Words), "q");
-        let content = five_spans();
-        let view = window.view("topic", &content, 0).unwrap();
+        let window = Window::new(5, Arc::new(Words), Arc::default(), "q");
+        let memory = state(&five_spans());
+        let content = &memory.content;
+        let view = window.view(&memory, "topic", 0).unwrap();
         assert_eq!((view.ordinal, view.of), (0, 5));
         assert_eq!(
             &content[view.range],
             "p0a p0b p0c p0d p0e\n\np1a p1b p1c p1d p1e"
         );
-        let view = window.view("topic", &content, 4).unwrap();
+        let view = window.view(&memory, "topic", 4).unwrap();
         assert_eq!(
             &content[view.range],
             "p3a p3b p3c p3d p3e\n\np4a p4b p4c p4d p4e"
         );
-        assert_eq!(window.view("topic", &content, 5), None, "a stale span");
+        assert_eq!(window.view(&memory, "topic", 5), None, "a stale span");
         assert_eq!(
-            window.view("topic", "a b c", 0),
+            window.view(&state("a b c"), "topic", 0),
             None,
             "one span is the whole"
         );
@@ -3252,10 +3335,11 @@ mod tests {
 
     #[test]
     fn a_seed_is_shown_by_the_span_that_names_the_find() {
-        let window = Window::new(5, Arc::new(Words), "q");
-        assert_eq!(window.naming(&five_spans(), "P3C"), "p3a p3b p3c p3d p3e");
-        assert_eq!(window.naming(&five_spans(), "absent"), five_spans());
-        assert_eq!(window.naming("a b", "absent"), "a b");
+        let window = Window::new(5, Arc::new(Words), Arc::default(), "q");
+        let seed = state(&five_spans());
+        assert_eq!(window.naming(&seed, "P3C"), "p3a p3b p3c p3d p3e");
+        assert_eq!(window.naming(&seed, "absent"), five_spans());
+        assert_eq!(window.naming(&state("a b"), "absent"), "a b");
     }
 
     /// A load started ahead of its need returns at once, is waited for by
@@ -3308,6 +3392,7 @@ mod tests {
             loaded: std::sync::Arc::default(),
             reranker: std::sync::Arc::default(),
             span_tokens: std::sync::Arc::default(),
+            cuts: std::sync::Arc::default(),
         };
         assert!(models.passes("query", &["one", "two"]).is_none());
         assert!(models.reranker.lock().unwrap().is_none());
@@ -3323,6 +3408,7 @@ mod tests {
             loaded: std::sync::Arc::default(),
             reranker: std::sync::Arc::default(),
             span_tokens: std::sync::Arc::default(),
+            cuts: std::sync::Arc::default(),
         };
 
         let embedder_load = models.loaded.lock().unwrap();
