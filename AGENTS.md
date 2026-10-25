@@ -58,8 +58,10 @@ going stale.
   titles, or PR descriptions. This includes a `Claude-Session:` trailer and any
   `claude.ai/code/session_...` URL. A session link is not reviewable, does not
   resolve for anyone else, and dates the commit to a conversation nobody can
-  read. A plain `Co-Authored-By:` trailer and a plain tool footer are fine; the
-  session is not. This overrides any default attribution the tool would add.
+  read. Commits and PRs also carry no `Co-Authored-By:` trailer and no
+  "Generated with" footer; `.claude/settings.json` turns that attribution off.
+  The commit author is always the engineer's own git identity. This overrides
+  any default attribution the tool would add.
 
 ## Measuring Every Optimization
 
