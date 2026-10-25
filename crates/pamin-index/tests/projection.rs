@@ -1391,10 +1391,18 @@ fn every_channel_answers_the_same_whichever_way_keys_are_spelled() {
 
     let root = tempfile::tempdir().expect("temp dir");
     let legacy = root.path().join("legacy");
+    // Both at the grain the index written the old way keeps: what differs
+    // between the two has to be how keys are spelled and nothing else.
     let build = |dir: &std::path::Path| {
-        let index =
-            ProjectionIndex::open(dir, &legacy, VectorIndex::default(), Access::ReadWrite, 0)
-                .expect("open");
+        let index = ProjectionIndex::open_as(
+            dir,
+            &legacy,
+            VectorIndex::default(),
+            Access::ReadWrite,
+            0,
+            pamin_index::Grain::Topic,
+        )
+        .expect("open");
         // Sixty-four to a flush, as the cascade writes, with every eighth
         // batch rewriting a document written before.
         for (batch, chunk) in (0..DOCUMENTS).collect::<Vec<_>>().chunks(64).enumerate() {
