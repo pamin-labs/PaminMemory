@@ -12,6 +12,17 @@
 - When internal documentation changes are needed, update the private `InternalDocs` repository first, then update the public `internal-docs` submodule pointer.
 - Do not recreate local private planning folders in this repository.
 - Prefer `rtk <command>` for shell commands when `rtk` is available.
+- Keep one implementation per concern. Before adding logic that cuts, scores,
+  fuses, ranks, caches or stores, search `main` for an existing implementation
+  of the same concern and reuse or extend it through its interface; do not add
+  a parallel version with its own rules. Modules talk through narrow interfaces
+  so that a concern can change in one place.
+- Before opening a PR, rebase or merge onto the latest `main` and check whether
+  `main` gained anything overlapping your change while you worked. If it did,
+  rework the change to build on what landed, and say in the PR description what
+  you reused and what you removed.
+- Before starting a multi-PR feature, record it in the internal roadmap or
+  backlog so parallel work on the same concern is visible before code exists.
 
 ## Skills
 
