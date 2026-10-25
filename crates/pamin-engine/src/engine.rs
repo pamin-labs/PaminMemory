@@ -1798,6 +1798,29 @@ impl Engine {
         self.models.passes(query, documents)
     }
 
+    /// What a search for `query` showed the reranker of `hit`: the window
+    /// around its best span in an index cut into spans, with the span of its
+    /// seed that names it, or the whole memory and seed otherwise.
+    ///
+    /// Nothing in the product calls it. An evaluation that rescores or
+    /// rerenders what a search showed takes the text from here, so it scores
+    /// the pair the search scored rather than a rendering of its own.
+    #[doc(hidden)]
+    pub fn shown_to_reranker(&self, query: &str, hit: &SearchHit) -> Result<String> {
+        let window = self.window(query)?;
+        let content = hit.state.content.as_str();
+        Ok(match window {
+            None => shown(&hit.topic, content, hit.seed.as_deref()),
+            Some(window) => {
+                let seed = hit.seed.as_deref().map(|seed| {
+                    let spans = pamin_index::spans::pack("", seed, &*window.counter, window.cap);
+                    window.naming_in(seed, &spans, &hit.topic)
+                });
+                window.shown(&hit.state, &hit.topic, hit.result.span, seed)
+            }
+        })
+    }
+
     /// What this engine's reranker scores each of `documents` for `query`,
     /// in their order -- the model, settings and execution target its
     /// searches use -- or `None` if this process has not loaded it. Never
@@ -2042,6 +2065,7 @@ impl Engine {
             cap,
             counter,
             Arc::clone(&self.models.cuts),
+            Arc::clone(&self.segmenter),
             query,
         )))
     }
@@ -2731,6 +2755,10 @@ struct Window {
     /// from; cutting them here again is the cost of a span search that grows
     /// with a memory's length.
     cuts: Arc<Cuts>,
+    /// How a seed's span is found to name the topic the walk reached: as
+    /// mentions are derived, so the span shown is one an edge could have been
+    /// read from.
+    segmenter: Arc<pamin_index::segmentation::Segmenter>,
     /// The passage's share of the pair: what the query and the pair's four
     /// special tokens leave of the reranker's 256.
     room: usize,
@@ -2741,6 +2769,7 @@ impl Window {
         cap: usize,
         counter: Arc<dyn TokenCount + Send + Sync>,
         cuts: Arc<Cuts>,
+        segmenter: Arc<pamin_index::segmentation::Segmenter>,
         query: &str,
     ) -> Self {
         let room = pamin_index::reranking::MAX_TOKENS.saturating_sub(4 + counter.count(query));
@@ -2748,6 +2777,7 @@ impl Window {
             cap,
             counter,
             cuts,
+            segmenter,
             room,
         }
     }
@@ -2797,17 +2827,30 @@ impl Window {
 
     /// Of a seed's memory, the span that names the topic the walk reached --
     /// the sentence the edge was read from -- or all of it when no one span
-    /// does, as a seed of one span always is.
+    /// does, as a seed of one span always is. Named as a mention is: by token
+    /// sequence, so `cat` is not found inside `education` and
+    /// `deployment_pipeline` is found in "deployment pipeline".
     fn naming<'a>(&self, seed: &'a TopicState, reached: &str) -> &'a str {
-        let wanted = reached.to_lowercase();
-        let spans = self.cut(seed, "");
+        self.naming_in(&seed.content, &self.cut(seed, ""), reached)
+    }
+
+    /// [`naming`](Self::naming) among `spans`, what `content` was cut into.
+    fn naming_in<'a>(
+        &self,
+        content: &'a str,
+        spans: &[pamin_index::spans::Span],
+        reached: &str,
+    ) -> &'a str {
+        let wanted = self.segmenter.name_sequence(reached);
         if spans.len() == 1 {
-            return &seed.content;
+            return content;
         }
         spans
             .iter()
-            .find(|span| span.text.to_lowercase().contains(&wanted))
-            .map_or(&seed.content, |span| &seed.content[span.range.clone()])
+            .find(|span| {
+                pamin_index::segmentation::names(&self.segmenter.name_sequence(&span.text), &wanted)
+            })
+            .map_or(content, |span| &content[span.range.clone()])
     }
 }
 
@@ -3252,13 +3295,14 @@ mod tests {
             cap: 5,
             counter: Arc::new(Words),
             cuts: Arc::default(),
+            segmenter: Arc::default(),
             room,
         }
     }
 
     #[test]
     fn a_memory_of_one_span_is_shown_as_before_spans() {
-        let window = Window::new(5, Arc::new(Words), Arc::default(), "q");
+        let window = Window::new(5, Arc::new(Words), Arc::default(), Arc::default(), "q");
         assert_eq!(
             window.shown(&state("a b c"), "topic", 3, Some("seed")),
             shown("topic", "a b c", Some("seed"))
@@ -3311,7 +3355,7 @@ mod tests {
 
     #[test]
     fn a_hit_on_a_memory_of_several_spans_carries_its_window() {
-        let window = Window::new(5, Arc::new(Words), Arc::default(), "q");
+        let window = Window::new(5, Arc::new(Words), Arc::default(), Arc::default(), "q");
         let memory = state(&five_spans());
         let content = &memory.content;
         let view = window.view(&memory, "topic", 0).unwrap();
@@ -3335,11 +3379,22 @@ mod tests {
 
     #[test]
     fn a_seed_is_shown_by_the_span_that_names_the_find() {
-        let window = Window::new(5, Arc::new(Words), Arc::default(), "q");
+        let window = Window::new(5, Arc::new(Words), Arc::default(), Arc::default(), "q");
         let seed = state(&five_spans());
         assert_eq!(window.naming(&seed, "P3C"), "p3a p3b p3c p3d p3e");
         assert_eq!(window.naming(&seed, "absent"), five_spans());
         assert_eq!(window.naming(&state("a b"), "absent"), "a b");
+        let education = state("p0a p0b education p0d p0e\n\np1a p1b cat p1d p1e");
+        assert_eq!(
+            window.naming(&education, "cat"),
+            "p1a p1b cat p1d p1e",
+            "a name inside a longer word is not a mention"
+        );
+        let pipeline = state("p0a p0b p0c p0d p0e\n\np1a deployment pipeline p1d p1e");
+        assert_eq!(
+            window.naming(&pipeline, "deployment_pipeline"),
+            "p1a deployment pipeline p1d p1e"
+        );
     }
 
     /// A load started ahead of its need returns at once, is waited for by

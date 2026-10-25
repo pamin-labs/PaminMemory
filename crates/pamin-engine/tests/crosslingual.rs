@@ -1792,19 +1792,21 @@ async fn search_reaches_across_languages() {
         "XQuAD-R needs named passages; run pamin reindex for an older workspace"
     );
     println!("  index passage: named");
-    harness::index(
+    let expected = harness::index(
         &mut shape,
         "primary",
         &engine,
         workspace.root(),
-        corpus.sentences.len(),
+        corpus
+            .sentences
+            .iter()
+            .map(|sentence| (sentence.key.as_str(), sentence.text.as_str())),
     )
     .await;
     write_corpus(&engine, &corpus).await;
     let documents = engine.indexed_documents().expect("count documents") as usize;
     assert_eq!(
-        documents,
-        corpus.sentences.len(),
+        documents, expected,
         "the reused XQuAD-R index has extra or missing documents"
     );
     println!("  indexed documents: {documents}");
