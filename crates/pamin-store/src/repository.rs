@@ -1509,6 +1509,30 @@ pub async fn file_topic_names(
         .collect())
 }
 
+/// [`set_source_root`] for every source filed under `locators`, in one
+/// statement: for the sections an ingest found unchanged, which write nothing
+/// else, so that each records the tree it was last ingested from all the same.
+pub async fn set_roots_at(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    locators: &[String],
+    root: &str,
+) -> Result<()> {
+    if locators.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "UPDATE sources SET root = $3
+         WHERE project_id = $1 AND locator = ANY($2) AND root IS DISTINCT FROM $3",
+    )
+    .bind(project.0)
+    .bind(locators)
+    .bind(root)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
 /// Records `root` as the directory the file source was last ingested from.
 pub async fn set_source_root(
     executor: impl PgExecutor<'_>,
