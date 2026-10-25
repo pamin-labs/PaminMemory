@@ -742,12 +742,15 @@ async fn locomo_evidence_with_and_without_links() {
         .expect("open the engine");
         // Claimed before writing, so a reused project's index is checked
         // against the settings and plans that built it, not trusted.
-        harness::index(
+        let expected = harness::index(
             &mut shape,
             &conversation.id,
             &engine,
             workspace.root(),
-            conversation.turns.len(),
+            conversation
+                .turns
+                .iter()
+                .map(|turn| (turn.topic.as_str(), turn.record.as_str())),
         )
         .await;
         write(&engine, conversation).await;
@@ -756,7 +759,7 @@ async fn locomo_evidence_with_and_without_links() {
         // removed or half rebuilt; so count what the index holds.
         assert_eq!(
             engine.indexed_documents().expect("count the documents") as usize,
-            conversation.turns.len(),
+            expected,
             "{}: the index does not hold every turn",
             conversation.id
         );
