@@ -882,8 +882,9 @@ A memory is indexed as spans of at most 200 tokens, cut where its structure
 allows -- a Markdown heading, a turn in a conversation, a paragraph -- so a
 whole session or file can be written as one memory and still be found by a
 passage deep inside it. Each span is found by every channel on its own, a
-memory is ranked by its best span, and the reranker reads that span with one
-either side rather than the memory's opening. A memory short enough to be one
+memory is ranked by its best span, and the reranker reads that span with as
+many neighbours as fit its pair, nearer first, rather than the memory's
+opening. A memory short enough to be one
 span is indexed exactly as it always was.
 
 A hit on a memory of more than one span returns that window, not the whole
@@ -893,8 +894,8 @@ memory, and says which spans it is:
 "span": { "ordinal": 4, "of": 12, "header": "incident_2026_03 > Timeline", "start": 1104, "end": 3391 }
 ```
 
-The window is the best span and one either side, `start` and `end` its bytes
-in the memory. `pamin read <topic> --span 4 --around 2` reads further around
+The window is the best span and the neighbours, nearer first, that fit a
+budget of 600 tokens with it, `start` and `end` its bytes in the memory. `pamin read <topic> --span 4 --around 2` reads further around
 it, and `pamin read <topic>` reads all of it. A hit with no `span` field is a
 memory of one span, and its `content` is the whole memory.
 
