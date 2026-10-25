@@ -20,6 +20,7 @@ use pamin_engine::{Owed, Retired};
 use pamin_index::VectorIndex;
 use pamin_index::sections::{SEPARATOR, Section, sections};
 use pamin_index::spans::TokenCount;
+use pamin_store::repository::FileTopic;
 
 use crate::session::Session;
 
@@ -44,6 +45,20 @@ struct File {
     /// `README.md` are two files and not one.
     name: String,
     path: PathBuf,
+    /// The directory it is named from, as a path.
+    root: String,
+}
+
+/// A directory an ingest walked.
+#[derive(Debug)]
+struct Tree {
+    /// Named as a file under it is named, up to it.
+    name: String,
+    /// The directory its files are named from, as a path.
+    root: String,
+    /// Whether the walk read all of it. One that met an error cannot say a
+    /// file is gone from it rather than unreachable, and retires nothing.
+    whole: bool,
 }
 
 pub async fn execute(
@@ -64,15 +79,15 @@ pub async fn execute(
     for file in files {
         match std::fs::read(&file.path) {
             Ok(bytes) => match String::from_utf8(bytes) {
-                Ok(text) => texts.push((file.name, text)),
+                Ok(text) => texts.push((file.name, file.root, text)),
                 Err(_) => {
                     skipped.push(format!("{}: not UTF-8", file.path.display()));
-                    unread.push(file.name);
+                    unread.push((file.name, file.root));
                 }
             },
             Err(error) => {
                 skipped.push(format!("{}: {error}", file.path.display()));
-                unread.push(file.name);
+                unread.push((file.name, file.root));
             }
         }
     }
@@ -81,7 +96,7 @@ pub async fn execute(
     // too: both are XLM-R's. Loaded off the runtime, as every model load is.
     // Not loaded at all for an ingest that found nothing to read.
     let models = session.workspace().models_dir();
-    let cut: Vec<(String, Vec<Section>)> = tokio::task::spawn_blocking(move || {
+    let cut: Vec<(String, String, Vec<Section>)> = tokio::task::spawn_blocking(move || {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
@@ -90,9 +105,9 @@ pub async fn execute(
         Ok::<_, pamin_index::IndexError>(
             texts
                 .into_iter()
-                .map(|(name, text)| {
+                .map(|(name, root, text)| {
                     let sections = sections(&name, &text, counter);
-                    (name, sections)
+                    (name, root, sections)
                 })
                 .collect::<Vec<_>>(),
         )
@@ -102,15 +117,23 @@ pub async fn execute(
 
     let engine = session.engine(project, vector_index).await?;
 
-    let read: Vec<&str> = cut.iter().map(|(name, _)| name.as_str()).collect();
-    let cut: Vec<&Section> = cut.iter().flat_map(|(_, sections)| sections).collect();
-    let missing = missing(
+    let read: Vec<(String, String)> = cut
+        .iter()
+        .map(|(name, root, _)| (name.clone(), root.clone()))
+        .collect();
+    let cut: Vec<(&Section, &str)> = cut
+        .iter()
+        .flat_map(|(_, root, sections)| {
+            sections.iter().map(move |section| (section, root.as_str()))
+        })
+        .collect();
+    let gone = gone(
         &Looked {
             read: &read,
             unread: &unread,
             trees: &trees,
         },
-        &cut,
+        &cut.iter().map(|(section, _)| *section).collect::<Vec<_>>(),
         pamin_store::repository::file_topic_names(engine.database.pool(), engine.project).await?,
     );
 
@@ -125,11 +148,12 @@ pub async fn execute(
     let mut lagging = false;
     let mut since_check = 0;
     for chunk in cut.chunks(at_once) {
-        let recorded = futures::future::try_join_all(chunk.iter().map(|section| {
+        let recorded = futures::future::try_join_all(chunk.iter().map(|(section, root)| {
             engine.remember_section(
                 &section.name,
                 &section.content,
                 pamin_core::Validity::ALWAYS,
+                root,
             )
         }))
         .await?;
@@ -158,17 +182,18 @@ pub async fn execute(
     // the drain, which removes what retiring left for the projection.
     let mut removed = Vec::new();
     let mut kept = Vec::new();
-    for name in missing {
-        if args.keep_missing {
-            kept.push(name);
+    for gone in gone {
+        if args.keep_missing || !gone.retirable {
+            kept.push(gone.name);
             continue;
         }
-        match engine.retire_section(&name).await? {
-            Retired::Retired => removed.push(name),
-            Retired::Kept => kept.push(name),
+        match engine.retire_section(&gone.name, gone.current).await? {
+            Retired::Retired => removed.push(gone.name),
+            Retired::Kept | Retired::Changed => kept.push(gone.name),
             Retired::Absent => {}
         }
     }
+    kept.sort();
 
     engine.drain_cascade(Owed::WhatAMemoryNeeds).await?;
     engine.flush_what_is_applied().await?;
@@ -195,9 +220,8 @@ struct Found {
     files: Vec<File>,
     /// What was skipped, with why.
     skipped: Vec<String>,
-    /// The name of every directory walked, as a file under it is named up to
-    /// that directory.
-    trees: Vec<String>,
+    /// Every directory walked.
+    trees: Vec<Tree>,
 }
 
 /// Every file `paths` names, once each, in name order, and the ones skipped
@@ -220,9 +244,13 @@ fn files(paths: &[PathBuf]) -> Result<Found> {
             std::fs::canonicalize(path).with_context(|| format!("reading {}", path.display()))?;
         let root = root(&path);
         if path.is_dir() {
-            walk(&path, &root, &mut files, &mut skipped);
+            let whole = walk(&path, &root, &mut files, &mut skipped);
             match file(&path, &root) {
-                Some(tree) => trees.push(tree.name),
+                Some(tree) => trees.push(Tree {
+                    name: tree.name,
+                    root: tree.root,
+                    whole,
+                }),
                 None => skipped.push(format!("{}: name is not UTF-8", path.display())),
             }
         } else {
@@ -310,14 +338,22 @@ fn file(path: &Path, root: &Path) -> Option<File> {
     Some(File {
         name: components.join("/"),
         path: path.to_path_buf(),
+        root: root.to_str()?.to_string(),
     })
 }
 
-/// The files under `directory` with one of [`EXTENSIONS`], skipping hidden
+/// The files under `directory` with one of [`EXTENSIONS`] -- and whether the
+/// walk met no error, so that a file it did not find is one that is not
+/// there -- skipping hidden
 /// entries -- `.git` among them -- symbolic links, which could lead out of the
 /// tree or round in a circle, and whatever git ignores there. A repository's
 /// `node_modules/` or `target/` is full of Markdown nobody wrote for it.
-fn walk(directory: &Path, root: &Path, files: &mut BTreeSet<File>, skipped: &mut Vec<String>) {
+fn walk(
+    directory: &Path,
+    root: &Path,
+    files: &mut BTreeSet<File>,
+    skipped: &mut Vec<String>,
+) -> bool {
     let walk = ignore::WalkBuilder::new(directory)
         .hidden(true)
         .follow_links(false)
@@ -331,11 +367,13 @@ fn walk(directory: &Path, root: &Path, files: &mut BTreeSet<File>, skipped: &mut
         .git_exclude(true)
         .git_global(true)
         .build();
+    let mut whole = true;
     for entry in walk {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
                 skipped.push(error.to_string());
+                whole = false;
                 continue;
             }
         };
@@ -351,44 +389,94 @@ fn walk(directory: &Path, root: &Path, files: &mut BTreeSet<File>, skipped: &mut
             None => skipped.push(format!("{}: name is not UTF-8", path.display())),
         }
     }
+    whole
 }
 
-/// Where an ingest looked, by name.
+/// Where an ingest looked.
 struct Looked<'a> {
-    /// The files it read.
-    read: &'a [&'a str],
+    /// The files it read, by name and root.
+    read: &'a [(String, String)],
     /// The files it found and could not read.
-    unread: &'a [String],
+    unread: &'a [(String, String)],
     /// The directories it walked.
-    trees: &'a [String],
+    trees: &'a [Tree],
 }
 
-/// The names in `recorded` -- every section an ingest has put on the retrieval
-/// surface -- that are not among `cut` and that this ingest would have cut
-/// again: from a file it read, or from a file of a kind a walk reads, under a
-/// directory it walked, that is no longer there -- deleted, moved, or ignored
-/// now. A file it found and could not read is not where a section went
+/// A section an earlier ingest recorded that this one did not cut again.
+#[derive(Debug, PartialEq, Eq)]
+struct Gone {
+    name: String,
+    /// What its topic said when this ingest looked.
+    current: pamin_core::TopicStateId,
+    /// Whether this ingest can say it is gone rather than out of its reach: it
+    /// was cut from a file the ingest read, or from a file of a kind a walk
+    /// reads under a directory it walked whole.
+    retirable: bool,
+}
+
+/// The sections in `recorded` -- every section an ingest has put on the
+/// retrieval surface -- that are not among `cut` and that this ingest would
+/// have cut again: from a file it read, or from a file under a directory it
+/// walked that is no longer there -- deleted, moved, or ignored now.
+///
+/// Each from the root it was recorded from, so that another tree whose files
+/// are named alike -- another clone, another `notes` -- is not taken for this
+/// one. A file it found and could not read is not where a section went
 /// missing, and a file of another kind named on its own an earlier time is not
-/// one a walk would have found.
-fn missing(looked: &Looked, cut: &[&Section], recorded: Vec<String>) -> Vec<String> {
+/// one a walk would have found; neither is listed. Under a directory whose
+/// walk met an error, a file not found may only have been out of reach, so its
+/// sections are listed but not retirable.
+fn gone(looked: &Looked, cut: &[&Section], recorded: Vec<FileTopic>) -> Vec<Gone> {
     let present: BTreeSet<&str> = cut.iter().map(|section| section.name.as_str()).collect();
-    let mut missing: Vec<String> = recorded
-        .into_iter()
-        .filter(|name| !present.contains(name.as_str()))
-        .filter(|name| {
-            if looked.read.iter().any(|file| belongs(name, file)) {
-                return true;
-            }
+    let mut gone = Vec::new();
+    for topic in recorded {
+        if present.contains(topic.name.as_str()) {
+            continue;
+        }
+        let Some(root) = topic.root.as_deref() else {
+            continue;
+        };
+        let name = topic.name.as_str();
+        let retirable = if looked
+            .read
+            .iter()
+            .any(|(file, at)| at == root && belongs(name, file))
+        {
+            Some(true)
+        } else {
             let file = file_of(name);
-            looked.trees.iter().any(|tree| {
-                file.strip_prefix(tree.as_str())
-                    .is_some_and(|rest| rest.starts_with('/'))
-            }) && walked_kind(Path::new(file))
-                && !looked.unread.iter().any(|unread| unread == file)
-        })
-        .collect();
-    missing.sort();
-    missing
+            let unread = looked
+                .unread
+                .iter()
+                .any(|(unread, at)| at == root && unread == file);
+            if unread || !walked_kind(Path::new(file)) {
+                None
+            } else {
+                // Under every walked tree that holds it, and retirable if any
+                // of them was walked whole.
+                looked
+                    .trees
+                    .iter()
+                    .filter(|tree| {
+                        tree.root == root
+                            && file
+                                .strip_prefix(tree.name.as_str())
+                                .is_some_and(|rest| rest.starts_with('/'))
+                    })
+                    .map(|tree| tree.whole)
+                    .reduce(|left, right| left || right)
+            }
+        };
+        if let Some(retirable) = retirable {
+            gone.push(Gone {
+                name: topic.name,
+                current: topic.current,
+                retirable,
+            });
+        }
+    }
+    gone.sort_by(|left, right| left.name.cmp(&right.name));
+    gone
 }
 
 /// The name of the file the section named `name` was cut out of: its name up
@@ -507,61 +595,135 @@ mod tests {
         }
     }
 
+    const ROOT: &str = "/home/a/repo";
+
+    fn recorded(name: &str, root: &str) -> FileTopic {
+        FileTopic {
+            name: name.to_string(),
+            current: pamin_core::TopicStateId::new(),
+            root: Some(root.to_string()),
+        }
+    }
+
+    fn read(name: &str) -> (String, String) {
+        (name.to_string(), ROOT.to_string())
+    }
+
+    fn tree(name: &str, whole: bool) -> Tree {
+        Tree {
+            name: name.to_string(),
+            root: ROOT.to_string(),
+            whole,
+        }
+    }
+
+    fn listed(gone: &[Gone]) -> Vec<(&str, bool)> {
+        gone.iter()
+            .map(|gone| (gone.name.as_str(), gone.retirable))
+            .collect()
+    }
+
     /// Only the files this ingest read are compared: a section of a file left
-    /// out of the command is not missing, it is just not being looked at.
+    /// out of the command is not gone, it is just not being looked at.
     #[test]
-    fn missing_is_what_an_earlier_ingest_left_under_the_files_read() {
-        let kept = section("a.md › Kept");
-        let missing = missing(
+    fn gone_is_what_an_earlier_ingest_left_under_the_files_read() {
+        let kept = section("repo/a.md › Kept");
+        let gone = gone(
             &Looked {
-                read: &["a.md"],
+                read: &[read("repo/a.md")],
                 unread: &[],
                 trees: &[],
             },
             &[&kept],
             vec![
-                "a.md › Kept".to_string(),
-                "a.md › Gone".to_string(),
-                "b.md › Elsewhere".to_string(),
-                "manual_topic".to_string(),
+                recorded("repo/a.md › Kept", ROOT),
+                recorded("repo/a.md › Gone", ROOT),
+                recorded("repo/b.md › Elsewhere", ROOT),
             ],
         );
-        assert_eq!(missing, ["a.md › Gone"]);
+        assert_eq!(listed(&gone), [("repo/a.md › Gone", true)]);
     }
 
-    /// Under a directory it walked, an ingest also reports the sections of a
+    /// Under a directory it walked, an ingest also finds the sections of a
     /// file that is no longer there -- but not of one it found and could not
     /// read, nor of a file of a kind a walk does not read, which was named on
     /// its own before.
     #[test]
-    fn missing_includes_files_gone_from_a_walked_tree() {
+    fn gone_includes_files_missing_from_a_walked_tree() {
         let kept = section("repo/docs/a.md › Kept");
-        let recorded = [
-            "repo/docs/a.md › Kept",
-            "repo/docs/deleted.md › Usage",
-            "repo/docs/deleted.md #2 (3)",
-            "repo/docs/deep/moved.txt",
-            "repo/docs/unreadable.md › Kept",
-            "repo/docs/script.py › Comment",
-            "repo/docsier/other.md",
-            "repo/README.md › Top",
-            "manual_topic",
-        ];
-        let missing = missing(
+        let gone = gone(
             &Looked {
-                read: &["repo/docs/a.md"],
-                unread: &["repo/docs/unreadable.md".to_string()],
-                trees: &["repo/docs".to_string()],
+                read: &[read("repo/docs/a.md")],
+                unread: &[read("repo/docs/unreadable.md")],
+                trees: &[tree("repo/docs", true)],
             },
             &[&kept],
-            recorded.iter().map(|name| name.to_string()).collect(),
+            [
+                "repo/docs/a.md › Kept",
+                "repo/docs/deleted.md › Usage",
+                "repo/docs/deleted.md #2 (3)",
+                "repo/docs/deep/moved.txt",
+                "repo/docs/unreadable.md › Kept",
+                "repo/docs/script.py › Comment",
+                "repo/docsier/other.md",
+                "repo/README.md › Top",
+            ]
+            .iter()
+            .map(|name| recorded(name, ROOT))
+            .collect(),
         );
         assert_eq!(
-            missing,
+            listed(&gone),
             [
-                "repo/docs/deep/moved.txt",
-                "repo/docs/deleted.md #2 (3)",
-                "repo/docs/deleted.md › Usage"
+                ("repo/docs/deep/moved.txt", true),
+                ("repo/docs/deleted.md #2 (3)", true),
+                ("repo/docs/deleted.md › Usage", true)
+            ]
+        );
+    }
+
+    /// Another tree whose files are named alike -- another clone of `repo`
+    /// somewhere else -- is not this one: its sections are not gone.
+    #[test]
+    fn another_tree_of_the_same_name_is_not_looked_at() {
+        let gone = gone(
+            &Looked {
+                read: &[read("repo/a.md")],
+                unread: &[],
+                trees: &[tree("repo", true)],
+            },
+            &[],
+            vec![
+                recorded("repo/a.md › Here", ROOT),
+                recorded("repo/a.md › There", "/home/b/repo"),
+                recorded("repo/b.md › There", "/home/b/repo"),
+            ],
+        );
+        assert_eq!(listed(&gone), [("repo/a.md › Here", true)]);
+    }
+
+    /// A walk that met an error cannot tell a file that is gone from one it
+    /// could not reach: its sections are listed and not retirable, unless a
+    /// file the ingest read says otherwise.
+    #[test]
+    fn a_walk_that_met_an_error_retires_nothing_it_did_not_read() {
+        let gone = gone(
+            &Looked {
+                read: &[read("repo/docs/a.md")],
+                unread: &[],
+                trees: &[tree("repo/docs", false)],
+            },
+            &[],
+            vec![
+                recorded("repo/docs/a.md › Old heading", ROOT),
+                recorded("repo/docs/locked/b.md › Usage", ROOT),
+            ],
+        );
+        assert_eq!(
+            listed(&gone),
+            [
+                ("repo/docs/a.md › Old heading", true),
+                ("repo/docs/locked/b.md › Usage", false)
             ]
         );
     }
@@ -760,13 +922,16 @@ mod tests {
         let Found {
             files: found,
             skipped,
-            ..
+            trees,
         } = files(&[root.to_path_buf()]).expect("files");
         std::fs::set_permissions(root.join("locked"), std::fs::Permissions::from_mode(0o755))
             .unwrap();
         assert_eq!(found.len(), 1);
         if !readable {
             assert_eq!(skipped.len(), 1, "{skipped:?}");
+            // And the tree is not taken to be whole, so nothing under the
+            // directory that could not be read is retired as gone.
+            assert!(!trees[0].whole);
         }
     }
 }
