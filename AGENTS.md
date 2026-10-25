@@ -7,9 +7,9 @@
 
 
 - Before making changes, branch from the latest `main` with a concise name that matches the intended PR.
-- Sync submodules and read the relevant `internal-docs/pamin-memory/` materials before implementing PaminMemory changes.
+- Read the relevant `pamin-memory/` materials in InternalDocs before implementing PaminMemory changes. InternalDocs is a sibling clone at `$PAMIN_LABS_DEV_INTERNAL_DOCS` (default `../InternalDocs`); pull it first. See [docs/internal-docs.md](docs/internal-docs.md).
 - Keep private planning, monetization, strategy, and sensitive internal notes out of public files.
-- When internal documentation changes are needed, update the private `InternalDocs` repository first, then update the public `internal-docs` submodule pointer.
+- When internal documentation changes are needed, open a PR in the private `InternalDocs` repository. This repository keeps no pointer to it; cite InternalDocs evidence with SHA permalinks (`https://github.com/Pamin-Labs/InternalDocs/blob/<sha>/<path>`).
 - Do not recreate local private planning folders in this repository.
 - Prefer `rtk <command>` for shell commands when `rtk` is available.
 - Keep one implementation per concern. Before adding logic that cuts, scores,
