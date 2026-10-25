@@ -439,8 +439,9 @@ measurement scope. Retaining raw evidence does not override confidentiality.
 
 Private planning, strategy, sensitive internal notes and experiments using
 private user/workspace data belong in `InternalDocs`, not public files or PR
-links. Update that repository first, then the public submodule pointer. Public
-PRs describe the pointer change without copying the private note's contents.
+links. Read it from the sibling clone at `$PAMIN_LABS_DEV_INTERNAL_DOCS`
+(default `../InternalDocs`) and change it through its own PRs. Public PRs cite
+a private note by SHA permalink without copying its contents.
 For private-input measurements, publish only an approved non-sensitive summary
 or a public/synthetic reproduction; state when the raw data cannot be public.
 
