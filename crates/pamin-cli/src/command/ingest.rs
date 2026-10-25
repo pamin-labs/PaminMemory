@@ -16,12 +16,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use pamin_client::command::ingest::{Args, Ingested};
+use pamin_core::EdgeKind;
 use pamin_engine::{Owed, Retired};
 use pamin_index::VectorIndex;
-use pamin_core::EdgeKind;
-use pamin_index::sections::{
-    Placed, SEPARATOR, Section, Unnamed, named, number, outline, unnamed,
-};
+use pamin_index::sections::{Placed, SEPARATOR, Section, Unnamed, named, number, outline, unnamed};
 use pamin_index::spans::TokenCount;
 use pamin_store::repository::FileTopic;
 
@@ -205,7 +203,10 @@ pub async fn execute(
 
     // After the sections are recorded, so each has the state its edges cite,
     // and before retiring, whose sections the outline no longer names.
-    let sections: Vec<String> = cut.iter().map(|(section, _)| section.name.clone()).collect();
+    let sections: Vec<String> = cut
+        .iter()
+        .map(|(section, _)| section.name.clone())
+        .collect();
     engine.restate_outline(&sections, &outline).await?;
 
     // After the sections are recorded, so a section that moved within a file
@@ -272,9 +273,11 @@ async fn numbered(
                 .map(|topic| topic.name.clone())
                 .collect();
             let repeated = bases.len() < sections.len();
-            let renumbered = earlier
-                .iter()
-                .any(|name| bases.iter().any(|base| number(name, base).is_some_and(|n| n > 1)));
+            let renumbered = earlier.iter().any(|name| {
+                bases
+                    .iter()
+                    .any(|base| number(name, base).is_some_and(|n| n > 1))
+            });
             if repeated || renumbered {
                 earlier
             } else {

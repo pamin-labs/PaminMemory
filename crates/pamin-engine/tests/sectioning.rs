@@ -504,10 +504,20 @@ async fn run(
         );
     }
     // The premise of every score below: the project holds this arm's memories,
-    // all of them, and nothing else.
+    // all of them, and nothing else -- one document for each span the index
+    // cuts them into, which `Engine::cut` says.
+    let mut spans = 0;
+    for (_, sections) in &cut {
+        for section in sections {
+            spans += engine
+                .cut(&section.name, &section.content)
+                .expect("cut a section")
+                .len();
+        }
+    }
     assert_eq!(
         engine.indexed_documents().expect("count documents") as usize,
-        memories,
+        spans,
         "{label}: the index does not hold the arm's memories"
     );
 

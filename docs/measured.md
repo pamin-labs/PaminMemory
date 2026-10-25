@@ -2160,14 +2160,33 @@ ran 351.5, 671.9 and 565.1 s on three runs of the day. Nor is the cold pair the
 same work: ingest keeps its topics out of the name index and owes them no
 backfill, where import files 4,090 path-and-heading names and backfills each.
 Server CPU excludes PostgreSQL's backends and includes whatever index upkeep
-the server ran during an arm. Accuracy over ingested documents is not measured
--- no benchmark here holds long documents with questions about them -- and
-nothing on the search path changed. Conditions, every arm and the raw rows are
+the server ran during an arm. Accuracy over ingested documents is measured on
+Qasper below; nothing on the search path changed. Conditions, every arm and the raw rows are
 in [benchmarks/results/ingest/](../benchmarks/results/ingest/ingest-cost-2026-10-23.md). These were
 taken on an earlier cut that also split a section longer than the reranker's
 window into parts, each its own memory; ingest now records one memory per
 heading section and leaves size to the index's spans, so the section count and
 the timings above describe that earlier cut and are not re-measured.
+
+**Heading sections find more evidence per hit and less per token read than
+sized ones.** On 308 Qasper questions over 100 papers, through
+`search_reranked` at the shipped defaults, sections cut at headings alone
+against the earlier cut that sized each to about 200 tokens:
+
+- **At rank k.** covered@1 is +54.3% (0.1537 → 0.2372) and covered@10
+  +13.8% (0.4761 → 0.5420), both p = 0.0001 over papers.
+- **Per hit.** Each hit returns 2.4 times the text, because a hit shows its
+  best span and one either side.
+- **At a fixed read.** Read to the same 1,000 tokens, the sized cut finds
+  more: −10.8% for heading sections, p = 0.010. The gain at rank k is
+  therefore the view's width more than the cut.
+- **Cost.** Heading sections make a 63.5% smaller index, ingest 10.9% faster,
+  and search 6–7% slower at p50 and p95 over three rounds.
+- **Against whole files.** Heading sections find more in a fixed read (+37.4%)
+  while returning 28.4% less text.
+
+Conditions, both tables and the raw rows:
+[benchmarks/results/ingest/](../benchmarks/results/ingest/qasper-sections-2026-10-25.md).
 
 **Above this, nothing is measured.** The largest corpus here is 131,924
 documents. A million and beyond is untested — not projected, not extrapolated,

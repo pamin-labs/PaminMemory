@@ -1,0 +1,29 @@
+
+/// SCRATCH: the sized cut this commit ships, for every paper of the split, so
+/// a harness at a later commit can index it as an arm.
+#[test]
+#[ignore = "scratch"]
+fn scratch_dump_sized() {
+    let (papers, _) = corpus();
+    let workspace = Workspace::at(&harness::eval_home());
+    let counter = SpanTokens::load(&workspace.models_dir()).expect("BGE-M3's tokenizer");
+    let out: BTreeMap<String, Vec<(String, String)>> = papers
+        .iter()
+        .map(|paper| {
+            (
+                paper.id.clone(),
+                Arm::Shipped
+                    .cut(paper, &counter)
+                    .into_iter()
+                    .map(|section| (section.name, section.content))
+                    .collect(),
+            )
+        })
+        .collect();
+    std::fs::write(
+        std::env::var("SIZED_OUT").expect("SIZED_OUT"),
+        serde_json::to_vec(&out).expect("serialize"),
+    )
+    .expect("write");
+    println!("dumped {} papers", out.len());
+}

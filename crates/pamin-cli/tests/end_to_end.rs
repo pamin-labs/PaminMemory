@@ -2458,8 +2458,10 @@ fn an_ingested_file_is_found_by_section_and_re_ingested_by_change() {
         "an unchanged section was recorded as held: {again}"
     );
 
+    // Mentions only: the section's outline relates it to the section above
+    // it, which a walk from `oncall_rota` would reach in two hops.
     let rota_neighbors = |cli: &Cli| -> Vec<String> {
-        cli.json(&["neighbors", "oncall_rota"])["neighbors"]
+        cli.json(&["neighbors", "oncall_rota", "--kind", "mentions"])["neighbors"]
             .as_array()
             .expect("neighbors")
             .iter()
@@ -2569,7 +2571,10 @@ fn a_section_inserted_above_its_twin_leaves_the_twin_its_name() {
     let once = cli.json(&["ingest", notes.to_str().expect("a path")]);
     assert_eq!(once["written"], 1, "{once}");
 
-    put(&notes, &format!("# Notes\n\n{second}\n\n# Notes\n\n{first}\n"));
+    put(
+        &notes,
+        &format!("# Notes\n\n{second}\n\n# Notes\n\n{first}\n"),
+    );
     let twice = cli.json(&["ingest", notes.to_str().expect("a path")]);
     assert_eq!(twice["sections"], 2, "{twice}");
     assert_eq!(twice["written"], 1, "the twin was rewritten: {twice}");
@@ -2580,7 +2585,11 @@ fn a_section_inserted_above_its_twin_leaves_the_twin_its_name() {
     assert_eq!(kept["version"], 1, "{kept}");
     assert_eq!(kept["content"], format!("# Notes\n\n{first}"), "{kept}");
     let inserted = cli.json(&["read", &format!("{name} #2")]);
-    assert_eq!(inserted["content"], format!("# Notes\n\n{second}"), "{inserted}");
+    assert_eq!(
+        inserted["content"],
+        format!("# Notes\n\n{second}"),
+        "{inserted}"
+    );
 }
 
 /// A file's sections are related as its outline relates them: each is
@@ -2626,19 +2635,22 @@ fn a_files_outline_relates_its_sections() {
     assert_eq!(first["sections"], 3, "{first}");
 
     let edges = |topic: &str| -> Vec<(String, String, String)> {
-        let mut edges: Vec<(String, String, String)> = cli
-            .json(&["neighbors", topic, "--depth", "1"])["neighbors"]
-            .as_array()
-            .expect("neighbors")
-            .iter()
-            .map(|neighbor| {
-                (
-                    neighbor["asserted_from"].as_str().expect("from").to_string(),
-                    neighbor["edge"].as_str().expect("an edge").to_string(),
-                    neighbor["asserted_to"].as_str().expect("to").to_string(),
-                )
-            })
-            .collect();
+        let mut edges: Vec<(String, String, String)> =
+            cli.json(&["neighbors", topic, "--depth", "1"])["neighbors"]
+                .as_array()
+                .expect("neighbors")
+                .iter()
+                .map(|neighbor| {
+                    (
+                        neighbor["asserted_from"]
+                            .as_str()
+                            .expect("from")
+                            .to_string(),
+                        neighbor["edge"].as_str().expect("an edge").to_string(),
+                        neighbor["asserted_to"].as_str().expect("to").to_string(),
+                    )
+                })
+                .collect();
         edges.sort();
         edges
     };
@@ -2648,8 +2660,16 @@ fn a_files_outline_relates_its_sections() {
     assert_eq!(
         edges(&canary_name),
         [
-            (canary_name.clone(), "part_of".to_string(), deploy_name.clone()),
-            (canary_name.clone(), "related_to".to_string(), rollback_name.clone()),
+            (
+                canary_name.clone(),
+                "part_of".to_string(),
+                deploy_name.clone()
+            ),
+            (
+                canary_name.clone(),
+                "related_to".to_string(),
+                rollback_name.clone()
+            ),
         ]
     );
 
@@ -2659,16 +2679,31 @@ fn a_files_outline_relates_its_sections() {
     assert_eq!(edges(&canary_name).len(), 2);
 
     // Rollback gone: its edges, and the one to it, closed.
-    put(&ops, &format!("# Deploy\n\n{deploy}\n\n## Canary\n\n{canary}\n"));
+    put(
+        &ops,
+        &format!("# Deploy\n\n{deploy}\n\n## Canary\n\n{canary}\n"),
+    );
     let fewer = cli.json(&["ingest", ops.to_str().expect("a path")]);
-    assert_eq!(fewer["removed"], serde_json::json!([rollback_name]), "{fewer}");
+    assert_eq!(
+        fewer["removed"],
+        serde_json::json!([rollback_name]),
+        "{fewer}"
+    );
     assert_eq!(
         edges(&canary_name),
-        [(canary_name.clone(), "part_of".to_string(), deploy_name.clone())]
+        [(
+            canary_name.clone(),
+            "part_of".to_string(),
+            deploy_name.clone()
+        )]
     );
     assert_eq!(
         edges(&deploy_name),
-        [(canary_name.clone(), "part_of".to_string(), deploy_name.clone())],
+        [(
+            canary_name.clone(),
+            "part_of".to_string(),
+            deploy_name.clone()
+        )],
         "the removed section's own edge was left open"
     );
 }

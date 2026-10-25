@@ -209,13 +209,12 @@ pub enum Placed {
 /// heading above it sits under the file's first section, unless it is that
 /// section.
 pub fn outline(bases: &[&str]) -> Vec<(usize, usize, Placed)> {
-    let first: std::collections::HashMap<&str, usize> =
-        bases
-            .iter()
-            .enumerate()
-            .rev()
-            .map(|(at, base)| (*base, at))
-            .collect();
+    let first: std::collections::HashMap<&str, usize> = bases
+        .iter()
+        .enumerate()
+        .rev()
+        .map(|(at, base)| (*base, at))
+        .collect();
     let parent: Vec<Option<usize>> = bases
         .iter()
         .enumerate()
@@ -1028,7 +1027,10 @@ mod tests {
             tagged("a", 60)
         );
         // Without matching, the names would change hands.
-        assert_eq!(under(&sections("f.md", &after, &Words), "a"), "f.md › Notes #2");
+        assert_eq!(
+            under(&sections("f.md", &after, &Words), "a"),
+            "f.md › Notes #2"
+        );
 
         let named = again(&before, &after);
         assert_eq!(under(&named, "a"), "f.md › Notes");
@@ -1113,9 +1115,9 @@ mod tests {
     #[test]
     fn a_section_is_under_the_nearest_heading_with_a_section() {
         let bases = [
-            "f.md",                 // 0: what comes before the first heading
-            "f.md › Deploy",        // 1
-            "f.md › Deploy › Canary", // 2
+            "f.md",                     // 0: what comes before the first heading
+            "f.md › Deploy",            // 1
+            "f.md › Deploy › Canary",   // 2
             "f.md › Deploy › Rollback", // 3
             "f.md › Deploy › Rollback", // 4: `Rollback #2`
             // `Oncall` had nothing under it and joined `Rota`.
@@ -1145,7 +1147,11 @@ mod tests {
         let placed = outline(&["f.md › Intro", "f.md › Usage", "f.md › Usage › Flags"]);
         assert!(placed.contains(&(1, 0, Placed::Under)));
         assert!(placed.contains(&(2, 1, Placed::Under)));
-        assert!(!placed.iter().any(|(from, _, kind)| *from == 0 && *kind == Placed::Under));
+        assert!(
+            !placed
+                .iter()
+                .any(|(from, _, kind)| *from == 0 && *kind == Placed::Under)
+        );
         assert!(outline(&["f.md"]).is_empty());
     }
 
