@@ -1310,6 +1310,41 @@ impl Engine {
         Ok(Some((verdict, recorded)))
     }
 
+    /// Takes a section of a file off the retrieval surface, because the file
+    /// no longer has it: every version of its topic soft deleted, its document
+    /// and the edges its content derived owed removal. History, evidence and
+    /// the topic's name stay, and ingesting the section again brings it back.
+    ///
+    /// Only a topic whose every source is a file's. One somebody also wrote
+    /// by hand is theirs as well as the file's, and is left alone, as is a
+    /// name with no topic or nothing surviving under it.
+    pub async fn retire_section(&self, topic: &str) -> Result<Retired> {
+        let mut transaction = self.database.pool().begin().await?;
+
+        let Some(locked) = repository::lock_topic(&mut transaction, self.project, topic).await?
+        else {
+            return Ok(Retired::Absent);
+        };
+        if repository::source_at(
+            &mut *transaction,
+            self.project,
+            &locator(SourceKind::Manual, topic),
+        )
+        .await?
+        {
+            return Ok(Retired::Kept);
+        }
+        let retired =
+            repository::retire_topic(&mut transaction, self.project, locked.topic.id).await?;
+        transaction.commit().await?;
+
+        Ok(if retired {
+            Retired::Retired
+        } else {
+            Retired::Absent
+        })
+    }
+
     /// The rest of a memory once the filter has judged it: its language, and
     /// the transaction.
     async fn record(
@@ -2444,6 +2479,17 @@ pub struct Write<'a> {
     pub language_confidence: Option<f32>,
     pub observed_at: OffsetDateTime,
     pub validity: Validity,
+}
+
+/// What [`Engine::retire_section`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Retired {
+    /// Taken off the retrieval surface.
+    Retired,
+    /// Left on it, because somebody also wrote it by hand.
+    Kept,
+    /// Nothing under that name was on it.
+    Absent,
 }
 
 /// What a write left in the ledger.

@@ -995,6 +995,52 @@ pub async fn soft_delete_topic_state(
     Ok(true)
 }
 
+/// Soft deletes every surviving version of a topic, so that it stands for
+/// nothing: off the retrieval surface, its pointer cleared, and the work that
+/// removes its document from the projection and closes the edges its content
+/// derived owed in the same transaction. Returns whether anything survived to
+/// delete.
+///
+/// What [`soft_delete_topic_state`] does to one version, done to all of them --
+/// for a memory whose source no longer says anything at all, which is what a
+/// section of a file becomes when the file stops having it. The rows and their
+/// evidence stay, so the history reads as it did; a later write to the topic
+/// appends a version as any write does, and brings it back.
+pub async fn retire_topic(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    topic: TopicId,
+) -> Result<bool> {
+    sqlx::query("SELECT id FROM topics WHERE id = $1 FOR UPDATE")
+        .bind(topic.0)
+        .execute(&mut *connection)
+        .await?;
+
+    let affected = sqlx::query(
+        "UPDATE topic_states SET deleted_at = $2
+         WHERE topic_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(topic.0)
+    .bind(OffsetDateTime::now_utc())
+    .execute(&mut *connection)
+    .await?;
+
+    if affected.rows_affected() == 0 {
+        return Ok(false);
+    }
+
+    point_at(connection, topic, None).await?;
+    crate::jobs::enqueue_all(
+        &mut *connection,
+        project,
+        &[JobKind::SyncTopicIndex, JobKind::DeriveMentions],
+        Some(topic.0),
+    )
+    .await?;
+
+    Ok(true)
+}
+
 /// Recomputes every topic's current-state pointer from the ledger.
 ///
 /// Returns how many topics were pointing somewhere else. Nothing should be, and
@@ -1030,6 +1076,21 @@ pub async fn repair_current_state_pointers(pool: &PgPool, project: ProjectId) ->
     .await?;
 
     Ok(repaired.rows_affected())
+}
+
+/// Whether any evidence is filed under `locator`.
+pub async fn source_at(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    locator: &str,
+) -> Result<bool> {
+    let found: Option<(i32,)> =
+        sqlx::query_as("SELECT 1 FROM sources WHERE project_id = $1 AND locator = $2")
+            .bind(project.0)
+            .bind(locator)
+            .fetch_optional(executor)
+            .await?;
+    Ok(found.is_some())
 }
 
 /// The content hash of the newest evidence filed under `locator`, if any.

@@ -12,7 +12,7 @@ mod settings;
 
 pub use cascade::{Drained, Owed};
 pub use engine::{
-    Depths, Engine, Models, RERANK_FUSION, Rebuilt, Recorded, SearchHit, Write, place, rerankable,
-    score_blend_order,
+    Depths, Engine, Models, RERANK_FUSION, Rebuilt, Recorded, Retired, SearchHit, Write, place,
+    rerankable, score_blend_order,
 };
 pub use settings::Settings;
