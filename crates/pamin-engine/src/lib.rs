@@ -14,7 +14,6 @@ mod settings;
 pub use cascade::{Drained, Owed};
 pub use engine::{
     Depths, Engine, Models, RERANK_FUSION, Rebuilt, Recorded, Retired, SearchHit, SpanView, Write,
-    place,
-    rerankable, score_blend_order,
+    file_locator, place, rerankable, score_blend_order,
 };
 pub use settings::Settings;

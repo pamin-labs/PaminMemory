@@ -708,11 +708,13 @@ Only what the command could see is retired. A file it found and could not read
 is not where a section went missing, and its sections stay. Under a directory
 whose walk met an error — a subdirectory it could not open — a file it did not
 find may only have been out of reach, so its sections are listed under
-`missing` and stay. A section is retired only from the tree it was last
+`missing` and stay; so are those of a file the walk skipped that is still on
+disk, hidden or ignored by git and named on its own some earlier time. A section is retired only from the tree it was last
 ingested from: each file's sections record that directory, so another tree
 whose files are named alike, another clone or another `notes`, is not taken
-for this one. And a section that changed after the command looked, because
-another ingest found it back in its file meanwhile, is left as it now is.
+for this one. And a section another ingest wrote again after this one looked —
+found back in its file with new text — is left as it now is; one found back
+unchanged is retired, and the next ingest brings it back.
 
 `--keep-missing` only lists such sections, under `missing`, and leaves them
 searchable. So does any section somebody also wrote by hand with `pamin write`,
@@ -726,7 +728,8 @@ directory was renamed or checked out under another name is recorded afresh
 under its new names, and its old sections stay searchable and are listed
 nowhere. And two directories of the same name ingested by separate commands
 name their files alike, so where both have a file of the same name, each
-records that file's sections as new versions of the other's.
+records that file's sections as new versions of the other's wherever the two
+differ, and the sections remember whichever tree was ingested last.
 
 Ingested topics are kept out of the name index the graph channel matches
 memories against. A path and its headings are a name no memory spells out in
