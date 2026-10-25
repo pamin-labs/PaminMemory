@@ -700,10 +700,12 @@ yet. A section cut down below the filter's eight characters is likewise left
 saying what it said, and for as long as that lasts it is held on every ingest,
 counted under `held`, and its evidence recorded again each time.
 
-`missing` only looks under the files the command read. A file that moved, or a
-repository whose directory was renamed or checked out under another name, is
-recorded afresh under its new names, and its old sections stay searchable
-without being listed anywhere. And two directories of the same name ingested
+`missing` looks under the files the command read and the directories it
+walked: a file deleted from a directory, moved out of it or now ignored by git
+has its sections listed there, though a file the command found and could not
+read does not. Outside what the command named, nothing is looked at, so a
+repository whose directory was renamed or checked out under another name is
+recorded afresh under its new names, and the old ones are listed nowhere. And two directories of the same name ingested
 by separate commands outside any repository name their files alike, so the
 second records its sections as new versions of the first's.
 

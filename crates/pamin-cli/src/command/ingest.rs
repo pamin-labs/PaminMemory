@@ -52,16 +52,28 @@ pub async fn execute(
     vector_index: VectorIndex,
     args: Args,
 ) -> Result<Ingested> {
-    let (files, mut skipped) = files(&args.paths)?;
+    let Found {
+        files,
+        mut skipped,
+        trees,
+    } = files(&args.paths)?;
 
     let mut texts = Vec::new();
+    // Found and not read: their sections are not missing, only unread.
+    let mut unread = Vec::new();
     for file in files {
         match std::fs::read(&file.path) {
             Ok(bytes) => match String::from_utf8(bytes) {
                 Ok(text) => texts.push((file.name, text)),
-                Err(_) => skipped.push(format!("{}: not UTF-8", file.path.display())),
+                Err(_) => {
+                    skipped.push(format!("{}: not UTF-8", file.path.display()));
+                    unread.push(file.name);
+                }
             },
-            Err(error) => skipped.push(format!("{}: {error}", file.path.display())),
+            Err(error) => {
+                skipped.push(format!("{}: {error}", file.path.display()));
+                unread.push(file.name);
+            }
         }
     }
 
@@ -93,7 +105,11 @@ pub async fn execute(
     let read: Vec<&str> = cut.iter().map(|(name, _)| name.as_str()).collect();
     let cut: Vec<&Section> = cut.iter().flat_map(|(_, sections)| sections).collect();
     let missing = missing(
-        &read,
+        &Looked {
+            read: &read,
+            unread: &unread,
+            trees: &trees,
+        },
         &cut,
         pamin_store::repository::file_topic_names(engine.database.pool(), engine.project).await?,
     );
@@ -154,6 +170,18 @@ pub async fn execute(
     })
 }
 
+/// What a command's paths came to.
+#[derive(Debug)]
+struct Found {
+    /// Every file, once each, in name order.
+    files: Vec<File>,
+    /// What was skipped, with why.
+    skipped: Vec<String>,
+    /// The name of every directory walked, as a file under it is named up to
+    /// that directory.
+    trees: Vec<String>,
+}
+
 /// Every file `paths` names, once each, in name order, and the ones skipped
 /// with why.
 ///
@@ -162,9 +190,10 @@ pub async fn execute(
 /// is skipped and reported, as one that is not UTF-8 is. Two files that would
 /// go by one name are a refusal too: they would be one topic, which each
 /// ingest would hand from one to the other.
-fn files(paths: &[PathBuf]) -> Result<(Vec<File>, Vec<String>)> {
+fn files(paths: &[PathBuf]) -> Result<Found> {
     let mut files = BTreeSet::new();
     let mut skipped = Vec::new();
+    let mut trees = Vec::new();
     for path in paths {
         // Resolved here rather than by the client, which made it absolute but
         // left `..` and links in it: two spellings of one file must give its
@@ -174,6 +203,10 @@ fn files(paths: &[PathBuf]) -> Result<(Vec<File>, Vec<String>)> {
         let root = root(&path);
         if path.is_dir() {
             walk(&path, &root, &mut files, &mut skipped);
+            match file(&path, &root) {
+                Some(tree) => trees.push(tree.name),
+                None => skipped.push(format!("{}: name is not UTF-8", path.display())),
+            }
         } else {
             match file(&path, &root) {
                 Some(file) => {
@@ -206,7 +239,11 @@ fn files(paths: &[PathBuf]) -> Result<(Vec<File>, Vec<String>)> {
         );
     }
 
-    Ok((files.into_iter().collect(), skipped))
+    Ok(Found {
+        files: files.into_iter().collect(),
+        skipped,
+        trees,
+    })
 }
 
 /// What the files under `path` are named relative to: the repository it is
@@ -285,15 +322,7 @@ fn walk(directory: &Path, root: &Path, files: &mut BTreeSet<File>, skipped: &mut
             }
         };
         let path = entry.path();
-        let is_text = entry.file_type().is_some_and(|kind| kind.is_file())
-            && path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| {
-                    EXTENSIONS
-                        .iter()
-                        .any(|known| extension.eq_ignore_ascii_case(known))
-                });
+        let is_text = entry.file_type().is_some_and(|kind| kind.is_file()) && walked_kind(path);
         if !is_text {
             continue;
         }
@@ -306,17 +335,76 @@ fn walk(directory: &Path, root: &Path, files: &mut BTreeSet<File>, skipped: &mut
     }
 }
 
+/// Where an ingest looked, by name.
+struct Looked<'a> {
+    /// The files it read.
+    read: &'a [&'a str],
+    /// The files it found and could not read.
+    unread: &'a [String],
+    /// The directories it walked.
+    trees: &'a [String],
+}
+
 /// The names in `recorded` -- every section an ingest has put on the retrieval
-/// surface -- that belong to one of `read` and are not among `cut`.
-fn missing(read: &[&str], cut: &[&Section], recorded: Vec<String>) -> Vec<String> {
+/// surface -- that are not among `cut` and that this ingest would have cut
+/// again: from a file it read, or from a file of a kind a walk reads, under a
+/// directory it walked, that is no longer there -- deleted, moved, or ignored
+/// now. A file it found and could not read is not where a section went
+/// missing, and a file of another kind named on its own an earlier time is not
+/// one a walk would have found.
+fn missing(looked: &Looked, cut: &[&Section], recorded: Vec<String>) -> Vec<String> {
     let present: BTreeSet<&str> = cut.iter().map(|section| section.name.as_str()).collect();
     let mut missing: Vec<String> = recorded
         .into_iter()
         .filter(|name| !present.contains(name.as_str()))
-        .filter(|name| read.iter().any(|file| belongs(name, file)))
+        .filter(|name| {
+            if looked.read.iter().any(|file| belongs(name, file)) {
+                return true;
+            }
+            let file = file_of(name);
+            looked.trees.iter().any(|tree| {
+                file.strip_prefix(tree.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'))
+            }) && walked_kind(Path::new(file))
+                && !looked.unread.iter().any(|unread| unread == file)
+        })
         .collect();
     missing.sort();
     missing
+}
+
+/// The name of the file the section named `name` was cut out of: its name up
+/// to its headings, without the numbers and parts it was given.
+fn file_of(name: &str) -> &str {
+    let mut file = name.split(SEPARATOR).next().unwrap_or(name);
+    loop {
+        let stripped = file
+            .rsplit_once(" #")
+            .filter(|(_, number)| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
+            .or_else(|| {
+                file.strip_suffix(')')
+                    .and_then(|open| open.rsplit_once(" ("))
+                    .filter(|(_, part)| {
+                        !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())
+                    })
+            });
+        match stripped {
+            Some((before, _)) => file = before,
+            None => return file,
+        }
+    }
+}
+
+/// Whether a walk reads a file at `path`: one with an extension of
+/// [`EXTENSIONS`].
+fn walked_kind(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            EXTENSIONS
+                .iter()
+                .any(|known| extension.eq_ignore_ascii_case(known))
+        })
 }
 
 /// Whether the section named `name` was cut out of the file named `file`: its
@@ -365,7 +453,7 @@ mod tests {
     }
 
     fn names(paths: &[PathBuf]) -> Vec<String> {
-        let (files, skipped) = files(paths).expect("files");
+        let Found { files, skipped, .. } = files(paths).expect("files");
         assert!(skipped.is_empty(), "{skipped:?}");
         files.into_iter().map(|file| file.name).collect()
     }
@@ -407,7 +495,11 @@ mod tests {
     fn missing_is_what_an_earlier_ingest_left_under_the_files_read() {
         let kept = section("a.md › Kept");
         let missing = missing(
-            &["a.md"],
+            &Looked {
+                read: &["a.md"],
+                unread: &[],
+                trees: &[],
+            },
             &[&kept],
             vec![
                 "a.md › Kept".to_string(),
@@ -417,6 +509,52 @@ mod tests {
             ],
         );
         assert_eq!(missing, ["a.md › Gone"]);
+    }
+
+    /// Under a directory it walked, an ingest also reports the sections of a
+    /// file that is no longer there -- but not of one it found and could not
+    /// read, nor of a file of a kind a walk does not read, which was named on
+    /// its own before.
+    #[test]
+    fn missing_includes_files_gone_from_a_walked_tree() {
+        let kept = section("repo/docs/a.md › Kept");
+        let recorded = [
+            "repo/docs/a.md › Kept",
+            "repo/docs/deleted.md › Usage",
+            "repo/docs/deleted.md #2 (3)",
+            "repo/docs/deep/moved.txt",
+            "repo/docs/unreadable.md › Kept",
+            "repo/docs/script.py › Comment",
+            "repo/docsier/other.md",
+            "repo/README.md › Top",
+            "manual_topic",
+        ];
+        let missing = missing(
+            &Looked {
+                read: &["repo/docs/a.md"],
+                unread: &["repo/docs/unreadable.md".to_string()],
+                trees: &["repo/docs".to_string()],
+            },
+            &[&kept],
+            recorded.iter().map(|name| name.to_string()).collect(),
+        );
+        assert_eq!(
+            missing,
+            [
+                "repo/docs/deep/moved.txt",
+                "repo/docs/deleted.md #2 (3)",
+                "repo/docs/deleted.md › Usage"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_sections_file_is_its_name_before_its_headings_numbers_and_parts() {
+        assert_eq!(file_of("r/a.md"), "r/a.md");
+        assert_eq!(file_of("r/a.md › H › I"), "r/a.md");
+        assert_eq!(file_of("r/a.md #2 (3)"), "r/a.md");
+        assert_eq!(file_of("r/a.md (3) › H"), "r/a.md");
+        assert_eq!(file_of("r/a (old).md"), "r/a (old).md");
     }
 
     #[test]
@@ -601,7 +739,11 @@ mod tests {
         // Root reads every directory whatever its mode, so there is nothing
         // to observe there.
         let readable = std::fs::read_dir(root.join("locked")).is_ok();
-        let (found, skipped) = files(&[root.to_path_buf()]).expect("files");
+        let Found {
+            files: found,
+            skipped,
+            ..
+        } = files(&[root.to_path_buf()]).expect("files");
         std::fs::set_permissions(root.join("locked"), std::fs::Permissions::from_mode(0o755))
             .unwrap();
         assert_eq!(found.len(), 1);

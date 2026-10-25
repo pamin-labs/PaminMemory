@@ -30,7 +30,8 @@ pub struct Ingested {
     /// The ones the filter held in the evidence layer.
     pub held: usize,
     /// Memories an earlier ingest recorded from these files whose section is
-    /// no longer in them. They stay searchable: nothing here removes a memory.
+    /// no longer in them, or from files under these directories that are no
+    /// longer there. They stay searchable: nothing here removes a memory.
     pub missing: Vec<String>,
     /// Files skipped, with why: not UTF-8, or unreadable.
     pub skipped: Vec<String>,
