@@ -282,7 +282,7 @@ const NOT_IDENTITY: [(&str, &str); 6] = [
 /// that is set names the record, whichever harness reads it, so no harness
 /// keeps a list of its own that can miss one.
 /// `every_evaluation_read_is_classified` holds the tests to this.
-const EVAL_SETTINGS: [&str; 29] = [
+const EVAL_SETTINGS: [&str; 30] = [
     "AT_LIMIT",
     "CALIBRATE",
     "CHANNELS",
@@ -302,6 +302,7 @@ const EVAL_SETTINGS: [&str; 29] = [
     "MUSIQUE_SAMPLE",
     "PAIRS",
     "PASSAGES",
+    "QASPER_PAPERS",
     "REACH",
     "REPLAY_OUT",
     "RERANK_RULES",
@@ -322,7 +323,7 @@ const NAMED_BY_PRESENCE: [&str; 1] = ["REPLAY_OUT"];
 
 /// Variables the evaluation tests read that change nothing a record is
 /// named by, with why.
-const EVAL_NOT_IDENTITY: [(&str, &str); 6] = [
+const EVAL_NOT_IDENTITY: [(&str, &str); 8] = [
     ("CHANNELS_OUT", "where a table is written"),
     (
         "ESCI_DIR",
@@ -343,6 +344,14 @@ const EVAL_NOT_IDENTITY: [(&str, &str); 6] = [
     (
         "MUSIQUE_DIR",
         "where a dataset is; what it holds is the corpus digest",
+    ),
+    (
+        "QASPER_DIR",
+        "where a dataset is; which papers are drawn is QASPER_PAPERS and the seed",
+    ),
+    (
+        "SECTIONING_OUT",
+        "where every question's scores are written",
     ),
 ];
 
