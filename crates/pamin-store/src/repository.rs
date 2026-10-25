@@ -1532,22 +1532,25 @@ pub async fn current_named(
     if names.is_empty() {
         return Ok(Vec::new());
     }
-    let rows: Vec<(String, uuid::Uuid, uuid::Uuid, String)> = sqlx::query_as(
-        "SELECT t.name, t.id, s.id, s.content FROM topics t
-           JOIN topic_states s ON s.id = t.current_state_id
-         WHERE t.project_id = $1 AND t.name = ANY($2)",
-    )
+    let rows = sqlx::query(concat!(
+        "SELECT t.name, t.id, ts.id AS state_id, sp.byte_start, sp.byte_end,
+                sv.content AS evidence
+           FROM topics t
+           JOIN topic_states ts ON ts.id = t.current_state_id",
+        span_joins!(),
+        " WHERE t.project_id = $1 AND t.name = ANY($2)"
+    ))
     .bind(project.0)
     .bind(names)
     .fetch_all(executor)
     .await?;
     Ok(rows
-        .into_iter()
-        .map(|(name, topic, current, content)| Named {
-            name,
-            topic: topic.into(),
-            current: current.into(),
-            content,
+        .iter()
+        .map(|row| Named {
+            name: row.get("name"),
+            topic: row.get::<uuid::Uuid, _>("id").into(),
+            current: row.get::<uuid::Uuid, _>("state_id").into(),
+            content: content_of_span(row),
         })
         .collect())
 }
