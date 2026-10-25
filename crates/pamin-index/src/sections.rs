@@ -90,6 +90,33 @@ pub struct Section {
 /// from, so the same file ingested from the same root names its sections the
 /// same way however the command was spelled.
 pub fn sections(path: &str, text: &str, counter: &dyn TokenCount) -> Vec<Section> {
+    cut_by(path, text, counter, &|name| {
+        cap(&format!("{name}{LONGEST_SUFFIX}"), counter)
+    })
+}
+
+/// [`sections`] with every section held to `cap` content tokens, whatever its
+/// name, rather than to what the reranker has left beside it.
+///
+/// For the evaluation that sweeps the size, which has to vary it through the
+/// function the product cuts with; nothing in the product calls it.
+#[doc(hidden)]
+pub fn sections_capped(
+    path: &str,
+    text: &str,
+    counter: &dyn TokenCount,
+    cap: usize,
+) -> Vec<Section> {
+    cut_by(path, text, counter, &|_| cap)
+}
+
+/// `text` cut into sections, each held to what `cap_of` its name allows.
+fn cut_by(
+    path: &str,
+    text: &str,
+    counter: &dyn TokenCount,
+    cap_of: &dyn Fn(&str) -> usize,
+) -> Vec<Section> {
     let text = normalized(text);
     let body = without_front_matter(&text);
 
@@ -113,7 +140,7 @@ pub fn sections(path: &str, text: &str, counter: &dyn TokenCount) -> Vec<Section
             base.push_str(heading);
         }
 
-        let cap = cap(&format!("{base}{LONGEST_SUFFIX}"), counter);
+        let cap = cap_of(&base);
         let pieces = if counter.count(content) <= cap {
             std::iter::once(0..content.len()).collect()
         } else {
