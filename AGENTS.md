@@ -63,6 +63,12 @@ going stale.
 
 - Use the `git-commit` skill whenever possible when creating commits.
 - Use one logical change per commit.
+- Keep commits small: one rule, one module or one fix per commit, each building
+  and passing tests on its own. Split refactors, behaviour changes and
+  formatting into separate commits.
+- Keep PRs focused on one concern and small enough to review in one sitting;
+  split a large feature into a stack of PRs, each mergeable on its own, and say
+  in the description which PR it builds on.
 - Commit titles, commit messages, and PR titles must follow Conventional Commits:
 
 ```text
