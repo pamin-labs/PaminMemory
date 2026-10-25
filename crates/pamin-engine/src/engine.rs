@@ -1786,6 +1786,29 @@ impl Engine {
         self.models.passes(query, documents)
     }
 
+    /// What a search for `query` showed the reranker of `hit`: the window
+    /// around its best span in an index cut into spans, with the span of its
+    /// seed that names it, or the whole memory and seed otherwise.
+    ///
+    /// Nothing in the product calls it. An evaluation that rescores or
+    /// rerenders what a search showed takes the text from here, so it scores
+    /// the pair the search scored rather than a rendering of its own.
+    #[doc(hidden)]
+    pub fn shown_to_reranker(&self, query: &str, hit: &SearchHit) -> Result<String> {
+        let window = self.window(query)?;
+        let content = hit.state.content.as_str();
+        Ok(match window {
+            None => shown(&hit.topic, content, hit.seed.as_deref()),
+            Some(window) => {
+                let seed = hit
+                    .seed
+                    .as_deref()
+                    .map(|seed| window.naming(seed, &hit.topic));
+                window.shown(&hit.topic, content, hit.result.span, seed)
+            }
+        })
+    }
+
     /// What this engine's reranker scores each of `documents` for `query`,
     /// in their order -- the model, settings and execution target its
     /// searches use -- or `None` if this process has not loaded it. Never
