@@ -40,6 +40,17 @@ struct GraphRecallOptions {
 /// interchangeable. Provisional, like every other retrieval constant here.
 const MENTION_CONFIDENCE: f32 = 0.5;
 
+/// The kinds of edge a file's outline derives between its sections.
+const OUTLINE: [EdgeKind; 2] = [EdgeKind::PartOf, EdgeKind::RelatedTo];
+
+/// Every kind of edge the engine derives: what a memory names, and a file's
+/// outline. A topic that resolves to nothing derives none of them.
+pub(crate) const DERIVED: [EdgeKind; 3] = [EdgeKind::Mentions, OUTLINE[0], OUTLINE[1]];
+
+/// How much weight an edge from a file's outline carries: a mention's, until
+/// a measurement says otherwise. Provisional, as that is.
+const OUTLINE_CONFIDENCE: f32 = MENTION_CONFIDENCE;
+
 /// How many topics the graph channel is willing to walk out from.
 ///
 /// Not a query count -- the walk asks one question per hop for the whole
@@ -1739,6 +1750,69 @@ impl Engine {
         let mut connection = self.database.pool().acquire().await?;
         self.restate_mentions(&mut connection, std::slice::from_ref(state))
             .await
+    }
+
+    /// Restates the outline of the files an ingest read: for each of
+    /// `sections`, the section it sits under (`part_of`) and the next one under
+    /// the same parent (`related_to`), as `edges` name them.
+    ///
+    /// As [`derive_mentions`](Self::derive_mentions) restates what a memory
+    /// names: asserted first, so an outline that has not changed writes
+    /// nothing, then every derived edge of either kind out of `sections` that
+    /// `edges` no longer claim is closed -- a section moved, or one gone from
+    /// its file. Each edge is caused by its section's current state. Returns
+    /// how many edges this call added.
+    pub async fn restate_outline(
+        &self,
+        sections: &[String],
+        edges: &[(String, String, EdgeKind)],
+    ) -> Result<usize> {
+        let mut names: Vec<String> = sections.to_vec();
+        names.extend(edges.iter().map(|(_, to, _)| to.clone()));
+        names.sort_unstable();
+        names.dedup();
+        let found: std::collections::HashMap<String, repository::Named> =
+            repository::current_named(self.database.pool(), self.project, &names)
+                .await?
+                .into_iter()
+                .map(|named| (named.name.clone(), named))
+                .collect();
+
+        let mut claims = Vec::new();
+        let mut kept: std::collections::BTreeMap<(EdgeKind, TopicId), Vec<TopicId>> =
+            Default::default();
+        for section in sections {
+            if let Some(from) = found.get(section) {
+                for kind in OUTLINE {
+                    kept.entry((kind, from.topic)).or_default();
+                }
+            }
+        }
+        for (from, to, kind) in edges {
+            let (Some(from), Some(to)) = (found.get(from), found.get(to)) else {
+                continue;
+            };
+            claims.push((
+                from.topic,
+                to.topic,
+                EdgeClaim::derived(*kind, from.current, OUTLINE_CONFIDENCE),
+            ));
+            kept.entry((*kind, from.topic)).or_default().push(to.topic);
+        }
+
+        let asserted = graph::assert_edges(self.database.pool(), self.project, &claims).await?;
+        for kind in OUTLINE {
+            let keep: Vec<(TopicId, Vec<TopicId>)> = kept
+                .iter()
+                .filter(|((of, _), _)| *of == kind)
+                .map(|((_, from), to)| (*from, to.clone()))
+                .collect();
+            graph::retract_derived_all(self.database.pool(), self.project, kind, &keep).await?;
+        }
+        Ok(asserted
+            .iter()
+            .filter(|assertion| assertion.is_new())
+            .count())
     }
 
     /// [`derive_mentions`](Self::derive_mentions) for many states, asking each

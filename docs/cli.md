@@ -664,8 +664,13 @@ long section is found by any part of it and a hit shows the part that matched.
 A section of fewer than 48 tokens joins a neighbour — a heading with nothing
 under it the section after it, a short opening at the top of the file the
 section after it, anything else the one before. Two sections under the same
-headings are numbered `#2`, `#3`. YAML front matter is left out when its first
-line is a `key:` and it holds no blank line.
+headings are numbered `#2`, `#3`, and keep their numbers from one ingest to the
+next: each is matched to the section it was by its text — the same text first,
+then at least 80% of its three-word runs in common — and only the rest take
+free numbers, in file order. So a section inserted above its twin is `#2`,
+rather than taking the twin's name and making the twin's text a new version of
+somebody else's section. YAML front matter is left out when its first line is
+a `key:` and it holds no blank line.
 
 ```console
 $ sed -i 's/ten minutes/fifteen minutes/' docs/ops.md
@@ -732,6 +737,13 @@ A memory naming an ingested section therefore derives no edge to it, while a
 section naming a topic written by hand does. A topic written by hand keeps its
 name if it is later ingested, and one ingested first is named the first time
 somebody writes it by hand.
+
+**A file's sections are related as its outline relates them.** Each section is
+`part_of` the first section of the nearest heading above its own that has one —
+the file's first section, for one with none — and `related_to` the next
+section under the same heading, so `pamin neighbors` walks a file as it is laid
+out. These edges are derived, restated on every ingest, and closed when a
+section moves or leaves its file.
 
 `--json` carries every count, the `removed`, `missing` and `skipped` lists, and
 the same `cascade` and `cascade_lagging` as `import`.

@@ -558,13 +558,15 @@ impl Engine {
                 .filter(|topic| !resolved.contains(topic))
                 .map(|topic| (topic, Vec::new()))
                 .collect();
-            pamin_store::graph::retract_derived_all(
-                &mut *connection,
-                self.project,
-                pamin_core::EdgeKind::Mentions,
-                &gone,
-            )
-            .await?;
+            for kind in crate::engine::DERIVED {
+                pamin_store::graph::retract_derived_all(
+                    &mut *connection,
+                    self.project,
+                    kind,
+                    &gone,
+                )
+                .await?;
+            }
             let named: Vec<(TopicId, String)> = pamin_store::repository::topics_by_id(
                 &mut *connection,
                 self.project,
@@ -635,13 +637,15 @@ impl Engine {
         .await?;
 
         let Some(state) = states.first().cloned() else {
-            pamin_store::graph::retract_derived_all(
-                self.database.pool(),
-                self.project,
-                pamin_core::EdgeKind::Mentions,
-                &[(topic, Vec::new())],
-            )
-            .await?;
+            for kind in crate::engine::DERIVED {
+                pamin_store::graph::retract_derived_all(
+                    self.database.pool(),
+                    self.project,
+                    kind,
+                    &[(topic, Vec::new())],
+                )
+                .await?;
+            }
             return Ok(());
         };
 

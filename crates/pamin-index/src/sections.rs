@@ -23,9 +23,12 @@
 //! Under [`LEAST_TOKENS`], a section would otherwise be a passage the reranker
 //! scores on its name alone.
 //!
-//! A pure function of the path, the text and the token counter, so ingesting
-//! the same file twice yields the same sections with the same names, and an
-//! edit changes only the section it falls in.
+//! The cut is a pure function of the path, the text and the token counter, so
+//! ingesting the same file twice yields the same sections with the same names,
+//! and an edit changes only the section it falls in. Sections under the same
+//! headings are numbered, and [`named`] keeps each one's number across an
+//! ingest by matching it to what the file said before, so a section inserted
+//! above another does not take its name.
 
 use std::collections::HashSet;
 use std::ops::Range;
@@ -60,16 +63,26 @@ pub struct Section {
 /// from, so the same file ingested from the same root names its sections the
 /// same way however the command was spelled.
 pub fn sections(path: &str, text: &str, counter: &dyn TokenCount) -> Vec<Section> {
+    named(unnamed(path, text, counter), &[])
+}
+
+/// A section before it is named: the name its headings give it, which other
+/// sections of the file can share, and its content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unnamed {
+    /// The file's path and the headings the section sits under.
+    pub base: String,
+    pub content: String,
+}
+
+/// `text`, read from the file at `path`, cut into sections not yet named.
+pub fn unnamed(path: &str, text: &str, counter: &dyn TokenCount) -> Vec<Unnamed> {
     let text = normalized(text);
     let body = without_front_matter(&text);
 
     let raw = headed(&text, body);
     let merged = merged(&text, raw, counter);
 
-    // Every name this file has handed out: a heading can be spelled like the
-    // number another section was given, and two sections under one name are
-    // one topic, which each ingest would hand back and forth between them.
-    let mut taken: HashSet<String> = HashSet::new();
     let mut sections = Vec::new();
     for section in merged {
         let content = text[section.range].trim();
@@ -81,12 +94,193 @@ pub fn sections(path: &str, text: &str, counter: &dyn TokenCount) -> Vec<Section
             base.push_str(SEPARATOR);
             base.push_str(heading);
         }
-        sections.push(Section {
-            name: unique(&mut taken, &base),
+        sections.push(Unnamed {
+            base,
             content: content.to_string(),
         });
     }
     sections
+}
+
+/// The share of word shingles two sections must have in common to be taken
+/// for one section edited. The same bar a rename is held to: an edit this
+/// large or smaller keeps a section's number, and a section edited past it
+/// takes a free number in file order, as a new one does. Chosen, not measured.
+pub const SAME_SECTION: f64 = 0.8;
+
+/// Names for `sections`, the cut of one file, given what its sections said
+/// when it was last ingested: `previous`, by name.
+///
+/// Sections under the same headings share a base name and are told apart by
+/// number -- `base`, `base #2`, `base #3`. Numbering them in file order alone
+/// would let a section inserted above another take its name, and every later
+/// one's: the names would change hands, and each section's content would be
+/// written as a version of a different section. So each keeps the name of the
+/// earlier section it is, matched by the same content first and then by
+/// [`similarity`] of at least [`SAME_SECTION`], one to one, closest first;
+/// only the rest take free numbers, in file order.
+///
+/// No two sections are given one name: a heading can be spelled like the
+/// number another section was given, and two sections under one name are one
+/// topic, which each ingest would hand back and forth between them. With no
+/// `previous`, the names are those of numbering in file order.
+pub fn named(sections: Vec<Unnamed>, previous: &[Section]) -> Vec<Section> {
+    // Each earlier section claimed by the section it is, by name.
+    let mut claimed: Vec<Option<String>> = vec![None; sections.len()];
+    let mut by_base: std::collections::BTreeMap<&str, Vec<usize>> = Default::default();
+    for (at, section) in sections.iter().enumerate() {
+        by_base.entry(section.base.as_str()).or_default().push(at);
+    }
+    for (base, members) in &by_base {
+        let earlier: Vec<&Section> = previous
+            .iter()
+            .filter(|section| number(&section.name, base).is_some())
+            .collect();
+        if earlier.is_empty() {
+            continue;
+        }
+        let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
+        for &at in members {
+            for (from, section) in earlier.iter().enumerate() {
+                let score = if section.content == sections[at].content {
+                    // Above any similarity, so the same text is paired first.
+                    2.0
+                } else {
+                    similarity(&section.content, &sections[at].content)
+                };
+                if score >= SAME_SECTION {
+                    pairs.push((score, at, from));
+                }
+            }
+        }
+        // Closest first; ties in file order, then in the earlier order.
+        pairs.sort_by(|left, right| {
+            right
+                .0
+                .total_cmp(&left.0)
+                .then(left.1.cmp(&right.1))
+                .then(left.2.cmp(&right.2))
+        });
+        let mut used = HashSet::new();
+        for (_, at, from) in pairs {
+            if claimed[at].is_none() && used.insert(from) {
+                claimed[at] = Some(earlier[from].name.clone());
+            }
+        }
+    }
+
+    // Kept names first, file order breaking a clash, so that a section taking
+    // a free number cannot take a name a later section keeps.
+    let mut taken: HashSet<String> = HashSet::new();
+    for name in claimed.iter_mut() {
+        if let Some(kept) = name
+            && !taken.insert(kept.clone())
+        {
+            *name = None;
+        }
+    }
+    sections
+        .into_iter()
+        .zip(claimed)
+        .map(|(section, name)| Section {
+            name: name.unwrap_or_else(|| unique(&mut taken, &section.base)),
+            content: section.content,
+        })
+        .collect()
+}
+
+/// How two sections of one file stand to each other in its outline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placed {
+    /// The first sits under the second's heading: `part_of`.
+    Under,
+    /// The second is the next section under the same parent: `related_to`,
+    /// read as "followed by".
+    Before,
+}
+
+/// The outline of one file's sections, given in file order by their bases:
+/// each section and the section it sits under, and each and the next one
+/// under the same parent, as pairs of indices.
+///
+/// A section sits under the first section of the nearest heading above its
+/// own that has one -- a heading with nothing under it joined the section after
+/// it, and has no section of its own to be part of. A section with no such
+/// heading above it sits under the file's first section, unless it is that
+/// section.
+pub fn outline(bases: &[&str]) -> Vec<(usize, usize, Placed)> {
+    let first: std::collections::HashMap<&str, usize> =
+        bases
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(at, base)| (*base, at))
+            .collect();
+    let parent: Vec<Option<usize>> = bases
+        .iter()
+        .enumerate()
+        .map(|(at, base)| {
+            let mut above = *base;
+            while let Some((rest, _)) = above.rsplit_once(SEPARATOR) {
+                above = rest;
+                if let Some(&parent) = first.get(above) {
+                    return Some(parent);
+                }
+            }
+            (at != 0).then_some(0)
+        })
+        .collect();
+    let mut placed: Vec<(usize, usize, Placed)> = parent
+        .iter()
+        .enumerate()
+        .filter_map(|(at, parent)| Some((at, (*parent)?, Placed::Under)))
+        .collect();
+    let mut last_under: std::collections::HashMap<Option<usize>, usize> = Default::default();
+    for (at, parent) in parent.iter().enumerate() {
+        if let Some(before) = last_under.insert(*parent, at) {
+            placed.push((before, at, Placed::Before));
+        }
+    }
+    placed
+}
+
+/// The number `name` gives a section under `base`: 1 for `base` itself, `n`
+/// for `base #n`.
+pub fn number(name: &str, base: &str) -> Option<u32> {
+    let rest = name.strip_prefix(base)?;
+    if rest.is_empty() {
+        return Some(1);
+    }
+    let digits = rest.strip_prefix(" #")?;
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok().filter(|number| *number >= 2)
+}
+
+/// The words of `text` taken three at a time, lowercased.
+fn shingles(text: &str) -> HashSet<Vec<String>> {
+    let words: Vec<String> = text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    if words.len() < 3 {
+        return HashSet::from([words]);
+    }
+    words.windows(3).map(<[String]>::to_vec).collect()
+}
+
+/// How much of two texts is the same, as the share of their word shingles
+/// they have in common (Jaccard): 1 for the same words in the same order, 0
+/// for nothing in common.
+pub fn similarity(left: &str, right: &str) -> f64 {
+    let (left, right) = (shingles(left), shingles(right));
+    let union = left.union(&right).count();
+    if union == 0 {
+        return 1.0;
+    }
+    left.intersection(&right).count() as f64 / union as f64
 }
 
 /// `base`, or the first of `base #2`, `base #3` and on that is free, which it
@@ -782,5 +976,196 @@ mod tests {
     fn nothing_but_whitespace_is_no_sections() {
         assert!(sections("empty.md", " \n\n\t\n", &Words).is_empty());
         assert!(sections("empty.md", "", &Words).is_empty());
+    }
+
+    /// A paragraph of `n` words that no other `tag` shares.
+    fn tagged(tag: &str, n: usize) -> String {
+        (0..n)
+            .map(|i| format!("{tag}{i}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// `text` cut and named against what `before` was cut into.
+    fn again(before: &str, text: &str) -> Vec<Section> {
+        named(
+            unnamed("f.md", text, &Words),
+            &sections("f.md", before, &Words),
+        )
+    }
+
+    /// The name each paragraph `tag` ended up under.
+    fn under(sections: &[Section], tag: &str) -> String {
+        let marker = format!("{tag}0 ");
+        sections
+            .iter()
+            .find(|section| section.content.contains(&marker))
+            .map(|section| section.name.clone())
+            .unwrap_or_else(|| panic!("no section holds {tag}: {sections:?}"))
+    }
+
+    #[test]
+    fn with_nothing_before_sections_are_numbered_in_file_order() {
+        let text = format!(
+            "# Notes\n\n{}\n\n# Notes\n\n{}\n",
+            tagged("a", 60),
+            tagged("b", 60)
+        );
+        assert_eq!(
+            named(unnamed("f.md", &text, &Words), &[]),
+            sections("f.md", &text, &Words)
+        );
+    }
+
+    /// The case this exists for: in file order alone, the inserted section
+    /// would take `Notes`, and the one that had it would become `Notes #2`.
+    #[test]
+    fn a_heading_inserted_above_its_twin_takes_a_new_number() {
+        let before = format!("# Notes\n\n{}\n", tagged("a", 60));
+        let after = format!(
+            "# Notes\n\n{}\n\n# Notes\n\n{}\n",
+            tagged("new", 60),
+            tagged("a", 60)
+        );
+        // Without matching, the names would change hands.
+        assert_eq!(under(&sections("f.md", &after, &Words), "a"), "f.md › Notes #2");
+
+        let named = again(&before, &after);
+        assert_eq!(under(&named, "a"), "f.md › Notes");
+        assert_eq!(under(&named, "new"), "f.md › Notes #2");
+        check(&after, &named);
+    }
+
+    #[test]
+    fn a_section_edited_and_moved_keeps_its_number() {
+        let before = format!(
+            "# Notes\n\n{}\n\n# Notes\n\n{}\n",
+            tagged("a", 60),
+            tagged("b", 60)
+        );
+        // `b` edited by a word, moved first, and a new one between them.
+        let after = format!(
+            "# Notes\n\n{} extra\n\n# Notes\n\n{}\n\n# Notes\n\n{}\n",
+            tagged("b", 60),
+            tagged("new", 60),
+            tagged("a", 60)
+        );
+        let named = again(&before, &after);
+        assert_eq!(under(&named, "a"), "f.md › Notes");
+        assert_eq!(under(&named, "b"), "f.md › Notes #2");
+        assert_eq!(under(&named, "new"), "f.md › Notes #3");
+    }
+
+    /// Removing the first of two leaves the second its number: the first's
+    /// name is what goes, not the second's.
+    #[test]
+    fn removing_a_twin_leaves_the_other_its_name() {
+        let before = format!(
+            "# Notes\n\n{}\n\n# Notes\n\n{}\n",
+            tagged("a", 60),
+            tagged("b", 60)
+        );
+        let after = format!("# Notes\n\n{}\n", tagged("b", 60));
+        assert_eq!(under(&again(&before, &after), "b"), "f.md › Notes #2");
+    }
+
+    /// A section rewritten past [`SAME_SECTION`] is a new section: it takes a
+    /// free number, in file order.
+    #[test]
+    fn a_section_rewritten_is_numbered_as_a_new_one() {
+        let before = format!(
+            "# Notes\n\n{}\n\n# Notes\n\n{}\n",
+            tagged("a", 60),
+            tagged("b", 60)
+        );
+        let after = format!(
+            "# Notes\n\n{}\n\n# Notes\n\n{}\n",
+            tagged("c", 60),
+            tagged("b", 60)
+        );
+        let named = again(&before, &after);
+        assert_eq!(under(&named, "b"), "f.md › Notes #2");
+        assert_eq!(under(&named, "c"), "f.md › Notes");
+    }
+
+    /// A heading spelled like another's number cannot take a name a matched
+    /// section keeps, and no two sections share one.
+    #[test]
+    fn a_kept_name_is_not_given_to_a_heading_spelled_like_it() {
+        let before = format!(
+            "# Example\n\n{}\n\n# Example\n\n{}\n",
+            tagged("a", 60),
+            tagged("b", 60)
+        );
+        let after = format!(
+            "# Example #2\n\n{}\n\n# Example\n\n{}\n\n# Example\n\n{}\n",
+            tagged("lit", 60),
+            tagged("a", 60),
+            tagged("b", 60)
+        );
+        let named = again(&before, &after);
+        assert_eq!(under(&named, "a"), "f.md › Example");
+        assert_eq!(under(&named, "b"), "f.md › Example #2");
+        assert_eq!(under(&named, "lit"), "f.md › Example #2 #2");
+        check(&after, &named);
+    }
+
+    #[test]
+    fn a_section_is_under_the_nearest_heading_with_a_section() {
+        let bases = [
+            "f.md",                 // 0: what comes before the first heading
+            "f.md › Deploy",        // 1
+            "f.md › Deploy › Canary", // 2
+            "f.md › Deploy › Rollback", // 3
+            "f.md › Deploy › Rollback", // 4: `Rollback #2`
+            // `Oncall` had nothing under it and joined `Rota`.
+            "f.md › Oncall › Rota", // 5
+        ];
+        let mut placed = outline(&bases);
+        placed.sort_by_key(|(from, to, placed)| (*from, *to, *placed == Placed::Before));
+        assert_eq!(
+            placed,
+            [
+                (1, 0, Placed::Under),
+                (1, 5, Placed::Before),
+                (2, 1, Placed::Under),
+                (2, 3, Placed::Before),
+                (3, 1, Placed::Under),
+                (3, 4, Placed::Before),
+                (4, 1, Placed::Under),
+                (5, 0, Placed::Under),
+            ]
+        );
+    }
+
+    /// With nothing before its first heading, a file's first section is what
+    /// its other top-level sections are part of.
+    #[test]
+    fn top_level_sections_are_under_the_first() {
+        let placed = outline(&["f.md › Intro", "f.md › Usage", "f.md › Usage › Flags"]);
+        assert!(placed.contains(&(1, 0, Placed::Under)));
+        assert!(placed.contains(&(2, 1, Placed::Under)));
+        assert!(!placed.iter().any(|(from, _, kind)| *from == 0 && *kind == Placed::Under));
+        assert!(outline(&["f.md"]).is_empty());
+    }
+
+    #[test]
+    fn a_number_is_read_only_under_its_own_base() {
+        assert_eq!(number("f.md › A", "f.md › A"), Some(1));
+        assert_eq!(number("f.md › A #3", "f.md › A"), Some(3));
+        assert_eq!(number("f.md › A #1", "f.md › A"), None);
+        assert_eq!(number("f.md › A #2 #2", "f.md › A"), None);
+        assert_eq!(number("f.md › AB", "f.md › A"), None);
+        assert_eq!(number("f.md › A › B", "f.md › A"), None);
+    }
+
+    #[test]
+    fn similarity_is_the_share_of_shingles_in_common() {
+        let text = tagged("a", 60);
+        assert_eq!(similarity(&text, &text), 1.0);
+        assert_eq!(similarity(&text, &tagged("b", 60)), 0.0);
+        // One word added at the end: 58 shingles of 59.
+        let edited = format!("{text} extra");
+        assert!((similarity(&text, &edited) - 58.0 / 59.0).abs() < 1e-9);
     }
 }

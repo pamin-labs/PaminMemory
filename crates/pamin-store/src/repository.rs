@@ -1509,6 +1509,49 @@ pub async fn file_topic_names(
         .collect())
 }
 
+/// A topic as it stands now, found by name.
+#[derive(Clone, Debug)]
+pub struct Named {
+    pub name: String,
+    pub topic: TopicId,
+    pub current: TopicStateId,
+    pub content: String,
+}
+
+/// Each of the topics `names` as it stands now; a name with no topic, or none
+/// on the retrieval surface, is left out.
+///
+/// For an ingest, which asks it about many sections at once: to number a
+/// file's sections against what they said before, and to resolve the
+/// sections its outline relates.
+pub async fn current_named(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    names: &[String],
+) -> Result<Vec<Named>> {
+    if names.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(String, uuid::Uuid, uuid::Uuid, String)> = sqlx::query_as(
+        "SELECT t.name, t.id, s.id, s.content FROM topics t
+           JOIN topic_states s ON s.id = t.current_state_id
+         WHERE t.project_id = $1 AND t.name = ANY($2)",
+    )
+    .bind(project.0)
+    .bind(names)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(name, topic, current, content)| Named {
+            name,
+            topic: topic.into(),
+            current: current.into(),
+            content,
+        })
+        .collect())
+}
+
 /// [`set_source_root`] for every source filed under `locators`, in one
 /// statement: for the sections an ingest found unchanged, which write nothing
 /// else, so that each records the tree it was last ingested from all the same.
