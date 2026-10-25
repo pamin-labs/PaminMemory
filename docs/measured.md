@@ -2181,6 +2181,14 @@ already exceeds the 1,024 a Linux process is given by default.
 - **Why search is faster.** The reranker reads shorter pairs.
 - **What it costs.** Ingest and disk grow with memory length.
 - **Upgrading.** An index built before spans keeps its grain until `pamin reindex`.
+- **Evidence.** Each record names its compared commits and keeps its scripts and raw results beside it:
+  - accuracy: `internal-docs/pamin-memory/research/2026-10-23/q111-a0-span-vs-topic.md` (LoCoMo) and
+    `internal-docs/pamin-memory/research/2026-10-24/q111-part2-lme-md-a1.md` (LongMemEval-S, Markdown), with
+    `raw/q111-q118/` and `raw/q111-part2/`;
+  - short sessions: `internal-docs/pamin-memory/research/2026-10-23/q119-span-grain-timing.md`, `58f1825` against
+    `6305f8c`, with `raw/q119/`;
+  - long sessions: `internal-docs/pamin-memory/research/2026-10-25/q127-span-stack-vs-main.md`, `main` at `2c59266`
+    against `7aef72c`, with `raw/q127/`.
 
 What was measured, how, and the conclusions that reversed on measurement are in
 [the ADR](adr/0001-tech-selection.md), which is the
