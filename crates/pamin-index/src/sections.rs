@@ -12,11 +12,12 @@
 //! chunking agree on: structural or fixed-size cuts of a few hundred tokens with
 //! no overlap match or beat semantic chunking on realistic corpora at a
 //! fraction of the cost, and what a chunk gains most from is knowing where it
-//! sits. So an ATX heading opens a section, a section is named by the file's
-//! path and the headings above it -- which the embedder and the reranker both
-//! read ahead of the content, as `{name}: {content}` -- and a section too long
-//! to be read whole is cut by [`pack`](crate::spans::pack) at its blocks, then
-//! its sentences, then its tokens.
+//! sits. So a heading -- ATX, or setext under a paragraph -- opens a section,
+//! a section is named by the file's path and the headings above it -- which
+//! the embedder and the reranker both read ahead of the content, as
+//! `{name}: {content}` -- and a section too long to be read whole is cut by
+//! [`pack`](crate::spans::pack) at its blocks, then its sentences, then its
+//! tokens.
 //!
 //! **Sized so the reranker reads all of it.** A section's content is at most
 //! what fits the reranker's window beside its name, a query of
@@ -328,7 +329,8 @@ struct Headed {
     has_body: bool,
 }
 
-/// `body` of `text` cut at every ATX heading outside a fenced block.
+/// `body` of `text` cut at every heading outside a fenced block: ATX, or a
+/// paragraph a setext underline makes one.
 fn headed(text: &str, body: Range<usize>) -> Vec<Headed> {
     let mut sections = Vec::new();
     // The headings above the current line, with their levels.
@@ -336,6 +338,34 @@ fn headed(text: &str, body: Range<usize>) -> Vec<Headed> {
     let mut start = body.start;
     let mut has_body = false;
     let mut open_fence = None;
+    // The paragraph the current line continues, which a setext underline
+    // after it would make a heading: where it began, its lines, and whether
+    // the section had anything in it before the paragraph did.
+    let mut paragraph: Option<(usize, Vec<&str>, bool)> = None;
+
+    // A heading over `from..`, titled `title`, at `level`.
+    let mut open = |from: usize,
+                    title: &str,
+                    level: usize,
+                    had_body: bool,
+                    start: &mut usize,
+                    has_body: &mut bool,
+                    sections: &mut Vec<Headed>| {
+        if from > *start || had_body {
+            sections.push(Headed {
+                path: stack.iter().map(|(_, title)| title.clone()).collect(),
+                range: *start..from,
+                has_body: had_body,
+            });
+        }
+        stack.retain(|(above, _)| *above < level);
+        // A bare `#` closes the headings below its level and names nothing.
+        if !title.is_empty() {
+            stack.push((level, title.chars().take(TITLE_CHARS).collect()));
+        }
+        *start = from;
+        *has_body = false;
+    };
 
     let mut at = body.start;
     for line in text[body.clone()].split_inclusive('\n') {
@@ -352,29 +382,50 @@ fn headed(text: &str, body: Range<usize>) -> Vec<Headed> {
         }
         if let Some(opening) = fence(line) {
             open_fence = Some(opening);
+            paragraph = None;
             has_body = true;
             continue;
         }
-        let Some(title) = heading(line) else {
-            has_body |= !line.trim().is_empty();
+        if let Some(level) = setext(line)
+            && let Some((from, lines, had_body)) = paragraph.take()
+        {
+            let title = lines.join(" ");
+            open(
+                from,
+                &title,
+                level,
+                had_body,
+                &mut start,
+                &mut has_body,
+                &mut sections,
+            );
             continue;
-        };
-
-        if here > start || has_body {
-            sections.push(Headed {
-                path: stack.iter().map(|(_, title)| title.clone()).collect(),
-                range: start..here,
+        }
+        if let Some(title) = heading(line) {
+            paragraph = None;
+            open(
+                here,
+                title,
+                level(line),
                 has_body,
-            });
+                &mut start,
+                &mut has_body,
+                &mut sections,
+            );
+            continue;
         }
-        let level = level(line);
-        stack.retain(|(above, _)| *above < level);
-        // A bare `#` closes the headings below its level and names nothing.
-        if !title.is_empty() {
-            stack.push((level, title.chars().take(TITLE_CHARS).collect()));
-        }
-        start = here;
-        has_body = false;
+
+        let blank = line.trim().is_empty();
+        paragraph = match paragraph.take() {
+            _ if blank => None,
+            Some((from, mut lines, had_body)) => {
+                lines.push(line.trim());
+                Some((from, lines, had_body))
+            }
+            None if opens_paragraph(line) => Some((here, vec![line.trim()], has_body)),
+            None => None,
+        };
+        has_body |= !blank;
     }
     sections.push(Headed {
         path: stack.into_iter().map(|(_, title)| title).collect(),
@@ -383,6 +434,37 @@ fn headed(text: &str, body: Range<usize>) -> Vec<Headed> {
     });
     sections.retain(|section| !text[section.range.clone()].trim().is_empty());
     sections
+}
+
+/// The level of the setext heading `line` underlines, if it is an underline:
+/// a run of `=` for the first level or of `-` for the second, indented at most
+/// three spaces. Only after a paragraph -- elsewhere a run of `-` is a rule.
+fn setext(line: &str) -> Option<usize> {
+    let rest = indented(line)?.trim_end();
+    let marker = rest.chars().next()?;
+    let level = match marker {
+        '=' => 1,
+        '-' => 2,
+        _ => return None,
+    };
+    rest.chars().all(|c| c == marker).then_some(level)
+}
+
+/// Whether `line` can open a paragraph, which a setext underline turns into a
+/// heading: not a list item, a quotation or a table row, which an underline
+/// after them is a rule under, and not indented code.
+fn opens_paragraph(line: &str) -> bool {
+    let Some(rest) = indented(line) else {
+        return false;
+    };
+    let ordered = rest.split_once(['.', ')']).is_some_and(|(number, _)| {
+        !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
+    });
+    !(ordered
+        || rest.starts_with(['>', '|'])
+        || ["- ", "* ", "+ "]
+            .iter()
+            .any(|marker| rest.starts_with(marker)))
 }
 
 /// The level of the ATX heading `line` is.
@@ -793,6 +875,59 @@ mod tests {
             super::sections("f.md", &unix.replace('\n', "\r"), &Words),
             super::sections("f.md", &unix, &Words)
         );
+    }
+
+    /// A line of `=` or `-` under a paragraph makes the paragraph a heading of
+    /// the first or second level, nesting as an ATX heading of that level
+    /// would.
+    #[test]
+    fn a_setext_underline_makes_a_heading() {
+        let text = format!(
+            "Deploy\n======\n\n{}\n\nRollback\n--------\n\n{}\n\n### Window\n\n{}\n",
+            words(60),
+            words(60),
+            words(60)
+        );
+        let sections = sections("f.md", &text, &Words);
+        assert_eq!(
+            names(&sections),
+            [
+                "f.md › Deploy",
+                "f.md › Deploy › Rollback",
+                "f.md › Deploy › Rollback › Window"
+            ]
+        );
+        assert!(sections[1].content.starts_with("Rollback\n--------"));
+        check(&text, &sections);
+    }
+
+    /// Every line of the paragraph above an underline is the heading's title.
+    #[test]
+    fn a_setext_title_can_run_over_lines() {
+        let text = format!("Deploy and\n  roll back\n===\n\n{}\n", words(60));
+        let sections = sections("f.md", &text, &Words);
+        assert_eq!(names(&sections), ["f.md › Deploy and roll back"]);
+        check(&text, &sections);
+    }
+
+    /// `---` after a blank line, a list, a quotation, a table or inside a
+    /// fence is a rule or text, not an underline.
+    #[test]
+    fn a_rule_is_not_an_underline() {
+        for between in [
+            "\n\n---\n",
+            "\n\n- item\n---\n",
+            "\n\n> quoted\n---\n",
+            "\n\n| a | b |\n---\n",
+            "\n\n1. first\n---\n",
+            "\n\n```\ncode\n---\n```\n",
+            "\n\n    indented code\n---\n",
+        ] {
+            let text = format!("# Top\n\n{}{between}\n{}\n", words(60), words(60));
+            let sections = sections("f.md", &text, &Words);
+            assert_eq!(names(&sections), ["f.md › Top"], "{between:?}");
+            check(&text, &sections);
+        }
     }
 
     #[test]

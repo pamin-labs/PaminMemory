@@ -628,9 +628,10 @@ and wherever a link it is leads, and is cut as Markdown whatever it holds, so
 absolute by the client before the request leaves, because the server reading
 them may have been started from another directory.
 
-**A file is cut where its headings are.** An ATX heading (`#` to `######`)
-outside a fenced block opens a section, and the section's topic is the file's
-path and the headings above it, each cut to 80 characters, joined by ` › `:
+**A file is cut where its headings are.** A heading outside a fenced block —
+`#` to `######`, or a paragraph underlined with `===` or `---` — opens a
+section, and the section's topic is the file's path and the headings above it,
+each cut to 80 characters, joined by ` › `:
 
 ```console
 $ pamin search "how do we roll back a release" --limit 2    # second hit trimmed
