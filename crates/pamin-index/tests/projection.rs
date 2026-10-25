@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use pamin_core::{Scored, TopicId};
-use pamin_index::{Access, Projection, ProjectionIndex, VectorIndex};
+use pamin_index::{Access, Projection, ProjectionIndex, SpanSource, VectorIndex};
 
 /// A stand-in embedding. These tests exercise the lexical channels, so the
 /// vector only has to be the right width.
@@ -906,7 +906,7 @@ fn a_rebuild_reuses_only_the_vectors_of_unchanged_text() {
         (id(2), vec!["the oncall rota rotates every fortnight"]),
         (id(3), vec!["a topic the old index never held"]),
     ]);
-    assert_eq!(previous.lends(&wanted).expect("count"), 1);
+    assert_eq!(previous.lends(&sources(&wanted)).expect("count"), 1);
     let lent = lent(&previous, &wanted);
     assert_eq!(
         lent.get(&id(1)).map(|(_, vector)| vector.clone()),
@@ -942,6 +942,24 @@ fn a_rebuild_reuses_only_the_vectors_of_unchanged_text() {
     assert!(!dir.exists() && !dir.with_extension("previous").exists());
 }
 
+/// Each text of `wanted` as a span its index recorded no header for, which
+/// is how every document these tests write without one reads back.
+fn sources<'a>(wanted: &HashMap<TopicId, Vec<&'a str>>) -> HashMap<TopicId, Vec<SpanSource<'a>>> {
+    wanted
+        .iter()
+        .map(|(topic, texts)| {
+            let spans = texts
+                .iter()
+                .map(|text| SpanSource {
+                    text,
+                    header: "anything",
+                })
+                .collect();
+            (*topic, spans)
+        })
+        .collect()
+}
+
 /// Everything a set-aside index lends for `wanted`, by topic.
 fn lent(
     previous: &pamin_index::Previous,
@@ -949,8 +967,8 @@ fn lent(
 ) -> HashMap<TopicId, (String, Vec<f32>)> {
     let mut lent = HashMap::new();
     let topics = previous
-        .lend(wanted, 256, |documents, _| {
-            for (topic, ordinal, content, vector) in documents {
+        .lend(&sources(wanted), 256, |documents, _| {
+            for (topic, ordinal, content, _, vector) in documents {
                 assert_eq!(*ordinal, 0, "every memory here is one span");
                 lent.insert(*topic, (content.to_string(), vector.to_vec()));
             }
@@ -1009,7 +1027,7 @@ fn a_rebuild_keeps_what_produced_each_lent_vector() {
     let rebuilt = open();
     let mut batches: Vec<(Option<String>, usize)> = Vec::new();
     let lent = previous
-        .lend(&wanted, 2, |documents, encoding| {
+        .lend(&sources(&wanted), 2, |documents, encoding| {
             batches.push((encoding.map(str::to_string), documents.len()));
             rebuilt.write_spans(documents, encoding)
         })
@@ -1024,10 +1042,12 @@ fn a_rebuild_keeps_what_produced_each_lent_vector() {
         let stored = stored.first().expect("lent");
         assert_eq!(stored.encoding.as_deref(), plan, "{topic:?}");
     }
-    let wanted: Vec<(TopicId, &[&str])> = topics
-        .iter()
-        .map(|topic| (*topic, &["same text"][..]))
-        .collect();
+    let same = [SpanSource {
+        text: "same text",
+        header: "anything",
+    }];
+    let wanted: Vec<(TopicId, &[SpanSource<'_>])> =
+        topics.iter().map(|topic| (*topic, &same[..])).collect();
     assert_eq!(
         rebuilt.holds(&wanted, "cpu:one").expect("holds"),
         [true, false, true, false, true]
@@ -1122,7 +1142,10 @@ fn a_rebuild_lends_through_the_iterator_what_keyed_reads_return() {
     let previous = Previous::set_aside(&dir)
         .expect("set aside")
         .expect("an index built now lends its vectors");
-    assert_eq!(previous.lends(&wanted).expect("count"), expected.len());
+    assert_eq!(
+        previous.lends(&sources(&wanted)).expect("count"),
+        expected.len()
+    );
     let lent = lent(&previous, &wanted);
     assert_eq!(lent.len(), expected.len());
     for (topic, want) in &expected {
@@ -1178,11 +1201,13 @@ fn a_document_reads_back_as_it_was_written() {
                 content: "the release train leaves on fridays".to_string(),
                 embedding: pamin_index::as_stored(&separated(3)),
                 encoding: None,
+                header: None,
             }],
             vec![Stored {
                 content: "the oncall rota rotates weekly".to_string(),
                 embedding: pamin_index::as_stored(&separated(2)),
                 encoding: None,
+                header: None,
             }],
             vec![],
         ],
@@ -1307,7 +1332,7 @@ fn an_index_keyed_by_the_identifier_as_written_keeps_answering() {
         .expect("an index whose vectors are current lends them");
     let wanted = HashMap::from([(topics[0], vec![texts[0]]), (topics[1], vec![texts[1]])]);
     assert_eq!(
-        previous.lends(&wanted).expect("count"),
+        previous.lends(&sources(&wanted)).expect("count"),
         2,
         "the set-aside index was read with a spelling it was not written in"
     );
@@ -1315,7 +1340,7 @@ fn an_index_keyed_by_the_identifier_as_written_keeps_answering() {
         ProjectionIndex::open(&dir, &legacy, VectorIndex::default(), Access::ReadWrite, 0)
             .expect("rebuild");
     let lent = previous
-        .lend(&wanted, 256, |documents, encoding| {
+        .lend(&sources(&wanted), 256, |documents, encoding| {
             rebuilt.write_spans(documents, encoding)
         })
         .expect("lend");
@@ -1812,12 +1837,12 @@ fn an_fp32_index_from_before_is_refused_and_lends_to_its_rebuild() {
         .expect("set aside")
         .expect("an fp32 index of the same model and encoding lends its vectors");
     let wanted = HashMap::from([(id(1), vec![texts[0]]), (id(2), vec![texts[1]])]);
-    assert_eq!(previous.lends(&wanted).expect("count"), 2);
+    assert_eq!(previous.lends(&sources(&wanted)).expect("count"), 2);
     let rebuilt =
         ProjectionIndex::open(&dir, &legacy, VectorIndex::default(), Access::ReadWrite, 0)
             .expect("rebuild");
     previous
-        .lend(&wanted, 256, |documents, encoding| {
+        .lend(&sources(&wanted), 256, |documents, encoding| {
             rebuilt.write_spans(documents, encoding)
         })
         .expect("lend");
@@ -1868,7 +1893,15 @@ fn a_memory_of_several_spans_is_found_by_each_and_reported_once() {
         .iter()
         .zip(&vectors)
         .enumerate()
-        .map(|(ordinal, (text, vector))| (long, ordinal as u32, *text, vector.as_slice()))
+        .map(|(ordinal, (text, vector))| {
+            (
+                long,
+                ordinal as u32,
+                *text,
+                Some("incident"),
+                vector.as_slice(),
+            )
+        })
         .collect();
     index.replace(&documents, Some("cpu:one")).expect("write");
     index
@@ -1910,24 +1943,58 @@ fn a_memory_of_several_spans_is_found_by_each_and_reported_once() {
     let stored = index.stored(&[long]).expect("read back");
     let texts: Vec<&str> = stored[0].iter().map(|span| span.content.as_str()).collect();
     assert_eq!(texts, spans);
+    assert!(
+        stored[0]
+            .iter()
+            .all(|span| span.header.as_deref() == Some("incident")),
+        "the header each vector was embedded under is recorded"
+    );
+    let sources = |header| -> Vec<SpanSource<'_>> {
+        spans
+            .iter()
+            .map(|text| SpanSource { text, header })
+            .collect()
+    };
+    let (same, renamed) = (sources("incident"), sources("outage"));
+    let other_sources = sources("guide");
     assert_eq!(
         index
             .holds(
                 &[
-                    (long, &spans[..]),
-                    (long, &spans[..2]),
-                    (other, &spans[..1])
+                    (long, &same[..]),
+                    (long, &same[..2]),
+                    (other, &other_sources[..1]),
+                    (long, &renamed[..]),
                 ],
                 "cpu:one"
             )
             .expect("holds"),
-        [true, false, false],
-        "a topic is held only with exactly its spans"
+        [true, false, false, false],
+        "a topic is held only with exactly its spans, each under its header"
+    );
+    let unrecorded = id(3);
+    index
+        .upsert_encoded(
+            &[(unrecorded, "an older document", separated(30).as_slice())],
+            Some("cpu:one"),
+        )
+        .expect("write");
+    index.flush().expect("flush");
+    let older = [SpanSource {
+        text: "an older document",
+        header: "anything",
+    }];
+    assert_eq!(
+        index
+            .holds(&[(unrecorded, &older[..])], "cpu:one")
+            .expect("holds"),
+        [true],
+        "where no header was recorded the text decides, as before headers were"
     );
 
     index
         .replace(
-            &[(long, 0, spans[0], vectors[0].as_slice())],
+            &[(long, 0, spans[0], Some("incident"), vectors[0].as_slice())],
             Some("cpu:one"),
         )
         .expect("rewrite shorter");
@@ -1969,10 +2036,10 @@ fn a_rebuild_lends_a_memory_of_several_spans_whole_or_not_at_all() {
     index
         .replace(
             &[
-                (kept, 0, "kept one", vectors[0].as_slice()),
-                (kept, 1, "kept two", vectors[1].as_slice()),
-                (edited, 0, "edited one", vectors[2].as_slice()),
-                (edited, 1, "edited two", vectors[3].as_slice()),
+                (kept, 0, "kept one", None, vectors[0].as_slice()),
+                (kept, 1, "kept two", None, vectors[1].as_slice()),
+                (edited, 0, "edited one", None, vectors[2].as_slice()),
+                (edited, 1, "edited two", None, vectors[3].as_slice()),
             ],
             Some("cpu:one"),
         )
@@ -1987,12 +2054,12 @@ fn a_rebuild_lends_a_memory_of_several_spans_whole_or_not_at_all() {
         (kept, vec!["kept one", "kept two"]),
         (edited, vec!["edited one", "edited two, changed"]),
     ]);
-    assert_eq!(previous.lends(&wanted).expect("count"), 1);
+    assert_eq!(previous.lends(&sources(&wanted)).expect("count"), 1);
     let mut documents: Vec<(TopicId, u32, String)> = Vec::new();
     let lent = previous
-        .lend(&wanted, 256, |batch, encoding| {
+        .lend(&sources(&wanted), 256, |batch, encoding| {
             assert_eq!(encoding, Some("cpu:one"));
-            for (topic, ordinal, text, vector) in batch {
+            for (topic, ordinal, text, _, vector) in batch {
                 assert!(*vector == pamin_index::as_stored(&vectors[*ordinal as usize]));
                 documents.push((*topic, *ordinal, text.to_string()));
             }
@@ -2012,7 +2079,7 @@ fn a_rebuild_lends_a_memory_of_several_spans_whole_or_not_at_all() {
 
     // Fewer spans wanted than held is not the same memory either.
     let shorter = HashMap::from([(kept, vec!["kept one"])]);
-    assert_eq!(previous.lends(&shorter).expect("count"), 0);
+    assert_eq!(previous.lends(&sources(&shorter)).expect("count"), 0);
     previous.discard().expect("discard");
 }
 
@@ -2081,7 +2148,7 @@ fn an_index_keeps_its_grain_and_lends_across_grains() {
     );
     let wanted = HashMap::from([(id(1), vec!["a short memory"])]);
     let lent = previous
-        .lend(&wanted, 256, |documents, encoding| {
+        .lend(&sources(&wanted), 256, |documents, encoding| {
             rebuilt.write_spans(documents, encoding)
         })
         .expect("lend");
