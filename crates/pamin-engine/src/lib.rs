@@ -6,6 +6,7 @@
 //! beside it, which is what keeps `zvec` types from reaching the domain layer.
 
 mod cascade;
+mod cuts;
 mod engine;
 mod reshape;
 mod settings;
