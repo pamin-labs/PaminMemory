@@ -1252,7 +1252,7 @@ impl Engine {
                             text: span.text.clone(),
                         })
                         .collect();
-                    self.models.cuts.put(state.id, name, spans);
+                    self.models.cuts.put(state.id, cap, name, spans);
                     indexed
                 }
                 _ => vec![Indexed {
@@ -2754,7 +2754,7 @@ impl Window {
 
     /// The spans `state` is cut into under `name`, as the index cut it.
     fn cut(&self, state: &TopicState, name: &str) -> Arc<[pamin_index::spans::Span]> {
-        self.cuts.get_or_cut(state.id, name, || {
+        self.cuts.get_or_cut(state.id, self.cap, name, || {
             pamin_index::spans::pack(name, &state.content, &*self.counter, self.cap)
         })
     }
@@ -3298,7 +3298,7 @@ mod tests {
     fn a_window_reads_the_cut_it_was_given_rather_than_cutting_again() {
         let memory = state(&five_spans());
         let window = window(6);
-        let held = window.cuts.get_or_cut(memory.id, "topic", || {
+        let held = window.cuts.get_or_cut(memory.id, 5, "topic", || {
             pamin_index::spans::pack("topic", "q0 q1 q2 q3 q4\n\nq5 q6", &Words, 5)
         });
         assert_eq!(held.len(), 2);
