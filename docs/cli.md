@@ -679,7 +679,7 @@ Ingested 1 files as 2 sections: 1 written, 1 unchanged, 0 held in evidence only
 $ sed -i 's/## Rollback/## Rolling back/' docs/ops.md
 $ pamin ingest docs
 Ingested 1 files as 2 sections: 1 written, 1 unchanged, 0 held in evidence only
-1 sections from an earlier ingest are no longer in these files and are still searchable:
+1 sections from an earlier ingest are no longer in these files and were taken off the retrieval surface:
   handbook/docs/ops.md › Deploy › Rollback
 ```
 
@@ -689,25 +689,33 @@ a new version of its topic, as any write is, and only it is embedded again. An
 edit to a section's text changes that section, and for a section split into
 parts, the part it is in and those after it. Renaming a heading renames every
 section under it: each is recorded afresh under its new name, and the old ones
-are what `missing` lists. On this repository's own 105 Markdown and text files,
+are taken off the retrieval surface. On this repository's own 105 Markdown and text files,
 cut into 4,090 sections, an unchanged re-ingest took 4 to 7 seconds and wrote
 nothing, and a one-word edit wrote one to three sections
 ([measured](../benchmarks/results/ingest/ingest-cost-2026-10-23.md)).
 
-A section that is no longer in a file — its heading renamed or removed — is
-listed under `missing` and stays searchable: nothing in Påmin removes a memory
-yet. A section cut down below the filter's eight characters is likewise left
-saying what it said, and for as long as that lasts it is held on every ingest,
-counted under `held`, and its evidence recorded again each time.
+**A section that is no longer there is taken off the retrieval surface**, and
+listed under `removed`: its heading renamed or removed, or its file deleted
+from a directory the command walked, moved out of it, or now ignored by git.
+Every version of its topic is soft deleted, so search no longer returns it, and
+the edges its content derived are closed. Nothing is lost: its history and its
+evidence stay, `pamin grep` still finds the text, and ingesting the section
+again brings it back as a new version. A file the command found and could not
+read is not where a section went missing, and its sections stay.
 
-`missing` looks under the files the command read and the directories it
-walked: a file deleted from a directory, moved out of it or now ignored by git
-has its sections listed there, though a file the command found and could not
-read does not. Outside what the command named, nothing is looked at, so a
-repository whose directory was renamed or checked out under another name is
-recorded afresh under its new names, and the old ones are listed nowhere. And two directories of the same name ingested
-by separate commands outside any repository name their files alike, so the
-second records its sections as new versions of the first's.
+`--keep-missing` only lists such sections, under `missing`, and leaves them
+searchable. So does any section somebody also wrote by hand with `pamin write`,
+whatever the flag: it is theirs as well as the file's. A section cut down below
+the filter's eight characters is left saying what it said too, and for as long
+as that lasts it is held on every ingest, counted under `held`, and its
+evidence recorded again each time.
+
+Nothing outside what the command named is looked at. A repository whose
+directory was renamed or checked out under another name is recorded afresh
+under its new names, and its old sections stay searchable and are listed
+nowhere. And two directories of the same name ingested by separate commands
+outside any repository name their files alike, so the second records its
+sections as new versions of the first's.
 
 Ingested topics are kept out of the name index the graph channel matches
 memories against. A path and its headings are a name no memory spells out in
@@ -717,8 +725,8 @@ section naming a topic written by hand does. A topic written by hand keeps its
 name if it is later ingested; one ingested first and then written by hand is
 named from the next `pamin reindex`.
 
-`--json` carries every count, the `missing` and `skipped` lists, and the same
-`cascade` and `cascade_lagging` as `import`.
+`--json` carries every count, the `removed`, `missing` and `skipped` lists, and
+the same `cascade` and `cascade_lagging` as `import`.
 
 ## `pamin read`
 
