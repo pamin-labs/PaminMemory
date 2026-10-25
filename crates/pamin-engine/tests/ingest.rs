@@ -14,7 +14,7 @@
 mod support;
 
 use pamin_core::Validity;
-use pamin_engine::Engine;
+use pamin_engine::{Engine, Retired};
 use pamin_index::{Access, VectorIndex};
 use pamin_store::{Connections, Database, Workspace, repository};
 
@@ -342,6 +342,119 @@ async fn a_reindex_keeps_sections_out_of_the_name_index() {
         count(
             &engine,
             "SELECT count(*) FROM topic_name_tokens WHERE project_id = $1"
+        )
+        .await,
+        1
+    );
+}
+
+/// A section a file no longer has is taken off the retrieval surface: every
+/// version soft deleted, nothing current, and the projection and the graph
+/// owed the work that removes it -- while its evidence stays, and ingesting it
+/// again brings it back as a new version.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "provisions postgres"]
+async fn a_retired_section_leaves_the_surface_and_can_come_back() {
+    let (engine, _scratch) = engine().await;
+
+    for content in [TEXT.to_string(), format!("{TEXT} Edited once.")] {
+        engine
+            .remember_section(SECTION, &content, Validity::ALWAYS)
+            .await
+            .expect("ingest")
+            .expect("recorded");
+    }
+    sqlx::query("DELETE FROM index_jobs WHERE project_id = $1")
+        .bind(engine.project.0)
+        .execute(engine.database.pool())
+        .await
+        .expect("settle the queue");
+
+    assert_eq!(
+        engine.retire_section(SECTION).await.expect("retire"),
+        Retired::Retired
+    );
+    assert_eq!(
+        count(
+            &engine,
+            "SELECT count(*) FROM topic_states WHERE project_id = $1 AND deleted_at IS NULL"
+        )
+        .await,
+        0,
+        "a version survived"
+    );
+    assert_eq!(
+        count(
+            &engine,
+            "SELECT count(*) FROM topics WHERE project_id = $1 AND current_state_id IS NOT NULL"
+        )
+        .await,
+        0
+    );
+    assert_eq!(versions(&engine).await, 2, "evidence went with it");
+    assert_eq!(
+        owed(&engine, SECTION).await,
+        ["derive_mentions", "sync_topic_index"]
+    );
+    assert!(
+        repository::file_topic_names(engine.database.pool(), engine.project)
+            .await
+            .expect("file topics")
+            .is_empty(),
+        "a retired section is still listed as on the surface"
+    );
+
+    // Retiring again finds nothing to retire.
+    assert_eq!(
+        engine.retire_section(SECTION).await.expect("again"),
+        Retired::Absent
+    );
+    assert_eq!(
+        engine
+            .retire_section("no such topic")
+            .await
+            .expect("absent"),
+        Retired::Absent
+    );
+
+    // The section is back in the file: a new version, current again.
+    let (verdict, recorded) = engine
+        .remember_section(SECTION, TEXT, Validity::ALWAYS)
+        .await
+        .expect("back")
+        .expect("a returning section is recorded, not unchanged");
+    assert!(verdict.is_promoted());
+    assert_eq!(recorded.state.expect("promoted").version, 3);
+}
+
+/// A topic somebody also wrote by hand is theirs as well as the file's, and
+/// is left on the surface.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "provisions postgres"]
+async fn a_section_written_by_hand_too_is_kept() {
+    let (engine, _scratch) = engine().await;
+    engine
+        .remember_section(SECTION, TEXT, Validity::ALWAYS)
+        .await
+        .expect("ingest")
+        .expect("recorded");
+    engine
+        .remember(
+            SECTION,
+            "A note added by hand to the rollback section.",
+            Validity::ALWAYS,
+        )
+        .await
+        .expect("manual write");
+
+    assert_eq!(
+        engine.retire_section(SECTION).await.expect("retire"),
+        Retired::Kept
+    );
+    assert_eq!(
+        count(
+            &engine,
+            "SELECT count(*) FROM topics WHERE project_id = $1 AND current_state_id IS NOT NULL"
         )
         .await,
         1
