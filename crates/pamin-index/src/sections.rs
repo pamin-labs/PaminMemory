@@ -414,6 +414,7 @@ fn headed(text: &str, body: Range<usize>) -> Vec<Headed> {
         if let Some(opening) = fence(line) {
             open_fence = Some(opening);
             paragraph = None;
+            contained = false;
             has_body = true;
             continue;
         }
@@ -434,6 +435,7 @@ fn headed(text: &str, body: Range<usize>) -> Vec<Headed> {
         }
         if let Some(title) = heading(line) {
             paragraph = None;
+            contained = false;
             open(
                 here,
                 title,
@@ -495,10 +497,62 @@ fn opens_container(line: &str) -> bool {
             && (after.is_empty() || after.starts_with(' '))
     });
     ordered
-        || rest.starts_with(['>', '|', '<'])
+        || rest.starts_with(['>', '|'])
+        || html_block(rest)
         || ["-", "*", "+"]
             .iter()
             .any(|marker| rest == *marker || rest.starts_with(&format!("{marker} ")))
+}
+
+/// Whether `rest` opens an HTML block: a comment, or a tag of an element
+/// CommonMark reads as a block. An inline tag -- `<kbd>`, `<br>` -- or an
+/// autolink opens a paragraph like any other text.
+fn html_block(rest: &str) -> bool {
+    const BLOCKS: [&str; 30] = [
+        "address",
+        "article",
+        "aside",
+        "blockquote",
+        "details",
+        "dialog",
+        "div",
+        "dl",
+        "fieldset",
+        "figcaption",
+        "figure",
+        "footer",
+        "form",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "hr",
+        "li",
+        "nav",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "table",
+        "ul",
+        "script",
+    ];
+    if rest.starts_with("<!--") {
+        return true;
+    }
+    let Some(tag) = rest.strip_prefix("</").or_else(|| rest.strip_prefix('<')) else {
+        return false;
+    };
+    let name: String = tag
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let after = tag[name.len()..].chars().next();
+    BLOCKS.contains(&name.as_str()) && after.is_none_or(|c| matches!(c, ' ' | '>' | '/'))
 }
 
 /// The level of the ATX heading `line` is.
@@ -933,6 +987,32 @@ mod tests {
         );
         assert!(sections[1].content.starts_with("Rollback\n--------"));
         check(&text, &sections);
+    }
+
+    /// An inline tag or an autolink opens a paragraph like other text, and a
+    /// heading or a fence after a list ends the list's hold on what follows.
+    #[test]
+    fn a_setext_heading_follows_inline_html_and_ended_containers() {
+        for (text, title) in [
+            ("<kbd>Ctrl</kbd> copies\n---\n", "<kbd>Ctrl</kbd> copies"),
+            (
+                "<https://example.com> explains\n---\n",
+                "<https://example.com> explains",
+            ),
+            ("- item\n# Section\nTitle\n---\n", "Title"),
+            ("- item\n```\ncode\n```\nTitle\n---\n", "Title"),
+        ] {
+            let text = format!("{text}\n{}\n", words(60));
+            let sections = sections("f.md", &text, &Words);
+            assert!(
+                names(&sections)
+                    .iter()
+                    .any(|name| name.ends_with(&format!("› {title}"))),
+                "{text:?} gave {:?}",
+                names(&sections)
+            );
+            check(&text, &sections);
+        }
     }
 
     /// Every line of the paragraph above an underline is the heading's title.
