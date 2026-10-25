@@ -540,15 +540,31 @@ impl Engine {
         };
         let batched = async {
             let mut connection = self.database.pool().acquire().await?;
-            // A topic that resolves to nothing has nothing to restate, and one
-            // that does not exist has no name to backfill, as one at a time.
+            // A topic that resolves to nothing implies no edges, so the ones
+            // its content derived are closed; one that does not exist has no
+            // name to backfill. As one at a time.
+            let deriving = of_kind(JobKind::DeriveMentions);
             let states = pamin_store::repository::current_states_of(
                 &mut *connection,
                 self.project,
-                &of_kind(JobKind::DeriveMentions),
+                &deriving,
             )
             .await?;
             self.restate_mentions(&mut connection, &states).await?;
+            let resolved: std::collections::HashSet<TopicId> =
+                states.iter().map(|state| state.topic_id).collect();
+            let gone: Vec<(TopicId, Vec<TopicId>)> = deriving
+                .into_iter()
+                .filter(|topic| !resolved.contains(topic))
+                .map(|topic| (topic, Vec::new()))
+                .collect();
+            pamin_store::graph::retract_derived_all(
+                &mut *connection,
+                self.project,
+                pamin_core::EdgeKind::Mentions,
+                &gone,
+            )
+            .await?;
             let named: Vec<(TopicId, String)> = pamin_store::repository::topics_by_id(
                 &mut *connection,
                 self.project,
@@ -606,6 +622,10 @@ impl Engine {
     }
 
     /// Recomputes the edges a topic's current content implies.
+    ///
+    /// A topic that now resolves to nothing implies none, so every edge its
+    /// content derived is closed -- the edges a retired section of a file
+    /// named, which would otherwise outlive the content that claimed them.
     async fn derive_topic_mentions(&self, topic: TopicId) -> Result<()> {
         let states = pamin_store::repository::current_states_of(
             self.database.pool(),
@@ -615,6 +635,13 @@ impl Engine {
         .await?;
 
         let Some(state) = states.first().cloned() else {
+            pamin_store::graph::retract_derived_all(
+                self.database.pool(),
+                self.project,
+                pamin_core::EdgeKind::Mentions,
+                &[(topic, Vec::new())],
+            )
+            .await?;
             return Ok(());
         };
 
