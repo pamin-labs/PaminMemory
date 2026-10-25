@@ -415,27 +415,25 @@ fn fit<'a>(text: &'a str, budget: usize, counter: &dyn TokenCount) -> &'a str {
 }
 
 /// A span's header: `name`, then the heading it sits under, then the opening
-/// of the turn or table it continues, in at most [`HEADER_TOKENS`] tokens. The
-/// heading is shortened first; a header still too long is cut whole.
+/// of the turn or table it continues, in at most [`HEADER_TOKENS`] tokens.
+/// Each part is shortened to the room the parts before it leave, so the
+/// heading keeps its words ahead of a long table header row; a header still
+/// too long is cut whole.
 fn header(
     name: &str,
     heading: Option<&str>,
     continued: Option<&str>,
     counter: &dyn TokenCount,
 ) -> String {
-    let compose = |heading: Option<&str>| {
-        let mut header = name.to_string();
-        for part in [heading, continued].into_iter().flatten() {
-            header.push_str(" > ");
-            header.push_str(part);
-        }
-        header
-    };
-    let mut header = compose(None);
-    if let Some(heading) = heading {
+    let mut header = name.to_string();
+    for part in [heading, continued].into_iter().flatten() {
         let mut room = HEADER_TOKENS.saturating_sub(counter.count(&header));
         while room > 0 {
-            let candidate = compose(Some(fit(heading, room, counter)).filter(|h| !h.is_empty()));
+            let piece = fit(part, room, counter);
+            if piece.is_empty() {
+                break;
+            }
+            let candidate = format!("{header} > {piece}");
             if counter.count(&candidate) <= HEADER_TOKENS {
                 header = candidate;
                 break;
@@ -855,6 +853,35 @@ mod tests {
         assert!(!table("a | b", "---"));
         assert!(!table("a | b", "| x | y |"));
         assert!(!table("no pipes here", "|---|"));
+    }
+
+    /// A long table header row takes only the room the heading leaves, so
+    /// the heading a question names is not pushed out of the header.
+    #[test]
+    fn a_heading_keeps_its_room_ahead_of_a_table_header_row() {
+        let columns = (0..30).map(|c| format!("c{c}")).collect::<Vec<_>>();
+        let header_row = format!("| {} |", columns.join(" | "));
+        let delimiter = format!("|{}|", vec!["---"; 30].join("|"));
+        let rows = (0..30)
+            .map(|row| format!("| {} |", vec![format!("r{row}"); 30].join(" | ")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let content =
+            format!("## Rotated rerun of the verifier\n\n{header_row}\n{delimiter}\n{rows}");
+        let spans = pack("notes", &content, &Words, 120);
+        check(&content, &spans, 120);
+        let continuing = spans
+            .iter()
+            .find(|span| span.text.starts_with("| r"))
+            .expect("a continuing span");
+        assert!(
+            continuing
+                .header
+                .starts_with("notes > Rotated rerun of the verifier > | c0 "),
+            "{}",
+            continuing.header
+        );
+        assert!(Words.count(&continuing.header) <= HEADER_TOKENS);
     }
 
     /// The same memory always packs the same way, and every packing holds
