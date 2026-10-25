@@ -14,6 +14,11 @@ pub struct Args {
     /// this directory calls these paths rather than what its own does.
     #[arg(required = true)]
     pub paths: Vec<PathBuf>,
+
+    /// Leave sections these files no longer have searchable, and only list
+    /// them, rather than taking them off the retrieval surface.
+    #[arg(long)]
+    pub keep_missing: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -31,7 +36,11 @@ pub struct Ingested {
     pub held: usize,
     /// Memories an earlier ingest recorded from these files whose section is
     /// no longer in them, or from files under these directories that are no
-    /// longer there. They stay searchable: nothing here removes a memory.
+    /// longer there, which this ingest took off the retrieval surface. Their
+    /// history stays, and ingesting the section again brings it back.
+    pub removed: Vec<String>,
+    /// The same, left searchable: every one of them under `--keep-missing`,
+    /// and otherwise those somebody also wrote by hand.
     pub missing: Vec<String>,
     /// Files skipped, with why: not UTF-8, or unreadable.
     pub skipped: Vec<String>,
@@ -47,12 +56,18 @@ pub fn render(result: &Ingested) -> String {
         "Ingested {} files as {} sections: {} written, {} unchanged, {} held in evidence only",
         result.files, result.sections, result.written, result.unchanged, result.held
     );
-    if !result.missing.is_empty() {
+    for (names, what) in [
+        (&result.removed, "were taken off the retrieval surface"),
+        (&result.missing, "are still searchable"),
+    ] {
+        if names.is_empty() {
+            continue;
+        }
         out.push_str(&format!(
-            "\n{} sections from an earlier ingest are no longer in these files and are still searchable:",
-            result.missing.len()
+            "\n{} sections from an earlier ingest are no longer in these files and {what}:",
+            names.len()
         ));
-        for name in &result.missing {
+        for name in names {
             out.push_str(&format!("\n  {name}"));
         }
     }
