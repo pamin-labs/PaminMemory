@@ -848,7 +848,8 @@ pub fn vector_index_lags(documents: u64, completeness: f32, budget: std::num::No
 /// rebuild builds the one its caller asks for. Either grain is read the same
 /// way: a document is a span of a topic, keyed by [`Keys::span_key`], and a
 /// memory that is one span is keyed and embedded as a whole topic always was.
-/// What the grain decides is only how a memory is cut when it is written.
+/// What the grain decides is how a memory is cut when it is written, and so
+/// how deep an exact channel asks to find enough topics ([`deepest`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Grain {
     /// A whole memory, cut nowhere: one document per topic. Every index built
@@ -1396,7 +1397,7 @@ impl ProjectionIndex {
             return Ok(Vec::new());
         }
 
-        deepening(limit, |depth| {
+        deepest(self.grain, limit, |depth| {
             let mut fts = Fts::new()?;
             fts.set_match_string(query)?;
             let mut search = SearchQuery::fts(field, &fts, depth as i32)?;
@@ -1414,11 +1415,17 @@ impl ProjectionIndex {
             // it costs one accessor per candidate on a result set already in memory.
             // BM25, where larger is already better.
             let docs = self.collection.query(&search)?;
-            let full = docs.len() >= depth as usize;
-            Ok((
-                collapse(collect_scored(self.keys, docs, |score| score)),
-                full,
-            ))
+            // Equal scores in the order of their keys, not the engine's: which
+            // of them leads a deeper list depends on how the index is laid out
+            // in segments, and a reshape must not change what a search finds.
+            let mut scored = collect_scored(self.keys, docs, |score| score);
+            scored.sort_by(|left, right| {
+                right
+                    .2
+                    .total_cmp(&left.2)
+                    .then_with(|| (left.0, left.1).cmp(&(right.0, right.1)))
+            });
+            Ok(collapse(scored))
         })
     }
 
@@ -2286,6 +2293,31 @@ fn deepening(
         }
         depth = depth.saturating_mul(2);
     }
+}
+
+/// `limit` topics from one ask of `ask`, for a channel whose ranking is exact.
+///
+/// Where a memory can be several spans, the ask is as deep as [`deepening`]
+/// ever goes. An exact ranking at any depth is the start of the ranking at
+/// every deeper one, so one ask [`DEEPEST`] times deep keeps exactly the topics
+/// that deepening until enough of them collapsed out would have kept, and it
+/// is cheaper: a lexical ask costs what scoring the spans that share a term
+/// with the query costs, and deepening paid that two or three times over
+/// whenever one memory's spans crowded a list. Where every memory is one
+/// document, nothing crowds, and a deeper ask only scores more of them before
+/// the engine can stop: the depth asked is `limit`, as it always was.
+fn deepest(
+    grain: Grain,
+    limit: u32,
+    ask: impl FnOnce(u32) -> Result<Vec<Scored>>,
+) -> Result<Vec<Scored>> {
+    let depth = match grain {
+        Grain::Topic => limit,
+        Grain::Spans(_) => limit.saturating_mul(DEEPEST),
+    };
+    let mut topics = ask(depth)?;
+    topics.truncate(limit as usize);
+    Ok(topics)
 }
 
 /// Whether the spans an index holds for a topic -- their texts and what
