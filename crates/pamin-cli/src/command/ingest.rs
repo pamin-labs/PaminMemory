@@ -259,38 +259,33 @@ fn file(path: &Path, root: &Path) -> Option<File> {
 }
 
 /// The files under `directory` with one of [`EXTENSIONS`], skipping hidden
-/// entries -- `.git` among them -- and symbolic links, which could lead out of
-/// the tree or round in a circle.
+/// entries -- `.git` among them -- symbolic links, which could lead out of the
+/// tree or round in a circle, and whatever git ignores there. A repository's
+/// `node_modules/` or `target/` is full of Markdown nobody wrote for it.
 fn walk(directory: &Path, root: &Path, files: &mut BTreeSet<File>, skipped: &mut Vec<String>) {
-    let entries = match std::fs::read_dir(directory) {
-        Ok(entries) => entries,
-        Err(error) => {
-            skipped.push(format!("{}: {error}", directory.display()));
-            return;
-        }
-    };
-    for entry in entries {
+    let walk = ignore::WalkBuilder::new(directory)
+        .hidden(true)
+        .follow_links(false)
+        // Git's rules only: `.gitignore` in the tree and above it,
+        // `.git/info/exclude` and the user's global excludes, inside a
+        // repository. Not ripgrep's own `.ignore` and `.rgignore`, which a
+        // user writing them meant for a search tool.
+        .ignore(false)
+        .parents(true)
+        .git_ignore(true)
+        .git_exclude(true)
+        .git_global(true)
+        .build();
+    for entry in walk {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
-                skipped.push(format!("{}: {error}", directory.display()));
+                skipped.push(error.to_string());
                 continue;
             }
         };
-        if entry.file_name().to_string_lossy().starts_with('.') {
-            continue;
-        }
         let path = entry.path();
-        let kind = match entry.file_type() {
-            Ok(kind) => kind,
-            Err(error) => {
-                skipped.push(format!("{}: {error}", path.display()));
-                continue;
-            }
-        };
-        if kind.is_dir() {
-            walk(&path, root, files, skipped);
-        } else if kind.is_file()
+        let is_text = entry.file_type().is_some_and(|kind| kind.is_file())
             && path
                 .extension()
                 .and_then(|extension| extension.to_str())
@@ -298,14 +293,15 @@ fn walk(directory: &Path, root: &Path, files: &mut BTreeSet<File>, skipped: &mut
                     EXTENSIONS
                         .iter()
                         .any(|known| extension.eq_ignore_ascii_case(known))
-                })
-        {
-            match file(&path, root) {
-                Some(file) => {
-                    files.insert(file);
-                }
-                None => skipped.push(format!("{}: name is not UTF-8", path.display())),
+                });
+        if !is_text {
+            continue;
+        }
+        match file(path, root) {
+            Some(file) => {
+                files.insert(file);
             }
+            None => skipped.push(format!("{}: name is not UTF-8", path.display())),
         }
     }
 }
@@ -501,6 +497,66 @@ mod tests {
         .unwrap();
         std::fs::write(root.join("wt/y.md"), "text").unwrap();
         assert_eq!(names(&[root.join("wt/y.md")]), ["wt/y.md"]);
+    }
+
+    /// Inside a repository, what git ignores is not read: by a `.gitignore`
+    /// in the tree, in a directory under it, or above the directory named,
+    /// and by `.git/info/exclude`.
+    #[test]
+    fn what_git_ignores_is_not_read() {
+        let tree = tempfile::tempdir().unwrap();
+        let root = tree.path();
+        std::fs::create_dir_all(root.join(".git/info")).unwrap();
+        std::fs::write(
+            root.join(".gitignore"),
+            "build/\n*.draft.md\ndocs/private/\n",
+        )
+        .unwrap();
+        std::fs::write(root.join(".git/info/exclude"), "scratch.md\n").unwrap();
+        for name in [
+            "keep.md",
+            "a.draft.md",
+            "scratch.md",
+            "build/out.md",
+            "docs/guide.md",
+            "docs/private/secret.md",
+            "docs/notes/local.md",
+            "docs/notes/kept.md",
+        ] {
+            std::fs::create_dir_all(root.join(name).parent().unwrap()).unwrap();
+            std::fs::write(root.join(name), "text").unwrap();
+        }
+        std::fs::write(root.join("docs/notes/.gitignore"), "local.md\n").unwrap();
+
+        let base = base(root);
+        assert_eq!(
+            names(&[root.to_path_buf()]),
+            [
+                format!("{base}/docs/guide.md"),
+                format!("{base}/docs/notes/kept.md"),
+                format!("{base}/keep.md"),
+            ]
+        );
+        // Named below the `.gitignore` that excludes part of it.
+        assert_eq!(
+            names(&[root.join("docs")]),
+            [
+                format!("{base}/docs/guide.md"),
+                format!("{base}/docs/notes/kept.md"),
+            ]
+        );
+    }
+
+    /// Outside a repository a `.gitignore` is a file like any other, as it is
+    /// to git.
+    #[test]
+    fn outside_a_repository_nothing_is_ignored() {
+        let tree = tempfile::tempdir().unwrap();
+        let root = tree.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".gitignore"), "*.md\n").unwrap();
+        std::fs::write(root.join("a.md"), "text").unwrap();
+        assert_eq!(names(&[root]), ["notes/a.md"]);
     }
 
     #[test]
