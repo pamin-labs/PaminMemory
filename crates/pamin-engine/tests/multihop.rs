@@ -589,12 +589,12 @@ async fn search_answers_questions_that_take_several_steps() {
     if std::env::var("CHANNELS").is_ok() {
         assert_eq!(engine.passage(), pamin_index::Passage::Named);
     }
-    write_corpus(&engine, &corpus, &mut shape, "primary", &workspace).await;
+    let expected = write_corpus(&engine, &corpus, &mut shape, "primary", &workspace).await;
     if std::env::var("CHANNELS").is_ok() {
         assert_eq!(engine.passage(), pamin_index::Passage::Named);
         assert_eq!(
             engine.indexed_documents().expect("count documents") as usize,
-            corpus.memories.len()
+            expected
         );
     }
 
@@ -746,7 +746,7 @@ async fn search_answers_questions_that_take_several_steps() {
             "entities",
             &entities,
             workspace.root(),
-            corpus.memories.len(),
+            memories(&corpus),
         )
         .await;
         reach(&entities, &corpus, "with shared names").await;
@@ -908,23 +908,25 @@ async fn search_answers_questions_that_take_several_steps() {
     }
 }
 
+/// Each memory of `corpus` as a name and its content.
+fn memories(corpus: &Corpus) -> impl Iterator<Item = (&str, &str)> {
+    corpus
+        .memories
+        .iter()
+        .map(|memory| (memory.title.as_str(), memory.text.as_str()))
+}
+
 /// Hands the index to `shape` under `label` (see `harness::index`), then
-/// writes every memory not already a topic and runs the queue.
+/// writes every memory not already a topic and runs the queue. Returns how
+/// many documents the index holds for them.
 async fn write_corpus(
     engine: &Engine,
     corpus: &Corpus,
     shape: &mut Shape,
     label: &str,
     workspace: &Workspace,
-) {
-    harness::index(
-        shape,
-        label,
-        engine,
-        workspace.root(),
-        corpus.memories.len(),
-    )
-    .await;
+) -> usize {
+    let expected = harness::index(shape, label, engine, workspace.root(), memories(corpus)).await;
     let mut written = 0usize;
     for memory in &corpus.memories {
         if !harness::write_absent(
@@ -947,6 +949,7 @@ async fn write_corpus(
     if written > 0 {
         println!("  wrote {written} of {} memories", corpus.memories.len());
     }
+    expected
 }
 
 /// Edges from the names a memory's text shares with another's, priced against
