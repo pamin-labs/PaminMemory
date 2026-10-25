@@ -345,6 +345,7 @@ impl Reshape {
                     *topic,
                     ordinal as u32,
                     span.content.as_str(),
+                    span.header.as_deref(),
                     span.embedding.as_slice(),
                 ));
             }
@@ -812,6 +813,7 @@ mod tests {
                         content: content(n),
                         embedding: crate::as_stored(&vector(n)),
                         encoding: Some(SERVED_ENCODING.to_string()),
+                        header: None,
                     }],
                 )
             })
@@ -820,6 +822,7 @@ mod tests {
             content: "memory number 5 was edited".to_string(),
             embedding: crate::as_stored(&vector(1005)),
             encoding: Some("cuda:edited".to_string()),
+            header: None,
         }];
         // Written with nothing recorded, and copied the same way.
         if let Some((_, written)) = expected.last_mut() {
