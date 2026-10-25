@@ -1275,6 +1275,19 @@ necessary, to push down results the index should not have been returning. With
 one document per topic both go away: history is read by version from the ledger
 and is never ranked, so `search` returns current states only.
 
+Since 2026-10-25 "one document" is read at the grain of a span: a topic's
+current state is cut into spans of at most 200 tokens along its own structure,
+each span is a document, and a topic is ranked by its best span, so it still
+takes one place in a channel's list however many spans it has. What the
+paragraph above argues is unchanged -- a topic's history is never indexed --
+and a state that fits in one span is indexed exactly as before. The reason is
+length rather than history: the vector channel reads the first 512 tokens of a
+document and the reranker the first 256, so a whole-session memory was judged
+by its opening. Spans are derived and rebuildable, never stored in PostgreSQL;
+an index records the grain it was built with, and `pamin reindex` rebuilds an
+older one into spans. The measurements are in [what the project
+measures](../measured.md).
+
 All three criteria improve: four fewer query groups per search, four fewer channels of code and index, and no double-weighted recency or importance.
 
 ### Segmentation: ICU4X in the application layer
