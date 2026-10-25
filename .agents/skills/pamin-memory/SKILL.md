@@ -121,6 +121,21 @@ Results are **topics at what each says now**. A topic rewritten fourteen times
 is one result, not fourteen, and the `version` reported is its current one.
 Earlier versions are read, not ranked — `read --version-offset` reaches them.
 
+**Long memories are fine; read around the hit.** A memory is indexed as spans
+of about 200 tokens, so a whole session or file written as one memory is found
+by a passage deep inside it. A hit on such a memory returns the matching span
+and one either side, with a `span` field (`ordinal`, `of`, `header`, `start`,
+`end`) — not the whole memory. If the answer is not in that window, read
+around it rather than searching again:
+
+```bash
+pamin read incident_2026_03 --span 4 --around 2   # spans 2..6
+pamin read incident_2026_03                       # the whole memory
+```
+
+A hit with no `span` field is a memory short enough to be one span, and its
+`content` is all of it.
+
 ### Reading the `why` trace
 
 Every hit explains itself. This is the part worth actually reading, because it

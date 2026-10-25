@@ -640,6 +640,27 @@ without an interval carries none, and the fields appear only when it has one.
 `source_span` is the evidence this version was promoted from, and `pamin grep`
 is what reads it.
 
+A long memory is indexed as spans (see [Long memories](#long-memories-spans)),
+and `--span` reads one of them, numbered from 0 the way `pamin search` reports
+them; `--around N` adds N spans either side. The `content` is then that run of
+the memory and a `span` field says where it lies:
+
+```console
+$ pamin read incident_2026_03 --span 4 --around 1 --json
+{
+  "topic": "incident_2026_03",
+  "version": 1,
+  "content": "...",
+  ...
+  "span": { "ordinal": 4, "of": 12, "header": "incident_2026_03 > Timeline", "start": 2210, "end": 3391 }
+}
+```
+
+`ordinal` is the span asked for, `of` how many the memory is cut into,
+`header` the memory's name and the heading the run sits under, and `start` and
+`end` the run's bytes in the memory's content. A historical version is cut the
+same way, by the project's index.
+
 An offset past the oldest surviving version clamps rather than failing, and
 `actual_version_offset` reports how far the read actually reached. A caller
 walking backwards can therefore stop when the two stop agreeing instead of
@@ -854,6 +875,38 @@ $ pamin search "how do we deploy" --limit 1 --json --pretty
   ]
 }
 ```
+
+### Long memories: spans
+
+A memory is indexed as spans of at most 200 tokens, cut where its structure
+allows -- a Markdown heading, a turn in a conversation, a paragraph -- so a
+whole session or file can be written as one memory and still be found by a
+passage deep inside it. Each span is found by every channel on its own, a
+memory is ranked by its best span, and the reranker reads that span with one
+either side rather than the memory's opening. A memory short enough to be one
+span is indexed exactly as it always was.
+
+A hit on a memory of more than one span returns that window, not the whole
+memory, and says which spans it is:
+
+```json
+"span": { "ordinal": 4, "of": 12, "header": "incident_2026_03 > Timeline", "start": 1104, "end": 3391 }
+```
+
+The window is the best span and one either side, `start` and `end` its bytes
+in the memory. `pamin read <topic> --span 4 --around 2` reads further around
+it, and `pamin read <topic>` reads all of it. A hit with no `span` field is a
+memory of one span, and its `content` is the whole memory.
+
+Measured against whole-memory indexing, spans rank the right memory higher on
+every corpus tried -- nDCG@10 0.527 → 0.873 on LoCoMo with one memory per
+session -- and return far fewer bytes per hit. On long conversation sessions
+the window can miss the turn that answers the question when that turn is not
+next to the best span; read around the hit when the answer is not in it.
+
+An index keeps the grain it was built with. One built before spans holds one
+document per memory and searches as it always did; `pamin reindex` rebuilds it
+into spans.
 
 ### Reading the `why` trace
 
@@ -1279,7 +1332,10 @@ rather than a migration. Relationships are unaffected: they live in the
 authority store, not the index.
 
 Run it after changing `--vector-index`, on a project indexed under a retired
-profile, or after deleting the index directory. It rebuilds one project — the one named by `--project` — and
+profile, or after deleting the index directory. It is also how an index built
+before [spans](#long-memories-spans), one document per memory, is cut into
+them: an index keeps the grain it was built with, and a rebuild uses the
+current one. It rebuilds one project — the one named by `--project` — and
 leaves the rest alone. An index built before the vector indexes existed stored
 fp32 vectors under an in-memory graph; it is refused with a message naming
 this command, and rebuilding it reuses every vector it holds.
