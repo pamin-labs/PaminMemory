@@ -105,8 +105,13 @@ impl Generations {
         Some(spans)
     }
 
+    /// Keeps nothing larger than a generation, which would hold more than
+    /// the bound alone; it is cut again when reached.
     fn insert(&mut self, key: Key, spans: Arc<[Span]>, budget: usize) {
         let size = bytes(&spans);
+        if size > budget {
+            return;
+        }
         if self.bytes + size > budget && !self.current.is_empty() {
             self.previous = std::mem::take(&mut self.current);
             self.bytes = 0;
@@ -165,6 +170,24 @@ mod tests {
         cuts.put(state, 8, "name", vec![span("one")]);
         let recut = cuts.get_or_cut(state, 16, "name", || vec![span("two")]);
         assert_eq!(recut[0].text, "two");
+    }
+
+    #[test]
+    fn a_cut_larger_than_a_generation_is_not_kept() {
+        let size = bytes(&[span("0123456789")]);
+        let cuts = Cuts::with_budget(size);
+        let (small, large) = (TopicStateId::new(), TopicStateId::new());
+        cuts.put(small, 8, "", vec![span("0123456789")]);
+        cuts.put(large, 8, "", vec![span("0123456789"), span("0123456789")]);
+        cuts.get_or_cut(small, 8, "", || {
+            panic!("a cut too large retired what was held")
+        });
+        let mut cut = false;
+        cuts.get_or_cut(large, 8, "", || {
+            cut = true;
+            Vec::new()
+        });
+        assert!(cut, "a cut larger than a generation was kept");
     }
 
     #[test]
