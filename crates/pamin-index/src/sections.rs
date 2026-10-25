@@ -369,6 +369,10 @@ fn headed(text: &str, body: Range<usize>) -> Vec<Headed> {
     // after it would make a heading: where it began, its lines, and whether
     // the section had anything in it before the paragraph did.
     let mut paragraph: Option<(usize, Vec<&str>, bool)> = None;
+    // Inside a list, a quotation, a table or an HTML block, until a blank
+    // line: what follows on its lines is its, not a paragraph a setext
+    // underline could make a heading of.
+    let mut contained = false;
 
     // A heading over `from..`, titled `title`, at `level`.
     let mut open = |from: usize,
@@ -443,13 +447,15 @@ fn headed(text: &str, body: Range<usize>) -> Vec<Headed> {
         }
 
         let blank = line.trim().is_empty();
+        let container = opens_container(line);
+        contained = !blank && (contained || container);
         paragraph = match paragraph.take() {
-            _ if blank => None,
+            _ if blank || contained => None,
             Some((from, mut lines, had_body)) => {
                 lines.push(line.trim());
                 Some((from, lines, had_body))
             }
-            None if opens_paragraph(line) => Some((here, vec![line.trim()], has_body)),
+            None if indented(line).is_some() => Some((here, vec![line.trim()], has_body)),
             None => None,
         };
         has_body |= !blank;
@@ -477,21 +483,22 @@ fn setext(line: &str) -> Option<usize> {
     rest.chars().all(|c| c == marker).then_some(level)
 }
 
-/// Whether `line` can open a paragraph, which a setext underline turns into a
-/// heading: not a list item, a quotation or a table row, which an underline
-/// after them is a rule under, and not indented code.
-fn opens_paragraph(line: &str) -> bool {
+/// Whether `line` opens a block a setext underline cannot follow as a
+/// heading's: a list item, a quotation, a table row or HTML.
+fn opens_container(line: &str) -> bool {
     let Some(rest) = indented(line) else {
         return false;
     };
-    let ordered = rest.split_once(['.', ')']).is_some_and(|(number, _)| {
-        !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
+    let ordered = rest.split_once(['.', ')']).is_some_and(|(number, after)| {
+        !number.is_empty()
+            && number.chars().all(|c| c.is_ascii_digit())
+            && (after.is_empty() || after.starts_with(' '))
     });
-    !(ordered
-        || rest.starts_with(['>', '|'])
-        || ["- ", "* ", "+ "]
+    ordered
+        || rest.starts_with(['>', '|', '<'])
+        || ["-", "*", "+"]
             .iter()
-            .any(|marker| rest.starts_with(marker)))
+            .any(|marker| rest == *marker || rest.starts_with(&format!("{marker} ")))
 }
 
 /// The level of the ATX heading `line` is.
@@ -949,6 +956,13 @@ mod tests {
             "\n\n1. first\n---\n",
             "\n\n```\ncode\n---\n```\n",
             "\n\n    indented code\n---\n",
+            // What follows a list item or a quotation on its lines is its own,
+            // and a list item interrupts a paragraph rather than joining it.
+            "\n\n- item\n  continued\n---\n",
+            "\n\n> quoted\nlazily continued\n---\n",
+            "\n\nA paragraph\n- item\n---\n",
+            "\n\n<div>\n---\n",
+            "\n\n<!-- a comment -->\n---\n",
         ] {
             let text = format!("# Top\n\n{}{between}\n{}\n", words(60), words(60));
             let sections = sections("f.md", &text, &Words);
