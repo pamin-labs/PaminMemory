@@ -2393,6 +2393,14 @@ fn an_ingested_file_is_found_by_section_and_re_ingested_by_change() {
     let cli = Cli::new();
     let mut server = cli.serve();
     cli.run(&["init"]);
+    // Written by hand, and named by the rollback section, so the section
+    // derives an edge to it that removing the section has to close.
+    cli.run(&[
+        "write",
+        "--topic",
+        "oncall_rota",
+        "the oncall rota rotates every monday morning",
+    ]);
 
     let tree = tempfile::tempdir().expect("temp tree");
     std::fs::create_dir_all(tree.path().join(".git")).expect("a repository root");
@@ -2411,7 +2419,7 @@ fn an_ingested_file_is_found_by_section_and_re_ingested_by_change() {
                   to production through argo cd once the canary has served traffic for \
                   thirty minutes without raising its error budget alarm.";
     let rollback = "A rollback reverts the deployment pipeline to the previous release tag. \
-                    The oncall engineer starts it from the release dashboard, and the \
+                    Whoever is on the oncall_rota starts it from the release dashboard, and the \
                     previous build is serving again within ten minutes because its image \
                     is still cached on every node in the cluster.";
     put(
@@ -2450,18 +2458,75 @@ fn an_ingested_file_is_found_by_section_and_re_ingested_by_change() {
         "an unchanged section was recorded as held: {again}"
     );
 
-    // One section edited, one removed and reported.
-    put(
-        &ops,
-        &format!("# Deploy\n\n{deploy} Releases are cut every tuesday morning.\n"),
+    let rota_neighbors = |cli: &Cli| -> Vec<String> {
+        cli.json(&["neighbors", "oncall_rota"])["neighbors"]
+            .as_array()
+            .expect("neighbors")
+            .iter()
+            .map(|neighbor| neighbor["topic"].as_str().expect("a topic").to_string())
+            .collect()
+    };
+    assert_eq!(
+        rota_neighbors(&cli),
+        std::slice::from_ref(&rollback_section),
+        "the section's mention of oncall_rota derived no edge"
     );
+
+    // One section edited, one removed: taken off the surface, its edge closed.
+    let without_rollback =
+        format!("# Deploy\n\n{deploy} Releases are cut every tuesday morning.\n");
+    put(&ops, &without_rollback);
     let edited = cli.json(&["ingest", ops.to_str().expect("a path")]);
     assert_eq!(edited["sections"], 1, "{edited}");
     assert_eq!(edited["written"], 1, "{edited}");
     assert_eq!(
-        edited["missing"],
+        edited["removed"],
         serde_json::json!([rollback_section]),
         "{edited}"
+    );
+    assert_eq!(edited["missing"], serde_json::json!([]), "{edited}");
+    let after = cli.json(&["search", "how do we roll back to the previous release"]);
+    assert!(
+        after["hits"]
+            .as_array()
+            .expect("hits")
+            .iter()
+            .all(|hit| hit["topic"] != rollback_section.as_str()),
+        "a removed section is still found: {after}"
+    );
+    assert!(
+        rota_neighbors(&cli).is_empty(),
+        "the removed section's edge was left open"
+    );
+
+    // Back in the file, back on the surface.
+    put(
+        &ops,
+        &format!("# Deploy\n\n{deploy}\n\n## Rollback\n\n{rollback}\n"),
+    );
+    let back = cli.json(&["ingest", docs.to_str().expect("a path")]);
+    assert_eq!(back["written"], 2, "{back}");
+    let found = cli.json(&["search", "how do we roll back to the previous release"]);
+    assert_eq!(
+        found["hits"][0]["topic"],
+        rollback_section.as_str(),
+        "{found}"
+    );
+
+    // Under --keep-missing, a section the file lost is only listed.
+    put(&ops, &without_rollback);
+    let kept = cli.json(&["ingest", "--keep-missing", docs.to_str().expect("a path")]);
+    assert_eq!(kept["removed"], serde_json::json!([]), "{kept}");
+    assert_eq!(
+        kept["missing"],
+        serde_json::json!([rollback_section]),
+        "{kept}"
+    );
+    let still = cli.json(&["search", "how do we roll back to the previous release"]);
+    assert_eq!(
+        still["hits"][0]["topic"],
+        rollback_section.as_str(),
+        "{still}"
     );
 
     server.kill().expect("stopping the server");
