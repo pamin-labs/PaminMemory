@@ -133,7 +133,20 @@ pub async fn ensure_source(
     kind: SourceKind,
     locator: &str,
 ) -> Result<SourceId> {
-    const FIND: &str = "SELECT id FROM sources WHERE project_id = $1 AND locator = $2 FOR UPDATE";
+    Ok(ensure_source_created(connection, project, kind, locator)
+        .await?
+        .0)
+}
+
+/// [`ensure_source`], saying whether this call created the source -- which is
+/// the first time anything was filed under `locator`.
+pub async fn ensure_source_created(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    kind: SourceKind,
+    locator: &str,
+) -> Result<(SourceId, bool)> {
+    const FIND: &str = "SELECT id, false AS created FROM sources WHERE project_id = $1 AND locator = $2 FOR UPDATE";
 
     let row = sqlx::query(
         "WITH found AS (
@@ -145,9 +158,9 @@ pub async fn ensure_source(
              ON CONFLICT (project_id, locator) DO NOTHING
              RETURNING id
          )
-         SELECT id FROM found
+         SELECT id, false AS created FROM found
          UNION ALL
-         SELECT id FROM inserted",
+         SELECT id, true AS created FROM inserted",
     )
     .bind(project.0)
     .bind(locator)
@@ -171,7 +184,7 @@ pub async fn ensure_source(
         }
     };
 
-    Ok(row.get::<uuid::Uuid, _>("id").into())
+    Ok((row.get::<uuid::Uuid, _>("id").into(), row.get("created")))
 }
 
 /// Evidence as the write path records it: the content, the filter's verdict
@@ -497,6 +510,36 @@ pub async fn create_topic_named(
     tokens: usize,
 ) -> Result<LockedTopic> {
     create_topic(connection, project, name, Some((key, tokens))).await
+}
+
+/// Files the name of the topic called `name` in the name index, if the topic
+/// exists and is not filed there yet.
+///
+/// For a topic `pamin ingest` created, which is left out of the index, when
+/// somebody writes it by hand: from then on it is theirs too, and a name
+/// somebody wrote is one a memory may name.
+///
+/// Returns the topic when this call filed it.
+pub async fn name_topic(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    name: &str,
+    key: &str,
+    tokens: usize,
+) -> Result<Option<TopicId>> {
+    let inserted: Option<(uuid::Uuid,)> = sqlx::query_as(
+        "INSERT INTO topic_name_tokens (project_id, topic_id, name_key, token_count)
+         SELECT project_id, id, $3, $4 FROM topics WHERE project_id = $1 AND name = $2
+         ON CONFLICT (project_id, topic_id) DO NOTHING
+         RETURNING topic_id",
+    )
+    .bind(project.0)
+    .bind(name)
+    .bind(key)
+    .bind(i16::try_from(tokens).unwrap_or(i16::MAX))
+    .fetch_optional(executor)
+    .await?;
+    Ok(inserted.map(|(topic,)| topic.into()))
 }
 
 /// [`create_topic_named`] for a topic no memory is expected to name: one cut
