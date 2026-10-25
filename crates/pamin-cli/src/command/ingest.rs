@@ -127,14 +127,17 @@ pub async fn execute(
             sections.iter().map(move |section| (section, root.as_str()))
         })
         .collect();
+    let recorded =
+        pamin_store::repository::file_topic_names(engine.database.pool(), engine.project).await?;
     let gone = gone(
         &Looked {
             read: &read,
             unread: &unread,
             trees: &trees,
+            exists: &|path: &Path| path.exists(),
         },
         &cut.iter().map(|(section, _)| *section).collect::<Vec<_>>(),
-        pamin_store::repository::file_topic_names(engine.database.pool(), engine.project).await?,
+        recorded,
     );
 
     // Every section is a topic of its own -- its name holds its file's path,
@@ -145,6 +148,9 @@ pub async fn execute(
         .max(LEAST_AT_ONCE);
 
     let (mut written, mut unchanged, mut held) = (0, 0, 0);
+    // The sections found unchanged, by the root they were read from: each
+    // records that root, in one statement a root, after the writes.
+    let mut kept_at: std::collections::BTreeMap<&str, Vec<String>> = Default::default();
     let mut lagging = false;
     let mut since_check = 0;
     for chunk in cut.chunks(at_once) {
@@ -158,9 +164,15 @@ pub async fn execute(
         }))
         .await?;
 
-        for outcome in recorded {
+        for (outcome, (section, root)) in recorded.into_iter().zip(chunk) {
             match outcome {
-                None => unchanged += 1,
+                None => {
+                    unchanged += 1;
+                    kept_at
+                        .entry(*root)
+                        .or_default()
+                        .push(pamin_engine::file_locator(&section.name));
+                }
                 Some((verdict, _)) if verdict.is_promoted() => written += 1,
                 Some(_) => held += 1,
             }
@@ -175,6 +187,16 @@ pub async fn execute(
                 engine.drain_cascade(Owed::WhatAMemoryNeeds).await?;
             }
         }
+    }
+
+    for (root, locators) in &kept_at {
+        pamin_store::repository::set_roots_at(
+            engine.database.pool(),
+            engine.project,
+            locators,
+            root,
+        )
+        .await?;
     }
 
     // After the sections are recorded, so a section that moved within a file
@@ -400,6 +422,9 @@ struct Looked<'a> {
     unread: &'a [(String, String)],
     /// The directories it walked.
     trees: &'a [Tree],
+    /// Whether a path is there at all: a file a walk skipped -- hidden, or
+    /// ignored by git, and named on its own some earlier time -- is not gone.
+    exists: &'a dyn Fn(&Path) -> bool,
 }
 
 /// A section an earlier ingest recorded that this one did not cut again.
@@ -453,7 +478,8 @@ fn gone(looked: &Looked, cut: &[&Section], recorded: Vec<FileTopic>) -> Vec<Gone
                 None
             } else {
                 // Under every walked tree that holds it, and retirable if any
-                // of them was walked whole.
+                // of them was walked whole and the file is not on disk after
+                // all, where the walk skipped it.
                 looked
                     .trees
                     .iter()
@@ -465,6 +491,7 @@ fn gone(looked: &Looked, cut: &[&Section], recorded: Vec<FileTopic>) -> Vec<Gone
                     })
                     .map(|tree| tree.whole)
                     .reduce(|left, right| left || right)
+                    .map(|whole| whole && !(looked.exists)(&on_disk(root, file)))
             }
         };
         if let Some(retirable) = retirable {
@@ -477,6 +504,17 @@ fn gone(looked: &Looked, cut: &[&Section], recorded: Vec<FileTopic>) -> Vec<Gone
     }
     gone.sort_by(|left, right| left.name.cmp(&right.name));
     gone
+}
+
+/// Where the file named `file`, named from `root`, would be: its name is the
+/// root's own name and then its path from the root.
+fn on_disk(root: &str, file: &str) -> PathBuf {
+    let root = Path::new(root);
+    let relative = match root.file_name() {
+        Some(_) => file.split_once('/').map_or("", |(_, rest)| rest),
+        None => file,
+    };
+    root.join(relative)
 }
 
 /// The name of the file the section named `name` was cut out of: its name up
@@ -633,6 +671,7 @@ mod tests {
                 read: &[read("repo/a.md")],
                 unread: &[],
                 trees: &[],
+                exists: &|_: &Path| false,
             },
             &[&kept],
             vec![
@@ -656,6 +695,7 @@ mod tests {
                 read: &[read("repo/docs/a.md")],
                 unread: &[read("repo/docs/unreadable.md")],
                 trees: &[tree("repo/docs", true)],
+                exists: &|_: &Path| false,
             },
             &[&kept],
             [
@@ -691,6 +731,7 @@ mod tests {
                 read: &[read("repo/a.md")],
                 unread: &[],
                 trees: &[tree("repo", true)],
+                exists: &|_: &Path| false,
             },
             &[],
             vec![
@@ -712,6 +753,7 @@ mod tests {
                 read: &[read("repo/docs/a.md")],
                 unread: &[],
                 trees: &[tree("repo/docs", false)],
+                exists: &|_: &Path| false,
             },
             &[],
             vec![
@@ -725,6 +767,36 @@ mod tests {
                 ("repo/docs/a.md › Old heading", true),
                 ("repo/docs/locked/b.md › Usage", false)
             ]
+        );
+    }
+
+    /// A file the walk skipped but that is still on disk -- hidden, or ignored
+    /// by git, and named on its own before -- is listed, not retired.
+    #[test]
+    fn a_file_the_walk_skipped_is_not_gone() {
+        let gone = gone(
+            &Looked {
+                read: &[],
+                unread: &[],
+                trees: &[tree("repo", true)],
+                exists: &|path: &Path| path == Path::new("/home/a/repo/.github/CONTRIBUTING.md"),
+            },
+            &[],
+            vec![
+                recorded("repo/.github/CONTRIBUTING.md › Style", ROOT),
+                recorded("repo/deleted.md › Usage", ROOT),
+            ],
+        );
+        assert_eq!(
+            listed(&gone),
+            [
+                ("repo/.github/CONTRIBUTING.md › Style", false),
+                ("repo/deleted.md › Usage", true)
+            ]
+        );
+        assert_eq!(
+            on_disk("/home/a/repo", "repo/docs/a.md"),
+            Path::new("/home/a/repo/docs/a.md")
         );
     }
 

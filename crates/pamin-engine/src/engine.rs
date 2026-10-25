@@ -820,6 +820,12 @@ fn content_hash(content: &str) -> String {
     format!("{:x}", sha2::Sha256::digest(content.as_bytes()))
 }
 
+/// Where a section of a file named `topic` has its evidence filed, for a
+/// caller that addresses its source directly.
+pub fn file_locator(topic: &str) -> String {
+    locator(SourceKind::File, topic)
+}
+
 /// Where a topic's evidence of `kind` is filed: `manual:{topic}` for what was
 /// written by hand, `file:{topic}` for a section of a file, whose name is the
 /// file's path and the headings it sits under.
@@ -1397,7 +1403,9 @@ impl Engine {
     ///
     /// `root` is the directory the file was ingested from, filed with the
     /// section's source so that an ingest of another tree that names its
-    /// files alike can tell the two apart.
+    /// files alike can tell the two apart. A section that writes nothing does
+    /// not file it: [`repository::set_roots_at`] does that for a whole ingest's
+    /// unchanged sections in one statement.
     pub async fn remember_section(
         &self,
         topic: &str,
