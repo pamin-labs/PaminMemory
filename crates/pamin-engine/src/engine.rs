@@ -1259,7 +1259,7 @@ impl Engine {
             repository::current_content(self.database.pool(), self.project, topic).await?;
         let verdict = pamin_core::SensoryFilter::default().judge(content, current.as_deref());
         let recorded = self
-            .record(topic, content, validity, verdict, SourceKind::Manual)
+            .record(topic, content, validity, verdict, SourceKind::Manual, None)
             .await?;
         Ok((verdict, recorded))
     }
@@ -1275,11 +1275,16 @@ impl Engine {
     /// `source_versions` on every ingest, for a version nothing reads. Asked of
     /// the filter's own verdict rather than compared here, so "unchanged" means
     /// exactly what a restatement means everywhere else.
+    ///
+    /// `root` is the directory the file was ingested from, filed with the
+    /// section's source so that an ingest of another tree that names its
+    /// files alike can tell the two apart.
     pub async fn remember_section(
         &self,
         topic: &str,
         content: &str,
         validity: pamin_core::Validity,
+        root: &str,
     ) -> Result<Option<(pamin_core::Verdict, Recorded)>> {
         let current =
             repository::current_content(self.database.pool(), self.project, topic).await?;
@@ -1305,7 +1310,14 @@ impl Engine {
             }
         }
         let recorded = self
-            .record(topic, content, validity, verdict, SourceKind::File)
+            .record(
+                topic,
+                content,
+                validity,
+                verdict,
+                SourceKind::File,
+                Some(root),
+            )
             .await?;
         Ok(Some((verdict, recorded)))
     }
@@ -1318,13 +1330,23 @@ impl Engine {
     /// Only a topic whose every source is a file's. One somebody also wrote
     /// by hand is theirs as well as the file's, and is left alone, as is a
     /// name with no topic or nothing surviving under it.
-    pub async fn retire_section(&self, topic: &str) -> Result<Retired> {
+    ///
+    /// And only while the topic still says what `seen` -- the state the
+    /// ingest found it at -- says: another write since, a concurrent ingest
+    /// that found the section back in its file among them, is newer than the
+    /// question this answers.
+    pub async fn retire_section(&self, topic: &str, seen: TopicStateId) -> Result<Retired> {
         let mut transaction = self.database.pool().begin().await?;
 
         let Some(locked) = repository::lock_topic(&mut transaction, self.project, topic).await?
         else {
             return Ok(Retired::Absent);
         };
+        match locked.current {
+            None => return Ok(Retired::Absent),
+            Some(current) if current != seen => return Ok(Retired::Changed),
+            Some(_) => {}
+        }
         if repository::source_at(
             &mut *transaction,
             self.project,
@@ -1354,6 +1376,7 @@ impl Engine {
         validity: pamin_core::Validity,
         verdict: pamin_core::Verdict,
         kind: SourceKind,
+        root: Option<&str>,
     ) -> Result<Recorded> {
         let (language, confidence) = match pamin_index::detect_language(content) {
             Some((language, confidence)) => (Some(language), Some(confidence)),
@@ -1374,6 +1397,7 @@ impl Engine {
                 validity,
             },
             kind,
+            root,
         )
         .await
     }
@@ -1392,7 +1416,7 @@ impl Engine {
     /// The topic is created only when something is promoted under it, and only
     /// inside this transaction, so a held write leaves no name behind.
     pub async fn write(&self, request: &Write<'_>) -> Result<Recorded> {
-        self.write_from(request, SourceKind::Manual).await
+        self.write_from(request, SourceKind::Manual, None).await
     }
 
     /// [`write`](Self::write), for evidence of `kind`.
@@ -1402,7 +1426,14 @@ impl Engine {
     /// index (see [`repository::create_topic_unnamed`]) -- so it owes no
     /// backfill either, since a backfill looks for memories naming a topic
     /// that cannot be named.
-    async fn write_from(&self, request: &Write<'_>, kind: SourceKind) -> Result<Recorded> {
+    ///
+    /// `root`, for a section of a file, is the directory it was ingested from.
+    async fn write_from(
+        &self,
+        request: &Write<'_>,
+        kind: SourceKind,
+        root: Option<&str>,
+    ) -> Result<Recorded> {
         let mut transaction = self.database.pool().begin().await?;
 
         // Writes to one topic share a source, so their evidence forms a single
@@ -1417,6 +1448,9 @@ impl Engine {
             &locator(kind, request.topic),
         )
         .await?;
+        if let Some(root) = root {
+            repository::set_source_root(&mut *transaction, source, root).await?;
+        }
         // Whether this write creates the topic, and files its name with it.
         let mut created = false;
 
@@ -2521,6 +2555,8 @@ pub enum Retired {
     Retired,
     /// Left on it, because somebody also wrote it by hand.
     Kept,
+    /// Left on it, because it changed after the ingest looked.
+    Changed,
     /// Nothing under that name was on it.
     Absent,
 }
