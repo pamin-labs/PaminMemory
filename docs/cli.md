@@ -619,8 +619,10 @@ Ingested 1 files as 2 sections: 2 written, 0 unchanged, 0 held in evidence only
 ```
 
 A path is a file or a directory. A directory is read recursively for `.md`,
-`.markdown` and `.txt` files, skipping hidden entries — `.git` among them — and
-symbolic links. A file named on the command line is read whatever it is called
+`.markdown` and `.txt` files, skipping hidden entries — `.git` among them —
+symbolic links, and, inside a git repository, whatever git ignores: its
+`.gitignore` files, including any above the directory named,
+`.git/info/exclude` and your global excludes. A file named on the command line is read whatever it is called
 and wherever a link it is leads, and is cut as Markdown whatever it holds, so
 `# ` at the start of a line of code is a heading to it. The paths are made
 absolute by the client before the request leaves, because the server reading
