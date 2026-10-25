@@ -9,9 +9,10 @@
 //! every candidate of every search, and it grows with the memory's length, not
 //! the window's.
 //!
-//! Kept by the state that was cut, which never changes, and the name its spans
-//! were headed with, which can, so an entry is never stale: a memory rewritten
-//! is a new state and a memory renamed is a new key.
+//! Kept by the state that was cut, which never changes, the cap it was cut
+//! to, and the name its spans were headed with, which can, so an entry is
+//! never stale: a memory rewritten is a new state, an index rebuilt at another
+//! grain cuts to another cap, and a memory renamed is a new key.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -24,7 +25,7 @@ use pamin_index::spans::Span;
 /// current one about to be retired.
 const GENERATION_BYTES: usize = 32 << 20;
 
-type Key = (TopicStateId, String);
+type Key = (TopicStateId, usize, String);
 
 /// Cuts, bounded by the bytes they hold.
 ///
@@ -60,8 +61,8 @@ impl Cuts {
         }
     }
 
-    /// The spans `state` was cut into under `name`, cutting it with `cut` only
-    /// when no search or write has yet.
+    /// The spans `state` was cut into to `cap` tokens under `name`, cutting it
+    /// with `cut` only when no search or write has yet.
     ///
     /// The cut runs outside the lock, so two searches reaching the same memory
     /// at once may both cut it; they cut it identically, and the second keeps
@@ -69,10 +70,11 @@ impl Cuts {
     pub(crate) fn get_or_cut(
         &self,
         state: TopicStateId,
+        cap: usize,
         name: &str,
         cut: impl FnOnce() -> Vec<Span>,
     ) -> Arc<[Span]> {
-        let key = (state, name.to_string());
+        let key = (state, cap, name.to_string());
         if let Some(spans) = self.lock().get(&key, self.budget) {
             return spans;
         }
@@ -83,9 +85,9 @@ impl Cuts {
 
     /// Records what a write cut `state` into, which the searches that follow
     /// it would otherwise cut again.
-    pub(crate) fn put(&self, state: TopicStateId, name: &str, spans: Vec<Span>) {
+    pub(crate) fn put(&self, state: TopicStateId, cap: usize, name: &str, spans: Vec<Span>) {
         self.lock()
-            .insert((state, name.to_string()), spans.into(), self.budget);
+            .insert((state, cap, name.to_string()), spans.into(), self.budget);
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Generations> {
@@ -142,8 +144,8 @@ mod tests {
     fn a_held_cut_is_not_cut_again() {
         let cuts = Cuts::default();
         let state = TopicStateId::new();
-        let first = cuts.get_or_cut(state, "name", || vec![span("one")]);
-        let again = cuts.get_or_cut(state, "name", || panic!("cut again"));
+        let first = cuts.get_or_cut(state, 8, "name", || vec![span("one")]);
+        let again = cuts.get_or_cut(state, 8, "name", || panic!("cut again"));
         assert!(Arc::ptr_eq(&first, &again));
     }
 
@@ -151,9 +153,18 @@ mod tests {
     fn a_new_name_is_cut_again() {
         let cuts = Cuts::default();
         let state = TopicStateId::new();
-        cuts.put(state, "old", vec![span("one")]);
-        let renamed = cuts.get_or_cut(state, "new", || vec![span("two")]);
+        cuts.put(state, 8, "old", vec![span("one")]);
+        let renamed = cuts.get_or_cut(state, 8, "new", || vec![span("two")]);
         assert_eq!(renamed[0].text, "two");
+    }
+
+    #[test]
+    fn another_cap_is_cut_again() {
+        let cuts = Cuts::default();
+        let state = TopicStateId::new();
+        cuts.put(state, 8, "name", vec![span("one")]);
+        let recut = cuts.get_or_cut(state, 16, "name", || vec![span("two")]);
+        assert_eq!(recut[0].text, "two");
     }
 
     #[test]
@@ -161,17 +172,17 @@ mod tests {
         let size = bytes(&[span("0123456789")]);
         let cuts = Cuts::with_budget(2 * size);
         let (kept, dropped) = (TopicStateId::new(), TopicStateId::new());
-        cuts.put(kept, "", vec![span("0123456789")]);
-        cuts.put(dropped, "", vec![span("0123456789")]);
+        cuts.put(kept, 8, "", vec![span("0123456789")]);
+        cuts.put(dropped, 8, "", vec![span("0123456789")]);
         // Fills the first generation: both move to the previous one.
-        cuts.put(TopicStateId::new(), "", vec![span("0123456789")]);
+        cuts.put(TopicStateId::new(), 8, "", vec![span("0123456789")]);
         // Reached, so moved to the current generation.
-        cuts.get_or_cut(kept, "", || panic!("dropped too soon"));
+        cuts.get_or_cut(kept, 8, "", || panic!("dropped too soon"));
         // Retires the generation holding `dropped`.
-        cuts.put(TopicStateId::new(), "", vec![span("0123456789")]);
-        cuts.get_or_cut(kept, "", || panic!("dropped what was reached"));
+        cuts.put(TopicStateId::new(), 8, "", vec![span("0123456789")]);
+        cuts.get_or_cut(kept, 8, "", || panic!("dropped what was reached"));
         let mut cut = false;
-        cuts.get_or_cut(dropped, "", || {
+        cuts.get_or_cut(dropped, 8, "", || {
             cut = true;
             vec![span("0123456789")]
         });
