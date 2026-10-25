@@ -9,9 +9,9 @@ pub struct Args {
     /// Markdown or plain-text files, or directories to read them from.
     ///
     /// A directory is read recursively for `.md`, `.markdown` and `.txt`
-    /// files, skipping hidden entries and symbolic links. Made absolute here,
-    /// before the request leaves, so the server reads what this directory
-    /// calls these paths rather than what its own does.
+    /// files, skipping hidden entries, symbolic links and what git ignores.
+    /// Made absolute here, before the request leaves, so the server reads what
+    /// this directory calls these paths rather than what its own does.
     #[arg(required = true)]
     pub paths: Vec<PathBuf>,
 }
