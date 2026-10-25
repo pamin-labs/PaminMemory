@@ -1,13 +1,11 @@
-//! What the size of a section is worth to retrieval: Qasper, through `pamin
-//! ingest`'s cutting and `pamin search`'s entry point.
+//! What cutting a file at its headings is worth to retrieval: Qasper, through
+//! `pamin ingest`'s cutting and `pamin search`'s entry point.
 //!
-//! **What this is here to settle.** `pamin ingest` cuts a file into sections
-//! sized so the reranker reads all of each beside its name -- about two
-//! hundred tokens -- and that size was chosen from the reranker's window and
-//! from published chunking studies, not from a measurement here. This asks
-//! whether a section of another size retrieves better on documents nobody
-//! here wrote, and what recording a file whole, without cutting it, would
-//! cost.
+//! **What this is here to settle.** `pamin ingest` records a file as one
+//! memory per heading section, and leaves size to the index, which cuts every
+//! memory into spans. This asks what that is worth on documents nobody here
+//! wrote, against recording each file whole and letting the index's spans do
+//! all the cutting.
 //!
 //! **The corpus.** Qasper (Dasigi et al., NAACL 2021): NLP papers in their
 //! sections and paragraphs, and questions about each one written by people who
@@ -35,8 +33,8 @@
 //!
 //! **The arms**, each a project of its own built from the same papers:
 //! `whole`, every paper one memory, which is what recording files without
-//! cutting them would be; `shipped`, what `sections` cuts; and the same cut at
-//! fixed caps of [`CAPS`] tokens, through `sections_capped`.
+//! cutting them would be; and `shipped`, what `sections` cuts. In both the
+//! index cuts every memory into spans as it would in the product.
 //!
 //! **The rule, written before the table was read.** The shipped size stays
 //! unless the setting a five-fold cross-validation chooses -- folds by paper,
@@ -76,7 +74,7 @@ use std::process::Command;
 use std::time::Instant;
 
 use pamin_engine::Engine;
-use pamin_index::sections::{Section, sections, sections_capped};
+use pamin_index::sections::{Section, sections};
 use pamin_index::spans::TokenCount;
 use pamin_index::{Access, SpanTokens, VectorIndex};
 use pamin_store::Workspace;
@@ -105,14 +103,11 @@ const BUDGET: usize = 1_000;
 /// it to count as found.
 const COVERED: f64 = 0.5;
 
-/// The fixed caps swept beside what ships.
-const CAPS: [usize; 3] = [128, 320, 448];
-
 /// Sections of one file kept by the crowding arm.
 const PER_FILE: usize = 3;
 
-/// How many hits a search asks for: enough to fill the budget at the smallest
-/// cap and to leave the crowding arm something to promote.
+/// How many hits a search asks for: enough to fill the budget and to leave the
+/// crowding arm something to promote.
 const LIMIT: u32 = 30;
 
 /// The directory every paper is ingested from, recorded with its sections as
@@ -143,7 +138,6 @@ struct Question {
 enum Arm {
     Whole,
     Shipped,
-    Capped(usize),
 }
 
 impl Arm {
@@ -151,7 +145,6 @@ impl Arm {
         match self {
             Self::Whole => "whole".into(),
             Self::Shipped => "shipped".into(),
-            Self::Capped(cap) => format!("cap{cap}"),
         }
     }
 
@@ -162,7 +155,6 @@ impl Arm {
                 content: paper.markdown.clone(),
             }],
             Self::Shipped => sections(&paper.name, &paper.markdown, counter),
-            Self::Capped(cap) => sections_capped(&paper.name, &paper.markdown, counter, cap),
         }
     }
 }
@@ -266,7 +258,7 @@ fn relevant(question: &Question, name: &str, content: &str) -> bool {
         .any(|paragraph| covers(&found, paragraph))
 }
 
-/// The file a section was cut from: its name before its headings and parts.
+/// The file a section was cut from: its name before its headings.
 fn file_of(name: &str) -> &str {
     let file = name.split(" › ").next().unwrap_or(name);
     match file.find(".md") {
@@ -607,10 +599,7 @@ async fn a_sections_size_against_retrieval() {
         hasher.finish()
     };
 
-    let arms: Vec<Arm> = [Arm::Whole, Arm::Shipped]
-        .into_iter()
-        .chain(CAPS.iter().map(|cap| Arm::Capped(*cap)))
-        .collect();
+    let arms = [Arm::Whole, Arm::Shipped];
     let mut scored = Vec::new();
     for arm in arms {
         let one = run(arm, &workspace, &papers, &questions, &counter, fingerprint).await;
@@ -719,7 +708,7 @@ async fn a_sections_size_against_retrieval() {
         if change {
             format!("change the size to {}", scored[selected.chosen[0]].arm)
         } else {
-            "keep the shipped size: the sweep found nothing to change".to_string()
+            "keep the shipped cut: the comparison found nothing to change".to_string()
         }
     );
 }
@@ -727,7 +716,7 @@ async fn a_sections_size_against_retrieval() {
 #[test]
 fn a_file_is_read_from_a_sections_name() {
     assert_eq!(
-        file_of("qasper/1909.00001.md › Intro (2)"),
+        file_of("qasper/1909.00001.md › Intro #2"),
         "qasper/1909.00001.md"
     );
     assert_eq!(file_of("qasper/1909.00001.md"), "qasper/1909.00001.md");

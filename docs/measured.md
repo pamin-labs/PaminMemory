@@ -2163,7 +2163,11 @@ Server CPU excludes PostgreSQL's backends and includes whatever index upkeep
 the server ran during an arm. Accuracy over ingested documents is not measured
 -- no benchmark here holds long documents with questions about them -- and
 nothing on the search path changed. Conditions, every arm and the raw rows are
-in [benchmarks/results/ingest/](../benchmarks/results/ingest/ingest-cost-2026-10-23.md).
+in [benchmarks/results/ingest/](../benchmarks/results/ingest/ingest-cost-2026-10-23.md). These were
+taken on an earlier cut that also split a section longer than the reranker's
+window into parts, each its own memory; ingest now records one memory per
+heading section and leaves size to the index's spans, so the section count and
+the timings above describe that earlier cut and are not re-measured.
 
 **Above this, nothing is measured.** The largest corpus here is 131,924
 documents. A million and beyond is untested — not projected, not extrapolated,
