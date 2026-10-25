@@ -1836,12 +1836,13 @@ fn an_fp32_index_from_before_is_refused_and_lends_to_its_rebuild() {
 #[test]
 fn a_memory_of_several_spans_is_found_by_each_and_reported_once() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let index = ProjectionIndex::open(
+    let index = ProjectionIndex::open_as(
         dir.path(),
         &dir.path().join("legacy"),
         VectorIndex::default(),
         Access::ReadWrite,
         0,
+        pamin_index::Grain::Spans(std::num::NonZeroU32::new(200).expect("non-zero")),
     )
     .expect("open index");
 
