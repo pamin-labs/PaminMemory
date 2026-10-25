@@ -340,7 +340,7 @@ fn lines(content: &str, range: Range<usize>) -> Vec<Range<usize>> {
 /// The sentences of `range`, trimmed, by Unicode's sentence boundaries --
 /// which also break after every line ending, and after `。！？` in text
 /// written without spaces.
-pub(crate) fn sentences(content: &str, range: Range<usize>) -> Vec<Range<usize>> {
+fn sentences(content: &str, range: Range<usize>) -> Vec<Range<usize>> {
     let text = &content[range.clone()];
     let boundaries: Vec<usize> = SentenceSegmenter::new(SentenceBreakInvariantOptions::default())
         .segment_str(text)
@@ -356,7 +356,7 @@ pub(crate) fn sentences(content: &str, range: Range<usize>) -> Vec<Range<usize>>
 /// pieces of near equal size that each fit -- `ceil(n / cap)` of them unless
 /// counting a piece on its own finds more tokens than it held in place -- so
 /// that no piece is a sliver.
-pub(crate) fn cut(
+fn cut(
     content: &str,
     range: Range<usize>,
     counter: &dyn TokenCount,
@@ -442,7 +442,7 @@ fn header(
 }
 
 /// `range` without the whitespace at either end.
-pub(crate) fn trim(content: &str, range: Range<usize>) -> Range<usize> {
+fn trim(content: &str, range: Range<usize>) -> Range<usize> {
     let text = &content[range.clone()];
     let start = range.start + (text.len() - text.trim_start().len());
     let end = (range.start + text.trim_end().len()).max(start);

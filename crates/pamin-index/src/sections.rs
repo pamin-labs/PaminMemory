@@ -1,29 +1,21 @@
 //! Cutting a file into the memories `pamin ingest` records.
 //!
-//! A file is not one memory. The embedder reads the first 512 tokens of what it
-//! is given and the reranker the first 256 of a query and a passage together,
-//! so a file recorded whole is found by its opening and judged by its opening,
-//! and the rest of it is evidence nothing retrieves. Cut into sections, each
-//! is a memory of its own: one document in the index, one candidate in fusion
-//! and one passage the reranker reads in full, which is the shape every part of
-//! search already assumes.
+//! A file is not one memory. Its sections are about different things, and a
+//! section is what a caller asks after and what a link points at, so each
+//! is a memory of its own: one topic, named by where it sits, whose history
+//! is the history of that section.
 //!
-//! The cut follows the file's own structure, which is what the measurements of
-//! chunking agree on: structural or fixed-size cuts of a few hundred tokens with
-//! no overlap match or beat semantic chunking on realistic corpora at a
-//! fraction of the cost, and what a chunk gains most from is knowing where it
-//! sits. So a heading -- ATX, or setext under a paragraph -- opens a section,
-//! a section is named by the file's path and the headings above it -- which
-//! the embedder and the reranker both read ahead of the content, as
-//! `{name}: {content}` -- and a section too long to be read whole is cut by
-//! [`pack`](crate::spans::pack) at its blocks, then its sentences, then its
-//! tokens.
+//! The cut follows the file's own structure. A heading -- ATX, or setext
+//! under a paragraph -- opens a section, and a section is named by the
+//! file's path and the headings above it, which the embedder and the
+//! reranker both read ahead of the content.
 //!
-//! **Sized so the reranker reads all of it.** A section's content is at most
-//! what fits the reranker's window beside its name, a query of
-//! [`QUERY_TOKENS`] and the pair's special tokens. Larger sections would be
-//! cut short at reranking, and this project has measured a longer reranker
-//! window to buy nothing on the corpora it has.
+//! **Size is not decided here.** A section of any length is one topic. The
+//! index cuts every memory into spans it can read whole, and ranks a topic by
+//! its best span, so a long section is found by any part of it without being
+//! split into topics that compete with each other for the reranker's slots
+//! and can show nothing of their neighbours. Deciding a unit's size in two
+//! places would let the two disagree.
 //!
 //! **A section too small to carry a claim joins a neighbour.** A heading with
 //! nothing under it is a title for what follows, so it joins the next section;
@@ -33,53 +25,31 @@
 //!
 //! A pure function of the path, the text and the token counter, so ingesting
 //! the same file twice yields the same sections with the same names, and an
-//! edit changes only the section it falls in -- or, for a section long enough
-//! to have been split, the part it falls in, the parts after it, and when it
-//! leaves a part too small to stand alone, the part before.
+//! edit changes only the section it falls in.
 
 use std::collections::HashSet;
 use std::ops::Range;
 
-use crate::spans::{TokenCount, closes, cut, fence, heading, indented, pack, trim};
-
-/// What a query is allowed of the reranker's window when a section is sized.
-///
-/// The reranker truncates the longer side of a pair first, so a query longer
-/// than this costs the end of a section rather than of the query; most queries
-/// an agent sends are well under it.
-pub const QUERY_TOKENS: usize = 48;
-
-/// The special tokens XLM-R wraps a pair in: `<s> query </s></s> passage </s>`.
-const PAIR_TOKENS: usize = 4;
+use crate::spans::{TokenCount, closes, fence, heading, indented};
 
 /// The fewest tokens a section is left with on its own.
 pub const LEAST_TOKENS: usize = 48;
-
-/// The fewest content tokens a section is sized to, however long its name.
-const LEAST_CAP: usize = 64;
 
 /// What separates a file's path from its headings, and one heading from the
 /// next, in a section's name.
 pub const SEPARATOR: &str = " › ";
 
 /// The most characters of a heading a section's name carries. A name is read
-/// ahead of every section under it and costs the section what it takes of the
+/// ahead of every span of the section and costs each what it takes of the
 /// reranker's window, and a heading longer than this is a paragraph that lost
 /// its line break.
 const TITLE_CHARS: usize = 80;
-
-/// The longest suffix a section's name can be given -- a number to tell it from
-/// another section under the same headings, and a part -- which is what a
-/// section is sized for, so that no part of it is pushed past the cap by its
-/// own name.
-const LONGEST_SUFFIX: &str = " #999 (9999)";
 
 /// One section of a file: a memory's topic and content.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Section {
     /// The file's path and the headings it sits under, then `#n` for the
-    /// second and later sections under the same headings, then `(n)` for the
-    /// second and later parts of a section that had to be split.
+    /// second and later sections under the same headings.
     pub name: String,
     pub content: String,
 }
@@ -90,206 +60,46 @@ pub struct Section {
 /// from, so the same file ingested from the same root names its sections the
 /// same way however the command was spelled.
 pub fn sections(path: &str, text: &str, counter: &dyn TokenCount) -> Vec<Section> {
-    cut_by(path, text, counter, &|name| {
-        cap(&format!("{name}{LONGEST_SUFFIX}"), counter)
-    })
-}
-
-/// [`sections`] with every section held to `cap` content tokens, whatever its
-/// name, rather than to what the reranker has left beside it.
-///
-/// For the evaluation that sweeps the size, which has to vary it through the
-/// function the product cuts with; nothing in the product calls it.
-#[doc(hidden)]
-pub fn sections_capped(
-    path: &str,
-    text: &str,
-    counter: &dyn TokenCount,
-    cap: usize,
-) -> Vec<Section> {
-    cut_by(path, text, counter, &|_| cap)
-}
-
-/// `text` cut into sections, each held to what `cap_of` its name allows.
-fn cut_by(
-    path: &str,
-    text: &str,
-    counter: &dyn TokenCount,
-    cap_of: &dyn Fn(&str) -> usize,
-) -> Vec<Section> {
     let text = normalized(text);
     let body = without_front_matter(&text);
 
     let raw = headed(&text, body);
     let merged = merged(&text, raw, counter);
 
-    // Every name this file has handed out, parts included: a heading can be
-    // spelled like the number or the part another section was given, and two
-    // sections under one name are one topic, which each ingest would hand
-    // back and forth between them.
+    // Every name this file has handed out: a heading can be spelled like the
+    // number another section was given, and two sections under one name are
+    // one topic, which each ingest would hand back and forth between them.
     let mut taken: HashSet<String> = HashSet::new();
     let mut sections = Vec::new();
-    for part in merged {
-        let content = text[part.range].trim();
+    for section in merged {
+        let content = text[section.range].trim();
         if content.is_empty() {
             continue;
         }
         let mut base = path.to_string();
-        for heading in &part.path {
+        for heading in &section.path {
             base.push_str(SEPARATOR);
             base.push_str(heading);
         }
-
-        let cap = cap_of(&base);
-        let pieces = if counter.count(content) <= cap {
-            std::iter::once(0..content.len()).collect()
-        } else {
-            let packed = pack(&base, content, counter, cap)
-                .into_iter()
-                .map(|span| span.range)
-                .collect();
-            balanced(content, packed, counter, cap)
-        };
-
-        let name = unique(&mut taken, &base, pieces.len());
-        for (index, range) in pieces.into_iter().enumerate() {
-            sections.push(Section {
-                name: part_name(&name, index),
-                content: content[range].to_string(),
-            });
-        }
+        sections.push(Section {
+            name: unique(&mut taken, &base),
+            content: content.to_string(),
+        });
     }
     sections
 }
 
-/// The name of part `index` of a section named `name`.
-fn part_name(name: &str, index: usize) -> String {
-    match index {
-        0 => name.to_string(),
-        _ => format!("{name} ({})", index + 1),
-    }
-}
-
-/// `base`, or the first of `base #2`, `base #3` and on whose `parts` parts are
-/// all free, which it then takes.
-fn unique(taken: &mut HashSet<String>, base: &str, parts: usize) -> String {
-    let free = |name: &str, taken: &HashSet<String>| {
-        (0..parts).all(|index| !taken.contains(&part_name(name, index)))
-    };
+/// `base`, or the first of `base #2`, `base #3` and on that is free, which it
+/// then takes.
+fn unique(taken: &mut HashSet<String>, base: &str) -> String {
     let mut name = base.to_string();
     let mut number = 1;
-    while !free(&name, taken) {
+    while taken.contains(&name) {
         number += 1;
         name = format!("{base} #{number}");
     }
-    for index in 0..parts {
-        taken.insert(part_name(&name, index));
-    }
+    taken.insert(name.clone());
     name
-}
-
-/// `pieces` of `content` with each one under [`LEAST_TOKENS`] joined to the
-/// piece before it -- or after it, when it is the first -- or, when the two do
-/// not fit together, the two divided again where they are most nearly equal.
-///
-/// [`pack`] fills a span as far as the cap allows, so a heading and the
-/// opening of what follows it can leave a sliver of that block behind as a
-/// part of its own: a passage of two tokens that the reranker would score on
-/// its name alone.
-fn balanced(
-    content: &str,
-    pieces: Vec<Range<usize>>,
-    counter: &dyn TokenCount,
-    cap: usize,
-) -> Vec<Range<usize>> {
-    let small = |range: &Range<usize>| counter.count(&content[range.clone()]) < LEAST_TOKENS;
-    let join = |first: Range<usize>, second: Range<usize>| -> Vec<Range<usize>> {
-        let joined = first.start..second.end;
-        if counter.count(&content[joined.clone()]) <= cap {
-            vec![joined]
-        } else {
-            halved(content, joined, counter, cap)
-        }
-    };
-
-    let mut out: Vec<Range<usize>> = Vec::new();
-    let mut carried: Option<Range<usize>> = None;
-    for piece in pieces {
-        if let Some(first) = carried.take() {
-            let joined = join(first, piece);
-            // Two slivers at the top are still one: carry it on to the next.
-            match joined.as_slice() {
-                [one] if small(one) => carried = Some(one.clone()),
-                _ => out.extend(joined),
-            }
-            continue;
-        }
-        if !small(&piece) {
-            out.push(piece);
-            continue;
-        }
-        match out.pop() {
-            Some(previous) => out.extend(join(previous, piece)),
-            None => carried = Some(piece),
-        }
-    }
-    out.extend(carried);
-    out
-}
-
-/// `range` of `content`, over `cap` tokens, in two pieces that each fit,
-/// divided at the sentence or line boundary nearest its middle by tokens, or
-/// failing one, at the nearest whitespace -- and only when neither fits, at
-/// tokens by [`cut`], which can divide a word.
-///
-/// The pair is a block [`pack`] already cut where the text allowed and a
-/// sliver after it, so the boundary it is divided at again should be one the
-/// text has rather than one the tokenizer does.
-fn halved(
-    content: &str,
-    range: Range<usize>,
-    counter: &dyn TokenCount,
-    cap: usize,
-) -> Vec<Range<usize>> {
-    let text = &content[range.clone()];
-    let offsets = counter.offsets(text);
-    let middle = offsets.len() / 2;
-    let tokens_before = |at: usize| offsets.partition_point(|token| token.start < at);
-
-    let sentences: Vec<usize> = crate::spans::sentences(content, range.clone())
-        .into_iter()
-        .map(|sentence| sentence.start - range.start)
-        .chain(text.match_indices('\n').map(|(at, _)| at + 1))
-        .collect();
-    let spaces: Vec<usize> = text
-        .char_indices()
-        .filter(|&(at, c)| c.is_whitespace() && at > 0)
-        .map(|(at, _)| at)
-        .collect();
-
-    for boundaries in [sentences, spaces] {
-        let mut boundaries: Vec<usize> = boundaries
-            .into_iter()
-            .filter(|&at| at > 0 && at < text.len())
-            .collect();
-        boundaries.sort_by_key(|&at| tokens_before(at).abs_diff(middle));
-        for at in boundaries.into_iter().take(8) {
-            let pieces = [
-                trim(content, range.start..range.start + at),
-                trim(content, range.start + at..range.end),
-            ];
-            if pieces
-                .iter()
-                .all(|piece| !piece.is_empty() && counter.count(&content[piece.clone()]) <= cap)
-            {
-                return pieces.to_vec();
-            }
-        }
-    }
-    cut(content, range, counter, cap)
-        .into_iter()
-        .map(|(range, _)| range)
-        .collect()
 }
 
 /// `text` with a byte-order mark removed and every line ending, Windows' and
@@ -299,14 +109,6 @@ fn normalized(text: &str) -> String {
         .unwrap_or(text)
         .replace("\r\n", "\n")
         .replace('\r', "\n")
-}
-
-/// How many content tokens a section named `name` may hold.
-fn cap(name: &str, counter: &dyn TokenCount) -> usize {
-    let named = counter.count(&format!("{name}: "));
-    crate::reranking::MAX_TOKENS
-        .saturating_sub(PAIR_TOKENS + QUERY_TOKENS + named)
-        .max(LEAST_CAP)
 }
 
 /// The range of `text` after a YAML front matter block, which is metadata
@@ -611,79 +413,6 @@ mod tests {
             .collect()
     }
 
-    /// Up to three characters of a word a token, so a cut at tokens can fall
-    /// inside a word -- which [`Words`] never lets happen -- the way XLM-R's
-    /// pieces can.
-    struct Pieces;
-
-    impl TokenCount for Pieces {
-        fn offsets(&self, text: &str) -> Vec<Range<usize>> {
-            Words
-                .offsets(text)
-                .into_iter()
-                .flat_map(|word| {
-                    let starts: Vec<usize> = text[word.clone()]
-                        .char_indices()
-                        .map(|(at, _)| word.start + at)
-                        .step_by(3)
-                        .collect();
-                    let ends = starts.iter().skip(1).copied().chain([word.end]);
-                    starts
-                        .iter()
-                        .copied()
-                        .zip(ends)
-                        .map(|(start, end)| start..end)
-                        .collect::<Vec<_>>()
-                })
-                .collect()
-        }
-    }
-
-    /// A full piece and a sliver after
-    /// it, which together are over the cap, are divided again at a boundary
-    /// the text has -- here a sentence -- and not at a piece of a word.
-    #[test]
-    fn a_full_piece_and_a_sliver_are_divided_at_a_sentence() {
-        let sentences: Vec<String> = (0..12)
-            .map(|i| format!("Sentence{i} carries considerable wordings."))
-            .collect();
-        let content = sentences.join(" ");
-        let sliver = content.rfind(" Sentence11").unwrap() + 1;
-        let cap = Pieces.count(&content[..sliver]) + 2;
-        assert!(
-            Pieces.count(&content) > cap,
-            "the pair has to be over the cap"
-        );
-        assert!(Pieces.count(&content[sliver..]) < LEAST_TOKENS);
-
-        let pieces = balanced(
-            &content,
-            vec![0..sliver - 1, sliver..content.len()],
-            &Pieces,
-            cap,
-        );
-        assert_eq!(pieces.len(), 2, "{pieces:?}");
-        for piece in &pieces {
-            assert!(Pieces.count(&content[piece.clone()]) <= cap);
-            let text = &content[piece.clone()];
-            assert!(
-                text.starts_with("Sentence") && text.ends_with('.'),
-                "{text:?}"
-            );
-        }
-    }
-
-    /// Two slivers at the top of a split section are one sliver, and are
-    /// carried on until they are not.
-    #[test]
-    fn slivers_at_the_top_are_carried_until_they_are_not() {
-        let pieces = vec![0..1, 2..3, 4..200];
-        let content = format!("a b {}", "c ".repeat(98));
-        let balanced = balanced(&content, pieces, &Words, 500);
-        assert_eq!(balanced.len(), 1);
-        assert_eq!(balanced[0], 0..200);
-    }
-
     /// A paragraph of `n` words, each one token to [`Words`].
     fn words(n: usize) -> String {
         (0..n)
@@ -692,20 +421,10 @@ mod tests {
             .join(" ")
     }
 
-    /// Every section fits what the reranker reads beside its name, no two
-    /// share a name, and between them they hold every word of `expected` -- the
-    /// file as the test states it should be kept, worked out by the test and
-    /// not by the code under it -- in order.
+    /// No two sections share a name, and between them they hold every word of
+    /// `expected` -- the file as the test states it should be kept, worked out
+    /// by the test and not by the code under it -- in order.
     fn check(expected: &str, sections: &[Section]) {
-        for section in sections {
-            let cap = cap(&section.name, &Words);
-            assert!(
-                Words.count(&section.content) <= cap.max(1),
-                "{} holds {} tokens, over {cap}",
-                section.name,
-                Words.count(&section.content)
-            );
-        }
         let names: HashSet<&str> = sections.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names.len(), sections.len(), "a name repeats: {sections:?}");
         let written: Vec<&str> = sections
@@ -824,30 +543,26 @@ mod tests {
         check(&text, &sections);
     }
 
+    /// However long a section is, it is one topic: the index cuts it into
+    /// spans, not this.
     #[test]
-    fn a_long_section_is_split_into_numbered_parts_that_each_fit() {
+    fn a_long_section_is_one_section() {
         let text = format!(
             "# Guide\n\n{}\n\n{}\n\n{}\n",
-            words(150),
-            words(150),
-            words(150)
+            words(400),
+            words(400),
+            words(400)
         );
         let sections = sections("guide.md", &text, &Words);
-        assert!(sections.len() >= 3, "{:?}", names(&sections));
-        assert_eq!(sections[0].name, "guide.md › Guide");
-        for (index, section) in sections.iter().enumerate().skip(1) {
-            assert_eq!(section.name, format!("guide.md › Guide ({})", index + 1));
-        }
+        assert_eq!(names(&sections), ["guide.md › Guide"]);
         check(&text, &sections);
     }
 
     #[test]
-    fn a_plain_text_file_with_no_headings_is_cut_by_size_alone() {
+    fn a_plain_text_file_with_no_headings_is_one_section() {
         let text = (0..8).map(|_| words(80)).collect::<Vec<_>>().join("\n\n");
         let sections = sections("notes.txt", &text, &Words);
-        assert!(sections.len() > 1);
-        assert_eq!(sections[0].name, "notes.txt");
-        assert_eq!(sections[1].name, "notes.txt (2)");
+        assert_eq!(names(&sections), ["notes.txt"]);
         check(&text, &sections);
     }
 
@@ -892,8 +607,8 @@ mod tests {
         }
     }
 
-    /// A heading spelled like the number or the part another section was
-    /// given does not take that section's name.
+    /// A heading spelled like the number another section was given does not
+    /// take that section's name.
     #[test]
     fn a_heading_spelled_like_a_suffix_gets_a_name_of_its_own() {
         let text = format!(
@@ -912,41 +627,6 @@ mod tests {
                 "f.md › Example #2 #2"
             ]
         );
-
-        let text = format!("# Foo\n\n{}\n\n# Foo (2)\n\n{}\n", words(400), words(60));
-        let parts = sections("f.md", &text, &Words);
-        check(&text, &parts);
-        assert!(
-            names(&parts).contains(&"f.md › Foo (2) #2"),
-            "{:?}",
-            names(&parts)
-        );
-    }
-
-    /// A section packed up to the cap leaves no sliver behind as a part of its
-    /// own, whether the sliver is the end of a block or a heading of a few
-    /// words that `merged` joined to it.
-    #[test]
-    fn no_part_is_a_sliver() {
-        for text in [
-            format!("# Foo\n\n{}\n", words(400)),
-            format!(
-                "# Setup\n\n{}\n\n## Note\n\nrestart afterwards\n",
-                words(250)
-            ),
-        ] {
-            let sections = sections("f.md", &text, &Words);
-            check(&text, &sections);
-            for section in &sections {
-                assert!(
-                    Words.count(&section.content) >= LEAST_TOKENS,
-                    "{} is {} tokens: {:?}",
-                    section.name,
-                    Words.count(&section.content),
-                    names(&sections)
-                );
-            }
-        }
     }
 
     /// A byte-order mark does not hide the first heading, a bare `#` names
@@ -1102,17 +782,5 @@ mod tests {
     fn nothing_but_whitespace_is_no_sections() {
         assert!(sections("empty.md", " \n\n\t\n", &Words).is_empty());
         assert!(sections("empty.md", "", &Words).is_empty());
-    }
-
-    /// The cap leaves the reranker room for the name, the query and the pair's
-    /// own tokens, and never falls below the floor however long a name is.
-    #[test]
-    fn the_cap_is_what_the_reranker_has_left() {
-        assert_eq!(
-            cap("a.md", &Words),
-            // `a.md:` is one token to `Words`.
-            crate::reranking::MAX_TOKENS - PAIR_TOKENS - QUERY_TOKENS - 1
-        );
-        assert_eq!(cap(&words(400), &Words), LEAST_CAP);
     }
 }

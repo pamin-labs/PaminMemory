@@ -658,19 +658,14 @@ The topic is also what each section is embedded and reranked under, as
 with both. The heading line stays in the section's content too, which is what
 the two lexical channels index.
 
-**A section is sized so the reranker reads all of it**: at most the reranker's
-256-token window less the pair's four special tokens, a 48-token allowance for
-the query, and the topic with room for a number and a part — but never fewer
-than 64 tokens, so under a very long topic a section can run past the window.
-A longer section is cut at its paragraphs, code blocks and sentences, and a
-sentence still too long at its tokens, into parts named `(2)`, `(3)` and on,
-with no overlap. A section of fewer than 48 tokens joins a neighbour — a heading
-with nothing under it the section after it, a short opening at the top of the
-file the section after it, anything else the one before — and so does a part
-that small, the two divided again at a sentence or a space if they do not fit
-together. Two sections under the same headings are numbered `#2`, `#3`. YAML
-front matter is left out when its first line is a `key:` and it holds no blank
-line.
+**A section is one memory however long it is.** Its size is left to the index,
+which cuts every memory into spans and ranks a topic by its best span, so a
+long section is found by any part of it and a hit shows the part that matched.
+A section of fewer than 48 tokens joins a neighbour — a heading with nothing
+under it the section after it, a short opening at the top of the file the
+section after it, anything else the one before. Two sections under the same
+headings are numbered `#2`, `#3`. YAML front matter is left out when its first
+line is a `key:` and it holds no blank line.
 
 ```console
 $ sed -i 's/ten minutes/fifteen minutes/' docs/ops.md
@@ -686,13 +681,12 @@ Ingested 1 files as 2 sections: 1 written, 1 unchanged, 0 held in evidence only
 **Ingesting again records only what changed.** A section that says what its
 topic already does is left as it is, with nothing written; a changed section is
 a new version of its topic, as any write is, and only it is embedded again. An
-edit to a section's text changes that section, and for a section split into
-parts, the part it is in and those after it. Renaming a heading renames every
+edit to a section's text changes that section alone. Renaming a heading renames every
 section under it: each is recorded afresh under its new name, and the old ones
-are taken off the retrieval surface. On this repository's own 105 Markdown and text files,
-cut into 4,090 sections, an unchanged re-ingest took 4 to 7 seconds and wrote
-nothing, and a one-word edit wrote one to three sections
-([measured](../benchmarks/results/ingest/ingest-cost-2026-10-23.md)).
+are taken off the retrieval surface. On this repository's own 105 Markdown and text files, an
+unchanged re-ingest wrote nothing; the time it took was measured on an earlier
+cut that also split long sections into parts, and is not re-measured for this
+one ([measured](../benchmarks/results/ingest/ingest-cost-2026-10-23.md)).
 
 **A section that is no longer there is taken off the retrieval surface**, and
 listed under `removed`: its heading renamed or removed, or its file deleted

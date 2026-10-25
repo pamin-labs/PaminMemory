@@ -518,25 +518,16 @@ fn on_disk(root: &str, file: &str) -> PathBuf {
 }
 
 /// The name of the file the section named `name` was cut out of: its name up
-/// to its headings, without the numbers and parts it was given.
+/// to its headings, without the number it was given.
 fn file_of(name: &str) -> &str {
     let mut file = name.split(SEPARATOR).next().unwrap_or(name);
-    loop {
-        let stripped = file
-            .rsplit_once(" #")
-            .filter(|(_, number)| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
-            .or_else(|| {
-                file.strip_suffix(')')
-                    .and_then(|open| open.rsplit_once(" ("))
-                    .filter(|(_, part)| {
-                        !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())
-                    })
-            });
-        match stripped {
-            Some((before, _)) => file = before,
-            None => return file,
-        }
+    while let Some((before, _)) = file
+        .rsplit_once(" #")
+        .filter(|(_, number)| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
+    {
+        file = before;
     }
+    file
 }
 
 /// Whether a walk reads a file at `path`: one with an extension of
@@ -552,10 +543,10 @@ fn walked_kind(path: &Path) -> bool {
 }
 
 /// Whether the section named `name` was cut out of the file named `file`: its
-/// name is the file's, then any numbers ` #n` and parts ` (n)` it was given,
-/// then nothing or its headings.
+/// name is the file's, then any numbers ` #n` it was given, then nothing or
+/// its headings.
 ///
-/// Read exactly, because `a.md (old).md` begins with `a.md (` and is another
+/// Read exactly, because `a.md #1.md` begins with `a.md #1` and is another
 /// file.
 fn belongs(name: &str, file: &str) -> bool {
     let Some(mut rest) = name.strip_prefix(file) else {
@@ -565,14 +556,7 @@ fn belongs(name: &str, file: &str) -> bool {
         if rest.is_empty() || rest.starts_with(SEPARATOR) {
             return true;
         }
-        let after = if let Some(number) = rest.strip_prefix(" #") {
-            digits(number)
-        } else if let Some(part) = rest.strip_prefix(" (") {
-            digits(part).and_then(|after| after.strip_prefix(')'))
-        } else {
-            None
-        };
-        match after {
+        match rest.strip_prefix(" #").and_then(digits) {
             Some(after) => rest = after,
             None => return false,
         }
@@ -614,8 +598,7 @@ mod tests {
             "docs/a.md",
             "docs/a.md › Usage",
             "docs/a.md #2",
-            "docs/a.md (3)",
-            "docs/a.md #2 (3)",
+            "docs/a.md #2 #3",
             "docs/a.md #2 › Usage",
         ] {
             assert!(belongs(name, "docs/a.md"), "{name}");
@@ -624,9 +607,8 @@ mod tests {
             "docs/a.md.bak › Usage",
             "docs/ab.md",
             "docs",
-            "docs/a.md (old).md",
+            "docs/a.md (2)",
             "docs/a.md #1.md",
-            "docs/a.md (2",
             "docs/a.md #",
         ] {
             assert!(!belongs(name, "docs/a.md"), "{name}");
@@ -701,7 +683,7 @@ mod tests {
             [
                 "repo/docs/a.md › Kept",
                 "repo/docs/deleted.md › Usage",
-                "repo/docs/deleted.md #2 (3)",
+                "repo/docs/deleted.md #2",
                 "repo/docs/deep/moved.txt",
                 "repo/docs/unreadable.md › Kept",
                 "repo/docs/script.py › Comment",
@@ -716,7 +698,7 @@ mod tests {
             listed(&gone),
             [
                 ("repo/docs/deep/moved.txt", true),
-                ("repo/docs/deleted.md #2 (3)", true),
+                ("repo/docs/deleted.md #2", true),
                 ("repo/docs/deleted.md › Usage", true)
             ]
         );
@@ -801,11 +783,11 @@ mod tests {
     }
 
     #[test]
-    fn a_sections_file_is_its_name_before_its_headings_numbers_and_parts() {
+    fn a_sections_file_is_its_name_before_its_headings_and_numbers() {
         assert_eq!(file_of("r/a.md"), "r/a.md");
         assert_eq!(file_of("r/a.md › H › I"), "r/a.md");
-        assert_eq!(file_of("r/a.md #2 (3)"), "r/a.md");
-        assert_eq!(file_of("r/a.md (3) › H"), "r/a.md");
+        assert_eq!(file_of("r/a.md #2"), "r/a.md");
+        assert_eq!(file_of("r/a.md #2 › H"), "r/a.md");
         assert_eq!(file_of("r/a (old).md"), "r/a (old).md");
     }
 
