@@ -2145,6 +2145,51 @@ untested — and the descriptor count is the first thing that would break: this
 index is 2,111 segment files and a search holds 2,733 descriptors open, which
 already exceeds the 1,024 a Linux process is given by default.
 
+**Spans of 200 tokens against whole memories (2026-10-25)**.
+
+- **What changed.** Every memory is cut into spans; a topic is ranked by its best span, and the reranker reads that
+  span with one either side.
+- **How accuracy was measured.** Through `search_reranked` at shipped depths, with the same models (BGE-M3 int8 and
+  bge-reranker-v2-m3 int8), on CPU. p is a paired sign-flip test over conversations, questions or files.
+
+| corpus | memories | questions | nDCG@10 whole → spans | p | covered@5 whole → spans | bytes in the first 5 hits |
+| --- | ---: | ---: | --- | ---: | --- | --- |
+| LoCoMo, one memory per session | 272 | 1,442 | 0.527 → 0.873 | 0.002 | 0.555 → 0.856 | −56% |
+| LongMemEval-S, one memory per session | 2,875 | 60 | 0.819 → 0.935 | 0.0015 | 0.847 → 0.475 | −82% |
+| repository Markdown, one memory per file | 58 | 120 | 0.597 → 0.928 | <0.0001 | 0.700 → 0.758 | −92% |
+
+- **Accuracy.** No question category ranks significantly worse (p < 0.05) on any corpus.
+- **The loss.** It is covered@5 on LongMemEval: a session runs to about 1,700 words, and the window (the best span and
+  one either side) misses the answer turn about half the time. `pamin read --span --around` reaches it.
+
+**Latency and cost at the entry point.**
+
+- **Setup.** `pamin-server` plus one `pamin search` process per query. Each round is 20 warm and 120 timed queries;
+  rounds are rotated between the arms.
+- **Host.** Four-core Xeon with AVX-512 VNNI, CPU execution provider.
+- **Builds.** Short sessions compare whole memories with the first span build. Long sessions compare `main` with the
+  shipped span build: spans, a cache of each memory's cut, and one lexical ask per channel.
+
+| | short sessions (LoCoMo, 272) | long sessions (LongMemEval-S, 322; 3.5 MB) |
+| --- | --- | --- |
+| search p50, whole → spans | 5,173 → 4,229 ms (−18.3%) | 5,088 → 4,532 ms (−10.9%) |
+| search p95, whole → spans | 5,751 → 4,854 ms (−15.6%) | 5,924 → 5,852 ms (−1.2%, not significant) |
+| server peak RSS | +6.3% | +11.3% |
+| `pamin import` wall time | +49.8% | +323% |
+| index on disk | +28.8% | +84.6% |
+
+- **Why search is faster.** The reranker reads shorter pairs.
+- **What it costs.** Ingest and disk grow with memory length.
+- **Upgrading.** An index built before spans keeps its grain until `pamin reindex`.
+- **Evidence.** Each record names its compared commits and keeps its scripts and raw results beside it:
+  - accuracy: `internal-docs/pamin-memory/research/2026-10-23/q111-a0-span-vs-topic.md` (LoCoMo) and
+    `internal-docs/pamin-memory/research/2026-10-24/q111-part2-lme-md-a1.md` (LongMemEval-S, Markdown), with
+    `raw/q111-q118/` and `raw/q111-part2/`;
+  - short sessions: `internal-docs/pamin-memory/research/2026-10-23/q119-span-grain-timing.md`, `58f1825` against
+    `6305f8c`, with `raw/q119/`;
+  - long sessions: `internal-docs/pamin-memory/research/2026-10-25/q127-span-stack-vs-main.md`, `main` at `2c59266`
+    against `7aef72c`, with `raw/q127/`.
+
 What was measured, how, and the conclusions that reversed on measurement are in
 [the ADR](adr/0001-tech-selection.md), which is the
 source of truth if it and this page ever disagree.
