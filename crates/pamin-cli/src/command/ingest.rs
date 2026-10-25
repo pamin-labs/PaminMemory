@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use pamin_client::command::ingest::{Args, Ingested};
-use pamin_engine::Owed;
+use pamin_engine::{Owed, Retired};
 use pamin_index::VectorIndex;
 use pamin_index::sections::{SEPARATOR, Section, sections};
 use pamin_index::spans::TokenCount;
@@ -153,6 +153,23 @@ pub async fn execute(
         }
     }
 
+    // After the sections are recorded, so a section that moved within a file
+    // is written under its new name before its old one is retired, and before
+    // the drain, which removes what retiring left for the projection.
+    let mut removed = Vec::new();
+    let mut kept = Vec::new();
+    for name in missing {
+        if args.keep_missing {
+            kept.push(name);
+            continue;
+        }
+        match engine.retire_section(&name).await? {
+            Retired::Retired => removed.push(name),
+            Retired::Kept => kept.push(name),
+            Retired::Absent => {}
+        }
+    }
+
     engine.drain_cascade(Owed::WhatAMemoryNeeds).await?;
     engine.flush_what_is_applied().await?;
     let owed = pamin_store::jobs::pending(engine.database.pool(), engine.project).await?;
@@ -163,7 +180,8 @@ pub async fn execute(
         written,
         unchanged,
         held,
-        missing,
+        removed,
+        missing: kept,
         skipped,
         cascade: if owed == 0 { "applied" } else { "queued" }.to_string(),
         cascade_lagging: lagging,
