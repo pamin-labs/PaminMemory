@@ -1410,13 +1410,15 @@ impl Engine {
         // sections too, rather than one source per file: the source row is
         // locked for the whole transaction, and one row for a file would
         // record its sections one at a time.
-        let source = repository::ensure_source(
+        let (source, first) = repository::ensure_source_created(
             &mut transaction,
             self.project,
             kind,
             &locator(kind, request.topic),
         )
         .await?;
+        // Whether this write creates the topic, and files its name with it.
+        let mut created = false;
 
         // Evidence always, whatever the verdict. That is what makes a rejection
         // recoverable instead of a loss.
@@ -1443,10 +1445,13 @@ impl Engine {
                         .await?,
                     false,
                 ),
-                None => (
-                    self.create_topic(&mut transaction, request.topic).await?,
-                    false,
-                ),
+                None => {
+                    created = true;
+                    (
+                        self.create_topic(&mut transaction, request.topic).await?,
+                        false,
+                    )
+                }
             };
 
             // Committed with the state rather than after it. A crash between
@@ -1487,6 +1492,34 @@ impl Engine {
                     .await?;
             (version, None)
         };
+
+        // The first time somebody writes a topic by hand that `pamin ingest`
+        // created, the name ingest left out of the index goes in, with the
+        // backfill a new name owes: the topic is theirs too now, and a name
+        // somebody wrote is one a memory may name. Only on that first write --
+        // the one that creates its manual source -- so every later write runs
+        // the statements it ran before.
+        if kind == SourceKind::Manual && first && !created {
+            let tokens = off_the_runtime(|| self.segmenter.name_sequence(request.topic));
+            if let Some(topic) = repository::name_topic(
+                &mut *transaction,
+                self.project,
+                request.topic,
+                &tokens.join(" "),
+                tokens.len(),
+            )
+            .await?
+            {
+                pamin_store::jobs::enqueue(
+                    &mut *transaction,
+                    self.project,
+                    JobKind::BackfillMentions,
+                    Some(topic.0),
+                )
+                .await?;
+                self.remember_widest_name(tokens.len());
+            }
+        }
 
         transaction.commit().await?;
 
