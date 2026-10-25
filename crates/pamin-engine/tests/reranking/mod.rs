@@ -444,7 +444,7 @@ impl Priced {
             .collect();
         self.queries += 1;
         let names = replayed.movable();
-        let documents = shown(hits, &names);
+        let documents = shown(engine, query, hits, &names);
         let rescored = self.rescore.as_ref().map(|rescore| {
             let other = rescore.get(at).expect("a rescored search for every search");
             assert_eq!(other.query, query, "rescored searches are out of step");
@@ -606,17 +606,23 @@ fn render(name: &str, content: &str, seed: Option<&str>, named: bool) -> String 
     text
 }
 
-/// What the shipped rendering shows the model for each of `names`.
-fn shown(hits: &[SearchHit], names: &[&str]) -> Vec<String> {
+/// What the search for `query` showed the model of each of `names`, as the
+/// engine rendered it: in an index cut into spans that is a window, which
+/// [`render`] does not reproduce.
+fn shown(
+    engine: &pamin_engine::Engine,
+    query: &str,
+    hits: &[SearchHit],
+    names: &[&str],
+) -> Vec<String> {
     let found: HashMap<&str, &SearchHit> =
         hits.iter().map(|hit| (hit.topic.as_str(), hit)).collect();
-    let (named, with_seed) = (SHIPPED % 2 == 1, SHIPPED >= 2);
     names
         .iter()
         .map(|name| {
-            let hit = found[name];
-            let seed = hit.seed.as_deref().filter(|_| with_seed);
-            render(name, &hit.state.content, seed, named)
+            engine
+                .shown_to_reranker(query, found[name])
+                .expect("render what the search showed")
         })
         .collect()
 }
