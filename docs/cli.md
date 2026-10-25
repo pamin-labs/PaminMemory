@@ -722,8 +722,8 @@ memories against. A path and its headings are a name no memory spells out in
 full, and a wide name makes every later write compare longer runs of its text.
 A memory naming an ingested section therefore derives no edge to it, while a
 section naming a topic written by hand does. A topic written by hand keeps its
-name if it is later ingested; one ingested first and then written by hand is
-named from the next `pamin reindex`.
+name if it is later ingested, and one ingested first is named the first time
+somebody writes it by hand.
 
 `--json` carries every count, the `removed`, `missing` and `skipped` lists, and
 the same `cascade` and `cascade_lagging` as `import`.

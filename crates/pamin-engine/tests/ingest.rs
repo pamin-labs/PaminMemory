@@ -460,3 +460,75 @@ async fn a_section_written_by_hand_too_is_kept() {
         1
     );
 }
+
+/// The first time a section is written by hand, its name goes into the name
+/// index -- with the backfill a new name owes -- whether or not the filter
+/// promotes that write; later writes do not file it again.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "provisions postgres"]
+async fn a_section_written_by_hand_is_named() {
+    let named = |engine: &Engine, topic: &'static str| {
+        let pool = engine.database.pool().clone();
+        let project = engine.project;
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM topic_name_tokens n JOIN topics t ON t.id = n.topic_id
+                 WHERE n.project_id = $1 AND t.name = $2",
+            )
+            .bind(project.0)
+            .bind(topic)
+            .fetch_one(&pool)
+            .await
+            .expect("names")
+        }
+    };
+
+    for (topic, by_hand) in [
+        (
+            "docs/a.md › Promoted",
+            "A note on this section, written by hand.",
+        ),
+        ("docs/a.md › Held", "ok"),
+    ] {
+        let (engine, _scratch) = engine().await;
+        engine
+            .remember_section(topic, TEXT, Validity::ALWAYS)
+            .await
+            .expect("ingest")
+            .expect("recorded");
+        assert_eq!(named(&engine, topic).await, 0);
+        sqlx::query("DELETE FROM index_jobs WHERE project_id = $1")
+            .bind(engine.project.0)
+            .execute(engine.database.pool())
+            .await
+            .expect("settle the queue");
+
+        engine
+            .remember(topic, by_hand, Validity::ALWAYS)
+            .await
+            .expect("by hand");
+        assert_eq!(named(&engine, topic).await, 1, "{topic}");
+        assert!(
+            owed(&engine, topic)
+                .await
+                .contains(&"backfill_mentions".to_string()),
+            "{topic}: naming it owed no backfill"
+        );
+
+        sqlx::query("DELETE FROM index_jobs WHERE project_id = $1")
+            .bind(engine.project.0)
+            .execute(engine.database.pool())
+            .await
+            .expect("settle the queue");
+        engine
+            .remember(topic, "A second note, also by hand.", Validity::ALWAYS)
+            .await
+            .expect("again");
+        assert!(
+            !owed(&engine, topic)
+                .await
+                .contains(&"backfill_mentions".to_string()),
+            "{topic}: a later write named it again"
+        );
+    }
+}
