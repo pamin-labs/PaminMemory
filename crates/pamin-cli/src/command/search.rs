@@ -1,7 +1,7 @@
 //! `pamin search` — retrieve memories, with the reasoning attached.
 
 use anyhow::Result;
-use pamin_client::command::search::{Args, Hit, Results, Trace};
+use pamin_client::command::search::{Args, Hit, Results, Span, Trace};
 use pamin_client::command::validity;
 use pamin_engine::Depths;
 use pamin_index::VectorIndex;
@@ -32,12 +32,22 @@ pub async fn execute(
             .map(|hit| Hit {
                 topic: hit.topic,
                 version: hit.state.version,
-                content: hit.state.content,
+                content: match &hit.span {
+                    Some(span) => hit.state.content[span.range.clone()].to_string(),
+                    None => hit.state.content,
+                },
                 score: hit.result.score,
                 why: hit.result.why.into_iter().map(Trace::from).collect(),
                 recorded_at: validity::render(hit.state.recorded_at),
                 valid_from: hit.state.validity.from.map(validity::render),
                 valid_to: hit.state.validity.to.map(validity::render),
+                span: hit.span.map(|span| Span {
+                    ordinal: span.ordinal,
+                    of: span.of,
+                    header: span.header,
+                    start: span.range.start,
+                    end: span.range.end,
+                }),
             })
             .collect(),
     };

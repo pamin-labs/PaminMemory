@@ -632,12 +632,12 @@ async fn search() {
     shape.observe_models();
     let engine = open(&workspace, &project).await;
     shape.ran_on(harness::shape::engines(&[("primary", &engine)]));
-    harness::index(
+    let expected = harness::index(
         &mut shape,
         "primary",
         &engine,
         workspace.root(),
-        corpus.passages.len(),
+        passages(&corpus),
     )
     .await;
 
@@ -688,7 +688,7 @@ async fn search() {
     // file a measurement of something nobody ships.
     assert_eq!(
         engine.indexed_documents().expect("count the documents") as usize,
-        corpus.passages.len(),
+        expected,
         "the index does not hold the whole corpus"
     );
     let completeness = engine
@@ -798,7 +798,7 @@ async fn search() {
             "named",
             &other,
             workspace.root(),
-            corpus.passages.len(),
+            passages(&corpus),
         )
         .await;
         write_corpus(&other, &corpus).await;
@@ -1276,13 +1276,21 @@ async fn report_channels(engine: &Engine, corpus: &Corpus, named: &str) {
     );
 }
 
+/// Each passage of `corpus` as a name and its content.
+fn passages(corpus: &Corpus) -> impl Iterator<Item = (&str, &str)> {
+    corpus
+        .passages
+        .iter()
+        .map(|passage| (passage.docid.as_str(), passage.text.as_str()))
+}
+
 /// Writes every passage that is not already a topic, then runs the queue.
 /// Resident memory after each thing a server loads, on the largest corpus
 /// here, and what the allocator is holding that nothing uses.
 async fn attribute_memory(engine: &Engine, corpus: &Corpus) {
     assert_eq!(
         engine.indexed_documents().expect("count the documents") as usize,
-        corpus.passages.len(),
+        harness::documents(engine, passages(corpus)),
         "the index does not hold the whole corpus, so this would measure a smaller one"
     );
     const SEARCHES: usize = 100;
@@ -1332,9 +1340,10 @@ async fn attribute_memory(engine: &Engine, corpus: &Corpus) {
 /// The premise is asserted: the index holds the whole corpus, is worth
 /// reshaping before and is not after, and holds every document afterwards.
 async fn reshape_in_place(engine: &Engine, corpus: &Corpus) {
+    let expected = harness::documents(engine, passages(corpus));
     assert_eq!(
         engine.indexed_documents().expect("count the documents") as usize,
-        corpus.passages.len(),
+        expected,
         "the index does not hold the whole corpus"
     );
     let before = engine.segmentation().expect("the shape");
@@ -1378,7 +1387,7 @@ async fn reshape_in_place(engine: &Engine, corpus: &Corpus) {
     );
     assert_eq!(
         engine.indexed_documents().expect("count the documents") as usize,
-        corpus.passages.len(),
+        expected,
         "the reshaped index lost documents"
     );
     assert!(
@@ -1524,6 +1533,7 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) {
     //
     // That is an assertion rather than an argument: the arm below fails if the
     // graph channel ever credits a hit.
+    let expected = harness::documents(engine, passages(corpus));
     let started = std::time::Instant::now();
     let mut completed = 0;
     loop {
@@ -1534,19 +1544,17 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) {
         completed += drained.completed;
 
         let indexed = engine.indexed_documents().expect("count the documents") as usize;
-        if indexed >= corpus.passages.len() {
+        if indexed >= expected {
             break;
         }
         assert!(
             drained.completed > 0 || drained.pending > 0,
-            "the index holds {indexed} of {} passages and the queue is empty, \
-             so nothing will ever finish it",
-            corpus.passages.len()
+            "the index holds {indexed} of {expected} documents and the queue is empty, \
+             so nothing will ever finish it"
         );
         if completed.is_multiple_of(20_000) {
             println!(
-                "  indexed {indexed}/{} after {completed} jobs, {:.0} minutes",
-                corpus.passages.len(),
+                "  indexed {indexed}/{expected} documents after {completed} jobs, {:.0} minutes",
                 started.elapsed().as_secs_f64() / 60.0
             );
         }

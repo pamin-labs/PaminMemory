@@ -24,6 +24,7 @@ mod reshape;
 mod resident;
 pub mod segmentation;
 pub mod settings;
+pub mod spans;
 mod tokenizer;
 mod vector_math;
 #[cfg(target_os = "windows")]
@@ -52,8 +53,9 @@ pub const BUILD_FINGERPRINT: &str = env!("PAMIN_INFERENCE_BUILD");
 /// among them), as `NAME=value` lines separated by 0x1f.
 pub const BUILD_CARGO: &str = env!("PAMIN_INFERENCE_CARGO");
 pub use projection::{
-    Access, Passage, Previous, Projection, ProjectionIndex, Segmentation, Stored, VectorDocument,
-    VectorIndex, is_fragmented, segment_documents, vector_index_lags, wastes_disk,
+    Access, Grain, Passage, Previous, Projection, ProjectionIndex, Segmentation, SpanDocument,
+    Stored, VectorDocument, VectorIndex, is_fragmented, segment_documents, vector_index_lags,
+    wastes_disk,
 };
 pub use reranking::{Ranked, Reranked, Reranker};
 pub use reshape::{Held, Reshape, Reshaped};
@@ -61,3 +63,4 @@ pub use segmentation::{Segmenter, detect_language};
 pub use settings::{
     DeviceChoice, InferenceSettings, RerankSettings, shown_path, spelled_path, spelled_paths,
 };
+pub use tokenizer::SpanTokens;
