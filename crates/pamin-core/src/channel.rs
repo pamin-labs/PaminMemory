@@ -107,10 +107,16 @@ impl Channel {
 /// from a score of zero. The graph channel is the case: it reaches a topic
 /// across edges rather than scoring it against a query, so a zero there would
 /// assert a measurement nobody took.
+///
+/// `span` is which of the topic's spans the channel found it by, its best one
+/// when it found several: an index channel ranks the spans a memory is cut
+/// into and reports each topic once, by the best. 0 for a memory of one span
+/// and for a channel that reaches topics whole, as the graph does.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Scored {
     pub topic: TopicId,
     pub score: Option<f32>,
+    pub span: u32,
 }
 
 impl Scored {
@@ -118,12 +124,22 @@ impl Scored {
         Self {
             topic,
             score: Some(score),
+            span: 0,
         }
     }
 
     /// A candidate from a channel that does not score.
     pub fn unscored(topic: TopicId) -> Self {
-        Self { topic, score: None }
+        Self {
+            topic,
+            score: None,
+            span: 0,
+        }
+    }
+
+    /// The same candidate, found by span `span` of its topic.
+    pub fn in_span(self, span: u32) -> Self {
+        Self { span, ..self }
     }
 }
 

@@ -43,6 +43,7 @@
 //! again.
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
@@ -59,6 +60,7 @@ use tokenizers::{
 
 use crate::error::{IndexError, Result};
 use crate::hub::Repository;
+use crate::spans::TokenCount;
 
 /// A tokenizer whose model may be shared with other tokenizers.
 ///
@@ -680,6 +682,49 @@ fn build<M: Model + DeserializeOwned>(
         }
     }
     Ok(tokenizer)
+}
+
+/// Counts tokens the way BGE-M3 reads a passage, with nothing cut off, for
+/// [`pack`](crate::spans::pack) to cut memories by.
+///
+/// BGE-M3's own `tokenizer.json`, loaded as the embedder loads it -- so its
+/// vocabulary is the one the embedder holds, not a second copy of it -- with
+/// truncation and padding off and no special tokens added. A span is packed to
+/// fit what the model will read, and a count cut at the model's 512 tokens
+/// would say that every memory fits.
+pub struct SpanTokens(Tokenizer);
+
+impl SpanTokens {
+    /// BGE-M3's tokenizer, read from the model directory `cache_dir`, or
+    /// downloaded into it.
+    pub fn load(cache_dir: &Path) -> Result<Self> {
+        let repository =
+            Repository::open_at(cache_dir, crate::embedding::JOINT_REPOSITORY, "main")?;
+        Self::new(load(&repository, usize::MAX)?)
+    }
+
+    fn new(mut tokenizer: Tokenizer) -> Result<Self> {
+        tokenizer
+            .with_truncation(None)
+            .map_err(|error| IndexError::Engine(format!("untruncating the tokenizer: {error}")))?
+            .with_padding(None);
+        Ok(Self(tokenizer))
+    }
+}
+
+impl TokenCount for SpanTokens {
+    /// Byte offsets into `text`, which are what `encode` reports for a string.
+    fn offsets(&self, text: &str) -> Vec<Range<usize>> {
+        // Encoding fails only on a character the vocabulary has no piece for
+        // in a model with no unknown token; XLM-R's Unigram has one.
+        self.0
+            .encode(text, false)
+            .expect("XLM-R's Unigram encodes any text")
+            .get_offsets()
+            .iter()
+            .map(|&(start, end)| start..end)
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -1306,5 +1351,79 @@ pub(crate) mod tests {
             texts.push(vec!["中"; words].join(""));
         }
         texts
+    }
+
+    /// Every token's byte range starts and ends on a character boundary of
+    /// the text, in order, so a span cut at one is a slice of the content.
+    fn assert_on_boundaries(tokens: &SpanTokens, text: &str) {
+        let offsets = tokens.offsets(text);
+        let mut start = 0;
+        for range in &offsets {
+            assert!(
+                range.start <= range.end && range.end <= text.len(),
+                "{range:?}"
+            );
+            assert!(range.start >= start, "offsets out of order in {text:?}");
+            assert!(
+                text.is_char_boundary(range.start) && text.is_char_boundary(range.end),
+                "{range:?} splits a character of {text:?}"
+            );
+            start = range.start;
+        }
+    }
+
+    /// A text is counted whole -- the fixture truncates at eight tokens --
+    /// and without the special tokens the model is handed around it.
+    #[test]
+    fn span_tokens_count_a_whole_text_and_nothing_around_it() {
+        let tokens = SpanTokens::new(fixture()).expect("untruncate");
+        assert_eq!(tokens.count("memory"), 1);
+        let text = vec!["memory"; 20].join(" ");
+        assert_eq!(tokens.count(&text), 20);
+        assert!(
+            tokens
+                .offsets(&text)
+                .into_iter()
+                .all(|range| text[range].trim_start() == "memory"),
+            "an offset that does not cover its word and the space before it"
+        );
+        assert_on_boundaries(&tokens, "mémory 東京 memory\nmem ory 🙂");
+    }
+
+    /// BGE-M3's tokenizer counts a text as the sum of its lines, which is
+    /// what lets `spans::pack` count blocks one at a time; and its offsets
+    /// fall on character boundaries in every script.
+    #[test]
+    #[ignore = "reads BGE-M3's tokenizer; set PAMIN_TEST_MODEL_CACHE"]
+    fn bge_tokens_add_up_across_lines_and_fall_on_boundaries() {
+        let cache = std::path::PathBuf::from(
+            std::env::var_os("PAMIN_TEST_MODEL_CACHE").expect("set PAMIN_TEST_MODEL_CACHE"),
+        );
+        let tokens = SpanTokens::load(&cache).expect("load the tokenizer");
+        let blocks = [
+            "# Deploy notes",
+            "The deploy failed at noon. We rolled back within the hour.",
+            "    let value = compute(1, other);",
+            "今天天气很好。我们去公园散步吧！",
+            "[2023-05-08 13:56] Caroline: Die Datenbankmigration ist fehlgeschlagen.",
+            "ฉันชอบกินข้าว 🙂 é",
+            "```",
+        ];
+        for first in blocks {
+            for second in blocks {
+                for separator in ["\n", "\n\n", "\n  \n", " \n"] {
+                    let text = format!("{first}{separator}{second}");
+                    assert_eq!(
+                        tokens.count(&text),
+                        tokens.count(first) + tokens.count(second),
+                        "{text:?}"
+                    );
+                    assert_on_boundaries(&tokens, &text);
+                }
+            }
+        }
+        let text = blocks.join(" ");
+        assert!(tokens.count(&text) > 0);
+        assert_on_boundaries(&tokens, &"字".repeat(600));
     }
 }

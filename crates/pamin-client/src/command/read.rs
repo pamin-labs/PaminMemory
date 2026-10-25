@@ -10,6 +10,32 @@ pub struct Args {
     /// How many versions back from the current one. Zero is current.
     #[arg(long, default_value_t = 0)]
     pub version_offset: u32,
+
+    /// Read one span of a memory the index cut into spans, from 0, rather
+    /// than all of it -- what `pamin search` prints as `--span` on a hit.
+    #[arg(long)]
+    #[serde(default)]
+    pub span: Option<u32>,
+
+    /// With `--span`, this many spans either side as well.
+    #[arg(long, default_value_t = 0, requires = "span")]
+    #[serde(default)]
+    pub around: u32,
+}
+
+/// Where in a memory a span, or a run of them, lies.
+#[derive(Serialize, Deserialize)]
+pub struct Span {
+    /// The span asked about, from 0.
+    pub ordinal: u32,
+    /// How many spans the memory is cut into.
+    pub of: u32,
+    /// The memory's name, and the heading and turn the run continues -- what
+    /// the run lost by being cut out of it.
+    pub header: String,
+    /// The run's bytes in the memory's content.
+    pub start: usize,
+    pub end: usize,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -50,6 +76,10 @@ pub struct Read {
     /// command line. One per read is where it is affordable and where somebody
     /// auditing a single claim is already looking.
     pub source_span: String,
+    /// With `--span`, which spans `content` is. `content` is then those spans
+    /// alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<Span>,
 }
 
 /// Renders the result for a person reading it.
@@ -59,8 +89,14 @@ pub fn render(result: &Read) -> String {
     } else {
         "historical"
     };
+    let span = result.span.as_ref().map_or(String::new(), |span| {
+        format!(
+            "\nspan {} of {}, bytes {}..{}: {}",
+            span.ordinal, span.of, span.start, span.end, span.header
+        )
+    });
     format!(
-        "{} v{} ({marker}, {} of {} versions, recorded {})\n\n{}",
+        "{} v{} ({marker}, {} of {} versions, recorded {}){span}\n\n{}",
         result.topic,
         result.version,
         result.actual_version_offset,

@@ -224,6 +224,8 @@ pub fn settings() -> pamin_engine::Settings {
         model_idle: default.model_idle,
         unindexed_budget: eval::parsed::<std::num::NonZeroU64>("PAMIN_EVAL_UNINDEXED_BUDGET")
             .unwrap_or(default.unindexed_budget),
+        grain: eval::parsed::<std::num::NonZeroU32>("PAMIN_EVAL_SPAN_TOKENS")
+            .map_or(default.grain, pamin_index::Grain::Spans),
     }
 }
 
@@ -354,22 +356,40 @@ pub async fn write_absent(
 }
 
 /// Hands `engine`'s index to `shape` under `label` before the run writes
-/// any of its `total` documents (see `Shape::indexed`): loads the embedder,
-/// so the producer that will embed them is known; the shape takes the
-/// index's build lock and counts what it already holds.
-pub async fn index(
+/// any of `memories`, each a name and its content (see `Shape::indexed`):
+/// loads the embedder, so the producer that will embed them is known; the
+/// shape takes the index's build lock and counts what it already holds.
+///
+/// Returns how many documents the index holds once all of them are written,
+/// which is what a count of it is checked against: one per span a memory is
+/// cut into, so a missing memory is found at any grain.
+pub async fn index<'a>(
     shape: &mut shape::Shape,
     label: &str,
     engine: &Engine,
     workspace: &std::path::Path,
-    total: usize,
-) {
+    memories: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> usize {
     let loading = engine.clone();
     tokio::task::spawn_blocking(move || loading.load_embedder())
         .await
         .expect("the embedder load panicked")
         .expect("load the embedding model");
+    let total = documents(engine, memories);
     shape.indexed(label, engine, workspace, total);
+    total
+}
+
+/// How many documents `engine`'s index holds for `memories`, each a name and
+/// its content, once all are written: one per span each is cut into.
+pub fn documents<'a>(
+    engine: &Engine,
+    memories: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> usize {
+    memories
+        .into_iter()
+        .map(|(name, content)| engine.cut(name, content).expect("cut a memory").len())
+        .sum()
 }
 
 /// Runs the cascade until nothing is owed, and fails if anything still is.

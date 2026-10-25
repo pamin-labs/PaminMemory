@@ -325,7 +325,7 @@ impl Record {
                 .iter()
                 .map(|at| candidates[*at].topic.as_str())
                 .collect();
-            let documents = super::shown(hits, &names);
+            let documents = super::shown(engine, asked.query, hits, &names);
             let borrowed: Vec<&str> = documents.iter().map(String::as_str).collect();
             // Equal scores below do not show independence by themselves: an
             // unchanged list can come back from the reranker's cache. The
