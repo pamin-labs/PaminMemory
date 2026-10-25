@@ -1470,8 +1470,18 @@ pub async fn topics_to_name(
         .collect())
 }
 
-/// The names of every topic `pamin ingest` has put on the retrieval surface in
-/// this project.
+/// A topic `pamin ingest` has put on the retrieval surface.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileTopic {
+    pub name: String,
+    /// What it says now, which an ingest that retires it checks is still what
+    /// it says when it gets there.
+    pub current: TopicStateId,
+    /// The directory it was last ingested from.
+    pub root: Option<String>,
+}
+
+/// Every topic `pamin ingest` has put on the retrieval surface in this project.
 ///
 /// One read for a whole ingest, rather than one per file: an ingest compares
 /// each file's sections against what an earlier ingest left under that file,
@@ -1479,9 +1489,9 @@ pub async fn topics_to_name(
 pub async fn file_topic_names(
     executor: impl PgExecutor<'_>,
     project: ProjectId,
-) -> Result<Vec<String>> {
-    let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT t.name FROM sources s
+) -> Result<Vec<FileTopic>> {
+    let rows: Vec<(String, uuid::Uuid, Option<String>)> = sqlx::query_as(
+        "SELECT t.name, t.current_state_id, s.root FROM sources s
            JOIN topics t ON t.project_id = s.project_id AND t.name = substr(s.locator, 6)
          WHERE s.project_id = $1 AND s.kind = 'file' AND t.current_state_id IS NOT NULL",
     )
@@ -1489,7 +1499,28 @@ pub async fn file_topic_names(
     .fetch_all(executor)
     .await?;
 
-    Ok(rows.into_iter().map(|(name,)| name).collect())
+    Ok(rows
+        .into_iter()
+        .map(|(name, current, root)| FileTopic {
+            name,
+            current: current.into(),
+            root,
+        })
+        .collect())
+}
+
+/// Records `root` as the directory the file source was last ingested from.
+pub async fn set_source_root(
+    executor: impl PgExecutor<'_>,
+    source: SourceId,
+    root: &str,
+) -> Result<()> {
+    sqlx::query("UPDATE sources SET root = $2 WHERE id = $1 AND root IS DISTINCT FROM $2")
+        .bind(source.0)
+        .bind(root)
+        .execute(executor)
+        .await?;
+    Ok(())
 }
 
 /// Lists every topic in a project.
