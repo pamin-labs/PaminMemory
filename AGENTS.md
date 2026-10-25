@@ -24,6 +24,24 @@
 - Before starting a multi-PR feature, record it in the internal roadmap or
   backlog so parallel work on the same concern is visible before code exists.
 
+## Code Quality
+
+- DRY and decoupled: the one-implementation-per-concern rule above applies to
+  every concern, not only retrieval. Shared logic lives in the crate that owns
+  the concern; other crates call its public interface instead of copying it.
+  Frozen benchmark harnesses and results are records and stay as they are.
+- Do not reinvent what exists: prefer the standard library, then a crate already
+  in the workspace, then a maintained, widely used crate that passes
+  `cargo deny check licenses`. Write custom code only when none fits, and say
+  why in the PR.
+- Keep it maintainable: small functions with one job, names that say what they
+  hold, comments that explain why rather than what, no dead code. A change to
+  one rule should touch one place.
+- Keep it fast: on search, ingest and model-load paths avoid allocation and
+  cloning inside loops, repeated parsing, and blocking I/O on async paths; reuse
+  buffers and the optimized kernels already in the tree. Any speed claim
+  follows [Measuring Every Optimization](#measuring-every-optimization).
+
 ## Skills
 
 Longer-form guidance lives in `.agents/skills/`, one directory per skill, each
