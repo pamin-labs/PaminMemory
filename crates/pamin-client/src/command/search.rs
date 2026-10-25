@@ -183,7 +183,8 @@ pub struct Hit {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub valid_to: Option<String>,
     /// For a memory the index cut into spans, which of them `content` is: the
-    /// span the search matched best and one either side. Absent for a memory
+    /// span the search matched best and what fits a budget of about 600 tokens
+    /// around it, nearer neighbours first. Absent for a memory
     /// of one span, whose `content` is all of it. `pamin read --span` reads
     /// more of the memory around it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
