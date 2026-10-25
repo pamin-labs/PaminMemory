@@ -13,7 +13,7 @@
 #[path = "../../pamin-index/tests/support/mod.rs"]
 mod support;
 
-use pamin_core::Validity;
+use pamin_core::{TopicStateId, Validity};
 use pamin_engine::{Engine, Retired};
 use pamin_index::{Access, VectorIndex};
 use pamin_store::{Connections, Database, Workspace, repository};
@@ -92,6 +92,9 @@ async fn owed(engine: &Engine, topic: &str) -> Vec<String> {
     kinds
 }
 
+/// The directory the sections here were ingested from.
+const ROOT: &str = "/home/someone/docs-repo";
+
 const SECTION: &str = "docs/ops.md › Deploy › Rollback";
 const TEXT: &str = "## Rollback\n\nA rollback reverts the deployment pipeline to the previous tag.";
 
@@ -103,7 +106,7 @@ async fn an_unchanged_section_is_not_recorded_again() {
     let (engine, _scratch) = engine().await;
 
     let first = engine
-        .remember_section(SECTION, TEXT, Validity::ALWAYS)
+        .remember_section(SECTION, TEXT, Validity::ALWAYS, ROOT)
         .await
         .expect("first ingest");
     let (verdict, recorded) = first.expect("a new section is recorded");
@@ -118,7 +121,7 @@ async fn an_unchanged_section_is_not_recorded_again() {
         TEXT.replace(' ', "  ").replace("\n\n", "\n"),
     ] {
         let outcome = engine
-            .remember_section(SECTION, &again, Validity::ALWAYS)
+            .remember_section(SECTION, &again, Validity::ALWAYS, ROOT)
             .await
             .expect("re-ingest");
         assert!(outcome.is_none(), "{again:?} was recorded again");
@@ -141,7 +144,7 @@ async fn an_unchanged_section_is_not_recorded_again() {
     // A changed section is a new version, as any edit is.
     let edited = format!("{TEXT} It takes about ten minutes.");
     let (verdict, recorded) = engine
-        .remember_section(SECTION, &edited, Validity::ALWAYS)
+        .remember_section(SECTION, &edited, Validity::ALWAYS, ROOT)
         .await
         .expect("edited")
         .expect("a changed section is recorded");
@@ -153,7 +156,7 @@ async fn an_unchanged_section_is_not_recorded_again() {
     // still says what it said before and nothing else would say so.
     for _ in 0..2 {
         let (verdict, _) = engine
-            .remember_section(SECTION, "ok", Validity::ALWAYS)
+            .remember_section(SECTION, "ok", Validity::ALWAYS, ROOT)
             .await
             .expect("cut down")
             .expect("a held section over live content is not unchanged");
@@ -170,7 +173,7 @@ async fn a_section_is_kept_out_of_the_name_index() {
     let (engine, _scratch) = engine().await;
 
     engine
-        .remember_section(SECTION, TEXT, Validity::ALWAYS)
+        .remember_section(SECTION, TEXT, Validity::ALWAYS, ROOT)
         .await
         .expect("ingest")
         .expect("recorded");
@@ -216,11 +219,26 @@ async fn a_section_is_kept_out_of_the_name_index() {
             "rollback_plan",
             "## Rollback\n\nIngested over a topic first written by hand.",
             Validity::ALWAYS,
+            ROOT,
         )
         .await
         .expect("ingest over a manual topic")
         .expect("recorded");
     assert_eq!(to_name(&engine).await, ["rollback_plan"]);
+}
+
+/// The state `topic` points at now, as an ingest that is about to retire it
+/// saw it.
+async fn seen(engine: &Engine, topic: &str) -> TopicStateId {
+    let id: uuid::Uuid = sqlx::query_scalar(
+        "SELECT current_state_id FROM topics WHERE project_id = $1 AND name = $2",
+    )
+    .bind(engine.project.0)
+    .bind(topic)
+    .fetch_one(engine.database.pool())
+    .await
+    .expect("a current state");
+    id.into()
 }
 
 /// What a rebuild of the name index would restate.
@@ -247,7 +265,7 @@ async fn a_sections_source_is_the_files() {
         (other, "# Deploy\n\nThe pipeline runs on argo cd."),
     ] {
         engine
-            .remember_section(topic, content, Validity::ALWAYS)
+            .remember_section(topic, content, Validity::ALWAYS, ROOT)
             .await
             .expect("ingest")
             .expect("recorded");
@@ -255,7 +273,7 @@ async fn a_sections_source_is_the_files() {
     // Held by the filter, so on no retrieval surface and not a section to
     // report missing later.
     let held = engine
-        .remember_section("docs/ops.md › Tiny", "ok", Validity::ALWAYS)
+        .remember_section("docs/ops.md › Tiny", "ok", Validity::ALWAYS, ROOT)
         .await
         .expect("ingest")
         .expect("recorded as held");
@@ -264,7 +282,7 @@ async fn a_sections_source_is_the_files() {
     // to restate, and ingesting it again must not copy it again.
     let before = versions(&engine).await;
     let again = engine
-        .remember_section("docs/ops.md › Tiny", "ok", Validity::ALWAYS)
+        .remember_section("docs/ops.md › Tiny", "ok", Validity::ALWAYS, ROOT)
         .await
         .expect("re-ingest");
     assert!(again.is_none(), "a held section was recorded again");
@@ -297,8 +315,15 @@ async fn a_sections_source_is_the_files() {
     let mut listed = repository::file_topic_names(engine.database.pool(), engine.project)
         .await
         .expect("file topics");
-    listed.sort();
-    assert_eq!(listed, [other, SECTION]);
+    listed.sort_by(|left, right| left.name.cmp(&right.name));
+    assert_eq!(
+        listed
+            .iter()
+            .map(|topic| (topic.name.as_str(), topic.root.as_deref()))
+            .collect::<Vec<_>>(),
+        [(other, Some(ROOT)), (SECTION, Some(ROOT))],
+        "a section's source does not say which tree it was ingested from"
+    );
 
     // The column admits only the kinds a variant writes.
     let rejected = sqlx::query(
@@ -321,7 +346,7 @@ async fn a_reindex_keeps_sections_out_of_the_name_index() {
     let (engine, _scratch) = engine().await;
 
     engine
-        .remember_section(SECTION, TEXT, Validity::ALWAYS)
+        .remember_section(SECTION, TEXT, Validity::ALWAYS, ROOT)
         .await
         .expect("ingest")
         .expect("recorded");
@@ -357,9 +382,14 @@ async fn a_reindex_keeps_sections_out_of_the_name_index() {
 async fn a_retired_section_leaves_the_surface_and_can_come_back() {
     let (engine, _scratch) = engine().await;
 
+    // What an ingest that looked before the second write saw.
+    let mut stale = None;
     for content in [TEXT.to_string(), format!("{TEXT} Edited once.")] {
+        if stale.is_none() && content != TEXT {
+            stale = Some(seen(&engine, SECTION).await);
+        }
         engine
-            .remember_section(SECTION, &content, Validity::ALWAYS)
+            .remember_section(SECTION, &content, Validity::ALWAYS, ROOT)
             .await
             .expect("ingest")
             .expect("recorded");
@@ -370,8 +400,21 @@ async fn a_retired_section_leaves_the_surface_and_can_come_back() {
         .await
         .expect("settle the queue");
 
+    // An ingest that looked before the section changed again -- a concurrent
+    // one that found it back in its file -- retires nothing.
     assert_eq!(
-        engine.retire_section(SECTION).await.expect("retire"),
+        engine
+            .retire_section(SECTION, stale.expect("seen before the edit"))
+            .await
+            .expect("stale retire"),
+        Retired::Changed
+    );
+
+    assert_eq!(
+        engine
+            .retire_section(SECTION, seen(&engine, SECTION).await)
+            .await
+            .expect("retire"),
         Retired::Retired
     );
     assert_eq!(
@@ -406,12 +449,15 @@ async fn a_retired_section_leaves_the_surface_and_can_come_back() {
 
     // Retiring again finds nothing to retire.
     assert_eq!(
-        engine.retire_section(SECTION).await.expect("again"),
+        engine
+            .retire_section(SECTION, TopicStateId::new())
+            .await
+            .expect("again"),
         Retired::Absent
     );
     assert_eq!(
         engine
-            .retire_section("no such topic")
+            .retire_section("no such topic", TopicStateId::new())
             .await
             .expect("absent"),
         Retired::Absent
@@ -419,7 +465,7 @@ async fn a_retired_section_leaves_the_surface_and_can_come_back() {
 
     // The section is back in the file: a new version, current again.
     let (verdict, recorded) = engine
-        .remember_section(SECTION, TEXT, Validity::ALWAYS)
+        .remember_section(SECTION, TEXT, Validity::ALWAYS, ROOT)
         .await
         .expect("back")
         .expect("a returning section is recorded, not unchanged");
@@ -434,7 +480,7 @@ async fn a_retired_section_leaves_the_surface_and_can_come_back() {
 async fn a_section_written_by_hand_too_is_kept() {
     let (engine, _scratch) = engine().await;
     engine
-        .remember_section(SECTION, TEXT, Validity::ALWAYS)
+        .remember_section(SECTION, TEXT, Validity::ALWAYS, ROOT)
         .await
         .expect("ingest")
         .expect("recorded");
@@ -448,7 +494,10 @@ async fn a_section_written_by_hand_too_is_kept() {
         .expect("manual write");
 
     assert_eq!(
-        engine.retire_section(SECTION).await.expect("retire"),
+        engine
+            .retire_section(SECTION, seen(&engine, SECTION).await)
+            .await
+            .expect("retire"),
         Retired::Kept
     );
     assert_eq!(
@@ -492,7 +541,7 @@ async fn a_section_written_by_hand_is_named() {
     ] {
         let (engine, _scratch) = engine().await;
         engine
-            .remember_section(topic, TEXT, Validity::ALWAYS)
+            .remember_section(topic, TEXT, Validity::ALWAYS, ROOT)
             .await
             .expect("ingest")
             .expect("recorded");

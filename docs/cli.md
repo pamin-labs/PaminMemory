@@ -622,7 +622,7 @@ A path is a file or a directory. A directory is read recursively for `.md`,
 `.markdown` and `.txt` files, skipping hidden entries — `.git` among them —
 symbolic links, and, inside a git repository, whatever git ignores: its
 `.gitignore` files, including any above the directory named,
-`.git/info/exclude` and your global excludes. A file named on the command line is read whatever it is called
+`.git/info/exclude` and the global excludes of the user the server runs as. A file named on the command line is read whatever it is called
 and wherever a link it is leads, and is cut as Markdown whatever it holds, so
 `# ` at the start of a line of code is a heading to it. The paths are made
 absolute by the client before the request leaves, because the server reading
@@ -698,10 +698,21 @@ nothing, and a one-word edit wrote one to three sections
 listed under `removed`: its heading renamed or removed, or its file deleted
 from a directory the command walked, moved out of it, or now ignored by git.
 Every version of its topic is soft deleted, so search no longer returns it, and
-the edges its content derived are closed. Nothing is lost: its history and its
-evidence stay, `pamin grep` still finds the text, and ingesting the section
-again brings it back as a new version. A file the command found and could not
-read is not where a section went missing, and its sections stay.
+the edges its content derived are closed. Nothing is lost: the ledger keeps
+every version and its evidence, `pamin grep` still finds the text, and
+ingesting the section again brings it back as a new version — though until
+then `pamin read` reports the topic has no live version, and `pamin topics`
+still lists its name.
+
+Only what the command could see is retired. A file it found and could not read
+is not where a section went missing, and its sections stay. Under a directory
+whose walk met an error — a subdirectory it could not open — a file it did not
+find may only have been out of reach, so its sections are listed under
+`missing` and stay. A section is retired only from the tree it was last
+ingested from: each file's sections record that directory, so another tree
+whose files are named alike, another clone or another `notes`, is not taken
+for this one. And a section that changed after the command looked, because
+another ingest found it back in its file meanwhile, is left as it now is.
 
 `--keep-missing` only lists such sections, under `missing`, and leaves them
 searchable. So does any section somebody also wrote by hand with `pamin write`,
@@ -714,8 +725,8 @@ Nothing outside what the command named is looked at. A repository whose
 directory was renamed or checked out under another name is recorded afresh
 under its new names, and its old sections stay searchable and are listed
 nowhere. And two directories of the same name ingested by separate commands
-outside any repository name their files alike, so the second records its
-sections as new versions of the first's.
+name their files alike, so where both have a file of the same name, each
+records that file's sections as new versions of the other's.
 
 Ingested topics are kept out of the name index the graph channel matches
 memories against. A path and its headings are a name no memory spells out in
