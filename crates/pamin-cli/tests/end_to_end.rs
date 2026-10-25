@@ -2532,3 +2532,143 @@ fn an_ingested_file_is_found_by_section_and_re_ingested_by_change() {
     server.kill().expect("stopping the server");
     server.wait().expect("reaping the server");
 }
+
+/// A section inserted above another under the same headings takes a new
+/// number, rather than the name of the one already there.
+///
+/// Numbered in file order alone, the inserted section would take `Notes` and
+/// the one that had it would become `Notes #2`: both names would change hands,
+/// and each section's text would be written as a new version of the other.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn a_section_inserted_above_its_twin_leaves_the_twin_its_name() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+    let tree = tempfile::tempdir().expect("temp tree");
+    std::fs::create_dir_all(tree.path().join(".git")).expect("a repository root");
+    let notes = tree.path().join("notes.md");
+    let name = format!(
+        "{}/notes.md › Notes",
+        tree.path()
+            .file_name()
+            .expect("a name")
+            .to_str()
+            .expect("utf-8")
+    );
+    let first = "The staging cluster is rebuilt from scratch every friday evening, \
+                 so anything deployed there by hand is gone on monday morning and \
+                 has to be redeployed through the pipeline instead. Nobody keeps \
+                 state there that they cannot rebuild, and the seed data comes from \
+                 the nightly anonymised snapshot of production.";
+    let second = "Database migrations run before the application starts, and a \
+                  migration that fails leaves the previous release serving traffic \
+                  until whoever is on call rolls it forward by hand. A migration is \
+                  written to be safe against the release before it, so both can run \
+                  against the same schema while traffic moves across.";
+    put(&notes, &format!("# Notes\n\n{first}\n"));
+    let once = cli.json(&["ingest", notes.to_str().expect("a path")]);
+    assert_eq!(once["written"], 1, "{once}");
+
+    put(&notes, &format!("# Notes\n\n{second}\n\n# Notes\n\n{first}\n"));
+    let twice = cli.json(&["ingest", notes.to_str().expect("a path")]);
+    assert_eq!(twice["sections"], 2, "{twice}");
+    assert_eq!(twice["written"], 1, "the twin was rewritten: {twice}");
+    assert_eq!(twice["unchanged"], 1, "{twice}");
+    assert_eq!(twice["removed"], serde_json::json!([]), "{twice}");
+
+    let kept = cli.json(&["read", &name]);
+    assert_eq!(kept["version"], 1, "{kept}");
+    assert_eq!(kept["content"], format!("# Notes\n\n{first}"), "{kept}");
+    let inserted = cli.json(&["read", &format!("{name} #2")]);
+    assert_eq!(inserted["content"], format!("# Notes\n\n{second}"), "{inserted}");
+}
+
+/// A file's sections are related as its outline relates them: each is
+/// `part_of` the section of the heading above it and `related_to` the next one
+/// under the same heading, and a section the file loses takes its edges with
+/// it.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn a_files_outline_relates_its_sections() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+    let tree = tempfile::tempdir().expect("temp tree");
+    std::fs::create_dir_all(tree.path().join(".git")).expect("a repository root");
+    let ops = tree.path().join("ops.md");
+    let file = format!(
+        "{}/ops.md",
+        tree.path()
+            .file_name()
+            .expect("a name")
+            .to_str()
+            .expect("utf-8")
+    );
+    let deploy = "The deployment pipeline builds every commit on the main branch and \
+                  promotes the build to production once the canary has served traffic \
+                  for thirty minutes without raising an alarm. Every stage records \
+                  what it built and from which commit, so a release can always be \
+                  traced back to the change that produced it.";
+    let canary = "The canary takes five per cent of production traffic, and its error \
+                  rate is compared with the rest of the fleet before the build is \
+                  allowed to go any further. If the canary's latency or errors drift \
+                  above the fleet's for more than five minutes, the build is stopped \
+                  and whoever is on call is paged.";
+    let rollback = "A rollback reverts the deployment pipeline to the previous release \
+                    tag, and the previous build is serving again within ten minutes \
+                    because its image is still cached on every node. The rollback is \
+                    recorded against the release it undid, and the pipeline refuses to \
+                    promote that release again until someone clears it.";
+    put(
+        &ops,
+        &format!("# Deploy\n\n{deploy}\n\n## Canary\n\n{canary}\n\n## Rollback\n\n{rollback}\n"),
+    );
+    let first = cli.json(&["ingest", ops.to_str().expect("a path")]);
+    assert_eq!(first["sections"], 3, "{first}");
+
+    let edges = |topic: &str| -> Vec<(String, String, String)> {
+        let mut edges: Vec<(String, String, String)> = cli
+            .json(&["neighbors", topic, "--depth", "1"])["neighbors"]
+            .as_array()
+            .expect("neighbors")
+            .iter()
+            .map(|neighbor| {
+                (
+                    neighbor["asserted_from"].as_str().expect("from").to_string(),
+                    neighbor["edge"].as_str().expect("an edge").to_string(),
+                    neighbor["asserted_to"].as_str().expect("to").to_string(),
+                )
+            })
+            .collect();
+        edges.sort();
+        edges
+    };
+    let deploy_name = format!("{file} › Deploy");
+    let canary_name = format!("{file} › Deploy › Canary");
+    let rollback_name = format!("{file} › Deploy › Rollback");
+    assert_eq!(
+        edges(&canary_name),
+        [
+            (canary_name.clone(), "part_of".to_string(), deploy_name.clone()),
+            (canary_name.clone(), "related_to".to_string(), rollback_name.clone()),
+        ]
+    );
+
+    // Unchanged, re-ingested: nothing new to say.
+    let again = cli.json(&["ingest", ops.to_str().expect("a path")]);
+    assert_eq!(again["unchanged"], 3, "{again}");
+    assert_eq!(edges(&canary_name).len(), 2);
+
+    // Rollback gone: its edges, and the one to it, closed.
+    put(&ops, &format!("# Deploy\n\n{deploy}\n\n## Canary\n\n{canary}\n"));
+    let fewer = cli.json(&["ingest", ops.to_str().expect("a path")]);
+    assert_eq!(fewer["removed"], serde_json::json!([rollback_name]), "{fewer}");
+    assert_eq!(
+        edges(&canary_name),
+        [(canary_name.clone(), "part_of".to_string(), deploy_name.clone())]
+    );
+    assert_eq!(
+        edges(&deploy_name),
+        [(canary_name.clone(), "part_of".to_string(), deploy_name.clone())],
+        "the removed section's own edge was left open"
+    );
+}

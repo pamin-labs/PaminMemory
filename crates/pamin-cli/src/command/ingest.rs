@@ -18,7 +18,10 @@ use anyhow::{Context, Result};
 use pamin_client::command::ingest::{Args, Ingested};
 use pamin_engine::{Owed, Retired};
 use pamin_index::VectorIndex;
-use pamin_index::sections::{SEPARATOR, Section, sections};
+use pamin_core::EdgeKind;
+use pamin_index::sections::{
+    Placed, SEPARATOR, Section, Unnamed, named, number, outline, unnamed,
+};
 use pamin_index::spans::TokenCount;
 use pamin_store::repository::FileTopic;
 
@@ -96,7 +99,7 @@ pub async fn execute(
     // too: both are XLM-R's. Loaded off the runtime, as every model load is.
     // Not loaded at all for an ingest that found nothing to read.
     let models = session.workspace().models_dir();
-    let cut: Vec<(String, String, Vec<Section>)> = tokio::task::spawn_blocking(move || {
+    let cut: Vec<(String, String, Vec<Unnamed>)> = tokio::task::spawn_blocking(move || {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
@@ -106,7 +109,7 @@ pub async fn execute(
             texts
                 .into_iter()
                 .map(|(name, root, text)| {
-                    let sections = sections(&name, &text, counter);
+                    let sections = unnamed(&name, &text, counter);
                     (name, root, sections)
                 })
                 .collect::<Vec<_>>(),
@@ -116,6 +119,9 @@ pub async fn execute(
     .context("cutting files into sections")??;
 
     let engine = session.engine(project, vector_index).await?;
+    let recorded =
+        pamin_store::repository::file_topic_names(engine.database.pool(), engine.project).await?;
+    let (cut, outline) = numbered(&engine, cut, &recorded).await?;
 
     let read: Vec<(String, String)> = cut
         .iter()
@@ -127,8 +133,6 @@ pub async fn execute(
             sections.iter().map(move |section| (section, root.as_str()))
         })
         .collect();
-    let recorded =
-        pamin_store::repository::file_topic_names(engine.database.pool(), engine.project).await?;
     let gone = gone(
         &Looked {
             read: &read,
@@ -199,6 +203,11 @@ pub async fn execute(
         .await?;
     }
 
+    // After the sections are recorded, so each has the state its edges cite,
+    // and before retiring, whose sections the outline no longer names.
+    let sections: Vec<String> = cut.iter().map(|(section, _)| section.name.clone()).collect();
+    engine.restate_outline(&sections, &outline).await?;
+
     // After the sections are recorded, so a section that moved within a file
     // is written under its new name before its old one is retired, and before
     // the drain, which removes what retiring left for the projection.
@@ -233,6 +242,79 @@ pub async fn execute(
         cascade: if owed == 0 { "applied" } else { "queued" }.to_string(),
         cascade_lagging: lagging,
     })
+}
+
+/// Each file's sections named, numbered against what its sections said when
+/// it was last ingested wherever a number is at stake: in a file where two
+/// sections share headings, or where an earlier ingest numbered one. Every
+/// other file's sections are named as they are cut, with no read.
+///
+/// And each file's outline, by those names: the edges
+/// [`Engine::restate_outline`](pamin_engine::Engine::restate_outline) states.
+#[allow(clippy::type_complexity)]
+async fn numbered(
+    engine: &pamin_engine::Engine,
+    cut: Vec<(String, String, Vec<Unnamed>)>,
+    recorded: &[FileTopic],
+) -> Result<(
+    Vec<(String, String, Vec<Section>)>,
+    Vec<(String, String, EdgeKind)>,
+)> {
+    // Per file, the earlier sections a number could be kept from.
+    let wanted: Vec<Vec<String>> = cut
+        .iter()
+        .map(|(file, _, sections)| {
+            let bases: BTreeSet<&str> = sections.iter().map(|s| s.base.as_str()).collect();
+            let earlier: Vec<String> = recorded
+                .iter()
+                .filter(|topic| belongs(&topic.name, file))
+                .filter(|topic| bases.iter().any(|base| number(&topic.name, base).is_some()))
+                .map(|topic| topic.name.clone())
+                .collect();
+            let repeated = bases.len() < sections.len();
+            let renumbered = earlier
+                .iter()
+                .any(|name| bases.iter().any(|base| number(name, base).is_some_and(|n| n > 1)));
+            if repeated || renumbered {
+                earlier
+            } else {
+                Vec::new()
+            }
+        })
+        .collect();
+    let names: Vec<String> = wanted.iter().flatten().cloned().collect();
+    let contents: std::collections::HashMap<String, String> =
+        pamin_store::repository::current_named(engine.database.pool(), engine.project, &names)
+            .await?
+            .into_iter()
+            .map(|named| (named.name, named.content))
+            .collect();
+    let mut edges = Vec::new();
+    let files = cut
+        .into_iter()
+        .zip(wanted)
+        .map(|((file, root, sections), wanted)| {
+            let previous: Vec<Section> = wanted
+                .into_iter()
+                .filter_map(|name| {
+                    let content = contents.get(&name)?.clone();
+                    Some(Section { name, content })
+                })
+                .collect();
+            let bases: Vec<String> = sections.iter().map(|s| s.base.clone()).collect();
+            let sections = named(sections, &previous);
+            let bases: Vec<&str> = bases.iter().map(String::as_str).collect();
+            for (from, to, placed) in outline(&bases) {
+                let kind = match placed {
+                    Placed::Under => EdgeKind::PartOf,
+                    Placed::Before => EdgeKind::RelatedTo,
+                };
+                edges.push((sections[from].name.clone(), sections[to].name.clone(), kind));
+            }
+            (file, root, sections)
+        })
+        .collect();
+    Ok((files, edges))
 }
 
 /// What a command's paths came to.
