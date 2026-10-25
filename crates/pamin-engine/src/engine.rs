@@ -14,8 +14,8 @@ use pamin_core::{
 };
 use pamin_index::spans::TokenCount;
 use pamin_index::{
-    Access, Embedder, Previous, Projection, ProjectionIndex, Reranker, SpanDocument, SpanTokens,
-    VectorIndex,
+    Access, Embedder, Previous, Projection, ProjectionIndex, Reranker, SpanDocument, SpanSource,
+    SpanTokens, VectorIndex,
 };
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
 use pamin_store::{Connections, Database, PgConnection, Workspace, graph, jobs, repository};
@@ -110,17 +110,17 @@ pub(crate) fn off_the_runtime<T>(work: impl FnOnce() -> T) -> T {
 /// no encoding to compare -- including a fallback whose retry deadline has
 /// passed, which the next pass revalidates -- nothing is held.
 ///
-/// Compares the text, while a vector may be embedded from the topic's name as
-/// well ([`pamin_index::Passage`]). That is sound because a topic's name never
-/// changes once it is created; if renaming is ever added, a rename has to
-/// invalidate this, or a renamed topic keeps the vector of its old name.
+/// Compares each span's text and the header its vector is embedded under
+/// with it ([`SpanSource`]), so a topic renamed, or a span whose header
+/// changed while its text did not, is embedded again -- except in an index
+/// that did not record headers, where the text is all there is to compare.
 ///
 /// An index that cannot answer -- a document missing a vector it should have,
 /// or a failed read -- is treated as holding nothing, so every state is written
 /// as it was before this check existed, which also repairs that document.
 fn unheld(
     index: &dyn Projection,
-    wanted: &[(TopicId, &[&str])],
+    wanted: &[(TopicId, &[SpanSource<'_>])],
     encoding: Option<&str>,
 ) -> Vec<bool> {
     let Some(encoding) = encoding else {
@@ -187,7 +187,7 @@ impl PassageEncoder for Embedder {
 fn write_unheld<G>(
     index: impl Fn() -> G,
     encoder: &mut impl PassageEncoder,
-    wanted: &[(TopicId, &[&str])],
+    wanted: &[(TopicId, &[SpanSource<'_>])],
     passages: &[&[&str]],
 ) -> pamin_index::Result<()>
 where
@@ -216,7 +216,7 @@ where
 fn write_encoded<G>(
     index: &impl Fn() -> G,
     encoder: &mut impl PassageEncoder,
-    wanted: &[(TopicId, &[&str])],
+    wanted: &[(TopicId, &[SpanSource<'_>])],
     passages: &[&[&str]],
     at: &[usize],
 ) -> pamin_index::Result<Option<String>>
@@ -235,10 +235,18 @@ where
             spans
                 .iter()
                 .enumerate()
-                .map(move |(ordinal, text)| (topic, ordinal as u32, *text))
+                .map(move |(ordinal, span)| (topic, ordinal as u32, span))
         })
         .zip(&embeddings)
-        .map(|((topic, ordinal, text), embedding)| (topic, ordinal, text, embedding.as_slice()))
+        .map(|((topic, ordinal, span), embedding)| {
+            (
+                topic,
+                ordinal,
+                span.text,
+                Some(span.header),
+                embedding.as_slice(),
+            )
+        })
         .collect();
     index().replace(&documents, encoding.as_deref())?;
     Ok(encoding)
@@ -246,17 +254,26 @@ where
 
 /// One span of a memory as it is indexed.
 struct Indexed {
-    /// What the lexical channels match, and what decides whether the index
-    /// already holds this span.
+    /// What the lexical channels match.
     text: String,
+    /// What it lost by being cut out: the memory's name, and the heading and
+    /// turn it continues. The memory's name alone for a memory indexed whole.
+    header: String,
     /// What its vector is embedded from: its header and text, or its text
     /// alone, as the index's [`pamin_index::Passage`] says.
     passage: String,
 }
 
 impl Indexed {
-    fn texts(spans: &[Self]) -> Vec<&str> {
-        spans.iter().map(|span| span.text.as_str()).collect()
+    /// What decides whether the index already holds these spans.
+    fn sources(spans: &[Self]) -> Vec<SpanSource<'_>> {
+        spans
+            .iter()
+            .map(|span| SpanSource {
+                text: &span.text,
+                header: &span.header,
+            })
+            .collect()
     }
 }
 
@@ -1204,6 +1221,7 @@ impl Engine {
                         state.topic_id,
                         ordinal as u32,
                         span.text.as_str(),
+                        Some(span.header.as_str()),
                         embedding.as_slice(),
                     )
                 })
@@ -1250,6 +1268,7 @@ impl Engine {
                         .map(|span| Indexed {
                             passage: passage.render(&span.header, &span.text),
                             text: span.text.clone(),
+                            header: span.header.clone(),
                         })
                         .collect();
                     self.models.cuts.put(state.id, cap, name, spans);
@@ -1257,6 +1276,7 @@ impl Engine {
                 }
                 _ => vec![Indexed {
                     text: content.to_string(),
+                    header: name.to_string(),
                     passage: passage.render(name, content),
                 }],
             }
@@ -1322,15 +1342,16 @@ impl Engine {
             // every state turns out held: which plan it runs on is the
             // question the check asks.
             let mut embedder = self.embedding()?;
-            let texts: Vec<Vec<&str>> = spans.iter().map(|spans| Indexed::texts(spans)).collect();
+            let sources: Vec<Vec<SpanSource<'_>>> =
+                spans.iter().map(|spans| Indexed::sources(spans)).collect();
             let passages: Vec<Vec<&str>> = spans
                 .iter()
                 .map(|spans| spans.iter().map(|span| span.passage.as_str()).collect())
                 .collect();
-            let wanted: Vec<(TopicId, &[&str])> = states
+            let wanted: Vec<(TopicId, &[SpanSource<'_>])> = states
                 .iter()
-                .zip(&texts)
-                .map(|(state, texts)| (state.topic_id, texts.as_slice()))
+                .zip(&sources)
+                .map(|(state, sources)| (state.topic_id, sources.as_slice()))
                 .collect();
             let passages: Vec<&[&str]> = passages.iter().map(Vec::as_slice).collect();
             write_unheld(|| self.index(), &mut *embedder, &wanted, &passages)
@@ -2391,10 +2412,10 @@ impl Engine {
         };
 
         let reused = off_the_runtime(|| {
-            let wanted: std::collections::HashMap<TopicId, Vec<&str>> = states
+            let wanted: std::collections::HashMap<TopicId, Vec<SpanSource<'_>>> = states
                 .iter()
                 .zip(&spans)
-                .map(|(state, spans)| (state.topic_id, Indexed::texts(spans)))
+                .map(|(state, spans)| (state.topic_id, Indexed::sources(spans)))
                 .collect();
             // Counted before any lock is taken, so a rebuild that can reuse
             // every vector never loads the model at all.
@@ -2460,7 +2481,13 @@ impl Engine {
                     .iter()
                     .zip(&embeddings)
                     .map(|((topic, ordinal, span), embedding)| {
-                        (*topic, *ordinal, span.text.as_str(), embedding.as_slice())
+                        (
+                            *topic,
+                            *ordinal,
+                            span.text.as_str(),
+                            Some(span.header.as_str()),
+                            embedding.as_slice(),
+                        )
                     })
                     .collect();
                 index.write_spans(&documents, encoding.as_deref())?;
@@ -3245,6 +3272,7 @@ mod tests {
     use pamin_core::{
         Channel, ChannelResults, ProjectId, TopicId, TopicState, TopicStateId, Validity,
     };
+    use pamin_index::SpanSource;
     use pamin_index::spans::TokenCount;
     use std::sync::Arc;
     use time::OffsetDateTime;
@@ -4002,7 +4030,11 @@ mod tests {
                 .collect();
             let absent: Vec<TopicId> = absent.iter().map(|(topic, _)| *topic).collect();
 
-            let unheld = super::unheld(&skipping, &whole(&wanted), Some(PLAN));
+            let sources: Vec<(TopicId, SpanSource<'_>)> = wanted
+                .iter()
+                .map(|(topic, text)| (*topic, source(text)))
+                .collect();
+            let unheld = super::unheld(&skipping, &whole(&sources), Some(PLAN));
             let needed: Vec<(TopicId, &str)> = wanted
                 .iter()
                 .zip(&unheld)
@@ -4079,7 +4111,7 @@ mod tests {
             .expect("write");
         index.flush().expect("flush");
 
-        let pairs = [(cpu, "alpha"), (unrecorded, "alpha")];
+        let pairs = [(cpu, source("alpha")), (unrecorded, source("alpha"))];
         let wanted = whole(&pairs);
         assert_eq!(
             super::unheld(&index, &wanted, Some("cpu:one")),
@@ -4186,7 +4218,7 @@ mod tests {
 
         // The plan stays: the held state is skipped.
         let (_dir, index, held, new) = setup();
-        let pairs = [(held, "alpha"), (new, "beta")];
+        let pairs = [(held, source("alpha")), (new, source("beta"))];
         let wanted = whole(&pairs);
         let mut model = Moving::on("cpu:fallback");
         super::write_unheld(|| &index, &mut model, &wanted, &each(&["alpha", "beta"]))
@@ -4200,7 +4232,7 @@ mod tests {
         // The pass moves the model: the whole batch is embedded again, and
         // both documents name the plan that produced them.
         let (_dir, index, held, new) = setup();
-        let pairs = [(held, "alpha"), (new, "beta")];
+        let pairs = [(held, source("alpha")), (new, source("beta"))];
         let wanted = whole(&pairs);
         let mut model = Moving::on("cpu:fallback");
         model.moves = vec!["npu:restored".into()];
@@ -4217,7 +4249,7 @@ mod tests {
         // name one plan, the one the second pass ran under, rather than the
         // fresh half keeping the plan of a pass the batch moved off.
         let (_dir, index, held, new) = setup();
-        let pairs = [(held, "alpha"), (new, "beta")];
+        let pairs = [(held, source("alpha")), (new, source("beta"))];
         let wanted = whole(&pairs);
         let mut model = Moving::on("cpu:fallback");
         model.moves = vec!["npu:restored".into(), "cpu:fallback-again".into()];
@@ -4241,7 +4273,7 @@ mod tests {
         super::write_unheld(
             || &index,
             &mut model,
-            &whole(&[(held, "alpha")]),
+            &whole(&[(held, source("alpha"))]),
             &each(&["alpha"]),
         )
         .expect("sync");
@@ -4250,6 +4282,59 @@ mod tests {
     }
 
     /// A write the index has buffered and not yet flushed is already held.
+    /// A span whose text stayed while its header changed is embedded again.
+    ///
+    /// Its vector is embedded from the header as well, and the header changes
+    /// without the text when a topic is renamed, or when an edit changes how a
+    /// line is read: a heading indented four spaces is a paragraph, and the
+    /// trimmed spans after it keep their text under a different header.
+    #[test]
+    fn a_span_under_a_new_header_is_embedded_again() {
+        use pamin_index::{Access, Projection, ProjectionIndex, VectorIndex};
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let index: Arc<dyn Projection + Send + Sync> = Arc::new(
+            ProjectionIndex::open(
+                dir.path(),
+                &dir.path().join("legacy"),
+                VectorIndex::default(),
+                Access::ReadWrite,
+                0,
+            )
+            .expect("open index"),
+        );
+        let topic = TopicId::new();
+        let under = |header| {
+            [SpanSource {
+                text: "the rollback took an hour",
+                header,
+            }]
+        };
+        let mut model = Moving::on("cpu:plan");
+        let sync = |model: &mut Moving, spans: &[SpanSource<'_>]| {
+            super::write_unheld(
+                || &index,
+                model,
+                &[(topic, spans)],
+                &each(&["the rollback took an hour"]),
+            )
+            .expect("sync");
+        };
+        sync(&mut model, &under("incident > Timeline"));
+        sync(&mut model, &under("incident > Timeline"));
+        assert_eq!(model.passes.len(), 1, "the same header is held");
+        sync(&mut model, &under("incident"));
+        assert_eq!(model.passes.len(), 2, "a new header is not");
+        assert_eq!(
+            index.stored(&[topic]).expect("read back")[0][0]
+                .header
+                .as_deref(),
+            Some("incident"),
+            "and the header the vector now stands for is recorded"
+        );
+    }
+
     #[test]
     fn a_buffered_write_is_already_held() {
         use pamin_index::{Access, Projection, ProjectionIndex, VectorIndex};
@@ -4270,26 +4355,34 @@ mod tests {
             .upsert_encoded(&[(topic, "alpha", vector.as_slice())], plan)
             .expect("write");
         assert_eq!(
-            super::unheld(&index, &whole(&[(topic, "alpha")]), plan),
+            super::unheld(&index, &whole(&[(topic, source("alpha"))]), plan),
             [false]
         );
         assert_eq!(
-            super::unheld(&index, &whole(&[(topic, "Alpha")]), plan),
+            super::unheld(&index, &whole(&[(topic, source("Alpha"))]), plan),
             [true]
         );
         index.delete(&[topic]).expect("delete");
         assert_eq!(
-            super::unheld(&index, &whole(&[(topic, "alpha")]), plan),
+            super::unheld(&index, &whole(&[(topic, source("alpha"))]), plan),
             [true]
         );
     }
 
     /// Each memory as the one span it is when indexed whole.
-    fn whole<'a>(wanted: &'a [(TopicId, &'a str)]) -> Vec<(TopicId, &'a [&'a str])> {
+    fn whole<'a>(wanted: &'a [(TopicId, SpanSource<'a>)]) -> Vec<(TopicId, &'a [SpanSource<'a>])> {
         wanted
             .iter()
-            .map(|(topic, text)| (*topic, std::slice::from_ref(text)))
+            .map(|(topic, span)| (*topic, std::slice::from_ref(span)))
             .collect()
+    }
+
+    /// `text` as a memory of one span named `topic`.
+    fn source(text: &str) -> SpanSource<'_> {
+        SpanSource {
+            text,
+            header: "topic",
+        }
     }
 
     /// Each passage as a memory's only span.
