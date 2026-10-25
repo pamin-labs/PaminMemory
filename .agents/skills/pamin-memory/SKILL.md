@@ -124,7 +124,7 @@ Earlier versions are read, not ranked — `read --version-offset` reaches them.
 **Long memories are fine; read around the hit.** A memory is indexed as spans
 of about 200 tokens, so a whole session or file written as one memory is found
 by a passage deep inside it. A hit on such a memory returns the matching span
-and one either side, with a `span` field (`ordinal`, `of`, `header`, `start`,
+and the neighbours that fit about 600 tokens with it, with a `span` field (`ordinal`, `of`, `header`, `start`,
 `end`) — not the whole memory. If the answer is not in that window, read
 around it rather than searching again:
 

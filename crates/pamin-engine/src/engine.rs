@@ -75,6 +75,11 @@ const HOP_DECAY: f32 = 0.5;
 /// project.
 const REINDEX_BATCH: usize = 256;
 
+/// How many tokens of a memory cut into spans a hit shows: its best span and
+/// what fits around it. Three spans at the default cap of 200, as a hit showed
+/// before its width followed a budget rather than the cap.
+const VIEW_TOKENS: usize = 600;
+
 /// How many candidates the index proposes when a new topic is backfilled.
 ///
 /// Every one costs a row read and an exact comparison, and the probe is a
@@ -2638,8 +2643,8 @@ pub struct SearchHit {
     /// than from the results, so it does not depend on how many were asked for.
     pub seed: Option<String>,
     /// For a memory the index cut into more than one span, the window of it
-    /// this hit is about: its best span and one either side. `None` for a
-    /// memory of one span, which is the whole of it.
+    /// this hit is about: its best span and what fits the view's token budget
+    /// around it. `None` for a memory of one span, which is the whole of it.
     pub span: Option<SpanView>,
 }
 
@@ -2673,6 +2678,32 @@ impl SpanView {
             range: first.range.start..last.range.end,
         })
     }
+
+    /// Span `ordinal` of `spans` and as many either side as fit with it in
+    /// `tokens`, grown one span at a time from the nearer side, or `None` when
+    /// there is no such span. The best span is always shown, however long.
+    ///
+    /// A budget rather than a count of spans, so what a hit shows does not
+    /// shrink with the cap an index is cut to: smaller spans make the
+    /// reranker's pairs cheaper, and the caller is shown as much around the
+    /// best one as before.
+    pub fn within(spans: &[pamin_index::spans::Span], ordinal: u32, tokens: usize) -> Option<Self> {
+        let at = ordinal as usize;
+        spans.get(at)?;
+        let (first, last) = grow(at, spans.len(), |first, last| {
+            spans[first..=last]
+                .iter()
+                .map(|span| span.tokens)
+                .sum::<usize>()
+                <= tokens
+        });
+        Some(Self {
+            ordinal,
+            of: spans.len() as u32,
+            header: spans[first].header.clone(),
+            range: spans[first].range.start..spans[last].range.end,
+        })
+    }
 }
 
 /// A search's fused results, best first, and what it resolved on the way.
@@ -2685,6 +2716,35 @@ struct Fused {
     results: Vec<FusedResult>,
     live: WorkingSet,
     paths: std::collections::HashMap<TopicId, Neighbor>,
+}
+
+/// The run of spans `first..=last` of `len` grown from span `at`, one span at
+/// a time and the nearer side first, while `fits` holds for the run it would
+/// become. Span `at` is always in it, whether or not it fits on its own.
+///
+/// The one rule for how much around a best span is shown, to the reranker
+/// against the room its pair leaves and to a caller against
+/// [`VIEW_TOKENS`], so that the two differ only in their budget. A neighbour
+/// that does not fit is skipped for the one on the other side, which may.
+fn grow(at: usize, len: usize, fits: impl Fn(usize, usize) -> bool) -> (usize, usize) {
+    let (mut first, mut last) = (at, at);
+    loop {
+        let before = first.checked_sub(1).map(|first| (first, last));
+        let after = (last + 1 < len).then_some((first, last + 1));
+        let order = if at - first <= last - at {
+            [before, after]
+        } else {
+            [after, before]
+        };
+        match order
+            .into_iter()
+            .flatten()
+            .find(|&(first, last)| fits(first, last))
+        {
+            Some(run) => (first, last) = run,
+            None => return (first, last),
+        }
+    }
 }
 
 impl Fused {
@@ -2741,9 +2801,9 @@ impl Fused {
 /// longer than that by construction.** Shown whole, as a memory of one span is,
 /// it would be judged by its opening whatever span the channels found it by --
 /// the failure cutting it was meant to remove. The best span is the one fusion
-/// weighed most ([`FusedResult::span`]); the previous span and then the next
-/// are added only while the whole pair still fits, so a neighbour is context
-/// the reranker reads rather than a tail it truncates.
+/// weighed most ([`FusedResult::span`]); its neighbours, nearer first, are
+/// added only while the whole pair still fits ([`grow`]), so a neighbour is
+/// context the reranker reads rather than a tail it truncates.
 ///
 /// A memory of one span is shown exactly as it was before spans. So is one
 /// whose best span the ledger no longer has -- the index can lag a write -- and
@@ -2803,26 +2863,22 @@ impl Window {
                 .collect();
             shown(&spans[first].header, &texts.join("\n"), seed)
         };
-        let fits = |first, last| self.counter.count(&render(first, last)) <= self.room;
-        let (mut first, mut last) = (best, best);
-        if first > 0 && fits(first - 1, last) {
-            first -= 1;
-        }
-        if last + 1 < spans.len() && fits(first, last + 1) {
-            last += 1;
-        }
+        let (first, last) = grow(best, spans.len(), |first, last| {
+            self.counter.count(&render(first, last)) <= self.room
+        });
         render(first, last)
     }
 
     /// The window a caller is shown of a memory cut into more than one span:
-    /// span `best` and one either side. `None` for a memory of one span, and
-    /// for one whose best span the ledger no longer has.
+    /// span `best` and what fits [`VIEW_TOKENS`] around it. `None` for a
+    /// memory of one span, and for one whose best span the ledger no longer
+    /// has.
     fn view(&self, state: &TopicState, name: &str, best: u32) -> Option<SpanView> {
         let spans = self.cut(state, name);
         if spans.len() == 1 {
             return None;
         }
-        SpanView::around(&spans, best, 1)
+        SpanView::within(&spans, best, VIEW_TOKENS)
     }
 
     /// Of a seed's memory, the span that names the topic the walk reached --
@@ -3238,7 +3294,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        GRAPH_SHOWN_AT_MOST, GRAPH_SHOWN_FROM, Window, best_first, can_be_seen, is_idle,
+        GRAPH_SHOWN_AT_MOST, GRAPH_SHOWN_FROM, SpanView, Window, best_first, can_be_seen, is_idle,
         path_strength, place, rerankable, runs_of_tokens, score_blend_order, seed_relevance, shown,
     };
     use pamin_core::settings::MODEL_IDLE;
@@ -3327,6 +3383,11 @@ mod tests {
             "topic: p1a p1b p1c p1d p1e\np2a p2b p2c p2d p2e\np3a p3b p3c p3d p3e"
         );
         assert_eq!(
+            window(21).shown(&memory, "topic", 2, None),
+            "topic: p0a p0b p0c p0d p0e\np1a p1b p1c p1d p1e\np2a p2b p2c p2d p2e\np3a p3b p3c p3d p3e",
+            "more than one either side when the room holds it"
+        );
+        assert_eq!(
             window(11).shown(&memory, "topic", 0, None),
             "topic: p0a p0b p0c p0d p0e\np1a p1b p1c p1d p1e",
             "the next when there is no previous"
@@ -3358,23 +3419,38 @@ mod tests {
         let window = Window::new(5, Arc::new(Words), Arc::default(), Arc::default(), "q");
         let memory = state(&five_spans());
         let content = &memory.content;
-        let view = window.view(&memory, "topic", 0).unwrap();
-        assert_eq!((view.ordinal, view.of), (0, 5));
-        assert_eq!(
-            &content[view.range],
-            "p0a p0b p0c p0d p0e\n\np1a p1b p1c p1d p1e"
-        );
         let view = window.view(&memory, "topic", 4).unwrap();
-        assert_eq!(
-            &content[view.range],
-            "p3a p3b p3c p3d p3e\n\np4a p4b p4c p4d p4e"
-        );
+        assert_eq!((view.ordinal, view.of), (4, 5));
+        assert_eq!(&content[view.range], content.as_str(), "all fit the budget");
         assert_eq!(window.view(&memory, "topic", 5), None, "a stale span");
         assert_eq!(
             window.view(&state("a b c"), "topic", 0),
             None,
             "one span is the whole"
         );
+    }
+
+    #[test]
+    fn a_view_grows_from_the_nearer_side_while_it_fits() {
+        let memory = state(&five_spans());
+        let spans = pamin_index::spans::pack("topic", &memory.content, &Words, 5);
+        let per = spans[0].tokens;
+        let shown = |at, tokens| {
+            let view = SpanView::within(&spans, at, tokens).unwrap();
+            memory.content[view.range].to_string()
+        };
+        assert_eq!(shown(2, per), "p2a p2b p2c p2d p2e", "the best span alone");
+        assert_eq!(shown(2, 1), "p2a p2b p2c p2d p2e", "however long it is");
+        assert_eq!(
+            shown(2, 3 * per),
+            "p1a p1b p1c p1d p1e\n\np2a p2b p2c p2d p2e\n\np3a p3b p3c p3d p3e"
+        );
+        assert_eq!(
+            shown(0, 3 * per),
+            "p0a p0b p0c p0d p0e\n\np1a p1b p1c p1d p1e\n\np2a p2b p2c p2d p2e",
+            "what one side lacks, the other gives"
+        );
+        assert_eq!(SpanView::within(&spans, 5, per), None, "a stale span");
     }
 
     #[test]
