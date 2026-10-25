@@ -128,9 +128,14 @@ struct Paper {
 
 struct Question {
     paper: String,
+    /// The name of the paper's file, which a hit has to be cut from to count.
+    file: String,
     text: String,
-    /// The distinct words of each paragraph cited as evidence.
-    evidence: Vec<HashSet<String>>,
+    /// Each annotator's evidence: the content words of every paragraph they
+    /// cited. A question is answered as well as its best-served annotator,
+    /// as Qasper scores it, rather than only when every annotator's
+    /// paragraphs are all found.
+    evidence: Vec<Vec<HashSet<String>>>,
 }
 
 /// One way of cutting the papers.
@@ -167,18 +172,35 @@ impl Arm {
 struct Scored {
     arm: String,
     memories: usize,
+    /// Memories this run recorded; fewer than `memories` means the project was
+    /// built by an earlier run, and `ingest_s` timed nothing.
+    written: usize,
     budget_recall: Vec<f64>,
     ndcg: Vec<f64>,
     crowded_budget_recall: Vec<f64>,
+    /// Questions whose hits held at least the budget: the rest were scored on
+    /// less reading than the budget allows.
+    filled: usize,
     search_ms: Vec<f64>,
-    ingest_s: f64,
+    ingest_s: Option<f64>,
 }
 
-/// The distinct words of `text`, lowercased: what coverage is counted in.
+/// Words too common to say whether a paragraph was found: half the distinct
+/// words of a short paragraph are often these, and any text has them.
+const STOPWORDS: [&str; 40] = [
+    "the", "and", "for", "are", "was", "were", "with", "that", "this", "these", "those", "from",
+    "into", "than", "then", "they", "their", "there", "which", "while", "where", "when", "what",
+    "who", "has", "have", "had", "not", "but", "can", "our", "its", "also", "such", "both", "each",
+    "all", "any", "more", "most",
+];
+
+/// The distinct content words of `text`, lowercased: what coverage is counted
+/// in. Words of fewer than three characters and [`STOPWORDS`] are left out.
 fn words(text: &str) -> HashSet<String> {
     text.split(|c: char| !c.is_alphanumeric())
-        .filter(|word| !word.is_empty())
+        .filter(|word| word.chars().count() >= 3)
         .map(str::to_lowercase)
+        .filter(|word| !STOPWORDS.contains(&word.as_str()))
         .collect()
 }
 
@@ -190,11 +212,18 @@ fn covers(found: &HashSet<String>, evidence: &HashSet<String>) -> bool {
 }
 
 /// The share of `question`'s evidence found within [`BUDGET`] tokens of
-/// `hits`, read in order; the last hit read is cut at the budget.
-fn budget_recall(question: &Question, hits: &[&str], counter: &dyn TokenCount) -> f64 {
+/// `hits`, read in order -- the best-served annotator's -- and whether the
+/// hits held the whole budget. The last hit read is cut at the budget; every
+/// hit spends it, and only a hit from the question's own paper can find its
+/// evidence.
+fn budget_recall(
+    question: &Question,
+    hits: &[(&str, &str)],
+    counter: &dyn TokenCount,
+) -> (f64, bool) {
     let mut left = BUDGET;
     let mut read = HashSet::new();
-    for content in hits {
+    for (name, content) in hits {
         if left == 0 {
             break;
         }
@@ -205,23 +234,36 @@ fn budget_recall(question: &Question, hits: &[&str], counter: &dyn TokenCount) -
             &content[..offsets[left].start]
         };
         left = left.saturating_sub(offsets.len());
-        read.extend(words(taken));
+        if file_of(name) == question.file {
+            read.extend(words(taken));
+        }
     }
-    let found = question
+    let best = question
         .evidence
         .iter()
-        .filter(|evidence| covers(&read, evidence))
-        .count();
-    found as f64 / question.evidence.len() as f64
+        .map(|cited| {
+            cited
+                .iter()
+                .filter(|paragraph| covers(&read, paragraph))
+                .count() as f64
+                / cited.len() as f64
+        })
+        .fold(0.0, f64::max);
+    (best, left == 0)
 }
 
-/// Whether a memory's content covers any of `question`'s evidence.
-fn relevant(question: &Question, content: &str) -> bool {
+/// Whether a memory is from `question`'s paper and covers any paragraph an
+/// annotator cited.
+fn relevant(question: &Question, name: &str, content: &str) -> bool {
+    if file_of(name) != question.file {
+        return false;
+    }
     let found = words(content);
     question
         .evidence
         .iter()
-        .any(|evidence| covers(&found, evidence))
+        .flatten()
+        .any(|paragraph| covers(&found, paragraph))
 }
 
 /// The file a section was cut from: its name before its headings and parts.
@@ -234,7 +276,7 @@ fn file_of(name: &str) -> &str {
 }
 
 /// `hits` with at most [`PER_FILE`] of any one file.
-fn spread<'a>(hits: &[(&'a str, &'a str)]) -> Vec<&'a str> {
+fn spread<'a>(hits: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
     let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
     hits.iter()
         .filter(|(name, _)| {
@@ -242,7 +284,7 @@ fn spread<'a>(hits: &[(&'a str, &'a str)]) -> Vec<&'a str> {
             *count += 1;
             *count <= PER_FILE
         })
-        .map(|(_, content)| *content)
+        .copied()
         .collect()
 }
 
@@ -351,11 +393,12 @@ fn corpus() -> (Vec<Paper>, Vec<Question>) {
         let asked = qas["question"].as_array().cloned().unwrap_or_default();
         let answered = qas["answers"].as_array().cloned().unwrap_or_default();
         for (question, answers) in asked.iter().zip(&answered) {
-            let mut evidence = BTreeSet::new();
+            let mut evidence = Vec::new();
             for answer in answers["answer"].as_array().into_iter().flatten() {
                 if answer["unanswerable"].as_bool() == Some(true) {
                     continue;
                 }
+                let mut found = BTreeSet::new();
                 for paragraph in answer["evidence"].as_array().into_iter().flatten() {
                     let paragraph = paragraph.as_str().unwrap_or_default().trim();
                     if paragraph.is_empty() || paragraph.starts_with("FLOAT SELECTED") {
@@ -364,10 +407,18 @@ fn corpus() -> (Vec<Paper>, Vec<Question>) {
                     cited += 1;
                     let flat = paragraph.split_whitespace().collect::<Vec<_>>().join(" ");
                     if text.contains(&flat) {
-                        evidence.insert(flat);
+                        found.insert(flat);
                     } else {
                         lost += 1;
                     }
+                }
+                let found: Vec<HashSet<String>> = found
+                    .iter()
+                    .map(|paragraph| words(paragraph))
+                    .filter(|paragraph| !paragraph.is_empty())
+                    .collect();
+                if !found.is_empty() {
+                    evidence.push(found);
                 }
             }
             if evidence.is_empty() {
@@ -375,8 +426,9 @@ fn corpus() -> (Vec<Paper>, Vec<Question>) {
             }
             questions.push(Question {
                 paper: id.clone(),
+                file: format!("qasper/{id}.md"),
                 text: question.as_str().unwrap_or_default().trim().to_string(),
-                evidence: evidence.iter().map(|paragraph| words(paragraph)).collect(),
+                evidence,
             });
         }
         papers.push(Paper {
@@ -435,9 +487,10 @@ async fn run(
     .expect("open the engine");
 
     let started = Instant::now();
+    let mut written = 0;
     for (_, sections) in &cut {
         for section in sections {
-            engine
+            let recorded = engine
                 .remember_section(
                     &section.name,
                     &section.content,
@@ -446,10 +499,18 @@ async fn run(
                 )
                 .await
                 .expect("record a section");
+            written += usize::from(recorded.is_some());
         }
     }
     harness::drain(&engine).await;
-    let ingest_s = started.elapsed().as_secs_f64();
+    // Timed only when this run built the project: one an earlier run built is
+    // read back unchanged, and the time is the time to find that out.
+    let ingest_s = (written == memories).then(|| started.elapsed().as_secs_f64());
+    if ingest_s.is_none() {
+        println!(
+            "  {label}: {written} of {memories} memories written; the rest were already there"
+        );
+    }
     // The premise of every score below: the project holds this arm's memories,
     // all of them, and nothing else.
     assert_eq!(
@@ -467,6 +528,7 @@ async fn run(
 
     let mut scores = Scores::default();
     let (mut budget, mut crowded, mut search_ms) = (Vec::new(), Vec::new(), Vec::new());
+    let mut filled = 0;
     for question in questions {
         let started = Instant::now();
         let hits = engine
@@ -479,17 +541,18 @@ async fn run(
             .iter()
             .map(|hit| (hit.topic.as_str(), hit.state.content.as_str()))
             .collect();
-        let contents: Vec<&str> = ranked.iter().map(|(_, content)| *content).collect();
-        budget.push(budget_recall(question, &contents, counter));
-        crowded.push(budget_recall(question, &spread(&ranked), counter));
+        let (recall, full) = budget_recall(question, &ranked, counter);
+        budget.push(recall);
+        filled += usize::from(full);
+        crowded.push(budget_recall(question, &spread(&ranked), counter).0);
 
         let judged = by_paper[question.paper.as_str()]
             .iter()
-            .filter(|section| relevant(question, &section.content))
+            .filter(|section| relevant(question, &section.name, &section.content))
             .count();
         let relevant_names: HashSet<&str> = ranked
             .iter()
-            .filter(|(_, content)| relevant(question, content))
+            .filter(|(name, content)| relevant(question, name, content))
             .map(|(name, _)| *name)
             .collect();
         let topics: Vec<String> = ranked.iter().map(|(name, _)| name.to_string()).collect();
@@ -499,9 +562,11 @@ async fn run(
     Scored {
         arm: label,
         memories,
+        written,
         budget_recall: budget,
         ndcg: scores.per_query,
         crowded_budget_recall: crowded,
+        filled,
         search_ms,
         ingest_s,
     }
@@ -551,15 +616,20 @@ async fn a_sections_size_against_retrieval() {
         let one = run(arm, &workspace, &papers, &questions, &counter, fingerprint).await;
         println!(
             "  {:<8} {:>6} memories  budget recall {:.4}  nDCG@10 {:.4}  per file {:.4}  \
-             search p50 {:.0} ms p95 {:.0} ms  ingest {:.0} s",
+             budget filled {}/{}  search p50 {:.0} ms p95 {:.0} ms  ingest {}",
             one.arm,
             one.memories,
             mean(&one.budget_recall),
             mean(&one.ndcg),
             mean(&one.crowded_budget_recall),
+            one.filled,
+            questions.len(),
             percentile(&one.search_ms, 0.5),
             percentile(&one.search_ms, 0.95),
-            one.ingest_s
+            one.ingest_s.map_or(
+                "not timed: built by an earlier run".to_string(),
+                |s| format!("{s:.0} s")
+            )
         );
         scored.push(one);
     }
@@ -577,18 +647,33 @@ async fn a_sections_size_against_retrieval() {
         .expect("the shipped arm");
     let others: Vec<usize> = (0..scored.len()).filter(|at| *at != shipped).collect();
 
-    println!("\n  against shipped, paired by question:");
+    // Questions about one paper share its sections and its index, so they are
+    // not independent: every test is over papers, each a cluster of its
+    // questions' scores, as the repository's other clustered corpora are.
+    let groups = vec![0; questions.len()];
+    let keys: Vec<String> = questions
+        .iter()
+        .map(|question| question.paper.clone())
+        .collect();
+    let by_paper = |scores: &[f64]| statistics::cluster_macro_contributions(scores, &groups, &keys);
+
+    println!("\n  against shipped, paired by paper:");
     let adjusted = statistics::family(
-        &scored[shipped].budget_recall,
+        &by_paper(&scored[shipped].budget_recall),
         &others
             .iter()
-            .map(|at| scored[*at].budget_recall.clone())
+            .map(|at| by_paper(&scored[*at].budget_recall))
             .collect::<Vec<_>>(),
     );
     for (at, p) in others.iter().zip(&adjusted) {
-        let budget =
-            statistics::compare(&scored[shipped].budget_recall, &scored[*at].budget_recall);
-        let ndcg = statistics::compare(&scored[shipped].ndcg, &scored[*at].ndcg);
+        let budget = statistics::compare(
+            &by_paper(&scored[shipped].budget_recall),
+            &by_paper(&scored[*at].budget_recall),
+        );
+        let ndcg = statistics::compare(
+            &by_paper(&scored[shipped].ndcg),
+            &by_paper(&scored[*at].ndcg),
+        );
         println!(
             "  {:<8} budget recall {budget} (family p {p:.4})  nDCG@10 {ndcg}",
             scored[*at].arm
@@ -599,18 +684,16 @@ async fn a_sections_size_against_retrieval() {
         println!(
             "  {:<8} {}",
             one.arm,
-            statistics::compare(&one.budget_recall, &one.crowded_budget_recall)
+            statistics::compare(
+                &by_paper(&one.budget_recall),
+                &by_paper(&one.crowded_budget_recall)
+            )
         );
     }
 
     // The rule: cross-validated by paper, choosing the highest mean budget
     // recall; ship a change only if the held-out score beats shipped
-    // significantly and every fold agreed.
-    let groups = vec![0; questions.len()];
-    let keys: Vec<String> = questions
-        .iter()
-        .map(|question| question.paper.clone())
-        .collect();
+    // significantly, over papers, and every fold agreed.
     let folds = statistics::cluster_folds(&groups, &keys, 5);
     let settings: Vec<Vec<f64>> = scored.iter().map(|one| one.budget_recall.clone()).collect();
     let selected = statistics::cross_validate(&settings, &groups, &folds, |table| {
@@ -618,7 +701,10 @@ async fn a_sections_size_against_retrieval() {
             .max_by(|left, right| table[*left][0].total_cmp(&table[*right][0]))
             .expect("a setting")
     });
-    let held = statistics::compare(&scored[shipped].budget_recall, &selected.held_out);
+    let held = statistics::compare(
+        &by_paper(&scored[shipped].budget_recall),
+        &by_paper(&selected.held_out),
+    );
     let chosen: Vec<&str> = selected
         .chosen
         .iter()
@@ -649,9 +735,15 @@ fn a_file_is_read_from_a_sections_name() {
 
 #[test]
 fn coverage_is_a_share_of_distinct_words() {
-    let evidence = words("The model uses a BiLSTM encoder and a CRF.");
+    let evidence = words("The model uses a BiLSTM encoder and a CRF decoder.");
+    assert_eq!(evidence.len(), 6, "{evidence:?}");
     assert!(covers(&words("uses a bilstm encoder"), &evidence));
     assert!(!covers(&words("a CRF"), &evidence));
+    // Common words carry nothing: text made of them finds nothing.
+    assert!(!covers(
+        &words("the and with that this from which"),
+        &evidence
+    ));
     assert!(!covers(&words("anything"), &HashSet::new()));
 }
 
@@ -670,4 +762,86 @@ fn a_paper_becomes_markdown_with_nested_headings() {
         "# A Paper\n\n## Abstract\n\nWhat it does.\n\n## Intro\n\nFirst.\n\n## Data\n\n\
          ### Collection\n\nGathered.\n\n### Cleaning\n\nCleaned.\n"
     );
+}
+
+/// One token a word, for the scoring tests.
+struct Spaces;
+
+impl TokenCount for Spaces {
+    fn offsets(&self, text: &str) -> Vec<std::ops::Range<usize>> {
+        let mut offsets = Vec::new();
+        let mut start = None;
+        for (at, c) in text.char_indices() {
+            match (c.is_whitespace(), start) {
+                (false, None) => start = Some(at),
+                (true, Some(from)) => {
+                    offsets.push(from..at);
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+        offsets.extend(start.map(|from| from..text.len()));
+        offsets
+    }
+}
+
+fn question(evidence: &[&[&str]]) -> Question {
+    Question {
+        paper: "p".into(),
+        file: "qasper/p.md".into(),
+        text: String::new(),
+        evidence: evidence
+            .iter()
+            .map(|cited| cited.iter().map(|paragraph| words(paragraph)).collect())
+            .collect(),
+    }
+}
+
+/// Only the question's own paper can find its evidence, though every hit spends
+/// the budget; and the question scores as its best-served annotator.
+#[test]
+fn budget_recall_reads_the_right_paper_within_the_budget() {
+    let asked = question(&[
+        &["bilstm encoder crf decoder", "attention heads pruned"],
+        &["dropout rate tuned"],
+    ]);
+    let filler = "word ".repeat(BUDGET);
+
+    // Found, in the right paper.
+    let (found, full) = budget_recall(
+        &asked,
+        &[("qasper/p.md › Model", "a bilstm encoder with a crf decoder")],
+        &Spaces,
+    );
+    assert_eq!(found, 0.5);
+    assert!(!full, "seven words do not fill the budget");
+
+    // The same words in another paper find nothing.
+    let (found, _) = budget_recall(
+        &asked,
+        &[("qasper/q.md › Model", "a bilstm encoder with a crf decoder")],
+        &Spaces,
+    );
+    assert_eq!(found, 0.0);
+
+    // Behind a hit that spends the whole budget, nothing is read.
+    let (found, full) = budget_recall(
+        &asked,
+        &[
+            ("qasper/q.md", filler.as_str()),
+            ("qasper/p.md › Model", "dropout rate tuned"),
+        ],
+        &Spaces,
+    );
+    assert_eq!(found, 0.0);
+    assert!(full);
+
+    // The second annotator is fully served, so the question is.
+    let (found, _) = budget_recall(
+        &asked,
+        &[("qasper/p.md › Training", "the dropout rate was tuned")],
+        &Spaces,
+    );
+    assert_eq!(found, 1.0);
 }
