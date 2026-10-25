@@ -2026,7 +2026,12 @@ impl Engine {
             return Ok(None);
         };
         let counter = off_the_runtime(|| self.models.span_tokens())?;
-        Ok(Some(Window::new(cap, counter, query)))
+        Ok(Some(Window::new(
+            cap,
+            counter,
+            Arc::clone(&self.segmenter),
+            query,
+        )))
     }
 
     /// The spans this project's index cuts a memory named `name` into: one,
@@ -2707,15 +2712,29 @@ impl Fused {
 struct Window {
     cap: usize,
     counter: Arc<dyn TokenCount + Send + Sync>,
+    /// How a seed's span is found to name the topic the walk reached: as
+    /// mentions are derived, so the span shown is one an edge could have been
+    /// read from.
+    segmenter: Arc<pamin_index::segmentation::Segmenter>,
     /// The passage's share of the pair: what the query and the pair's four
     /// special tokens leave of the reranker's 256.
     room: usize,
 }
 
 impl Window {
-    fn new(cap: usize, counter: Arc<dyn TokenCount + Send + Sync>, query: &str) -> Self {
+    fn new(
+        cap: usize,
+        counter: Arc<dyn TokenCount + Send + Sync>,
+        segmenter: Arc<pamin_index::segmentation::Segmenter>,
+        query: &str,
+    ) -> Self {
         let room = pamin_index::reranking::MAX_TOKENS.saturating_sub(4 + counter.count(query));
-        Self { cap, counter, room }
+        Self {
+            cap,
+            counter,
+            segmenter,
+            room,
+        }
     }
 
     fn shown(&self, name: &str, content: &str, best: u32, seed: Option<&str>) -> String {
@@ -2755,16 +2774,20 @@ impl Window {
 
     /// Of a seed's memory, the span that names the topic the walk reached --
     /// the sentence the edge was read from -- or all of it when no one span
-    /// does, as a seed of one span always is.
+    /// does, as a seed of one span always is. Named as a mention is: by token
+    /// sequence, so `cat` is not found inside `education` and
+    /// `deployment_pipeline` is found in "deployment pipeline".
     fn naming<'a>(&self, seed: &'a str, reached: &str) -> &'a str {
-        let wanted = reached.to_lowercase();
+        let wanted = self.segmenter.name_sequence(reached);
         let spans = pamin_index::spans::pack("", seed, &*self.counter, self.cap);
         if spans.len() == 1 {
             return seed;
         }
         spans
             .iter()
-            .find(|span| span.text.to_lowercase().contains(&wanted))
+            .find(|span| {
+                pamin_index::segmentation::names(&self.segmenter.name_sequence(&span.text), &wanted)
+            })
             .map_or(seed, |span| &seed[span.range.clone()])
     }
 }
@@ -3186,7 +3209,7 @@ mod tests {
 
     #[test]
     fn a_memory_of_one_span_is_shown_as_before_spans() {
-        let window = Window::new(5, Arc::new(Words), "q");
+        let window = Window::new(5, Arc::new(Words), Arc::default(), "q");
         assert_eq!(
             window.shown("topic", "a b c", 3, Some("seed")),
             shown("topic", "a b c", Some("seed"))
@@ -3199,6 +3222,7 @@ mod tests {
         let window = |room| Window {
             cap: 5,
             counter: Arc::new(Words),
+            segmenter: Arc::default(),
             room,
         };
         // "topic:" is one word, and each span five more.
@@ -3229,7 +3253,7 @@ mod tests {
 
     #[test]
     fn a_hit_on_a_memory_of_several_spans_carries_its_window() {
-        let window = Window::new(5, Arc::new(Words), "q");
+        let window = Window::new(5, Arc::new(Words), Arc::default(), "q");
         let content = five_spans();
         let view = window.view("topic", &content, 0).unwrap();
         assert_eq!((view.ordinal, view.of), (0, 5));
@@ -3252,10 +3276,21 @@ mod tests {
 
     #[test]
     fn a_seed_is_shown_by_the_span_that_names_the_find() {
-        let window = Window::new(5, Arc::new(Words), "q");
+        let window = Window::new(5, Arc::new(Words), Arc::default(), "q");
         assert_eq!(window.naming(&five_spans(), "P3C"), "p3a p3b p3c p3d p3e");
         assert_eq!(window.naming(&five_spans(), "absent"), five_spans());
         assert_eq!(window.naming("a b", "absent"), "a b");
+        let education = "p0a p0b education p0d p0e\n\np1a p1b cat p1d p1e";
+        assert_eq!(
+            window.naming(education, "cat"),
+            "p1a p1b cat p1d p1e",
+            "a name inside a longer word is not a mention"
+        );
+        let pipeline = "p0a p0b p0c p0d p0e\n\np1a deployment pipeline p1d p1e";
+        assert_eq!(
+            window.naming(pipeline, "deployment_pipeline"),
+            "p1a deployment pipeline p1d p1e"
+        );
     }
 
     /// A load started ahead of its need returns at once, is waited for by
