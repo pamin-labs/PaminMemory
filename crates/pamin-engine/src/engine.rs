@@ -1524,6 +1524,50 @@ impl Engine {
         })
     }
 
+    /// Gives a section of a file the name it now goes by -- its file moved, or
+    /// a heading above it renamed -- keeping its topic: its history, its edges
+    /// and its evidence. The old name stays as an alias `pamin read` and
+    /// `pamin link` resolve, and the projection is owed the topic again, since
+    /// its name is read into every span's header.
+    ///
+    /// As [`retire_section`](Self::retire_section) is: only a topic whose every
+    /// source is a file's, and only while it still says what `seen` says.
+    /// Returns whether it renamed; when it did not -- one of those, or a topic
+    /// already under the new name -- nothing changed, and the section is
+    /// recorded under its new name as a new one would be.
+    pub async fn rename_section(&self, from: &str, to: &str, seen: TopicStateId) -> Result<bool> {
+        let mut transaction = self.database.pool().begin().await?;
+        let Some(locked) = repository::lock_topic(&mut transaction, self.project, from).await?
+        else {
+            return Ok(false);
+        };
+        if locked.current != Some(seen)
+            || repository::source_at(
+                &mut *transaction,
+                self.project,
+                &locator(SourceKind::Manual, from),
+            )
+            .await?
+        {
+            return Ok(false);
+        }
+        let renamed = repository::rename_topic(
+            &mut transaction,
+            self.project,
+            locked.topic.id,
+            (from, to),
+            (
+                &locator(SourceKind::File, from),
+                &locator(SourceKind::File, to),
+            ),
+        )
+        .await?;
+        if renamed {
+            transaction.commit().await?;
+        }
+        Ok(renamed)
+    }
+
     /// The rest of a memory once the filter has judged it: its language, and
     /// the transaction.
     async fn record(
