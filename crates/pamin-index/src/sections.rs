@@ -169,6 +169,38 @@ pub fn named(sections: Vec<Unnamed>, previous: &[Section]) -> Vec<Section> {
         .collect()
 }
 
+/// The section each of one file's sections sits under, given in file order
+/// by their bases, as `(section, parent)` pairs of indices: what `part_of`
+/// says of them.
+///
+/// A section sits under the first section of the nearest heading above its
+/// own that has one -- a heading with nothing under it joined the section after
+/// it, and has no section of its own to be part of. A section with no such
+/// heading above it sits under the file's first section, unless it is that
+/// section.
+pub fn parents(bases: &[&str]) -> Vec<(usize, usize)> {
+    let first: std::collections::HashMap<&str, usize> = bases
+        .iter()
+        .enumerate()
+        .rev()
+        .map(|(at, base)| (*base, at))
+        .collect();
+    bases
+        .iter()
+        .enumerate()
+        .filter_map(|(at, base)| {
+            let mut above = *base;
+            while let Some((rest, _)) = above.rsplit_once(SEPARATOR) {
+                above = rest;
+                if let Some(&parent) = first.get(above) {
+                    return Some((at, parent));
+                }
+            }
+            (at != 0).then_some((at, 0))
+        })
+        .collect()
+}
+
 /// Which of `now` is which of `before`, as `(now, before)` index pairs, one to
 /// one: the same text first, then [`similarity`] of at least
 /// [`SAME_SECTION`], closest first, ties in the order each list is given.
@@ -1077,6 +1109,31 @@ mod tests {
         assert_eq!(under(&named, "b"), "f.md › Example #2");
         assert_eq!(under(&named, "lit"), "f.md › Example #2 #2");
         check(&after, &named);
+    }
+
+    #[test]
+    fn a_section_is_under_the_nearest_heading_with_a_section() {
+        let bases = [
+            "f.md",                     // 0: what comes before the first heading
+            "f.md › Deploy",            // 1
+            "f.md › Deploy › Canary",   // 2
+            "f.md › Deploy › Rollback", // 3
+            "f.md › Deploy › Rollback", // 4: `Rollback #2`
+            // `Oncall` had nothing under it and joined `Rota`.
+            "f.md › Oncall › Rota", // 5
+        ];
+        assert_eq!(parents(&bases), [(1, 0), (2, 1), (3, 1), (4, 1), (5, 0)]);
+    }
+
+    /// With nothing before its first heading, a file's first section is what
+    /// its other top-level sections are part of.
+    #[test]
+    fn top_level_sections_are_under_the_first() {
+        assert_eq!(
+            parents(&["f.md › Intro", "f.md › Usage", "f.md › Usage › Flags"]),
+            [(1, 0), (2, 1)]
+        );
+        assert!(parents(&["f.md"]).is_empty());
     }
 
     #[test]
