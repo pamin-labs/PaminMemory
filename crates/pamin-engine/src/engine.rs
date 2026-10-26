@@ -2105,30 +2105,31 @@ impl Engine {
     /// any of them a [`SearchHit`].
     async fn fused(&self, query: &str, depths: Depths, fusion: Fusion) -> Result<Fused> {
         let lists = off_the_runtime(|| {
-            // Embedded before the index is read, and the model lock released
-            // before the read lock is taken: holding both is what would turn
-            // one slow inference into a queue for every writer.
-            let embedding = self.embedding()?.embed_query(query)?;
-            let index = self.index_shared();
-            let lists = vec![
-                ChannelResults::new(
-                    Channel::LexicalSegmented,
-                    index.recall_segmented(query, depths.channel.get())?,
-                ),
-                ChannelResults::new(
-                    Channel::LexicalNgram,
-                    index.recall_ngram(query, depths.channel.get())?,
-                ),
-                ChannelResults::new(
-                    Channel::Vector,
-                    index.recall_vector_at(
-                        &embedding,
-                        depths.channel.get(),
-                        depths.effort.get(),
-                    )?,
-                ),
-            ];
-            Ok::<_, pamin_index::IndexError>(lists)
+            // The three asks are independent, so they run at once and a search
+            // waits for the slowest rather than for their sum; the n-gram ask
+            // is most of it. Each takes its own shared guard and releases it
+            // before anything else waits on it: a guard held across the join,
+            // or across the model lock, is what deadlocks against a writer or
+            // a rebuild queued between them. The model is taken before the
+            // index for the same reason -- see the lock order on `index`.
+            let depth = depths.channel.get();
+            std::thread::scope(|asks| {
+                let ngram = asks.spawn(|| self.index_shared().recall_ngram(query, depth));
+                let segmented = asks.spawn(|| self.index_shared().recall_segmented(query, depth));
+                let embedding = self.embedding()?.embed_query(query)?;
+                let vector =
+                    self.index_shared()
+                        .recall_vector_at(&embedding, depth, depths.effort.get())?;
+                let joined = |ask: std::thread::ScopedJoinHandle<'_, _>| {
+                    ask.join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+                };
+                Ok::<_, pamin_index::IndexError>(vec![
+                    ChannelResults::new(Channel::LexicalSegmented, joined(segmented)?),
+                    ChannelResults::new(Channel::LexicalNgram, joined(ngram)?),
+                    ChannelResults::new(Channel::Vector, vector),
+                ])
+            })
         })?;
 
         // Only the ledger knows what a topic stands for now, what it is worth,
