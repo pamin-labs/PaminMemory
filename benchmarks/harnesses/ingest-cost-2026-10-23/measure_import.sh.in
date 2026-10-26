@@ -1,0 +1,88 @@
+#!/bin/bash
+# `pamin ingest` against `pamin import` of the very sections the ingest cut, both
+# through the release binaries' product entry points, each on a fresh workspace
+# with the models cached and loaded by a warm-up search outside every arm.
+#
+#   ingest-cold   a second cold ingest of the pristine corpus (workspace A)
+#   ingest-again  an unchanged re-ingest (workspace A)
+#   import-cold   `pamin import` of A's sections, exported verbatim (workspace B)
+#   import-again  the same file imported again (workspace B)
+#
+# Same columns as measure_ingest.sh.in. Server CPU excludes PostgreSQL backends.
+# Usage: bash measure_import.sh.in <bin dir> <pristine corpus> <out csv>
+set -euo pipefail
+BIN="$1"; SRC="$2"; OUT="$3"
+CORPUS=/home/tester/import-corpus
+NDJSON=/home/tester/import-sections.ndjson
+rm -rf "$CORPUS" "$NDJSON"; cp -r "$SRC" "$CORPUS"; chown -R tester "$CORPUS"
+TCK=$(getconf CLK_TCK)
+
+fresh() {
+  local home="$1"
+  rm -rf "$home"; mkdir -p "$home"
+  printf '[serve]\npostgres_dir = "/usr/lib/postgresql/16"\n' > "$home/config.toml"
+  chown -R tester "$home"
+}
+as_tester() {
+  local home="$1"; shift
+  runuser -u tester -- env HOME=/home/tester PAMIN_HOME="$home" HF_HOME=/home/tester/hf \
+    LD_LIBRARY_PATH="$BIN" "$@"
+}
+port() { ps -eo args | grep "postgres -D $1/postgres/data" | grep -v grep | grep -oE ' -p [0-9]+' | awk '{print $2}'; }
+sql() {
+  PGPASSWORD=$(cat "$1/postgres/pgpass") psql -h 127.0.0.1 -p "$(port "$1")" -U postgres -d pamin -tA -c "$2"
+}
+start() {
+  as_tester "$1" "$BIN/pamin" init >/dev/null
+  as_tester "$1" "$BIN/pamin" search "warm up the models" >/dev/null
+  pgrep -u tester -f "pamin-server --home $1" | head -1
+}
+
+arm() {
+  local name="$1" home="$2" pid="$3"; shift 3
+  local before after start end json
+  before=$(awk '{print $14+$15}' "/proc/$pid/stat")
+  start=$(date +%s.%N)
+  json=$(as_tester "$home" "$BIN/pamin" --json "$@")
+  end=$(date +%s.%N)
+  after=$(awk '{print $14+$15}' "/proc/$pid/stat")
+  python3 - "$name" "$start" "$end" "$before" "$after" "$TCK" \
+    "$(awk '/VmHWM/{print $2}' "/proc/$pid/status")" \
+    "$(sql "$home" 'SELECT count(*) FROM source_versions')" \
+    "$(sql "$home" 'SELECT count(*) FROM topics')" \
+    "$(sql "$home" "SELECT pg_database_size('pamin')")" \
+    "$(du -sk "$home/index" | cut -f1)" "$json" <<'EOF' | tee -a "$OUT"
+import json, sys
+name, start, end, before, after, tck, hwm, versions, topics, db, idx, out = sys.argv[1:]
+r = json.loads(out)
+written = r.get("written", r.get("promoted"))
+print(",".join(str(x) for x in [
+    name, round(float(end) - float(start), 3), round((int(after) - int(before)) / int(tck), 2),
+    round(int(hwm) / 1024, 1), r.get("sections", r.get("memories")), written,
+    r.get("unchanged", "N/A"), r["held"], versions, topics,
+    round(int(db) / 2**20, 1), round(int(idx) / 1024, 1)]))
+EOF
+}
+
+pkill -u tester -f pamin-server || true
+echo "# $(nproc) cpus; load $(cut -d' ' -f1-3 /proc/loadavg)" | tee "$OUT"
+echo "arm,wall_s,server_cpu_s,server_hwm_mb,memories,written,unchanged,held,versions,topics,db_mb,index_mb" | tee -a "$OUT"
+
+A=/home/tester/import-home-a
+fresh "$A"; PID=$(start "$A")
+arm ingest-cold "$A" "$PID" ingest "$CORPUS"
+arm ingest-again "$A" "$PID" ingest "$CORPUS"
+sql "$A" "SELECT json_build_object('topic', t.name, 'content',
+             substring(sv.content FROM sp.byte_start + 1 FOR sp.byte_end - sp.byte_start))::text
+          FROM topics t JOIN topic_states ts ON ts.id = t.current_state_id
+          JOIN source_spans sp ON sp.id = ts.source_span_id
+          JOIN source_versions sv ON sv.id = sp.source_version_id ORDER BY t.name" > "$NDJSON"
+chown tester "$NDJSON"
+echo "# exported $(wc -l < "$NDJSON") sections" | tee -a "$OUT"
+as_tester "$A" "$BIN/pamin" stop >/dev/null || true
+
+B=/home/tester/import-home-b
+fresh "$B"; PID=$(start "$B")
+arm import-cold "$B" "$PID" import --from "$NDJSON"
+arm import-again "$B" "$PID" import --from "$NDJSON"
+as_tester "$B" "$BIN/pamin" stop >/dev/null || true
