@@ -22,6 +22,7 @@ pub mod projection;
 pub mod reranking;
 mod reshape;
 mod resident;
+pub mod sections;
 pub mod segmentation;
 pub mod settings;
 pub mod spans;
