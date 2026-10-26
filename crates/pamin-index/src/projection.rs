@@ -79,6 +79,9 @@ const FIELD_VECTOR: &str = "embedding";
 /// What produced a document's vectors ([`Stored::encoding`]). Nullable, and
 /// absent from a collection created before it was recorded.
 const FIELD_ENCODING: &str = "encoding";
+/// The header a document's vector was embedded under ([`Stored::header`]).
+/// Nullable, and absent from a collection created before it was recorded.
+const FIELD_HEADER: &str = "header";
 
 static INITIALIZE: Once = Once::new();
 
@@ -105,13 +108,31 @@ pub enum Access {
 /// A topic, its text and its vector: a memory indexed whole, as its one span.
 pub type VectorDocument<'a> = (TopicId, &'a str, &'a [f32]);
 
-/// Span `ordinal` of a topic, its text and its vector.
+/// Span `ordinal` of a topic, its text, the header its vector was embedded
+/// under with that text, and its vector.
 ///
 /// A memory is indexed as the spans it is cut into (see [`crate::spans`]),
 /// each its own document, numbered from 0 with no gap. A memory that fits in
 /// one span is one document under ordinal 0, keyed as its topic always was.
-pub type SpanDocument<'a> = (TopicId, u32, &'a str, &'a [f32]);
-type PendingSpanDocument<'a> = (TopicId, u32, &'a str, Vec<f32>);
+///
+/// The header is `None` when it is not known -- a vector lent or copied from a
+/// document that did not record one -- and is then not recorded either.
+pub type SpanDocument<'a> = (TopicId, u32, &'a str, Option<&'a str>, &'a [f32]);
+type PendingSpanDocument<'a> = (TopicId, u32, &'a str, Option<String>, Vec<f32>);
+
+/// A span as a write would index it: its text, and the header its vector is
+/// embedded under with that text ([`crate::spans::Span::header`]).
+///
+/// What decides whether an index already holds the span. The text alone does
+/// not: a vector is embedded from the header as well ([`Passage::Named`]),
+/// and the header can change while every span's text stays the same -- a
+/// topic renamed, or an edit that changes how a line is read without changing
+/// any trimmed span.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpanSource<'a> {
+    pub text: &'a str,
+    pub header: &'a str,
+}
 
 /// What the layer above needs a projection to do.
 ///
@@ -160,7 +181,7 @@ pub trait Projection {
     ) -> Result<()> {
         let spans: Vec<SpanDocument<'_>> = documents
             .iter()
-            .map(|(topic, content, embedding)| (*topic, 0, *content, *embedding))
+            .map(|(topic, content, embedding)| (*topic, 0, *content, None, *embedding))
             .collect();
         self.replace(&spans, encoding)
     }
@@ -236,8 +257,9 @@ pub trait Projection {
     fn stored(&self, topics: &[TopicId]) -> Result<Vec<Vec<Stored>>>;
 
     /// Whether this index already holds each topic with exactly the spans
-    /// given for it -- each with exactly its text, and none past them --
-    /// embedded under exactly `encoding`, in the order asked.
+    /// given for it -- each with exactly its text and, where the index
+    /// recorded one, its header, and none past them -- embedded under exactly
+    /// `encoding`, in the order asked.
     ///
     /// The rule a rebuild lends a stored vector by ([`Previous::lend`]), asked
     /// of a served index, and narrowed to the plan that produced the vector: a
@@ -249,18 +271,22 @@ pub trait Projection {
     /// recorded. Read through [`stored`](Self::stored), so a buffered write
     /// counts, a deleted topic does not, and a document missing a vector it
     /// should have is an error rather than a match.
-    fn holds(&self, wanted: &[(TopicId, &[&str])], encoding: &str) -> Result<Vec<bool>> {
+    fn holds(&self, wanted: &[(TopicId, &[SpanSource<'_>])], encoding: &str) -> Result<Vec<bool>> {
         let topics: Vec<TopicId> = wanted.iter().map(|(topic, _)| *topic).collect();
         Ok(self
             .stored(&topics)?
             .iter()
             .zip(wanted)
-            .map(|(stored, (_, texts))| {
+            .map(|(stored, (_, spans))| {
                 holds_spans(
-                    stored
-                        .iter()
-                        .map(|span| (Some(span.content.as_str()), span.encoding.as_deref())),
-                    texts,
+                    stored.iter().map(|span| {
+                        (
+                            Some(span.content.as_str()),
+                            span.header.as_deref(),
+                            span.encoding.as_deref(),
+                        )
+                    }),
+                    spans,
                     encoding,
                 )
             })
@@ -339,6 +365,11 @@ pub struct Stored {
     /// document that had none, or any in an index created before then -- or
     /// when the plan was not one a record can name.
     pub encoding: Option<String>,
+    /// The header the vector was embedded under with the text
+    /// ([`SpanSource::header`]). `None` when nothing recorded it: an index
+    /// whose [`Passage`] leaves the header out, one created before headers
+    /// were recorded, or a document copied or lent from one of those.
+    pub header: Option<String>,
 }
 
 /// A lexical or vector index over topics.
@@ -358,6 +389,8 @@ pub struct ProjectionIndex {
     /// Whether this collection has [`FIELD_ENCODING`]: one created before it
     /// existed does not, and its documents are written and read without it.
     encodings: bool,
+    /// Whether this collection has [`FIELD_HEADER`], on the same terms.
+    headers: bool,
     /// What [`Projection::files_after_optimize`] reports.
     optimized_files: AtomicU64,
 }
@@ -1292,6 +1325,7 @@ impl ProjectionIndex {
             )
             // Not indexed: read back by key, never searched.
             .add_field(FieldSchema::new(FIELD_ENCODING, DataType::String, true, 0)?)
+            .add_field(FieldSchema::new(FIELD_HEADER, DataType::String, true, 0)?)
             // Half precision, and read back by the rescore; see `RESCORE`.
             .add_vector_field(
                 FIELD_VECTOR,
@@ -1318,7 +1352,9 @@ impl ProjectionIndex {
             }
             Ok(Collection::open(&path, options(access)?.as_ref())?)
         })?;
-        let encodings = collection.schema()?.has_field(FIELD_ENCODING);
+        let schema = collection.schema()?;
+        let encodings = schema.has_field(FIELD_ENCODING);
+        let headers = schema.has_field(FIELD_HEADER);
 
         Ok(Self {
             collection,
@@ -1329,13 +1365,14 @@ impl ProjectionIndex {
             keys: KEYS,
             grain: Grain::default(),
             encodings,
+            headers,
             optimized_files: AtomicU64::new(saved_optimize_floor(dir)),
         })
     }
 
     fn document(
         &self,
-        (topic, ordinal, content, embedding): SpanDocument<'_>,
+        (topic, ordinal, content, header, embedding): SpanDocument<'_>,
         encoding: Option<&str>,
     ) -> Result<Doc> {
         let mut doc = Doc::new()?;
@@ -1347,6 +1384,11 @@ impl ProjectionIndex {
         crate::half::add(&mut doc, FIELD_VECTOR, embedding)?;
         if let Some(encoding) = encoding.filter(|_| self.encodings) {
             doc.add_string(FIELD_ENCODING, encoding)?;
+        }
+        // Only where the vector was embedded from it: under a passage of the
+        // content alone, the header is not what the vector stands for.
+        if let Some(header) = header.filter(|_| self.headers && self.passage == Passage::Named) {
+            doc.add_string(FIELD_HEADER, header)?;
         }
         Ok(doc)
     }
@@ -1447,12 +1489,14 @@ impl ProjectionIndex {
     }
 
     /// The scalar fields [`fetch`](Self::fetch) reads back: the text, and what
-    /// produced the vectors when this collection records it.
+    /// produced the vectors and the header they were embedded under, each when
+    /// this collection records it.
     fn stored_fields(&self) -> &'static [&'static str] {
-        if self.encodings {
-            &[FIELD_NGRAM, FIELD_ENCODING]
-        } else {
-            &[FIELD_NGRAM]
+        match (self.encodings, self.headers) {
+            (true, true) => &[FIELD_NGRAM, FIELD_ENCODING, FIELD_HEADER],
+            (true, false) => &[FIELD_NGRAM, FIELD_ENCODING],
+            (false, true) => &[FIELD_NGRAM, FIELD_HEADER],
+            (false, false) => &[FIELD_NGRAM],
         }
     }
 
@@ -1462,6 +1506,15 @@ impl ProjectionIndex {
             return Ok(None);
         }
         Ok(doc.get_string(FIELD_ENCODING)?)
+    }
+
+    /// The header a fetched document's vector was embedded under, if that was
+    /// recorded.
+    fn header_of(&self, doc: &Doc) -> Result<Option<String>> {
+        if !self.headers || !doc.has_field(FIELD_HEADER) || doc.is_field_null(FIELD_HEADER) {
+            return Ok(None);
+        }
+        Ok(doc.get_string(FIELD_HEADER)?)
     }
 
     /// The documents stored under these topics, keyed by the topic each is.
@@ -1702,16 +1755,17 @@ impl Previous {
     /// How many of these topics [`lend`](Self::lend) would supply, without
     /// reading a vector.
     ///
-    /// `wanted` maps each topic to the texts of the spans the rebuild will
-    /// write for it, in order.
-    pub fn lends(&self, wanted: &HashMap<TopicId, Vec<&str>>) -> Result<usize> {
+    /// `wanted` maps each topic to the spans the rebuild will write for it,
+    /// in order.
+    pub fn lends(&self, wanted: &HashMap<TopicId, Vec<SpanSource<'_>>>) -> Result<usize> {
         Ok(self.whole(wanted)?.len())
     }
 
     /// Hands `take` every document this index can lend, at most `batch` at a
-    /// time, as the span, the text wanted for it and its stored vector, with
-    /// what produced those vectors ([`Stored::encoding`]); returns the topics
-    /// it lent, every span of each.
+    /// time, as the span, the text wanted for it, the header its vector was
+    /// recorded under ([`Stored::header`]) and its stored vector, with what
+    /// produced those vectors ([`Stored::encoding`]); returns the topics it
+    /// lent, every span of each.
     ///
     /// Each batch shares one encoding, so the caller can record it as this
     /// index did: a rebuild that dropped it would leave every lent document
@@ -1733,7 +1787,7 @@ impl Previous {
     /// resident set and identical vectors and text (ADR 0001).
     pub fn lend(
         &self,
-        wanted: &HashMap<TopicId, Vec<&str>>,
+        wanted: &HashMap<TopicId, Vec<SpanSource<'_>>>,
         batch: usize,
         mut take: impl FnMut(&[SpanDocument<'_>], Option<&str>) -> Result<()>,
     ) -> Result<HashSet<TopicId>> {
@@ -1744,8 +1798,14 @@ impl Previous {
             |encoding: &Option<String>, pending: &mut Vec<PendingSpanDocument<'_>>| {
                 let documents: Vec<SpanDocument<'_>> = pending
                     .iter()
-                    .map(|(topic, ordinal, content, vector)| {
-                        (*topic, *ordinal, *content, vector.as_slice())
+                    .map(|(topic, ordinal, content, header, vector)| {
+                        (
+                            *topic,
+                            *ordinal,
+                            *content,
+                            header.as_deref(),
+                            vector.as_slice(),
+                        )
                     })
                     .collect();
                 take(&documents, encoding.as_deref())?;
@@ -1768,10 +1828,15 @@ impl Previous {
                 IndexError::Engine(format!("the document for topic {topic} has no vector"))
             })?;
             let encoding = self.index.encoding_of(&doc)?;
+            // The header it was recorded under, not the one wanted: the two
+            // are the same where one was recorded, and where none was this
+            // vector's is unknown, which a recorded header would hide.
+            let header = self.index.header_of(&doc)?;
             pending.entry(encoding).or_default().push((
                 topic,
                 ordinal,
-                wanted[&topic][ordinal as usize],
+                wanted[&topic][ordinal as usize].text,
+                header,
                 vector,
             ));
             waiting += 1;
@@ -1799,15 +1864,21 @@ impl Previous {
     /// A pass of its own, without vectors, before any is lent: a topic is
     /// lent whole or not at all, and whether it is whole is known only once
     /// every document has been seen.
-    fn whole(&self, wanted: &HashMap<TopicId, Vec<&str>>) -> Result<HashSet<TopicId>> {
+    fn whole(&self, wanted: &HashMap<TopicId, Vec<SpanSource<'_>>>) -> Result<HashSet<TopicId>> {
         let mut matched: HashMap<TopicId, usize> = HashMap::new();
         let mut spoiled: HashSet<TopicId> = HashSet::new();
         self.each(false, |(topic, ordinal), doc| {
-            let Some(texts) = wanted.get(&topic) else {
+            let Some(spans) = wanted.get(&topic) else {
                 return Ok(());
             };
-            match texts.get(ordinal as usize) {
-                Some(text) if holds_exactly(doc.get_string(FIELD_NGRAM)?.as_deref(), text) => {
+            match spans.get(ordinal as usize) {
+                Some(span)
+                    if holds_source(
+                        doc.get_string(FIELD_NGRAM)?.as_deref(),
+                        self.index.header_of(&doc)?.as_deref(),
+                        span,
+                    ) =>
+                {
                     *matched.entry(topic).or_default() += 1;
                 }
                 _ => {
@@ -1868,6 +1939,13 @@ impl Previous {
 /// served index skipping a write, so the two cannot drift apart.
 fn holds_exactly(stored: Option<&str>, wanted: &str) -> bool {
     stored == Some(wanted)
+}
+
+/// Whether a document holding `text`, its vector embedded under `header`,
+/// already holds `wanted`: the same text, and the same header where one was
+/// recorded ([`Stored::header`]).
+fn holds_source(text: Option<&str>, header: Option<&str>, wanted: &SpanSource<'_>) -> bool {
+    holds_exactly(text, wanted.text) && header.is_none_or(|header| header == wanted.header)
 }
 
 impl Projection for ProjectionIndex {
@@ -1961,6 +2039,7 @@ impl Projection for ProjectionIndex {
                                 content,
                                 embedding,
                                 encoding: self.encoding_of(doc)?,
+                                header: self.header_of(doc)?,
                             }),
                             _ => Err(IndexError::Engine(format!(
                                 "a document for topic {topic} came back without its text or its \
@@ -1979,21 +2058,28 @@ impl Projection for ProjectionIndex {
     /// decoded a primary and a secondary vector per document only to drop
     /// them. A buffered write still counts and a deleted topic still does
     /// not, because both go through the same keyed fetch.
-    fn holds(&self, wanted: &[(TopicId, &[&str])], encoding: &str) -> Result<Vec<bool>> {
+    fn holds(&self, wanted: &[(TopicId, &[SpanSource<'_>])], encoding: &str) -> Result<Vec<bool>> {
         let topics: Vec<TopicId> = wanted.iter().map(|(topic, _)| *topic).collect();
         let stored = self.fetch(&topics, false)?;
         wanted
             .iter()
-            .map(|(topic, texts)| {
+            .map(|(topic, spans)| {
                 let docs = stored.get(topic).map_or(&[][..], Vec::as_slice);
                 let read = docs
                     .iter()
-                    .map(|doc| Ok((doc.get_string(FIELD_NGRAM)?, self.encoding_of(doc)?)))
+                    .map(|doc| {
+                        Ok((
+                            doc.get_string(FIELD_NGRAM)?,
+                            self.header_of(doc)?,
+                            self.encoding_of(doc)?,
+                        ))
+                    })
                     .collect::<Result<Vec<_>>>()?;
                 Ok(holds_spans(
-                    read.iter()
-                        .map(|(text, encoding)| (text.as_deref(), encoding.as_deref())),
-                    texts,
+                    read.iter().map(|(text, header, encoding)| {
+                        (text.as_deref(), header.as_deref(), encoding.as_deref())
+                    }),
+                    spans,
                     encoding,
                 ))
             })
@@ -2341,21 +2427,27 @@ fn deepest(
 /// produced their vectors, in order -- are exactly `wanted`, all embedded
 /// under `encoding`: the same number, each with exactly its text.
 ///
-/// Whole topics, not span by span. A span's vector is embedded from its
-/// header as well as its text, and the header is read off the spans before
-/// it -- the heading it sits under, the turn it continues -- so the same text
-/// is the same passage only when everything before it is the same too. A
-/// topic's name never changes, so with every span the same, every header is.
+/// Whole topics, not span by span: a topic is written whole.
+///
+/// A span's vector is embedded from its header as well as its text, so where
+/// the index recorded the header a span holds only that header too. The text
+/// alone would not do: the header is the topic's name and what the span
+/// continues -- the heading it sits under, the turn -- and an edit can change
+/// how a line is read, a heading indented into a paragraph, without changing
+/// any trimmed span. Where no header was recorded the text is all there is to
+/// compare, as before headers were.
 fn holds_spans<'a>(
-    stored: impl ExactSizeIterator<Item = (Option<&'a str>, Option<&'a str>)>,
-    wanted: &[&str],
+    stored: impl ExactSizeIterator<Item = (Option<&'a str>, Option<&'a str>, Option<&'a str>)>,
+    wanted: &[SpanSource<'_>],
     encoding: &str,
 ) -> bool {
     stored.len() == wanted.len()
         && !wanted.is_empty()
-        && stored.zip(wanted).all(|((text, recorded), wanted)| {
-            holds_exactly(text, wanted) && recorded == Some(encoding)
-        })
+        && stored
+            .zip(wanted)
+            .all(|((text, header, recorded), wanted)| {
+                holds_source(text, header, wanted) && recorded == Some(encoding)
+            })
 }
 
 #[cfg(test)]

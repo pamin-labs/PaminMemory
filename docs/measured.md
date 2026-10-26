@@ -939,12 +939,12 @@ each), MuSiQue 2-hop +0.0040 [−0.0029, +0.0113] (its first 200 questions). The
 `crates/pamin-index/src/reranking.rs`. Accelerators, and a CPU with an
 inference budget of one thread, where passes cannot overlap, still group up to
 four pairs within 512 padded tokens. The write-ups, raw rows, per-query dumps
-and harnesses are retained for maintainers in the private submodule (see
+and harnesses are retained for maintainers in the private InternalDocs repository (see
 [internal-docs.md](internal-docs.md)): the timing at
-`internal-docs/pamin-memory/research/2026-10-16/q42-shared-session-b1-and-review-status.md`
-and `internal-docs/pamin-memory/research/2026-10-16/raw/q42/`, the accuracy at
-`internal-docs/pamin-memory/research/2026-10-16/q44-b1-entry-point-accuracy.md`
-and `internal-docs/pamin-memory/research/2026-10-16/raw/q44/`.
+[`pamin-memory/research/2026-10-16/q42-shared-session-b1-and-review-status.md`](https://github.com/Pamin-Labs/InternalDocs/blob/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-16/q42-shared-session-b1-and-review-status.md)
+and [`pamin-memory/research/2026-10-16/raw/q42/`](https://github.com/Pamin-Labs/InternalDocs/tree/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-16/raw/q42), the accuracy at
+[`pamin-memory/research/2026-10-16/q44-b1-entry-point-accuracy.md`](https://github.com/Pamin-Labs/InternalDocs/blob/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-16/q44-b1-entry-point-accuracy.md)
+and [`pamin-memory/research/2026-10-16/raw/q44/`](https://github.com/Pamin-Labs/InternalDocs/tree/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-16/raw/q44).
 
 **The shared session, and one pair a pass, step by step at the entry point.**
 The paragraph above gives the second step's ratios; these are both steps with
@@ -1072,7 +1072,7 @@ moved in the same direction but within noise, and search peak memory did not
 move. Memory is the `pamin serve` process alone, with no accelerator
 services; the prepared model copies (1,668 MB) are the same in both arms and
 are not in the index figure. The raw rows and harness are in the private
-`internal-docs/pamin-memory/research/2026-10-19/raw/q65/` folder.
+[`pamin-memory/research/2026-10-19/raw/q65/`](https://github.com/Pamin-Labs/InternalDocs/tree/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-19/raw/q65) folder.
 
 **Which searches the latency rows time.** This harness, and the ones below
 that ask their 120 timed queries twice, serve the second round entirely from
@@ -1128,7 +1128,7 @@ Memory is the `pamin serve` process alone, with no accelerator services.
 CPU time counts the server's worker threads. The setting has an effect only
 under glibc on Linux; macOS and Windows are unaffected and unmeasured. The
 raw rows and harnesses are in the private
-`internal-docs/pamin-memory/research/2026-10-20/raw/q69/` folder, with
+[`pamin-memory/research/2026-10-20/raw/q69/`](https://github.com/Pamin-Labs/InternalDocs/tree/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-20/raw/q69) folder, with
 q64 and q67 beside it.
 
 **An idle model's weights handed back to the page cache.** A CPU session
@@ -1248,7 +1248,7 @@ Memory is the `pamin serve` process alone, with no accelerator services.
 Disk is the index directory; the prepared copies (1,668 MB) are unchanged.
 The release runs only on Linux; macOS and Windows are unaffected and
 unmeasured. The raw rows and harnesses are in the private
-`internal-docs/pamin-memory/research/2026-10-20/raw/q72b/`, `raw/q72c/` and
+[`pamin-memory/research/2026-10-20/raw/q72b/`](https://github.com/Pamin-Labs/InternalDocs/tree/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-20/raw/q72b), `raw/q72c/` and
 `raw/q74/` folders, and in `2026-10-21/raw/q78/` and `raw/q80/`.
 
 **The reranker's int8 weights, re-exported with SmoothQuant.** The upstream
@@ -1308,7 +1308,7 @@ named. The XQuAD-R arms ran one after the other on the same host, for
 accuracy only; their wall times are not a latency measurement. Accelerators
 load the fp16 file, which is upstream's, so they are unaffected and
 unmeasured. The raw rows and harnesses are in the private
-`internal-docs/pamin-memory/research/2026-10-21/raw/q81/` and `raw/q82/`
+[`pamin-memory/research/2026-10-21/raw/q81/`](https://github.com/Pamin-Labs/InternalDocs/tree/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-21/raw/q81) and `raw/q82/`
 folders.
 
 **Truncating at 192 or 384 tokens rather than 256 was measured, and neither
@@ -1362,7 +1362,7 @@ does not move beyond noise.**
   The prepared-copy figure includes the trimmed graphs; the index figure does
   not.
 - The raw rows and harness are in the private
-  `internal-docs/pamin-memory/research/2026-10-20/raw/q73/` folder, with the
+  [`pamin-memory/research/2026-10-20/raw/q73/`](https://github.com/Pamin-Labs/InternalDocs/tree/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-20/raw/q73) folder, with the
   replay in `raw/q71/`.
 
 **Reranking only the queries that need it was measured, and does not ship.**
@@ -1644,16 +1644,16 @@ writes no new files.
 Top-5 results at the entry point fall into two clusters that mix both arms.
 This is the segment-layout run-to-run variation, not the tokenizer. The
 write-up, raw rows and harness are at
-`internal-docs/pamin-memory/research/2026-10-14/q38-compact-tokenizer-timing.md`
-and `internal-docs/pamin-memory/research/2026-10-14/raw/q38/`.
+[`pamin-memory/research/2026-10-14/q38-compact-tokenizer-timing.md`](https://github.com/Pamin-Labs/InternalDocs/blob/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-14/q38-compact-tokenizer-timing.md)
+and [`pamin-memory/research/2026-10-14/raw/q38/`](https://github.com/Pamin-Labs/InternalDocs/tree/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-14/raw/q38).
 
 Outputs were bit-identical in all six runs. Encoding time was not measured,
 because the host was busy; load time moved by less than its run-to-run spread.
 These are whole-process figures, so they bound what the new layout holds but
 do not isolate it. The raw output of all six runs, the commands that drove them
-and the conditions are retained for maintainers in the private submodule (see
+and the conditions are retained for maintainers in the private InternalDocs repository (see
 [internal-docs.md](internal-docs.md)), at
-`internal-docs/pamin-memory/research/2026-10-13/raw/t1-tokenizer-memory/`.
+[`pamin-memory/research/2026-10-13/raw/t1-tokenizer-memory/`](https://github.com/Pamin-Labs/InternalDocs/tree/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-13/raw/t1-tokenizer-memory).
 
 **A cold server's first search, halved by loading models without repeated
 work.** Five changes take work off the model loads a server's first search
@@ -1726,8 +1726,8 @@ the main it started from:
   2.673 s, a difference of −3.149 s (−54.1%), ratio 0.459 [0.449, 0.466].
 - **Second search:** the second search's CI includes 1.0.
 - **Evidence:** the write-up and raw rows are in
-  [`q108-model-load-stack.md`](../internal-docs/pamin-memory/research/2026-10-23/q108-model-load-stack.md),
-  in the private submodule.
+  [`q108-model-load-stack.md`](https://github.com/Pamin-Labs/InternalDocs/blob/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-23/q108-model-load-stack.md),
+  in the private InternalDocs repository.
 - **Not done:** loading a model's tokenizer and its two sessions at once
   was tried on top of the after arm's code (`9cbb40c`) and not shipped. Same harness, 30
   rounds an arm, medians:
@@ -1782,12 +1782,12 @@ file-backed part is almost all the two prepared model copies (849 MB
 resident, each mapped once), which is what remains between this server and
 1 GB. The same cap set through `GLIBC_TUNABLES` on `d0b6b89` measured the
 same (search VmHWM 2,354 to 1,306 MB). The summaries, raw rows and harness
-are retained for maintainers in the private submodule (see
+are retained for maintainers in the private InternalDocs repository (see
 [internal-docs.md](internal-docs.md)):
-[q52-arena-cap-in-code.md](../internal-docs/pamin-memory/research/2026-10-18/q52-arena-cap-in-code.md)
-with [raw/q52/](../internal-docs/pamin-memory/research/2026-10-18/raw/q52/), and
-[q51-memory-split-and-arena-cap.md](../internal-docs/pamin-memory/research/2026-10-18/q51-memory-split-and-arena-cap.md)
-with [raw/q51/](../internal-docs/pamin-memory/research/2026-10-18/raw/q51/).
+[q52-arena-cap-in-code.md](https://github.com/Pamin-Labs/InternalDocs/blob/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-18/q52-arena-cap-in-code.md)
+with [raw/q52/](https://github.com/Pamin-Labs/InternalDocs/tree/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-18/raw/q52), and
+[q51-memory-split-and-arena-cap.md](https://github.com/Pamin-Labs/InternalDocs/blob/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-18/q51-memory-split-and-arena-cap.md)
+with [raw/q51/](https://github.com/Pamin-Labs/InternalDocs/tree/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-18/raw/q51).
 
 **The word-embedding tables, read rather than mapped.** Each prepared CPU
 copy's uint8 word-embedding table (250,002 rows of 1,024) was gathered by
@@ -1823,8 +1823,8 @@ directory and the two prepared copies, without postgres or temporary files
 reload this host triggered (its CUDA provider cannot register; fixed in the
 next paragraph), which mapped both models twice for a moment; without it the after arm peaked at 1,022 and
 1,049 MB. The summary, raw rows and harness:
-[q54-split-word-embeddings.md](../internal-docs/pamin-memory/research/2026-10-19/q54-split-word-embeddings.md)
-with [raw/q54/](../internal-docs/pamin-memory/research/2026-10-19/raw/q54/).
+[q54-split-word-embeddings.md](https://github.com/Pamin-Labs/InternalDocs/blob/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-19/q54-split-word-embeddings.md)
+with [raw/q54/](https://github.com/Pamin-Labs/InternalDocs/tree/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-19/raw/q54).
 
 **A provider that cannot register no longer reloads the models every five
 minutes.** Every x86-64 Linux build offers CUDA to the plan measurement, and on
@@ -1876,8 +1876,8 @@ is N/A. Memory is the server process only, with no accelerator services; disk
 is the index directory, without postgres, the prepared copies (unchanged, 1,668
 MB) or temporary files (not measured, N/A). The summary, raw-row checksums and
 harness:
-[q56-provider-reload.md](../internal-docs/pamin-memory/research/2026-10-19/q56-provider-reload.md)
-with [raw/q56/](../internal-docs/pamin-memory/research/2026-10-19/raw/q56/).
+[q56-provider-reload.md](https://github.com/Pamin-Labs/InternalDocs/blob/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-19/q56-provider-reload.md)
+with [raw/q56/](https://github.com/Pamin-Labs/InternalDocs/tree/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-19/raw/q56).
 
 **What the database is made of**, which is a figure this page has never carried
 and which turned out to be worth carrying. Broken down by table on the
@@ -2231,12 +2231,12 @@ already exceeds the 1,024 a Linux process is given by default.
 - **What it costs.** Ingest and disk grow with memory length.
 - **Upgrading.** An index built before spans keeps its grain until `pamin reindex`.
 - **Evidence.** Each record names its compared commits and keeps its scripts and raw results beside it:
-  - accuracy: `internal-docs/pamin-memory/research/2026-10-23/q111-a0-span-vs-topic.md` (LoCoMo) and
-    `internal-docs/pamin-memory/research/2026-10-24/q111-part2-lme-md-a1.md` (LongMemEval-S, Markdown), with
+  - accuracy: [`pamin-memory/research/2026-10-23/q111-a0-span-vs-topic.md`](https://github.com/Pamin-Labs/InternalDocs/blob/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-23/q111-a0-span-vs-topic.md) (LoCoMo) and
+    [`pamin-memory/research/2026-10-24/q111-part2-lme-md-a1.md`](https://github.com/Pamin-Labs/InternalDocs/blob/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-24/q111-part2-lme-md-a1.md) (LongMemEval-S, Markdown), with
     `raw/q111-q118/` and `raw/q111-part2/`;
-  - short sessions: `internal-docs/pamin-memory/research/2026-10-23/q119-span-grain-timing.md`, `58f1825` against
+  - short sessions: [`pamin-memory/research/2026-10-23/q119-span-grain-timing.md`](https://github.com/Pamin-Labs/InternalDocs/blob/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-23/q119-span-grain-timing.md), `58f1825` against
     `6305f8c`, with `raw/q119/`;
-  - long sessions: `internal-docs/pamin-memory/research/2026-10-25/q127-span-stack-vs-main.md`, `main` at `2c59266`
+  - long sessions: [`pamin-memory/research/2026-10-25/q127-span-stack-vs-main.md`](https://github.com/Pamin-Labs/InternalDocs/blob/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-25/q127-span-stack-vs-main.md), `main` at `2c59266`
     against `7aef72c`, with `raw/q127/`.
 
 What was measured, how, and the conclusions that reversed on measurement are in

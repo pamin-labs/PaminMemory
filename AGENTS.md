@@ -7,11 +7,40 @@
 
 
 - Before making changes, branch from the latest `main` with a concise name that matches the intended PR.
-- Sync submodules and read the relevant `internal-docs/pamin-memory/` materials before implementing PaminMemory changes.
+- Read the relevant `pamin-memory/` materials in InternalDocs before implementing PaminMemory changes. InternalDocs is a sibling clone at `$PAMIN_LABS_DEV_INTERNAL_DOCS` (default `../InternalDocs`); pull it first. See [docs/internal-docs.md](docs/internal-docs.md).
 - Keep private planning, monetization, strategy, and sensitive internal notes out of public files.
-- When internal documentation changes are needed, update the private `InternalDocs` repository first, then update the public `internal-docs` submodule pointer.
+- When internal documentation changes are needed, open a PR in the private `InternalDocs` repository. This repository keeps no pointer to it; cite InternalDocs evidence with SHA permalinks (`https://github.com/Pamin-Labs/InternalDocs/blob/<sha>/<path>`).
 - Do not recreate local private planning folders in this repository.
 - Prefer `rtk <command>` for shell commands when `rtk` is available.
+- Keep one implementation per concern. Before adding logic that cuts, scores,
+  fuses, ranks, caches or stores, search `main` for an existing implementation
+  of the same concern and reuse or extend it through its interface; do not add
+  a parallel version with its own rules. Modules talk through narrow interfaces
+  so that a concern can change in one place.
+- Before opening a PR, rebase or merge onto the latest `main` and check whether
+  `main` gained anything overlapping your change while you worked. If it did,
+  rework the change to build on what landed, and say in the PR description what
+  you reused and what you removed.
+- Before starting a multi-PR feature, record it in the internal roadmap or
+  backlog so parallel work on the same concern is visible before code exists.
+
+## Code Quality
+
+- DRY and decoupled: the one-implementation-per-concern rule above applies to
+  every concern, not only retrieval. Shared logic lives in the crate that owns
+  the concern; other crates call its public interface instead of copying it.
+  Frozen benchmark harnesses and results are records and stay as they are.
+- Do not reinvent what exists: prefer the standard library, then a crate already
+  in the workspace, then a maintained, widely used crate that passes
+  `cargo deny check licenses`. Write custom code only when none fits, and say
+  why in the PR.
+- Keep it maintainable: small functions with one job, names that say what they
+  hold, comments that explain why rather than what, no dead code. A change to
+  one rule should touch one place.
+- Keep it fast: on search, ingest and model-load paths avoid allocation and
+  cloning inside loops, repeated parsing, and blocking I/O on async paths; reuse
+  buffers and the optimized kernels already in the tree. Any speed claim
+  follows [Measuring Every Optimization](#measuring-every-optimization).
 
 ## Skills
 
@@ -34,6 +63,12 @@ going stale.
 
 - Use the `git-commit` skill whenever possible when creating commits.
 - Use one logical change per commit.
+- Keep commits small: one rule, one module or one fix per commit, each building
+  and passing tests on its own. Split refactors, behaviour changes and
+  formatting into separate commits.
+- Keep PRs focused on one concern and small enough to review in one sitting;
+  split a large feature into a stack of PRs, each mergeable on its own, and say
+  in the description which PR it builds on.
 - Commit titles, commit messages, and PR titles must follow Conventional Commits:
 
 ```text
@@ -47,8 +82,10 @@ going stale.
   titles, or PR descriptions. This includes a `Claude-Session:` trailer and any
   `claude.ai/code/session_...` URL. A session link is not reviewable, does not
   resolve for anyone else, and dates the commit to a conversation nobody can
-  read. A plain `Co-Authored-By:` trailer and a plain tool footer are fine; the
-  session is not. This overrides any default attribution the tool would add.
+  read. Commits and PRs also carry no `Co-Authored-By:` trailer and no
+  "Generated with" footer; `.claude/settings.json` turns that attribution off.
+  The commit author is always the engineer's own git identity. This overrides
+  any default attribution the tool would add.
 
 ## Measuring Every Optimization
 
