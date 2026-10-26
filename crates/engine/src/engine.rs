@@ -1031,7 +1031,7 @@ impl Engine {
             widest_name: Arc::default(),
             unflushed: Arc::default(),
             syncing: Arc::default(),
-            index: Arc::new(Mutex::new(index)),
+            index: Arc::new(std::sync::RwLock::new(index)),
             dir,
             access,
             rebuilding: Arc::new(Mutex::new(exclusive.map(|exclusive| Rebuilding {
@@ -1077,8 +1077,12 @@ impl Engine {
     /// index, so what it holds is whatever that panic left. Failing here is
     /// the honest outcome: the alternative is serving from state nobody
     /// finished writing.
-    pub(crate) fn index(&self) -> MutexGuard<'_, Arc<dyn Projection + Send + Sync>> {
-        self.index.lock().expect("the index lock is poisoned")
+    pub(crate) fn index(&self) -> std::sync::RwLockWriteGuard<'_, Arc<dyn Projection + Send + Sync>> {
+        self.index.write().expect("the index lock is poisoned")
+    }
+
+    pub(crate) fn index_shared(&self) -> std::sync::RwLockReadGuard<'_, Arc<dyn Projection + Send + Sync>> {
+        self.index.read().expect("the index lock is poisoned")
     }
 
     /// Which vector index this project's index was built with.
@@ -2528,7 +2532,7 @@ impl Engine {
             // before the read lock is taken: holding both is what would turn
             // one slow inference into a queue for every reader.
             let embedding = self.embedding()?.embed_query(query)?;
-            let index = self.index();
+            let index = self.index_shared();
             let lists = vec![
                 ChannelResults::new(
                     Channel::LexicalSegmented,
