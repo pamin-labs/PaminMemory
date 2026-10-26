@@ -15,11 +15,10 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use pamin_client::command::ingest::{Args, Ingested};
-use pamin_core::EdgeKind;
+use pamin_client::command::ingest::{Args, Ingested, Renamed};
 use pamin_engine::{Owed, Retired};
 use pamin_index::VectorIndex;
-use pamin_index::sections::{Placed, SEPARATOR, Section, Unnamed, named, number, outline, unnamed};
+use pamin_index::sections::{SEPARATOR, Section, Unnamed, named, number, pairs, parents, unnamed};
 use pamin_index::spans::TokenCount;
 use pamin_store::repository::FileTopic;
 
@@ -119,7 +118,7 @@ pub async fn execute(
     let engine = session.engine(project, vector_index).await?;
     let recorded =
         pamin_store::repository::file_topic_names(engine.database.pool(), engine.project).await?;
-    let (cut, outline) = numbered(&engine, cut, &recorded).await?;
+    let (cut, parents) = numbered(&engine, cut, &recorded).await?;
 
     let read: Vec<(String, String)> = cut
         .iter()
@@ -131,7 +130,9 @@ pub async fn execute(
             sections.iter().map(move |section| (section, root.as_str()))
         })
         .collect();
-    let gone = gone(
+    let known: std::collections::HashSet<String> =
+        recorded.iter().map(|topic| topic.name.clone()).collect();
+    let mut gone = gone(
         &Looked {
             read: &read,
             unread: &unread,
@@ -141,6 +142,9 @@ pub async fn execute(
         &cut.iter().map(|(section, _)| *section).collect::<Vec<_>>(),
         recorded,
     );
+    // Before the sections are recorded, so a section found under a new name
+    // is written to the topic it already was rather than to a new one.
+    let renamed = renamed(&engine, &cut, &known, &mut gone).await?;
 
     // Every section is a topic of its own -- its name holds its file's path,
     // and one file's names are numbered apart -- so they all run at once, in
@@ -201,13 +205,13 @@ pub async fn execute(
         .await?;
     }
 
-    // After the sections are recorded, so each has the state its edges cite,
-    // and before retiring, whose sections the outline no longer names.
+    // After the sections are recorded, so each has the state its edge cites,
+    // and before retiring, whose sections no section sits under any more.
     let sections: Vec<String> = cut
         .iter()
         .map(|(section, _)| section.name.clone())
         .collect();
-    engine.restate_outline(&sections, &outline).await?;
+    engine.restate_parents(&sections, &parents).await?;
 
     // After the sections are recorded, so a section that moved within a file
     // is written under its new name before its old one is retired, and before
@@ -239,10 +243,65 @@ pub async fn execute(
         held,
         removed,
         missing: kept,
+        renamed,
         skipped,
         cascade: if owed == 0 { "applied" } else { "queued" }.to_string(),
         cascade_lagging: lagging,
     })
+}
+
+/// The sections of `cut` that are ones in `gone` under a new name -- a file
+/// moved, or a heading above them renamed -- renamed to it, keeping their
+/// topics, and taken out of `gone`.
+///
+/// A section is the one it was by the rule that keeps a twin's number: the
+/// same text first, then most of its words in order, one to one. Only a new
+/// name, which no earlier ingest recorded, and only a section this ingest
+/// could retire: one it cannot say is gone is not one it can say moved.
+async fn renamed(
+    engine: &pamin_engine::Engine,
+    cut: &[(&Section, &str)],
+    known: &std::collections::HashSet<String>,
+    gone: &mut Vec<Gone>,
+) -> Result<Vec<Renamed>> {
+    let new: Vec<&Section> = cut
+        .iter()
+        .map(|(section, _)| *section)
+        .filter(|section| !known.contains(&section.name))
+        .collect();
+    let candidates: Vec<&Gone> = gone.iter().filter(|gone| gone.retirable).collect();
+    if new.is_empty() || candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let names: Vec<String> = candidates.iter().map(|gone| gone.name.clone()).collect();
+    let said: std::collections::HashMap<String, String> =
+        pamin_store::repository::current_named(engine.database.pool(), engine.project, &names)
+            .await?
+            .into_iter()
+            .map(|named| (named.name, named.content))
+            .collect();
+    let candidates: Vec<(&Gone, &str)> = candidates
+        .into_iter()
+        .filter_map(|gone| Some((gone, said.get(&gone.name)?.as_str())))
+        .collect();
+    let now: Vec<&str> = new.iter().map(|section| section.content.as_str()).collect();
+    let before: Vec<&str> = candidates.iter().map(|(_, content)| *content).collect();
+
+    let mut renamed = Vec::new();
+    for (at, from) in pairs(&now, &before) {
+        let (gone, _) = candidates[from];
+        if engine
+            .rename_section(&gone.name, &new[at].name, gone.current)
+            .await?
+        {
+            renamed.push(Renamed {
+                from: gone.name.clone(),
+                to: new[at].name.clone(),
+            });
+        }
+    }
+    gone.retain(|gone| !renamed.iter().any(|renamed| renamed.from == gone.name));
+    Ok(renamed)
 }
 
 /// Each file's sections named, numbered against what its sections said when
@@ -250,17 +309,14 @@ pub async fn execute(
 /// sections share headings, or where an earlier ingest numbered one. Every
 /// other file's sections are named as they are cut, with no read.
 ///
-/// And each file's outline, by those names: the edges
-/// [`Engine::restate_outline`](pamin_engine::Engine::restate_outline) states.
+/// And the section each sits under, by those names: the `part_of` edges
+/// [`Engine::restate_parents`](pamin_engine::Engine::restate_parents) states.
 #[allow(clippy::type_complexity)]
 async fn numbered(
     engine: &pamin_engine::Engine,
     cut: Vec<(String, String, Vec<Unnamed>)>,
     recorded: &[FileTopic],
-) -> Result<(
-    Vec<(String, String, Vec<Section>)>,
-    Vec<(String, String, EdgeKind)>,
-)> {
+) -> Result<(Vec<(String, String, Vec<Section>)>, Vec<(String, String)>)> {
     // Per file, the earlier sections a number could be kept from.
     let wanted: Vec<Vec<String>> = cut
         .iter()
@@ -307,12 +363,8 @@ async fn numbered(
             let bases: Vec<String> = sections.iter().map(|s| s.base.clone()).collect();
             let sections = named(sections, &previous);
             let bases: Vec<&str> = bases.iter().map(String::as_str).collect();
-            for (from, to, placed) in outline(&bases) {
-                let kind = match placed {
-                    Placed::Under => EdgeKind::PartOf,
-                    Placed::Before => EdgeKind::RelatedTo,
-                };
-                edges.push((sections[from].name.clone(), sections[to].name.clone(), kind));
+            for (from, to) in parents(&bases) {
+                edges.push((sections[from].name.clone(), sections[to].name.clone()));
             }
             (file, root, sections)
         })

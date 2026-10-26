@@ -1,0 +1,160 @@
+
+// ---------------------------------------------------------------------------
+// SCRATCH (not tracked): gaps doc step 5. One pass of `search_reranked` over
+// the ConditionalQA sections project (`CQA_NONCE`), whose hits now carry the
+// section each sits under; three ways of showing it, read from the same
+// ranking:
+//
+// - `off`: what each hit returns, as before;
+// - `every`: each hit preceded by its parent's opening, unless that parent
+//   was already read -- as a hit, or as another child's parent;
+// - `shared`: a parent's opening shown once, before the first of two or more
+//   hits in the first ten that sit under it.
+//
+// Scored as `scratch_cqa` scores, the parent's text counting against every
+// budget.
+// ---------------------------------------------------------------------------
+
+/// What a reader is shown, in order: each hit's own text, and when the arm
+/// shows it, its parent's opening before it. Each item is (file, text).
+fn shown_items<'a>(arm: &str, hits: &'a [pamin_engine::SearchHit]) -> Vec<(&'a str, &'a str)> {
+    let mut shared: BTreeMap<&str, usize> = BTreeMap::new();
+    for hit in hits.iter().take(10) {
+        if let Some(parent) = &hit.parent {
+            *shared.entry(parent.topic.as_str()).or_default() += 1;
+        }
+    }
+    let mut read: HashSet<&str> = HashSet::new();
+    let mut items = Vec::new();
+    for (at, hit) in hits.iter().enumerate() {
+        if let Some(parent) = &hit.parent {
+            let show = match arm {
+                "every" => true,
+                "shared" => at < 10 && shared[parent.topic.as_str()] >= 2,
+                _ => false,
+            };
+            if show && !read.contains(parent.topic.as_str()) {
+                read.insert(parent.topic.as_str());
+                items.push((file_part(&parent.topic), parent.opening.as_str()));
+            }
+        }
+        read.insert(hit.topic.as_str());
+        items.push((file_part(&hit.topic), view_of(hit)));
+    }
+    items
+}
+
+#[derive(serde::Serialize)]
+struct ParentRow {
+    arm: &'static str,
+    question: String,
+    file: String,
+    spread: &'static str,
+    complete: [f64; 3],
+    covered: [f64; 3],
+    bytes: [usize; 3],
+    fixed_read: f64,
+    fixed_read_complete: f64,
+    with_parent10: usize,
+    parents_shown10: usize,
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "scratch"]
+async fn scratch_cqa_parents() {
+    let home = harness::eval_home();
+    let workspace = Workspace::at(&home);
+    let counter = SpanTokens::load(&workspace.models_dir()).expect("BGE-M3's tokenizer");
+    let out = std::path::PathBuf::from(std::env::var("SCRATCH_OUT").expect("SCRATCH_OUT"));
+    let nonce = std::env::var("CQA_NONCE").expect("CQA_NONCE");
+    let (_, questions) = cqa_corpus();
+    let engine = Engine::open(
+        &workspace,
+        &format!("scratch-cqa-sections-{nonce}"),
+        VectorIndex::default(),
+        Access::ReadWrite,
+        &harness::settings(),
+    )
+    .await
+    .expect("open the engine");
+
+    let mut rows = Vec::new();
+    let mut with_parents = 0;
+    for question in &questions {
+        let hits = engine
+            .search_reranked(&question.text, LIMIT, harness::depths())
+            .await
+            .expect("search");
+        with_parents += usize::from(hits.iter().any(|hit| hit.parent.is_some()));
+        // Premise: a parent is a section of the hit's own file, other than it.
+        for hit in &hits {
+            if let Some(parent) = &hit.parent {
+                assert_eq!(file_part(&parent.topic), file_part(&hit.topic));
+                assert_ne!(parent.topic, hit.topic);
+                assert!(!parent.opening.is_empty());
+            }
+        }
+        let total = question.evidence.len() as f64;
+        for arm in ["off", "every", "shared"] {
+            // The first k hits, with what the arm shows before each.
+            let upto = |k: usize| -> Vec<(&str, &str)> { shown_items(arm, &hits[..k.min(hits.len())]) };
+            let (mut complete, mut covered, mut bytes) = ([0.0; 3], [0.0; 3], [0; 3]);
+            for (slot, k) in [1usize, 5, 10].iter().enumerate() {
+                let items = upto(*k);
+                let texts: Vec<&str> = items
+                    .iter()
+                    .filter(|(file, _)| *file == question.file)
+                    .map(|(_, text)| *text)
+                    .collect();
+                let found = found_in(question, &texts) as f64;
+                covered[slot] = found / total;
+                complete[slot] = f64::from(u8::from(found == total));
+                bytes[slot] = items.iter().map(|(_, text)| text.len()).sum();
+            }
+            let mut left = BUDGET;
+            let mut read = Vec::new();
+            for (file, text) in shown_items(arm, &hits) {
+                if left == 0 {
+                    break;
+                }
+                let offsets = counter.offsets(text);
+                let taken = if offsets.len() <= left {
+                    text
+                } else {
+                    &text[..offsets[left].start]
+                };
+                left = left.saturating_sub(offsets.len());
+                if file == question.file {
+                    read.push(taken);
+                }
+            }
+            let fixed = found_in(question, &read) as f64;
+            let ten = upto(10);
+            rows.push(ParentRow {
+                arm: match arm {
+                    "off" => "off",
+                    "every" => "every",
+                    _ => "shared",
+                },
+                question: question.id.clone(),
+                file: question.file.clone(),
+                spread: question.spread,
+                complete,
+                covered,
+                bytes,
+                fixed_read: fixed / total,
+                fixed_read_complete: f64::from(u8::from(fixed == total)),
+                with_parent10: hits.iter().take(10).filter(|hit| hit.parent.is_some()).count(),
+                parents_shown10: ten.len() - hits.len().min(10),
+            });
+        }
+    }
+    println!(
+        "  {} questions, {with_parents} with a hit that has a parent",
+        questions.len()
+    );
+    // Premise: the edges are there to read.
+    assert!(with_parents * 2 > questions.len(), "parents are missing");
+    std::fs::write(&out, serde_json::to_vec(&rows).expect("serialize")).expect("write");
+    println!("  rows: {}", out.display());
+}

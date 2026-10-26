@@ -2592,13 +2592,11 @@ fn a_section_inserted_above_its_twin_leaves_the_twin_its_name() {
     );
 }
 
-/// A file's sections are related as its outline relates them: each is
-/// `part_of` the section of the heading above it and `related_to` the next one
-/// under the same heading, and a section the file loses takes its edges with
-/// it.
+/// Each of a file's sections is `part_of` the section of the heading above
+/// it, and a section the file loses takes its edge with it.
 #[test]
 #[ignore = "provisions postgres and downloads model weights"]
-fn a_files_outline_relates_its_sections() {
+fn a_section_is_part_of_the_section_above_it() {
     let cli = Cli::new();
     cli.run(&["init"]);
     let tree = tempfile::tempdir().expect("temp tree");
@@ -2657,28 +2655,18 @@ fn a_files_outline_relates_its_sections() {
     let deploy_name = format!("{file} › Deploy");
     let canary_name = format!("{file} › Deploy › Canary");
     let rollback_name = format!("{file} › Deploy › Rollback");
+    let part_of = |name: &str| (name.to_string(), "part_of".to_string(), deploy_name.clone());
     assert_eq!(
-        edges(&canary_name),
-        [
-            (
-                canary_name.clone(),
-                "part_of".to_string(),
-                deploy_name.clone()
-            ),
-            (
-                canary_name.clone(),
-                "related_to".to_string(),
-                rollback_name.clone()
-            ),
-        ]
+        edges(&deploy_name),
+        [part_of(&canary_name), part_of(&rollback_name)]
     );
 
     // Unchanged, re-ingested: nothing new to say.
     let again = cli.json(&["ingest", ops.to_str().expect("a path")]);
     assert_eq!(again["unchanged"], 3, "{again}");
-    assert_eq!(edges(&canary_name).len(), 2);
+    assert_eq!(edges(&deploy_name).len(), 2);
 
-    // Rollback gone: its edges, and the one to it, closed.
+    // Rollback gone: its edge closed.
     put(
         &ops,
         &format!("# Deploy\n\n{deploy}\n\n## Canary\n\n{canary}\n"),
@@ -2690,20 +2678,106 @@ fn a_files_outline_relates_its_sections() {
         "{fewer}"
     );
     assert_eq!(
-        edges(&canary_name),
-        [(
-            canary_name.clone(),
-            "part_of".to_string(),
-            deploy_name.clone()
-        )]
+        edges(&deploy_name),
+        [part_of(&canary_name)],
+        "the removed section's edge was left open"
+    );
+}
+
+/// A section found under a new name -- its heading renamed, or its folder
+/// moved -- keeps its topic: its history, the edges to it, and the old name,
+/// which still finds it.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn a_renamed_heading_or_moved_folder_keeps_its_sections() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+    cli.run(&[
+        "write",
+        "--topic",
+        "oncall_rota",
+        "the oncall rota rotates every monday morning",
+    ]);
+    let tree = tempfile::tempdir().expect("temp tree");
+    std::fs::create_dir_all(tree.path().join(".git")).expect("a repository root");
+    let root = tree
+        .path()
+        .file_name()
+        .expect("a name")
+        .to_str()
+        .expect("utf-8")
+        .to_string();
+    let deploy = "The deployment pipeline builds every commit on the main branch and \
+                  promotes the build to production once the canary has served traffic \
+                  for thirty minutes without raising an alarm. Every stage records what \
+                  it built and from which commit, so a release can always be traced \
+                  back to the change that produced it.";
+    let rollback = "A rollback reverts the deployment pipeline to the previous release tag. \
+                    Whoever is on the oncall_rota starts it from the release dashboard, \
+                    and the previous build is serving again within ten minutes because \
+                    its image is still cached on every node in the cluster.";
+    let write = |dir: &str, heading: &str| {
+        put(
+            &tree.path().join(dir).join("ops.md"),
+            &format!("# Deploy\n\n{deploy}\n\n## {heading}\n\n{rollback}\n"),
+        );
+    };
+    // The repository's root each time, as a tree is re-ingested: only a walk
+    // of the tree can say a file has gone from where it was.
+    let ingest = || cli.json(&["ingest", tree.path().to_str().expect("a path")]);
+    let mentioning = || -> Vec<String> {
+        cli.json(&["neighbors", "oncall_rota", "--kind", "mentions"])["neighbors"]
+            .as_array()
+            .expect("neighbors")
+            .iter()
+            .map(|neighbor| neighbor["topic"].as_str().expect("a topic").to_string())
+            .collect()
+    };
+
+    write("docs", "Rollback");
+    let first = ingest();
+    assert_eq!(first["written"], 2, "{first}");
+    let original = format!("{root}/docs/ops.md › Deploy › Rollback");
+    assert_eq!(mentioning(), std::slice::from_ref(&original));
+
+    // The heading renamed: one section renamed, and its new text a version.
+    write("docs", "Rolling back");
+    let renamed_heading = format!("{root}/docs/ops.md › Deploy › Rolling back");
+    let second = ingest();
+    assert_eq!(
+        second["renamed"],
+        serde_json::json!([{"from": original, "to": renamed_heading}]),
+        "{second}"
+    );
+    assert_eq!(second["removed"], serde_json::json!([]), "{second}");
+    assert_eq!(second["written"], 1, "{second}");
+    let read = cli.json(&["read", &renamed_heading]);
+    assert_eq!(
+        read["version"], 2,
+        "the renamed section lost its history: {read}"
+    );
+    // The old name still reaches it, under its new one.
+    assert_eq!(
+        cli.json(&["read", &original])["topic"],
+        renamed_heading.as_str()
     );
     assert_eq!(
-        edges(&deploy_name),
-        [(
-            canary_name.clone(),
-            "part_of".to_string(),
-            deploy_name.clone()
-        )],
-        "the removed section's own edge was left open"
+        mentioning(),
+        std::slice::from_ref(&renamed_heading),
+        "the mention edge was lost"
     );
+
+    // The folder moved: every section renamed, none written.
+    std::fs::rename(tree.path().join("docs"), tree.path().join("guides")).expect("a move");
+    let third = ingest();
+    assert_eq!(
+        third["renamed"].as_array().map(Vec::len),
+        Some(2),
+        "{third}"
+    );
+    assert_eq!(third["written"], 0, "{third}");
+    assert_eq!(third["unchanged"], 2, "{third}");
+    let moved = format!("{root}/guides/ops.md › Deploy › Rolling back");
+    assert_eq!(cli.json(&["read", &moved])["version"], 2);
+    assert_eq!(mentioning(), [moved]);
 }
