@@ -3015,7 +3015,7 @@ The trigger is therefore two-part, and the second part is the one that matters:
 
 **Both parts are met (2026-10-26).** On 0.7.2, with searches taking a shared
 guard and every other caller an exclusive one, the test ran its full five
-minutes on Linux (4 vCPU, 20 writers, 20 readers) and passed,
+minutes on Linux (4 vCPU, 20 writers, 20 readers) and passed twice out of two,
 the server alive at the end and flushes overlapping the queries as it asserts.
 So searches now share the index and writers still exclude everyone: that is the
 shape the test passed, and nothing has tested writers sharing with readers.
