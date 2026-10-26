@@ -68,7 +68,9 @@ pub async fn execute(
     };
 
     let result = Read {
-        topic: args.topic,
+        // The name it goes by now, which differs from the one asked for when
+        // that was a name it was renamed from.
+        topic: topic.name,
         version: resolved.version,
         content,
         is_current: resolved.is_current,
