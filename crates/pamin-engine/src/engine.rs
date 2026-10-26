@@ -89,10 +89,6 @@ const REINDEX_BATCH: usize = 256;
 /// before its width followed a budget rather than the cap.
 const VIEW_TOKENS: usize = 600;
 
-/// How many tokens of a hit's parent section are shown with it: its opening
-/// span at the default cap. Provisional, until a measurement settles it.
-const PARENT_TOKENS: usize = 200;
-
 /// How many candidates the index proposes when a new topic is backfilled.
 ///
 /// Every one costs a row read and an exact comparison, and the probe is a
@@ -2267,9 +2263,10 @@ impl Engine {
         self.with_parents(hits).await
     }
 
-    /// Each hit with the section it sits under, if it is a section of a file
-    /// with one: one read of the hits' `part_of` edges and one of their
-    /// targets, and nothing at all when no hit has one.
+    /// Each hit with the name of the section it sits under, if it is a
+    /// section of a file with one: one read of the hits' `part_of` edges and
+    /// one of their targets' names, and the second not at all when no hit has
+    /// one.
     async fn with_parents(&self, mut hits: Vec<SearchHit>) -> Result<Vec<SearchHit>> {
         let topics: Vec<TopicId> = hits.iter().map(|hit| hit.state.topic_id).collect();
         let edges = graph::targets(
@@ -2282,8 +2279,7 @@ impl Engine {
         if edges.is_empty() {
             return Ok(hits);
         }
-        let parent_of: std::collections::HashMap<TopicId, TopicId> = edges.into_iter().collect();
-        let mut parents: Vec<TopicId> = parent_of.values().copied().collect();
+        let mut parents: Vec<TopicId> = edges.iter().map(|(_, parent)| *parent).collect();
         parents.sort_unstable();
         parents.dedup();
         let names: std::collections::HashMap<TopicId, String> =
@@ -2292,28 +2288,11 @@ impl Engine {
                 .into_iter()
                 .map(|(topic, name, _)| (topic, name))
                 .collect();
-        let states =
-            repository::current_states_of(self.database.pool(), self.project, &parents).await?;
-        // Off the runtime: a parent no search has cut in this process is cut
-        // here, by its tokens.
-        let shown: std::collections::HashMap<TopicId, Parent> = off_the_runtime(|| {
-            states
-                .iter()
-                .filter_map(|state| {
-                    let topic = names.get(&state.topic_id)?.clone();
-                    let spans = self.cut(&topic, &state.content).ok()?;
-                    let opening = match SpanView::within(&spans, 0, PARENT_TOKENS) {
-                        Some(view) if spans.len() > 1 => state.content[view.range].to_string(),
-                        _ => state.content.clone(),
-                    };
-                    Some((state.topic_id, Parent { topic, opening }))
-                })
-                .collect()
-        });
+        let parent_of: std::collections::HashMap<TopicId, TopicId> = edges.into_iter().collect();
         for hit in &mut hits {
             hit.parent = parent_of
                 .get(&hit.state.topic_id)
-                .and_then(|parent| shown.get(parent))
+                .and_then(|parent| names.get(parent))
                 .cloned();
         }
         Ok(hits)
@@ -3064,19 +3043,12 @@ pub struct SearchHit {
     /// this hit is about: its best span and what fits the view's token budget
     /// around it. `None` for a memory of one span, which is the whole of it.
     pub span: Option<SpanView>,
-    /// For a section of a file, the section it sits under: the context a hit
-    /// cut out of its outline lost. `None` for a memory with no `part_of`.
-    pub parent: Option<Parent>,
-}
-
-/// The section a hit sits under, and how it opens.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Parent {
-    /// The parent, by the name a caller addresses it with.
-    pub topic: String,
-    /// Its opening: the first of its spans and what fits [`PARENT_TOKENS`]
-    /// after it, or all of it when it is one span.
-    pub opening: String,
+    /// For a section of a file, the name of the section it sits under: the
+    /// context a section cut out of its file lost, for a caller to read when
+    /// the hit needs it. A name and not its text, which on ConditionalQA put
+    /// the context nearer the top only by returning more to read, and read to
+    /// the same budget found no more. `None` for a memory with no `part_of`.
+    pub parent: Option<String>,
 }
 
 /// Where in a memory a span, or a run of them, lies.
