@@ -2458,6 +2458,8 @@ fn an_ingested_file_is_found_by_section_and_re_ingested_by_change() {
         "an unchanged section was recorded as held: {again}"
     );
 
+    // Mentions only: the section's outline relates it to the section above
+    // it, which a walk from `oncall_rota` would reach in two hops.
     let rota_neighbors = |cli: &Cli| -> Vec<String> {
         cli.json(&["neighbors", "oncall_rota", "--kind", "mentions"])["neighbors"]
             .as_array()
@@ -2587,6 +2589,108 @@ fn a_section_inserted_above_its_twin_leaves_the_twin_its_name() {
         inserted["content"],
         format!("# Notes\n\n{second}"),
         "{inserted}"
+    );
+}
+
+/// Each of a file's sections is `part_of` the section of the heading above
+/// it, and a section the file loses takes its edge with it.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn a_section_is_part_of_the_section_above_it() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+    let tree = tempfile::tempdir().expect("temp tree");
+    std::fs::create_dir_all(tree.path().join(".git")).expect("a repository root");
+    let ops = tree.path().join("ops.md");
+    let file = format!(
+        "{}/ops.md",
+        tree.path()
+            .file_name()
+            .expect("a name")
+            .to_str()
+            .expect("utf-8")
+    );
+    let deploy = "The deployment pipeline builds every commit on the main branch and \
+                  promotes the build to production once the canary has served traffic \
+                  for thirty minutes without raising an alarm. Every stage records \
+                  what it built and from which commit, so a release can always be \
+                  traced back to the change that produced it.";
+    let canary = "The canary takes five per cent of production traffic, and its error \
+                  rate is compared with the rest of the fleet before the build is \
+                  allowed to go any further. If the canary's latency or errors drift \
+                  above the fleet's for more than five minutes, the build is stopped \
+                  and whoever is on call is paged.";
+    let rollback = "A rollback reverts the deployment pipeline to the previous release \
+                    tag, and the previous build is serving again within ten minutes \
+                    because its image is still cached on every node. The rollback is \
+                    recorded against the release it undid, and the pipeline refuses to \
+                    promote that release again until someone clears it.";
+    put(
+        &ops,
+        &format!("# Deploy\n\n{deploy}\n\n## Canary\n\n{canary}\n\n## Rollback\n\n{rollback}\n"),
+    );
+    let first = cli.json(&["ingest", ops.to_str().expect("a path")]);
+    assert_eq!(first["sections"], 3, "{first}");
+
+    let edges = |topic: &str| -> Vec<(String, String, String)> {
+        let mut edges: Vec<(String, String, String)> =
+            cli.json(&["neighbors", topic, "--depth", "1"])["neighbors"]
+                .as_array()
+                .expect("neighbors")
+                .iter()
+                .map(|neighbor| {
+                    (
+                        neighbor["asserted_from"]
+                            .as_str()
+                            .expect("from")
+                            .to_string(),
+                        neighbor["edge"].as_str().expect("an edge").to_string(),
+                        neighbor["asserted_to"].as_str().expect("to").to_string(),
+                    )
+                })
+                .collect();
+        edges.sort();
+        edges
+    };
+    let deploy_name = format!("{file} › Deploy");
+    let canary_name = format!("{file} › Deploy › Canary");
+    let rollback_name = format!("{file} › Deploy › Rollback");
+    let part_of = |name: &str| (name.to_string(), "part_of".to_string(), deploy_name.clone());
+    assert_eq!(
+        edges(&deploy_name),
+        [part_of(&canary_name), part_of(&rollback_name)]
+    );
+
+    // A hit names the section it sits under, for a caller to read.
+    let found = cli.json(&["search", "what share of traffic does the canary take"]);
+    let canary = found["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .find(|hit| hit["topic"] == canary_name.as_str())
+        .unwrap_or_else(|| panic!("the canary section was not found: {found}"));
+    assert_eq!(canary["parent"], deploy_name.as_str(), "{canary}");
+
+    // Unchanged, re-ingested: nothing new to say.
+    let again = cli.json(&["ingest", ops.to_str().expect("a path")]);
+    assert_eq!(again["unchanged"], 3, "{again}");
+    assert_eq!(edges(&deploy_name).len(), 2);
+
+    // Rollback gone: its edge closed.
+    put(
+        &ops,
+        &format!("# Deploy\n\n{deploy}\n\n## Canary\n\n{canary}\n"),
+    );
+    let fewer = cli.json(&["ingest", ops.to_str().expect("a path")]);
+    assert_eq!(
+        fewer["removed"],
+        serde_json::json!([rollback_name]),
+        "{fewer}"
+    );
+    assert_eq!(
+        edges(&deploy_name),
+        [part_of(&canary_name)],
+        "the removed section's edge was left open"
     );
 }
 
