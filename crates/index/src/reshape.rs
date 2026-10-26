@@ -39,12 +39,13 @@ use crate::projection::{
 };
 use crate::segmentation::Segmenter;
 
-/// A served projection: one handle, behind the lock its owner serializes every
-/// call on.
+/// A served projection: one handle, behind the lock its owner guards every
+/// call with.
 ///
-/// The lock is the owner's, not this crate's -- the engine takes it because
-/// concurrent calls wedge the index (see `Engine::index`) -- but a reshape has
-/// to take it too, a batch at a time, and has to replace what it holds.
+/// The lock is the owner's, not this crate's -- the engine lets searches share
+/// it and makes everything else take it alone (see `Engine::index`) -- but a
+/// reshape has to take it too, alone, a batch at a time, and has to replace
+/// what it holds.
 pub type Held = RwLock<Arc<dyn Projection + Send + Sync>>;
 
 /// How many documents a copy reads under the lock at a time.
