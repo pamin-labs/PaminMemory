@@ -2975,16 +2975,17 @@ That trade has not been measured and should not be guessed at here.
 
 ### The index lock, and what would actually lift it
 
-Every call into the projection goes through one exclusive lock. The engine
-declares `Sync` and does not honour it — a reader takes an unsynchronized
-snapshot of the segments a writer is changing, reported upstream as
-alibaba/zvec#714 — and without the lock, searches fail inside a minute under
-sustained concurrent traffic.
+Every call into the projection goes through one lock. Before `zvec-rust` 0.7.2
+the engine declared `Sync` and did not honour it — a reader took an
+unsynchronized snapshot of the segments a writer was changing, reported upstream
+as alibaba/zvec#714 — and without the lock, searches failed inside a minute
+under sustained concurrent traffic. Since 0.7.2 searches share it and everything
+else still takes it alone; the trigger below is what decided that.
 
 Two things about that lock are worth writing down, because both are easy to get
 wrong from the outside.
 
-**It is a mutex rather than a read-write lock, and that was decided by a hang
+**It was a mutex rather than a read-write lock, and that was decided by a hang
 nobody upstream has reported.** With readers allowed to share, twenty writers
 and twenty readers wedged the process inside the engine's own code: forty-six of
 its threads asleep on futexes, no caller of ours above them, and no processor
@@ -2998,9 +2999,9 @@ have not been shown to be the same defect.
 **Which means the fix landing upstream is not, by itself, permission to remove
 the lock.** #714 closed with #715 (merged as `515c11a`, giving the segment locks
 shared readers) and the sibling data-loss report #724 closed with #731 (as
-`31d88ea`). Neither is in a published version — 0.7.0 predates both — and
-neither touched a public header, so adopting them is a version bump rather than
-a binding change.
+`31d88ea`). 0.7.0 predates both; the native build 0.7.2 ships (`1ab7975`)
+contains both, and neither touched a public header, so adopting them was a
+version bump rather than a binding change.
 
 The trigger is therefore two-part, and the second part is the one that matters:
 
@@ -3011,6 +3012,13 @@ The trigger is therefore two-part, and the second part is the one that matters:
   says nothing. If it wedges again, the hang is a second defect, the lock stays
   a mutex, and *that* is the point at which it is worth reporting upstream with
   the stack and the three-way bisect above.
+
+**Both parts are met (2026-10-26).** On 0.7.2, with searches taking a shared
+guard and every other caller an exclusive one, the test ran its full five
+minutes on Linux (4 vCPU, 20 writers, 20 readers) and passed,
+the server alive at the end and flushes overlapping the queries as it asserts.
+So searches now share the index and writers still exclude everyone: that is the
+shape the test passed, and nothing has tested writers sharing with readers.
 
 Compaction is already outside this lock, on the strength of #614, which did ship
 in 0.7.0: Optimize is a brief exclusive seal, a long phase holding no schema
@@ -3064,7 +3072,8 @@ first caller's threads. Against that control the cached arm degrades *less* than
 lock-free work does, and the fresh arm gains a third rather than losing
 anything. Neither guard is the binding constraint here; the machine is.
 
-So there is nothing for removing the index mutex to buy on this hardware, and
+So there was nothing for removing the index mutex to buy on this hardware for
+throughput between callers, and
 nothing for splitting the embedder's cache guard from its model guard either —
 a cache hit is already three times the throughput of a miss at every N.
 
