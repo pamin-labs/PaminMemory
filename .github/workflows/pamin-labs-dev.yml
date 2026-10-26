@@ -1,0 +1,55 @@
+# Merge gate of pamin-labs-dev (R14). Organization PRs must name an intent that owns their branch on
+# the coordination bus and follow the commit, branch and title rules; external PRs must close an issue
+# their author claimed with /claim. Logs print pass or fail only; details go to the private bus.
+name: pamin-labs-dev
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: pamin-labs-dev-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  intent:
+    name: Intent and format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Organization PR
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ secrets.PAMIN_LABS_DEV_TOKEN }}
+          PAMIN_LABS_DEV_ACCESS_CLIENT_ID: ${{ secrets.PAMIN_LABS_DEV_ACCESS_CLIENT_ID }}
+          PAMIN_LABS_DEV_ACCESS_CLIENT_SECRET: ${{ secrets.PAMIN_LABS_DEV_ACCESS_CLIENT_SECRET }}
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+          BASE: origin/${{ github.base_ref }}
+          PLD: pamin-labs-dev-x86_64-unknown-linux-musl
+        run: |
+          cd "$RUNNER_TEMP"
+          gh release download --repo pamin-labs/pamin-labs-dev --pattern "$PLD" --pattern SHA256SUMS > /dev/null
+          grep " $PLD\$" SHA256SUMS | sha256sum -c - > /dev/null && chmod +x "$PLD"
+          printf '%s' "$BODY" > body
+          cd "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/$PLD" check pr --quiet --title "$TITLE" --branch "$BRANCH" --base "$BASE" --body-file "$RUNNER_TEMP/body"
+      - name: External PR
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BODY: ${{ github.event.pull_request.body }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          issue=$(printf '%s' "$BODY" | grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+          if [ -z "$issue" ]; then echo fail; exit 1; fi
+          claimed=$(gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json assignees,labels \
+            --jq "([.assignees[].login] | index(\"$AUTHOR\")) != null and ([.labels[].name] | index(\"claimed\")) != null")
+          if [ "$claimed" = true ]; then echo pass; else echo fail; exit 1; fi
