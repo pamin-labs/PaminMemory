@@ -28,7 +28,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::Duration;
 
 use pamin_core::{Scored, TopicId};
@@ -45,7 +45,7 @@ use crate::segmentation::Segmenter;
 /// The lock is the owner's, not this crate's -- the engine takes it because
 /// concurrent calls wedge the index (see `Engine::index`) -- but a reshape has
 /// to take it too, a batch at a time, and has to replace what it holds.
-pub type Held = Mutex<Arc<dyn Projection + Send + Sync>>;
+pub type Held = RwLock<Arc<dyn Projection + Send + Sync>>;
 
 /// How many documents a copy reads under the lock at a time.
 ///
@@ -78,8 +78,8 @@ fn replaced(live: &Path) -> PathBuf {
     live.with_extension("replaced")
 }
 
-fn lock(held: &Held) -> std::sync::MutexGuard<'_, Arc<dyn Projection + Send + Sync>> {
-    held.lock().expect("the index lock is poisoned")
+fn lock(held: &Held) -> std::sync::RwLockWriteGuard<'_, Arc<dyn Projection + Send + Sync>> {
+    held.write().expect("the index lock is poisoned")
 }
 
 /// Whether `served` is this recording, compared by address.
@@ -378,7 +378,7 @@ impl Drop for Reshape {
     /// Abandons the copy, if the swap has not taken it.
     fn drop(&mut self) {
         if let Some(recording) = self.recording.take() {
-            let mut served = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut served = self.held.write().unwrap_or_else(PoisonError::into_inner);
             if is(&served, &recording) {
                 *served = Arc::clone(&recording.inner);
             }
@@ -712,7 +712,7 @@ mod tests {
             .upsert_encoded(&documents, Some(SERVED_ENCODING))
             .expect("write");
         index.flush().expect("flush");
-        Arc::new(Mutex::new(Arc::new(index)))
+        Arc::new(RwLock::new(Arc::new(index)))
     }
 
     fn every_topic() -> Vec<TopicId> {
@@ -939,7 +939,7 @@ mod tests {
             Grain::default(),
         )
         .expect("open");
-        let held: Arc<Held> = Arc::new(Mutex::new(Arc::new(index)));
+        let held: Arc<Held> = Arc::new(RwLock::new(Arc::new(index)));
         assert!(Reshape::begin(&held, &live).expect("begin").is_none());
         assert!(!sibling(&live).exists());
     }
