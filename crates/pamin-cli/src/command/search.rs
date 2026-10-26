@@ -48,6 +48,7 @@ pub async fn execute(
                     start: span.range.start,
                     end: span.range.end,
                 }),
+                parent: hit.parent,
             })
             .collect(),
     };

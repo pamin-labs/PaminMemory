@@ -2661,6 +2661,16 @@ fn a_section_is_part_of_the_section_above_it() {
         [part_of(&canary_name), part_of(&rollback_name)]
     );
 
+    // A hit names the section it sits under, for a caller to read.
+    let found = cli.json(&["search", "what share of traffic does the canary take"]);
+    let canary = found["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .find(|hit| hit["topic"] == canary_name.as_str())
+        .unwrap_or_else(|| panic!("the canary section was not found: {found}"));
+    assert_eq!(canary["parent"], deploy_name.as_str(), "{canary}");
+
     // Unchanged, re-ingested: nothing new to say.
     let again = cli.json(&["ingest", ops.to_str().expect("a path")]);
     assert_eq!(again["unchanged"], 3, "{again}");
