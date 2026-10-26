@@ -1,0 +1,463 @@
+
+// ---------------------------------------------------------------------------
+// SCRATCH (not tracked): what ingesting a document is worth when a question's
+// evidence is spread over its sections. ConditionalQA (Sun et al., ACL 2022):
+// gov.uk guidance pages with their heading structure, and questions whose
+// evidence is exact sentences of a page -- often a section and the section
+// above it, or two siblings, because an answer holds only under conditions
+// stated elsewhere on the page. DAPR (Wang et al., ACL 2024) uses it to test
+// document-aware passage retrieval.
+//
+// Arms, every question through `Engine::search_reranked` at the product's
+// depths: `whole` (a page one memory), `sections` (cut and named as `pamin
+// ingest` does), and `outline` (the same project once its sections' `part_of`
+// and next-sibling `related_to` edges are stated). Scored by exact evidence
+// sentences found in what the hits return, broken down by how a question's
+// evidence is spread over its page's sections.
+// ---------------------------------------------------------------------------
+
+/// How a question's evidence sits in its page's outline.
+fn spread_of(paths: &[Vec<String>]) -> &'static str {
+    let distinct: BTreeSet<&Vec<String>> = paths.iter().collect();
+    if distinct.len() <= 1 {
+        return "one section";
+    }
+    let ancestor = distinct
+        .iter()
+        .any(|a| distinct.iter().any(|b| a != b && b.starts_with(a)));
+    if ancestor {
+        return "with an ancestor";
+    }
+    let sibling = distinct.iter().any(|a| {
+        distinct
+            .iter()
+            .any(|b| a != b && a.len() == b.len() && a[..a.len() - 1] == b[..b.len() - 1])
+    });
+    if sibling { "siblings" } else { "unrelated" }
+}
+
+struct CqaQuestion {
+    id: String,
+    file: String,
+    text: String,
+    evidence: Vec<String>,
+    spread: &'static str,
+}
+
+/// Whitespace collapsed, for exact matching of an evidence sentence.
+fn flat(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn strip_tags(line: &str) -> String {
+    let mut out = String::new();
+    let mut inside = false;
+    for c in line.chars() {
+        match c {
+            '<' => inside = true,
+            '>' => inside = false,
+            _ if !inside => out.push(c),
+            _ => {}
+        }
+    }
+    out.trim().to_string()
+}
+
+/// The pages as Markdown files, and the questions, drawn by seed.
+fn cqa_corpus() -> (Vec<(String, String)>, Vec<CqaQuestion>) {
+    let dir = std::path::PathBuf::from(std::env::var("CQA_DIR").expect("CQA_DIR"));
+    let docs: Vec<serde_json::Value> =
+        serde_json::from_slice(&std::fs::read(dir.join("documents.json")).expect("documents"))
+            .expect("documents json");
+    let mut files = Vec::new();
+    // Per page: its file name, and each line's heading path.
+    let mut pages: BTreeMap<String, (String, std::collections::HashMap<String, Vec<String>>)> =
+        BTreeMap::new();
+    for doc in &docs {
+        let url = doc["url"].as_str().expect("url");
+        let slug = url.trim_start_matches("https://www.gov.uk/").replace('/', "_");
+        let name = format!("cqa/{slug}.md");
+        let mut markdown = format!("# {}\n", doc["title"].as_str().expect("title").trim());
+        let mut stack: Vec<(usize, String)> = Vec::new();
+        let mut where_: std::collections::HashMap<String, Vec<String>> = Default::default();
+        for line in doc["contents"].as_array().expect("contents") {
+            let line = line.as_str().expect("a line");
+            let text = strip_tags(line);
+            let tag = line.get(1..3).unwrap_or("");
+            match tag {
+                "h1" | "h2" | "h3" | "h4" => {
+                    let level: usize = tag[1..].parse().expect("level");
+                    stack.retain(|(above, _)| *above < level);
+                    stack.push((level, text.clone()));
+                    markdown.push_str(&format!("\n{} {text}\n", "#".repeat(level + 1)));
+                }
+                "li" => markdown.push_str(&format!("- {text}\n")),
+                "tr" => markdown.push_str(&format!("| {text} |\n")),
+                _ => markdown.push_str(&format!("\n{text}\n")),
+            }
+            where_
+                .entry(flat(&text))
+                .or_insert_with(|| stack.iter().map(|(_, title)| title.clone()).collect());
+        }
+        pages.insert(url.to_string(), (name.clone(), where_));
+        files.push((name, markdown));
+    }
+    let names: HashSet<&str> = files.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names.len(), files.len(), "two pages under one name");
+
+    let train_wanted: usize = std::env::var("CQA_TRAIN")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(600);
+    let seed = harness::shape::seed();
+    let draw = |id: &str| {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (seed, id).hash(&mut hasher);
+        hasher.finish()
+    };
+    let mut questions = Vec::new();
+    let (mut cited, mut lost) = (0usize, 0usize);
+    for (split, wanted) in [("dev", usize::MAX), ("train", train_wanted)] {
+        let mut rows: Vec<serde_json::Value> = serde_json::from_slice(
+            &std::fs::read(dir.join(format!("{split}.json"))).expect("questions"),
+        )
+        .expect("questions json");
+        rows.sort_by_key(|row| draw(row["id"].as_str().unwrap_or_default()));
+        let mut taken = 0;
+        for row in rows {
+            if taken >= wanted {
+                break;
+            }
+            if row["not_answerable"].as_bool() == Some(true) {
+                continue;
+            }
+            let (file, where_) = &pages[row["url"].as_str().expect("url")];
+            let mut evidence = Vec::new();
+            let mut paths = Vec::new();
+            for line in row["evidences"].as_array().into_iter().flatten() {
+                let text = flat(&strip_tags(line.as_str().unwrap_or_default()));
+                if text.is_empty() {
+                    continue;
+                }
+                cited += 1;
+                match where_.get(&text) {
+                    Some(path) => {
+                        evidence.push(text);
+                        paths.push(path.clone());
+                    }
+                    None => lost += 1,
+                }
+            }
+            if evidence.is_empty() {
+                continue;
+            }
+            evidence.sort();
+            evidence.dedup();
+            taken += 1;
+            questions.push(CqaQuestion {
+                id: row["id"].as_str().expect("id").to_string(),
+                file: file.clone(),
+                text: format!(
+                    "{} {}",
+                    row["scenario"].as_str().unwrap_or_default().trim(),
+                    row["question"].as_str().expect("question").trim()
+                ),
+                evidence,
+                spread: spread_of(&paths),
+            });
+        }
+    }
+    println!(
+        "  {} pages, {} questions; {lost} of {cited} evidence sentences not found in their page",
+        files.len(),
+        questions.len()
+    );
+    assert!(lost * 10 <= cited, "{lost} of {cited} evidence sentences lost");
+    (files, questions)
+}
+
+#[derive(serde::Serialize)]
+struct CqaRow {
+    arm: &'static str,
+    question: String,
+    file: String,
+    spread: &'static str,
+    evidence: usize,
+    covered: [f64; 3],
+    complete: [f64; 3],
+    bytes: [usize; 3],
+    fixed_read: f64,
+    fixed_read_complete: f64,
+    ndcg10: f64,
+    graph_only10: usize,
+    search_ms: f64,
+}
+
+fn found_in(question: &CqaQuestion, texts: &[&str]) -> usize {
+    let read: Vec<String> = texts.iter().map(|text| flat(text)).collect();
+    question
+        .evidence
+        .iter()
+        .filter(|sentence| read.iter().any(|text| text.contains(sentence.as_str())))
+        .count()
+}
+
+async fn cqa_search(
+    engine: &Engine,
+    arm: &'static str,
+    questions: &[CqaQuestion],
+    sections: &BTreeMap<String, Vec<Section>>,
+    counter: &dyn TokenCount,
+    rows: &mut Vec<CqaRow>,
+) {
+    for question in questions {
+        let started = Instant::now();
+        let hits = engine
+            .search_reranked(&question.text, LIMIT, harness::depths())
+            .await
+            .expect("search");
+        let ms = started.elapsed().as_secs_f64() * 1e3;
+        assert!(!hits.is_empty(), "no hits for {}", question.id);
+        let own: Vec<bool> = hits
+            .iter()
+            .map(|hit| file_part(&hit.topic) == question.file)
+            .collect();
+        let views: Vec<&str> = hits.iter().map(view_of).collect();
+        let total = question.evidence.len() as f64;
+        let (mut covered, mut complete, mut bytes) = ([0.0; 3], [0.0; 3], [0; 3]);
+        for (slot, k) in [1usize, 5, 10].iter().enumerate() {
+            let k = (*k).min(hits.len());
+            let texts: Vec<&str> = (0..k).filter(|i| own[*i]).map(|i| views[i]).collect();
+            let found = found_in(question, &texts) as f64;
+            covered[slot] = found / total;
+            complete[slot] = f64::from(u8::from(found == total));
+            bytes[slot] = views[..k].iter().map(|text| text.len()).sum();
+        }
+        let mut left = BUDGET;
+        let mut read = Vec::new();
+        for (at, text) in views.iter().enumerate() {
+            if left == 0 {
+                break;
+            }
+            let offsets = counter.offsets(text);
+            let taken = if offsets.len() <= left {
+                *text
+            } else {
+                &text[..offsets[left].start]
+            };
+            left = left.saturating_sub(offsets.len());
+            if own[at] {
+                read.push(taken);
+            }
+        }
+        let fixed = found_in(question, &read) as f64;
+
+        let is_relevant =
+            |name: &str, content: &str| file_part(name) == question.file && found_in(question, &[content]) > 0;
+        let judged = sections[&question.file]
+            .iter()
+            .filter(|section| is_relevant(&section.name, &section.content))
+            .count();
+        let relevant: HashSet<&str> = hits
+            .iter()
+            .filter(|hit| is_relevant(&hit.topic, &hit.state.content))
+            .map(|hit| hit.topic.as_str())
+            .collect();
+        let topics: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
+        let mut scored = Scores::default();
+        scored.add(&topics, judged, |name| relevant.contains(name));
+        // Hits only the graph found: no index channel ranked them.
+        let graph_only10 = hits
+            .iter()
+            .take(10)
+            .filter(|hit| {
+                let channels: Vec<pamin_core::Channel> = hit
+                    .result
+                    .why
+                    .iter()
+                    .filter_map(|why| match why {
+                        pamin_core::Why::Channel { channel, .. } => Some(*channel),
+                        _ => None,
+                    })
+                    .collect();
+                !channels.is_empty() && channels.iter().all(|c| *c == pamin_core::Channel::Graph)
+            })
+            .count();
+        rows.push(CqaRow {
+            arm,
+            question: question.id.clone(),
+            file: question.file.clone(),
+            spread: question.spread,
+            evidence: question.evidence.len(),
+            covered,
+            complete,
+            bytes,
+            fixed_read: fixed / total,
+            fixed_read_complete: f64::from(u8::from(fixed == total)),
+            ndcg10: scored.per_query[0],
+            graph_only10,
+            search_ms: ms,
+        });
+    }
+}
+
+async fn cqa_project(
+    label: &str,
+    files: &[(String, String)],
+    cut: &dyn Fn(&str, &str) -> (Vec<Section>, Vec<(String, String, pamin_core::EdgeKind)>),
+    workspace: &Workspace,
+    nonce: &str,
+) -> (Engine, BTreeMap<String, Vec<Section>>, Vec<(String, String, pamin_core::EdgeKind)>) {
+    let engine = Engine::open(
+        workspace,
+        &format!("scratch-cqa-{label}-{nonce}"),
+        VectorIndex::default(),
+        Access::ReadWrite,
+        &harness::settings(),
+    )
+    .await
+    .expect("open the engine");
+    let mut by_file = BTreeMap::new();
+    let mut edges = Vec::new();
+    for (name, text) in files {
+        let (sections, outline) = cut(name, text);
+        edges.extend(outline);
+        by_file.insert(name.clone(), sections);
+    }
+    let started = Instant::now();
+    let mut written = 0;
+    for sections in by_file.values() {
+        for section in sections {
+            written += usize::from(
+                engine
+                    .remember_section(&section.name, &section.content, pamin_core::Validity::ALWAYS, ROOT)
+                    .await
+                    .expect("record a section")
+                    .is_some(),
+            );
+        }
+    }
+    harness::drain(&engine).await;
+    let memories: usize = by_file.values().map(Vec::len).sum();
+    assert_eq!(written, memories, "{label}: not a fresh project");
+    let mut spans = 0;
+    for sections in by_file.values() {
+        for section in sections {
+            spans += engine.cut(&section.name, &section.content).expect("cut").len();
+        }
+    }
+    assert_eq!(engine.indexed_documents().expect("count") as usize, spans, "{label}: index");
+    println!(
+        "  {label}: {memories} memories, {spans} spans, {} outline edges, ingest {:.0} s",
+        edges.len(),
+        started.elapsed().as_secs_f64()
+    );
+    (engine, by_file, edges)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "scratch"]
+async fn scratch_cqa() {
+    let home = harness::eval_home();
+    let workspace = Workspace::at(&home);
+    let counter = SpanTokens::load(&workspace.models_dir()).expect("BGE-M3's tokenizer");
+    let out = std::path::PathBuf::from(std::env::var("SCRATCH_OUT").expect("SCRATCH_OUT"));
+    let nonce = format!(
+        "{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_secs()
+    );
+    let (files, questions) = cqa_corpus();
+    let mut spreads: BTreeMap<&str, usize> = BTreeMap::new();
+    for question in &questions {
+        *spreads.entry(question.spread).or_default() += 1;
+    }
+    println!("  by spread: {spreads:?}");
+    let mut rows = Vec::new();
+    let save = |rows: &Vec<CqaRow>| {
+        std::fs::write(&out, serde_json::to_vec(rows).expect("serialize")).expect("write");
+    };
+
+    // Whole pages.
+    let whole = |name: &str, text: &str| {
+        (
+            vec![Section {
+                name: name.to_string(),
+                content: text.to_string(),
+            }],
+            Vec::new(),
+        )
+    };
+    let (engine, by_file, _) = cqa_project("whole", &files, &whole, &workspace, &nonce).await;
+    cqa_search(&engine, "whole", &questions, &by_file, &counter, &mut rows).await;
+    drop(engine);
+    save(&rows);
+
+    // Heading sections, then the same project with their outline.
+    let cut = |name: &str, text: &str| {
+        let unnamed = pamin_index::sections::unnamed(name, text, &counter);
+        let bases: Vec<String> = unnamed.iter().map(|s| s.base.clone()).collect();
+        let named = pamin_index::sections::named(unnamed, &[]);
+        let bases: Vec<&str> = bases.iter().map(String::as_str).collect();
+        let edges = pamin_index::sections::outline(&bases)
+            .into_iter()
+            .map(|(from, to, placed)| {
+                let kind = match placed {
+                    pamin_index::sections::Placed::Under => pamin_core::EdgeKind::PartOf,
+                    pamin_index::sections::Placed::Before => pamin_core::EdgeKind::RelatedTo,
+                };
+                (named[from].name.clone(), named[to].name.clone(), kind)
+            })
+            .collect();
+        (named, edges)
+    };
+    let (engine, by_file, edges) = cqa_project("sections", &files, &cut, &workspace, &nonce).await;
+    cqa_search(&engine, "sections", &questions, &by_file, &counter, &mut rows).await;
+    save(&rows);
+    let names: Vec<String> = by_file.values().flatten().map(|s| s.name.clone()).collect();
+    let added = engine.restate_outline(&names, &edges).await.expect("outline");
+    assert_eq!(added, edges.len(), "not every outline edge was added");
+    cqa_search(&engine, "outline", &questions, &by_file, &counter, &mut rows).await;
+    save(&rows);
+
+    // Paired by page, overall and by spread.
+    let compare = |base: &str, new: &str, spread: Option<&str>, metric: &dyn Fn(&CqaRow) -> f64| {
+        let pick = |arm: &str| -> (Vec<f64>, Vec<String>) {
+            rows.iter()
+                .filter(|r| r.arm == arm && spread.is_none_or(|s| r.spread == s))
+                .map(|r| (metric(r), r.file.clone()))
+                .unzip()
+        };
+        let (a, keys) = pick(base);
+        let (b, _) = pick(new);
+        let groups = vec![0; keys.len()];
+        let a = statistics::cluster_macro_contributions(&a, &groups, &keys);
+        let b = statistics::cluster_macro_contributions(&b, &groups, &keys);
+        (keys.len(), mean(&a), mean(&b), statistics::compare(&a, &b))
+    };
+    let metrics: Vec<(&str, Box<dyn Fn(&CqaRow) -> f64>)> = vec![
+        ("all evidence @5", Box::new(|r: &CqaRow| r.complete[1])),
+        ("all evidence @10", Box::new(|r: &CqaRow| r.complete[2])),
+        ("covered@1", Box::new(|r: &CqaRow| r.covered[0])),
+        ("covered@5", Box::new(|r: &CqaRow| r.covered[1])),
+        ("covered@10", Box::new(|r: &CqaRow| r.covered[2])),
+        ("fixed read", Box::new(|r: &CqaRow| r.fixed_read)),
+        ("fixed read, all", Box::new(|r: &CqaRow| r.fixed_read_complete)),
+        ("bytes@10", Box::new(|r: &CqaRow| r.bytes[2] as f64)),
+        ("nDCG@10", Box::new(|r: &CqaRow| r.ndcg10)),
+        ("graph-only in 10", Box::new(|r: &CqaRow| r.graph_only10 as f64)),
+    ];
+    for (base, new) in [("whole", "sections"), ("sections", "outline")] {
+        for spread in [None, Some("one section"), Some("with an ancestor"), Some("siblings"), Some("unrelated")] {
+            println!("\n  {new} against {base}, {}:", spread.unwrap_or("all questions"));
+            for (name, metric) in &metrics {
+                let (n, a, b, paired) = compare(base, new, spread, metric.as_ref());
+                println!("  {name:<18} n={n:<4} {base} {a:.4}  {new} {b:.4}  {paired}");
+            }
+        }
+    }
+    println!("  rows: {}", out.display());
+}
