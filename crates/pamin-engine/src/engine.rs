@@ -40,16 +40,14 @@ struct GraphRecallOptions {
 /// interchangeable. Provisional, like every other retrieval constant here.
 const MENTION_CONFIDENCE: f32 = 0.5;
 
-/// The kinds of edge a file's outline derives between its sections.
-const OUTLINE: [EdgeKind; 2] = [EdgeKind::PartOf, EdgeKind::RelatedTo];
+/// Every kind of edge the engine derives: what a memory names, and the section
+/// a section of a file sits under. A topic that resolves to nothing derives
+/// none of them.
+pub(crate) const DERIVED: [EdgeKind; 2] = [EdgeKind::Mentions, EdgeKind::PartOf];
 
-/// Every kind of edge the engine derives: what a memory names, and a file's
-/// outline. A topic that resolves to nothing derives none of them.
-pub(crate) const DERIVED: [EdgeKind; 3] = [EdgeKind::Mentions, OUTLINE[0], OUTLINE[1]];
-
-/// How much weight an edge from a file's outline carries: a mention's, until
-/// a measurement says otherwise. Provisional, as that is.
-const OUTLINE_CONFIDENCE: f32 = MENTION_CONFIDENCE;
+/// How much weight a section's `part_of` carries: a mention's. Provisional, as
+/// that is; the edge was measured at this weight.
+const PARENT_CONFIDENCE: f32 = MENTION_CONFIDENCE;
 
 /// How many topics the graph channel is willing to walk out from.
 ///
@@ -90,6 +88,10 @@ const REINDEX_BATCH: usize = 256;
 /// what fits around it. Three spans at the default cap of 200, as a hit showed
 /// before its width followed a budget rather than the cap.
 const VIEW_TOKENS: usize = 600;
+
+/// How many tokens of a hit's parent section are shown with it: its opening
+/// span at the default cap. Provisional, until a measurement settles it.
+const PARENT_TOKENS: usize = 200;
 
 /// How many candidates the index proposes when a new topic is backfilled.
 ///
@@ -1531,6 +1533,50 @@ impl Engine {
         })
     }
 
+    /// Gives a section of a file the name it now goes by -- its file moved, or
+    /// a heading above it renamed -- keeping its topic: its history, its edges
+    /// and its evidence. The old name stays as an alias `pamin read` and
+    /// `pamin link` resolve, and the projection is owed the topic again, since
+    /// its name is read into every span's header.
+    ///
+    /// As [`retire_section`](Self::retire_section) is: only a topic whose every
+    /// source is a file's, and only while it still says what `seen` says.
+    /// Returns whether it renamed; when it did not -- one of those, or a topic
+    /// already under the new name -- nothing changed, and the section is
+    /// recorded under its new name as a new one would be.
+    pub async fn rename_section(&self, from: &str, to: &str, seen: TopicStateId) -> Result<bool> {
+        let mut transaction = self.database.pool().begin().await?;
+        let Some(locked) = repository::lock_topic(&mut transaction, self.project, from).await?
+        else {
+            return Ok(false);
+        };
+        if locked.current != Some(seen)
+            || repository::source_at(
+                &mut *transaction,
+                self.project,
+                &locator(SourceKind::Manual, from),
+            )
+            .await?
+        {
+            return Ok(false);
+        }
+        let renamed = repository::rename_topic(
+            &mut transaction,
+            self.project,
+            locked.topic.id,
+            (from, to),
+            (
+                &locator(SourceKind::File, from),
+                &locator(SourceKind::File, to),
+            ),
+        )
+        .await?;
+        if renamed {
+            transaction.commit().await?;
+        }
+        Ok(renamed)
+    }
+
     /// The rest of a memory once the filter has judged it: its language, and
     /// the transaction.
     async fn record(
@@ -1778,23 +1824,23 @@ impl Engine {
             .await
     }
 
-    /// Restates the outline of the files an ingest read: for each of
-    /// `sections`, the section it sits under (`part_of`) and the next one under
-    /// the same parent (`related_to`), as `edges` name them.
+    /// Restates which section each of `sections` sits under, as `parents`
+    /// names them: its `part_of` edge, which a search follows to the context a
+    /// section cut out of its file lost.
     ///
     /// As [`derive_mentions`](Self::derive_mentions) restates what a memory
     /// names: asserted first, so an outline that has not changed writes
-    /// nothing, then every derived edge of either kind out of `sections` that
-    /// `edges` no longer claim is closed -- a section moved, or one gone from
-    /// its file. Each edge is caused by its section's current state. Returns
-    /// how many edges this call added.
-    pub async fn restate_outline(
+    /// nothing, then every derived `part_of` out of `sections` that `parents`
+    /// no longer claims is closed -- a section moved, or its parent gone. Each
+    /// edge is caused by its section's current state. Returns how many edges
+    /// this call added.
+    pub async fn restate_parents(
         &self,
         sections: &[String],
-        edges: &[(String, String, EdgeKind)],
+        parents: &[(String, String)],
     ) -> Result<usize> {
         let mut names: Vec<String> = sections.to_vec();
-        names.extend(edges.iter().map(|(_, to, _)| to.clone()));
+        names.extend(parents.iter().map(|(_, parent)| parent.clone()));
         names.sort_unstable();
         names.dedup();
         let found: std::collections::HashMap<String, repository::Named> =
@@ -1804,37 +1850,27 @@ impl Engine {
                 .map(|named| (named.name.clone(), named))
                 .collect();
 
+        let mut kept: std::collections::BTreeMap<TopicId, Vec<TopicId>> = sections
+            .iter()
+            .filter_map(|section| Some((found.get(section)?.topic, Vec::new())))
+            .collect();
         let mut claims = Vec::new();
-        let mut kept: std::collections::BTreeMap<(EdgeKind, TopicId), Vec<TopicId>> =
-            Default::default();
-        for section in sections {
-            if let Some(from) = found.get(section) {
-                for kind in OUTLINE {
-                    kept.entry((kind, from.topic)).or_default();
-                }
-            }
-        }
-        for (from, to, kind) in edges {
-            let (Some(from), Some(to)) = (found.get(from), found.get(to)) else {
+        for (section, parent) in parents {
+            let (Some(from), Some(to)) = (found.get(section), found.get(parent)) else {
                 continue;
             };
             claims.push((
                 from.topic,
                 to.topic,
-                EdgeClaim::derived(*kind, from.current, OUTLINE_CONFIDENCE),
+                EdgeClaim::derived(EdgeKind::PartOf, from.current, PARENT_CONFIDENCE),
             ));
-            kept.entry((*kind, from.topic)).or_default().push(to.topic);
+            kept.entry(from.topic).or_default().push(to.topic);
         }
 
         let asserted = graph::assert_edges(self.database.pool(), self.project, &claims).await?;
-        for kind in OUTLINE {
-            let keep: Vec<(TopicId, Vec<TopicId>)> = kept
-                .iter()
-                .filter(|((of, _), _)| *of == kind)
-                .map(|((_, from), to)| (*from, to.clone()))
-                .collect();
-            graph::retract_derived_all(self.database.pool(), self.project, kind, &keep).await?;
-        }
+        let keep: Vec<(TopicId, Vec<TopicId>)> = kept.into_iter().collect();
+        graph::retract_derived_all(self.database.pool(), self.project, EdgeKind::PartOf, &keep)
+            .await?;
         Ok(asserted
             .iter()
             .filter(|assertion| assertion.is_new())
@@ -2221,6 +2257,71 @@ impl Engine {
     /// the product does fixed -- the reranker above all -- while one channel
     /// is taken out or reweighted.
     pub async fn search_reranked_with(
+        &self,
+        query: &str,
+        limit: u32,
+        depths: Depths,
+        fusion: Fusion,
+    ) -> Result<Vec<SearchHit>> {
+        let hits = self.ranked(query, limit, depths, fusion).await?;
+        self.with_parents(hits).await
+    }
+
+    /// Each hit with the section it sits under, if it is a section of a file
+    /// with one: one read of the hits' `part_of` edges and one of their
+    /// targets, and nothing at all when no hit has one.
+    async fn with_parents(&self, mut hits: Vec<SearchHit>) -> Result<Vec<SearchHit>> {
+        let topics: Vec<TopicId> = hits.iter().map(|hit| hit.state.topic_id).collect();
+        let edges = graph::targets(
+            self.database.pool(),
+            self.project,
+            &topics,
+            EdgeKind::PartOf,
+        )
+        .await?;
+        if edges.is_empty() {
+            return Ok(hits);
+        }
+        let parent_of: std::collections::HashMap<TopicId, TopicId> = edges.into_iter().collect();
+        let mut parents: Vec<TopicId> = parent_of.values().copied().collect();
+        parents.sort_unstable();
+        parents.dedup();
+        let names: std::collections::HashMap<TopicId, String> =
+            repository::topics_by_id(self.database.pool(), self.project, &parents)
+                .await?
+                .into_iter()
+                .map(|(topic, name, _)| (topic, name))
+                .collect();
+        let states =
+            repository::current_states_of(self.database.pool(), self.project, &parents).await?;
+        // Off the runtime: a parent no search has cut in this process is cut
+        // here, by its tokens.
+        let shown: std::collections::HashMap<TopicId, Parent> = off_the_runtime(|| {
+            states
+                .iter()
+                .filter_map(|state| {
+                    let topic = names.get(&state.topic_id)?.clone();
+                    let spans = self.cut(&topic, &state.content).ok()?;
+                    let opening = match SpanView::within(&spans, 0, PARENT_TOKENS) {
+                        Some(view) if spans.len() > 1 => state.content[view.range].to_string(),
+                        _ => state.content.clone(),
+                    };
+                    Some((state.topic_id, Parent { topic, opening }))
+                })
+                .collect()
+        });
+        for hit in &mut hits {
+            hit.parent = parent_of
+                .get(&hit.state.topic_id)
+                .and_then(|parent| shown.get(parent))
+                .cloned();
+        }
+        Ok(hits)
+    }
+
+    /// [`search_reranked_with`](Self::search_reranked_with) without the
+    /// hits' parents.
+    async fn ranked(
         &self,
         query: &str,
         limit: u32,
@@ -2963,6 +3064,19 @@ pub struct SearchHit {
     /// this hit is about: its best span and what fits the view's token budget
     /// around it. `None` for a memory of one span, which is the whole of it.
     pub span: Option<SpanView>,
+    /// For a section of a file, the section it sits under: the context a hit
+    /// cut out of its outline lost. `None` for a memory with no `part_of`.
+    pub parent: Option<Parent>,
+}
+
+/// The section a hit sits under, and how it opens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Parent {
+    /// The parent, by the name a caller addresses it with.
+    pub topic: String,
+    /// Its opening: the first of its spans and what fits [`PARENT_TOKENS`]
+    /// after it, or all of it when it is one span.
+    pub opening: String,
 }
 
 /// Where in a memory a span, or a run of them, lies.
@@ -3086,6 +3200,7 @@ impl Fused {
                     result,
                     seed,
                     span,
+                    parent: None,
                 }
             })
             .collect()

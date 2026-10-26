@@ -139,33 +139,13 @@ pub fn named(sections: Vec<Unnamed>, previous: &[Section]) -> Vec<Section> {
         if earlier.is_empty() {
             continue;
         }
-        let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
-        for &at in members {
-            for (from, section) in earlier.iter().enumerate() {
-                let score = if section.content == sections[at].content {
-                    // Above any similarity, so the same text is paired first.
-                    2.0
-                } else {
-                    similarity(&section.content, &sections[at].content)
-                };
-                if score >= SAME_SECTION {
-                    pairs.push((score, at, from));
-                }
-            }
-        }
-        // Closest first; ties in file order, then in the earlier order.
-        pairs.sort_by(|left, right| {
-            right
-                .0
-                .total_cmp(&left.0)
-                .then(left.1.cmp(&right.1))
-                .then(left.2.cmp(&right.2))
-        });
-        let mut used = HashSet::new();
-        for (_, at, from) in pairs {
-            if claimed[at].is_none() && used.insert(from) {
-                claimed[at] = Some(earlier[from].name.clone());
-            }
+        let now: Vec<&str> = members
+            .iter()
+            .map(|at| sections[*at].content.as_str())
+            .collect();
+        let before: Vec<&str> = earlier.iter().map(|s| s.content.as_str()).collect();
+        for (at, from) in pairs(&now, &before) {
+            claimed[members[at]] = Some(earlier[from].name.clone());
         }
     }
 
@@ -189,58 +169,77 @@ pub fn named(sections: Vec<Unnamed>, previous: &[Section]) -> Vec<Section> {
         .collect()
 }
 
-/// How two sections of one file stand to each other in its outline.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Placed {
-    /// The first sits under the second's heading: `part_of`.
-    Under,
-    /// The second is the next section under the same parent: `related_to`,
-    /// read as "followed by".
-    Before,
-}
-
-/// The outline of one file's sections, given in file order by their bases:
-/// each section and the section it sits under, and each and the next one
-/// under the same parent, as pairs of indices.
+/// The section each of one file's sections sits under, given in file order
+/// by their bases, as `(section, parent)` pairs of indices: what `part_of`
+/// says of them.
 ///
 /// A section sits under the first section of the nearest heading above its
 /// own that has one -- a heading with nothing under it joined the section after
 /// it, and has no section of its own to be part of. A section with no such
 /// heading above it sits under the file's first section, unless it is that
 /// section.
-pub fn outline(bases: &[&str]) -> Vec<(usize, usize, Placed)> {
+pub fn parents(bases: &[&str]) -> Vec<(usize, usize)> {
     let first: std::collections::HashMap<&str, usize> = bases
         .iter()
         .enumerate()
         .rev()
         .map(|(at, base)| (*base, at))
         .collect();
-    let parent: Vec<Option<usize>> = bases
+    bases
         .iter()
         .enumerate()
-        .map(|(at, base)| {
+        .filter_map(|(at, base)| {
             let mut above = *base;
             while let Some((rest, _)) = above.rsplit_once(SEPARATOR) {
                 above = rest;
                 if let Some(&parent) = first.get(above) {
-                    return Some(parent);
+                    return Some((at, parent));
                 }
             }
-            (at != 0).then_some(0)
+            (at != 0).then_some((at, 0))
         })
-        .collect();
-    let mut placed: Vec<(usize, usize, Placed)> = parent
-        .iter()
-        .enumerate()
-        .filter_map(|(at, parent)| Some((at, (*parent)?, Placed::Under)))
-        .collect();
-    let mut last_under: std::collections::HashMap<Option<usize>, usize> = Default::default();
-    for (at, parent) in parent.iter().enumerate() {
-        if let Some(before) = last_under.insert(*parent, at) {
-            placed.push((before, at, Placed::Before));
+        .collect()
+}
+
+/// Which of `now` is which of `before`, as `(now, before)` index pairs, one to
+/// one: the same text first, then [`similarity`] of at least
+/// [`SAME_SECTION`], closest first, ties in the order each list is given.
+///
+/// The one rule for telling that a section is one seen before: it keeps a
+/// section's number among its twins, and it says a section that left one name
+/// is the one that appeared under another.
+pub fn pairs(now: &[&str], before: &[&str]) -> Vec<(usize, usize)> {
+    let mut candidates: Vec<(f64, usize, usize)> = Vec::new();
+    for (at, text) in now.iter().enumerate() {
+        for (from, earlier) in before.iter().enumerate() {
+            let score = if earlier == text {
+                // Above any similarity, so the same text is paired first.
+                2.0
+            } else {
+                similarity(earlier, text)
+            };
+            if score >= SAME_SECTION {
+                candidates.push((score, at, from));
+            }
         }
     }
-    placed
+    candidates.sort_by(|left, right| {
+        right
+            .0
+            .total_cmp(&left.0)
+            .then(left.1.cmp(&right.1))
+            .then(left.2.cmp(&right.2))
+    });
+    let (mut taken, mut used) = (HashSet::new(), HashSet::new());
+    let mut paired = Vec::new();
+    for (_, at, from) in candidates {
+        if !taken.contains(&at) && !used.contains(&from) {
+            taken.insert(at);
+            used.insert(from);
+            paired.push((at, from));
+        }
+    }
+    paired
 }
 
 /// The number `name` gives a section under `base`: 1 for `base` itself, `n`
@@ -1123,36 +1122,18 @@ mod tests {
             // `Oncall` had nothing under it and joined `Rota`.
             "f.md › Oncall › Rota", // 5
         ];
-        let mut placed = outline(&bases);
-        placed.sort_by_key(|(from, to, placed)| (*from, *to, *placed == Placed::Before));
-        assert_eq!(
-            placed,
-            [
-                (1, 0, Placed::Under),
-                (1, 5, Placed::Before),
-                (2, 1, Placed::Under),
-                (2, 3, Placed::Before),
-                (3, 1, Placed::Under),
-                (3, 4, Placed::Before),
-                (4, 1, Placed::Under),
-                (5, 0, Placed::Under),
-            ]
-        );
+        assert_eq!(parents(&bases), [(1, 0), (2, 1), (3, 1), (4, 1), (5, 0)]);
     }
 
     /// With nothing before its first heading, a file's first section is what
     /// its other top-level sections are part of.
     #[test]
     fn top_level_sections_are_under_the_first() {
-        let placed = outline(&["f.md › Intro", "f.md › Usage", "f.md › Usage › Flags"]);
-        assert!(placed.contains(&(1, 0, Placed::Under)));
-        assert!(placed.contains(&(2, 1, Placed::Under)));
-        assert!(
-            !placed
-                .iter()
-                .any(|(from, _, kind)| *from == 0 && *kind == Placed::Under)
+        assert_eq!(
+            parents(&["f.md › Intro", "f.md › Usage", "f.md › Usage › Flags"]),
+            [(1, 0), (2, 1)]
         );
-        assert!(outline(&["f.md"]).is_empty());
+        assert!(parents(&["f.md"]).is_empty());
     }
 
     #[test]

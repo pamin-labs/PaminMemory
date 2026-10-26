@@ -1555,6 +1555,70 @@ pub async fn current_named(
         .collect())
 }
 
+/// Renames a topic, keeping the name it had as an alias that
+/// [`find_topic`] resolves, and files the source at `from_locator` under
+/// `to_locator`; then owes the projection the topic again, since its name is
+/// read into every span's header.
+///
+/// Returns false, changing nothing, when another topic or source already holds
+/// the new name. For a topic locked by the caller's transaction.
+pub async fn rename_topic(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    topic: TopicId,
+    (from, to): (&str, &str),
+    (from_locator, to_locator): (&str, &str),
+) -> Result<bool> {
+    let taken: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 FROM topics WHERE project_id = $1 AND name = $2
+         UNION ALL
+         SELECT 1 FROM sources WHERE project_id = $1 AND locator = $3
+         LIMIT 1",
+    )
+    .bind(project.0)
+    .bind(to)
+    .bind(to_locator)
+    .fetch_optional(&mut *connection)
+    .await?;
+    if taken.is_some() {
+        return Ok(false);
+    }
+    sqlx::query("UPDATE topics SET name = $2 WHERE id = $1")
+        .bind(topic.0)
+        .bind(to)
+        .execute(&mut *connection)
+        .await?;
+    sqlx::query("UPDATE sources SET locator = $3 WHERE project_id = $1 AND locator = $2")
+        .bind(project.0)
+        .bind(from_locator)
+        .bind(to_locator)
+        .execute(&mut *connection)
+        .await?;
+    // The new name is a topic's own now, and the old one is this topic's.
+    sqlx::query(
+        "WITH gone AS (DELETE FROM topic_aliases WHERE project_id = $1 AND name = $3)
+         INSERT INTO topic_aliases (project_id, name, topic_id, renamed_at)
+         VALUES ($1, $2, $4, $5)
+         ON CONFLICT (project_id, name)
+         DO UPDATE SET topic_id = EXCLUDED.topic_id, renamed_at = EXCLUDED.renamed_at",
+    )
+    .bind(project.0)
+    .bind(from)
+    .bind(to)
+    .bind(topic.0)
+    .bind(OffsetDateTime::now_utc())
+    .execute(&mut *connection)
+    .await?;
+    crate::jobs::enqueue_all(
+        &mut *connection,
+        project,
+        &[JobKind::SyncTopicIndex],
+        Some(topic.0),
+    )
+    .await?;
+    Ok(true)
+}
+
 /// [`set_source_root`] for every source filed under `locators`, in one
 /// statement: for the sections an ingest found unchanged, which write nothing
 /// else, so that each records the tree it was last ingested from all the same.
@@ -1662,10 +1726,21 @@ pub async fn topic_count(executor: impl PgExecutor<'_>, project: ProjectId) -> R
     Ok(count.max(0) as u64)
 }
 
+// A topic by its name, or by a name it went by before a rename when no topic
+// holds that name now: the topic's own row, read under its current name.
 const FIND_TOPIC: &str = "SELECT id, name, path, created_at FROM topics
-                          WHERE project_id = $1 AND name = $2";
+                          WHERE project_id = $1 AND name = $2
+                          UNION ALL
+                          SELECT t.id, t.name, t.path, t.created_at
+                            FROM topic_aliases a JOIN topics t ON t.id = a.topic_id
+                           WHERE a.project_id = $1 AND a.name = $2
+                             AND NOT EXISTS (
+                                 SELECT 1 FROM topics WHERE project_id = $1 AND name = $2
+                             )
+                          LIMIT 1";
 
-/// Looks up a topic by name within a project.
+/// Looks up a topic by name within a project, or by a name it was renamed
+/// from that no topic holds now; the topic comes back under its current name.
 pub async fn find_topic(
     executor: impl PgExecutor<'_>,
     project: ProjectId,

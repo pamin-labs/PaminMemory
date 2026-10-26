@@ -679,22 +679,38 @@ Ingested 1 files as 2 sections: 1 written, 1 unchanged, 0 held in evidence only
 $ sed -i 's/## Rollback/## Rolling back/' docs/ops.md
 $ pamin ingest docs
 Ingested 1 files as 2 sections: 1 written, 1 unchanged, 0 held in evidence only
-1 sections from an earlier ingest are no longer in these files and were taken off the retrieval surface:
-  handbook/docs/ops.md › Deploy › Rollback
+1 sections were found under a new name and renamed, keeping their history:
+  handbook/docs/ops.md › Deploy › Rollback -> handbook/docs/ops.md › Deploy › Rolling back
 ```
 
 **Ingesting again records only what changed.** A section that says what its
 topic already does is left as it is, with nothing written; a changed section is
 a new version of its topic, as any write is, and only it is embedded again. An
-edit to a section's text changes that section alone. Renaming a heading renames every
-section under it: each is recorded afresh under its new name, and the old ones
-are taken off the retrieval surface. On this repository's own 105 Markdown and text files, an
+edit to a section's text changes that section alone.
+
+**A section found under a new name is renamed, not recorded afresh.** Renaming
+a heading changes the name of every section under it, and moving a file or a
+folder within a tree changes every name in it. A section an ingest finds gone
+from one name is matched to one appearing under a new name — the same text
+first, then at least 80% of its three-word runs in common, one to one — and its
+topic takes the new name, keeping its versions, its evidence and the edges to
+it; its new text, if it changed, is a new version. The old name stays as an
+alias: `pamin read`, `pamin link` and `pamin neighbors` still find the topic by
+it, and `read` answers with the name it goes by now. A renamed section is
+owed to the index again, because its name is read into the header of every
+span, and a span is re-embedded when its header changes. Only a section the
+ingest could otherwise have taken off the retrieval surface is renamed, and
+only to a name no topic already holds: a file moved out of the tree the command
+walked is still `removed`, and one moved onto an old section's name is recorded
+as new. Listed under `renamed`.
+
+On this repository's own 105 Markdown and text files, an
 unchanged re-ingest wrote nothing; the time it took was measured on an earlier
 cut that also split long sections into parts, and is not re-measured for this
 one ([measured](../benchmarks/results/ingest/ingest-cost-2026-10-23.md)).
 
 **A section that is no longer there is taken off the retrieval surface**, and
-listed under `removed`: its heading renamed or removed, or its file deleted
+listed under `removed`: its heading removed, or renamed with its text rewritten past matching, or its file deleted
 from a directory the command walked, moved out of it, or now ignored by git.
 Every version of its topic is soft deleted, so search no longer returns it, and
 the edges its content derived are closed. Nothing is lost: the ledger keeps
@@ -738,14 +754,18 @@ section naming a topic written by hand does. A topic written by hand keeps its
 name if it is later ingested, and one ingested first is named the first time
 somebody writes it by hand.
 
-**A file's sections are related as its outline relates them.** Each section is
-`part_of` the first section of the nearest heading above its own that has one —
-the file's first section, for one with none — and `related_to` the next
-section under the same heading, so `pamin neighbors` walks a file as it is laid
-out. These edges are derived, restated on every ingest, and closed when a
-section moves or leaves its file.
+**Each section is `part_of` the section above it**: the first section of the
+nearest heading above its own that has one, or the file's first section for one
+with none. Search follows these edges, so a section whose meaning depends on
+the section above it — a rule's conditions stated under the heading it sits
+under — brings that section along; `pamin neighbors` walks a file by them too.
+They are derived, restated on every ingest, and closed when a section moves or
+leaves its file. On ConditionalQA they raised how often every evidence sentence
+of a question needing a section and the one above it was read in the first
+1,000 tokens from 0.506 to 0.618, and over all questions from 0.755 to 0.792
+([measured](../benchmarks/results/ingest/conditionalqa-sections-2026-10-26.md)).
 
-`--json` carries every count, the `removed`, `missing` and `skipped` lists, and
+`--json` carries every count, the `removed`, `missing`, `renamed` and `skipped` lists, and
 the same `cascade` and `cascade_lagging` as `import`.
 
 ## `pamin read`
