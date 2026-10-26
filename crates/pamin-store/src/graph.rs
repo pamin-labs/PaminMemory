@@ -671,6 +671,41 @@ pub async fn retract_derived_all(
     Ok(closed.rows_affected())
 }
 
+/// The topics each of `from` points at by a live edge of `kind`, as
+/// `(from, to)` pairs.
+///
+/// For a caller that needs every topic's own answer -- what each of a
+/// search's hits sits under. [`expand`] reaches a topic once, from one origin,
+/// so of two hits under the same section it would report one.
+pub async fn targets(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    from: &[TopicId],
+    kind: EdgeKind,
+) -> Result<Vec<(TopicId, TopicId)>> {
+    if from.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<uuid::Uuid> = from.iter().map(|topic| topic.0).collect();
+    let rows: Vec<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
+        "SELECT r.from_topic, r.to_topic FROM relationships r
+          WHERE r.project_id = $1 AND r.from_topic = ANY($2) AND r.kind = $3
+            AND EXISTS (
+                SELECT 1 FROM relationship_versions v
+                 WHERE v.relationship_id = r.id AND v.invalidated_at IS NULL
+            )",
+    )
+    .bind(project.0)
+    .bind(&ids)
+    .bind(kind.label())
+    .fetch_all(executor)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(from, to)| (from.into(), to.into()))
+        .collect())
+}
+
 /// Closes the live version of an edge, leaving every row in place.
 ///
 /// Returns whether anything was open to close. Closing is a retraction of the
