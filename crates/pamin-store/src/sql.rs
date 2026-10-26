@@ -52,16 +52,13 @@ pub(crate) use sql_enum;
 #[cfg(test)]
 mod tests {
     use super::SqlLabel;
-    use pamin_core::{Derivation, EdgeKind, FilterDecision, JobKind, TombstoneReason};
+    use pamin_core::{Derivation, EdgeKind, FilterDecision, JobKind, SourceKind, TombstoneReason};
 
     /// Enums whose column is constrained to their label set.
-    ///
-    /// `SourceKind` is absent on purpose: kinds beyond `manual` arrive with an
-    /// ingest path that does not exist yet, so its column stays open until one
-    /// does.
     fn constrained() -> Vec<&'static [&'static str]> {
         vec![
             FilterDecision::labels(),
+            SourceKind::labels(),
             EdgeKind::labels(),
             Derivation::labels(),
             TombstoneReason::labels(),
