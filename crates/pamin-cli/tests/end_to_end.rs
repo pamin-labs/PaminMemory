@@ -2791,3 +2791,62 @@ fn a_renamed_heading_or_moved_folder_keeps_its_sections() {
     assert_eq!(cli.json(&["read", &moved])["version"], 2);
     assert_eq!(mentioning(), [moved]);
 }
+
+/// A section its file cut down to next to nothing -- below what the filter
+/// promotes -- is not left answering with the text the file no longer has. It
+/// is taken off the surface, and back on it once the file says something again.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn a_section_its_file_emptied_is_no_longer_found() {
+    let cli = Cli::new();
+    let mut server = cli.serve();
+    cli.run(&["init"]);
+
+    let tree = tempfile::tempdir().expect("temp tree");
+    let notes = tree.path().join("notes.md");
+    let text = "The staging cluster is rebuilt from scratch every friday evening, so \
+                anything deployed there by hand is gone by monday morning and has to \
+                go through the pipeline like every other change.";
+    put(&notes, text);
+    let path = notes.to_str().expect("a path");
+    let first = cli.json(&["ingest", path]);
+    assert_eq!(first["written"], 1, "{first}");
+    let query = "what happens to the staging cluster on friday";
+    let found = cli.json(&["search", query]);
+    let section = found["hits"][0]["topic"]
+        .as_str()
+        .expect("the section was found")
+        .to_string();
+
+    put(&notes, "TBD\n");
+    let emptied = cli.json(&["ingest", path]);
+    assert_eq!(emptied["held"], 1, "{emptied}");
+    assert_eq!(
+        emptied["removed"],
+        serde_json::json!([section]),
+        "{emptied}"
+    );
+    let after = cli.json(&["search", query]);
+    assert!(
+        after["hits"]
+            .as_array()
+            .expect("hits")
+            .iter()
+            .all(|hit| hit["topic"] != section.as_str()),
+        "an emptied section is still found by its old text: {after}"
+    );
+
+    // Held again, and nothing more to retire: no evidence copied, no work.
+    let again = cli.json(&["ingest", path]);
+    assert_eq!(again["unchanged"], 1, "{again}");
+    assert_eq!(again["removed"], serde_json::json!([]), "{again}");
+
+    put(&notes, text);
+    let back = cli.json(&["ingest", path]);
+    assert_eq!(back["written"], 1, "{back}");
+    let found = cli.json(&["search", query]);
+    assert_eq!(found["hits"][0]["topic"], section.as_str(), "{found}");
+
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
+}
