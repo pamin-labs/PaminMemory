@@ -654,7 +654,7 @@ impl Engine {
     /// means a write waits out a compaction whether or not it is the one doing
     /// it. Moving the work off the writer does not move the wait, and nothing
     /// on this side of the engine can -- that needs maintenance able to run
-    /// alongside a query, which is the same thing the mutex is there for.
+    /// alongside a query, which is the same thing the index lock is there for.
     ///
     /// What it does buy is that the wait no longer lands on whichever caller
     /// happened to cross the budget, and that the shape is the one this can be

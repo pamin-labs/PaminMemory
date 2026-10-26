@@ -4,7 +4,7 @@
 //! codebase; this is the one place that holds both, so it is also the only
 //! place where the two can drift out of step.
 
-use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+use std::sync::{Arc, Mutex, MutexGuard, RwLockReadGuard, RwLockWriteGuard, TryLockError};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -301,26 +301,18 @@ pub struct Engine {
     /// type erases the auto traits with it, and a resident server serves one
     /// engine from whichever runtime thread takes the request.
     ///
-    /// Behind a lock even though every method on the trait takes `&self`. The
-    /// engine declares `Sync` and does not honour it: a reader takes an
-    /// unsynchronized snapshot of the segments a writer is in the middle of
-    /// changing, reported upstream as alibaba/zvec#714. One caller at a time,
-    /// not readers sharing -- see [`Engine::index`] for what decided that.
+    /// Behind a lock even though every method on the trait takes `&self`.
+    /// Searches share it; everything else takes it alone -- see
+    /// [`Engine::index`] and [`Engine::index_shared`].
     ///
-    /// Not a precaution. Taking this lock out makes searches fail inside a
-    /// minute under the concurrency `readers_and_writers_share_one_index_
-    /// without_bringing_it_down` puts through it, and that is the mild form --
-    /// upstream reports the same race faulting. On macOS it is latent, so it
-    /// looks like a precaution there.
-    ///
-    /// **Merged upstream and not released.** #714 closed with alibaba/zvec#715,
-    /// merged as `515c11a`, which gives the segment locks shared readers; the
-    /// sibling report #724 closed with #731 as `31d88ea`. The newest published
-    /// version is 0.7.0, which predates both, so what this depends on is still
-    /// the code that needs the lock. Neither touched a public header, so
-    /// picking them up is a version bump rather than a binding change -- see
-    /// the deferred entry in `docs/adr/0001-tech-selection.md` for the trigger
-    /// and for what has to be measured before the lock comes off.
+    /// Not a precaution. The engine declares `Sync` and, before 0.7.2, did not
+    /// honour it: a reader took an unsynchronized snapshot of the segments a
+    /// writer was changing (alibaba/zvec#714), and without this lock searches
+    /// failed inside a minute under the concurrency `readers_and_writers_
+    /// share_one_index_without_bringing_it_down` puts through it. 0.7.2 carries
+    /// the fix (#715, `515c11a`) and its sibling (#731, `31d88ea`), which is
+    /// what let readers share; writers still exclude them, because that is the
+    /// shape the stress test passed and nothing has tested the other.
     ///
     /// A reshape takes the same lock a batch at a time and, for the length of
     /// one, replaces what it holds -- see [`reshape`](Self::reshape).
@@ -1016,24 +1008,16 @@ impl Engine {
         })
     }
 
-    /// The projection. One caller at a time.
+    /// The projection, alone: every write, and every read that is not a
+    /// search.
     ///
-    /// This was a read-write lock, on the reading that queries are read-only
-    /// and may as well run together. The engine does not agree. Twenty writers
-    /// and twenty readers against one index wedged it inside the engine's own
-    /// code -- forty-six of its threads asleep on futexes with no caller of
-    /// ours above them, four of ours stopped inside a query, and no processor
-    /// time being used by any of them for thirty-five minutes. The same run
-    /// with writers alone passes, and the same run with this lock made
-    /// exclusive passes for the full five minutes. So concurrent queries are
-    /// the thing it cannot do, and an exclusive lock is what it costs to say
-    /// so.
-    ///
-    /// It costs less than it sounds. A search spends about half its time in a
-    /// forward pass, and the model is behind a mutex already, so two searches
-    /// were never going to overlap by much; what is given up is a few
-    /// milliseconds of index work per query, and only between callers sharing
-    /// one project.
+    /// Exclusive by default because sharing is what has to be shown safe, one
+    /// caller at a time, and only searches have been. On 0.7.0 twenty writers
+    /// and twenty readers sharing the index wedged it inside the engine's own
+    /// code, forty-six threads asleep on futexes; on 0.7.2, which carries the
+    /// fix for #714, the same five-minute run passes with searches sharing.
+    /// The other reads are rare and short, so leaving them exclusive costs
+    /// nothing worth a second test.
     ///
     /// # Lock order
     ///
@@ -1047,11 +1031,16 @@ impl Engine {
     /// index, so what it holds is whatever that panic left. Failing here is
     /// the honest outcome: the alternative is serving from state nobody
     /// finished writing.
-    pub(crate) fn index(&self) -> std::sync::RwLockWriteGuard<'_, Arc<dyn Projection + Send + Sync>> {
+    pub(crate) fn index(&self) -> RwLockWriteGuard<'_, Arc<dyn Projection + Send + Sync>> {
         self.index.write().expect("the index lock is poisoned")
     }
 
-    pub(crate) fn index_shared(&self) -> std::sync::RwLockReadGuard<'_, Arc<dyn Projection + Send + Sync>> {
+    /// The projection, shared with other searches and with nothing else.
+    ///
+    /// Only a search's recalls take this: they are the reads that are
+    /// frequent, long, and what the stress test ran concurrently. The lock
+    /// order and the poisoning are [`index`](Self::index)'s.
+    pub(crate) fn index_shared(&self) -> RwLockReadGuard<'_, Arc<dyn Projection + Send + Sync>> {
         self.index.read().expect("the index lock is poisoned")
     }
 
@@ -1154,9 +1143,8 @@ impl Engine {
     /// is what makes them safe to run alongside a query, and the engine agrees:
     /// alibaba/zvec#614 turned Optimize into a brief exclusive seal, a long
     /// phase holding no schema lock, and a brief exclusive commit, so reads and
-    /// writes proceed through the middle of it. Unlike the concurrency fix this
-    /// index is still waiting on, **that one shipped**, in the 0.7.0 this
-    /// depends on.
+    /// writes proceed through the middle of it. That one shipped in 0.7.0, a
+    /// release before the concurrency fix did.
     ///
     /// So holding [`index`] across it was our own exclusion, not the engine's,
     /// and it was the whole reason moving upkeep off the writer bought nothing:
@@ -1164,8 +1152,9 @@ impl Engine {
     /// it. Taking a handle instead lets the upkeep worker compact while the
     /// searches it is speeding up are still being answered.
     ///
-    /// Only this operation gets it. Every other call goes through [`index`],
-    /// because #714 is what that lock is for and it is still unfixed here.
+    /// Only this operation gets it. Every other call goes through [`index`] or
+    /// [`index_shared`](Self::index_shared), because writers still exclude
+    /// readers.
     ///
     /// [`index`]: Self::index
     pub(crate) fn index_for_upkeep(&self) -> Arc<dyn Projection + Send + Sync> {
@@ -2118,7 +2107,7 @@ impl Engine {
         let lists = off_the_runtime(|| {
             // Embedded before the index is read, and the model lock released
             // before the read lock is taken: holding both is what would turn
-            // one slow inference into a queue for every reader.
+            // one slow inference into a queue for every writer.
             let embedding = self.embedding()?.embed_query(query)?;
             let index = self.index_shared();
             let lists = vec![

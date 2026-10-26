@@ -348,8 +348,8 @@ fn a_second_opener_waits_for_the_index_rather_than_failing() {
 ///
 /// Building the graph rewrites the vector storage, and zvec has a report --
 /// alibaba/zvec#724, against 0.6 and 0.7 -- of that step dropping the last
-/// documents of a collection. It is fixed upstream and not released: #731
-/// merged as `31d88ea`, and the newest published version is 0.7.0. What makes
+/// documents of a collection. It is fixed upstream: #731 merged as `31d88ea`,
+/// which 0.7.2 carries. What makes
 /// it worth a standing test rather than a note is how it fails: the dropped
 /// documents keep appearing in the document count and in scalar reads, so only
 /// a vector query can tell, and re-running the build does not bring them back.
@@ -816,7 +816,7 @@ fn optimize_records_how_many_files_it_left() {
 
 /// Splitting text does not wait for whoever is using the index.
 ///
-/// The composition layer holds the projection behind a mutex, for a defect in
+/// The composition layer holds the projection behind a lock, for a defect in
 /// the search engine that has nothing to do with segmentation. Handing out the
 /// segmenter as a borrow made that lock cover tokenizing too: five callers took
 /// it for work the index was not doing, and two held it a long time -- one
@@ -830,7 +830,7 @@ fn optimize_records_how_many_files_it_left() {
 /// write the second half of it. That is the stronger form of the same claim.
 #[test]
 fn tokenizing_does_not_wait_for_the_index() {
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, RwLock};
 
     let dir = tempfile::tempdir().expect("temp dir");
     let index = ProjectionIndex::open(
@@ -844,11 +844,11 @@ fn tokenizing_does_not_wait_for_the_index() {
 
     // The shape the composition layer holds it in, so this is the lock the test
     // is actually about and not a stand-in for it.
-    let index: Arc<Mutex<Box<dyn Projection + Send + Sync>>> =
-        Arc::new(Mutex::new(Box::new(index)));
+    let index: Arc<RwLock<Box<dyn Projection + Send + Sync>>> =
+        Arc::new(RwLock::new(Box::new(index)));
 
-    let segmenter = index.lock().expect("lock the index").segmenter();
-    let held = index.lock().expect("lock the index");
+    let segmenter = index.write().expect("lock the index").segmenter();
+    let held = index.write().expect("lock the index");
 
     let tokens = std::thread::spawn(move || segmenter.name_sequence("index lock contention"))
         .join()
