@@ -129,6 +129,12 @@ pub async fn execute(
         .collect();
     let recorded =
         pamin_store::repository::file_topic_names(engine.database.pool(), engine.project).await?;
+    // What each section on the surface said when this ingest looked, for one
+    // the filter now holds: see the retiring below.
+    let surfaced: std::collections::HashMap<String, pamin_core::TopicStateId> = recorded
+        .iter()
+        .map(|topic| (topic.name.clone(), topic.current))
+        .collect();
     let gone = gone(
         &Looked {
             read: &read,
@@ -148,6 +154,9 @@ pub async fn execute(
         .max(LEAST_AT_ONCE);
 
     let (mut written, mut unchanged, mut held) = (0, 0, 0);
+    // The sections on the surface that the filter now holds, cut down to next
+    // to nothing in their file.
+    let mut emptied = Vec::new();
     // The sections found unchanged, by the root they were read from: each
     // records that root, in one statement a root, after the writes.
     let mut kept_at: std::collections::BTreeMap<&str, Vec<String>> = Default::default();
@@ -174,7 +183,12 @@ pub async fn execute(
                         .push(pamin_engine::file_locator(&section.name));
                 }
                 Some((verdict, _)) if verdict.is_promoted() => written += 1,
-                Some(_) => held += 1,
+                Some(_) => {
+                    held += 1;
+                    if let Some(&current) = surfaced.get(&section.name) {
+                        emptied.push((section.name.clone(), current));
+                    }
+                }
             }
         }
 
@@ -215,6 +229,18 @@ pub async fn execute(
             Retired::Absent => {}
         }
     }
+    // A held write leaves the topic's state as it was, so a section its file
+    // emptied would still be found by the text the file no longer has. Taken
+    // off the surface as a section the file lost is, and back on it once the
+    // file says something again -- under --keep-missing too, since the file
+    // still has the section and only says next to nothing in it. One somebody
+    // also wrote by hand stays, the held count saying so.
+    for (name, current) in emptied {
+        if engine.retire_section(&name, current).await? == Retired::Retired {
+            removed.push(name);
+        }
+    }
+    removed.sort();
     kept.sort();
 
     engine.drain_cascade(Owed::WhatAMemoryNeeds).await?;
