@@ -476,6 +476,6 @@ CI enforces.
 
 ## Maintainer Notes
 
-This repository can optionally include private maintainer notes through the `internal-docs` submodule. Public users do not need that submodule to use or follow the open-source project.
+Maintainers keep private notes in a separate repository, cloned next to this one. Public users do not need it to use or follow the open-source project.
 
 See [docs/internal-docs.md](docs/internal-docs.md) for the maintainer workflow.

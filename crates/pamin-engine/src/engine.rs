@@ -14,8 +14,8 @@ use pamin_core::{
 };
 use pamin_index::spans::TokenCount;
 use pamin_index::{
-    Access, Embedder, Previous, Projection, ProjectionIndex, Reranker, SpanDocument, SpanTokens,
-    VectorIndex,
+    Access, Embedder, Previous, Projection, ProjectionIndex, Reranker, SpanDocument, SpanSource,
+    SpanTokens, VectorIndex,
 };
 use pamin_store::graph::{EdgeClaim, Expansion, Neighbor};
 use pamin_store::{Connections, Database, PgConnection, Workspace, graph, jobs, repository};
@@ -86,6 +86,11 @@ const HOP_DECAY: f32 = 0.5;
 /// project.
 const REINDEX_BATCH: usize = 256;
 
+/// How many tokens of a memory cut into spans a hit shows: its best span and
+/// what fits around it. Three spans at the default cap of 200, as a hit showed
+/// before its width followed a budget rather than the cap.
+const VIEW_TOKENS: usize = 600;
+
 /// How many candidates the index proposes when a new topic is backfilled.
 ///
 /// Every one costs a row read and an exact comparison, and the probe is a
@@ -121,17 +126,17 @@ pub(crate) fn off_the_runtime<T>(work: impl FnOnce() -> T) -> T {
 /// no encoding to compare -- including a fallback whose retry deadline has
 /// passed, which the next pass revalidates -- nothing is held.
 ///
-/// Compares the text, while a vector may be embedded from the topic's name as
-/// well ([`pamin_index::Passage`]). That is sound because a topic's name never
-/// changes once it is created; if renaming is ever added, a rename has to
-/// invalidate this, or a renamed topic keeps the vector of its old name.
+/// Compares each span's text and the header its vector is embedded under
+/// with it ([`SpanSource`]), so a topic renamed, or a span whose header
+/// changed while its text did not, is embedded again -- except in an index
+/// that did not record headers, where the text is all there is to compare.
 ///
 /// An index that cannot answer -- a document missing a vector it should have,
 /// or a failed read -- is treated as holding nothing, so every state is written
 /// as it was before this check existed, which also repairs that document.
 fn unheld(
     index: &dyn Projection,
-    wanted: &[(TopicId, &[&str])],
+    wanted: &[(TopicId, &[SpanSource<'_>])],
     encoding: Option<&str>,
 ) -> Vec<bool> {
     let Some(encoding) = encoding else {
@@ -198,7 +203,7 @@ impl PassageEncoder for Embedder {
 fn write_unheld<G>(
     index: impl Fn() -> G,
     encoder: &mut impl PassageEncoder,
-    wanted: &[(TopicId, &[&str])],
+    wanted: &[(TopicId, &[SpanSource<'_>])],
     passages: &[&[&str]],
 ) -> pamin_index::Result<()>
 where
@@ -227,7 +232,7 @@ where
 fn write_encoded<G>(
     index: &impl Fn() -> G,
     encoder: &mut impl PassageEncoder,
-    wanted: &[(TopicId, &[&str])],
+    wanted: &[(TopicId, &[SpanSource<'_>])],
     passages: &[&[&str]],
     at: &[usize],
 ) -> pamin_index::Result<Option<String>>
@@ -246,10 +251,18 @@ where
             spans
                 .iter()
                 .enumerate()
-                .map(move |(ordinal, text)| (topic, ordinal as u32, *text))
+                .map(move |(ordinal, span)| (topic, ordinal as u32, span))
         })
         .zip(&embeddings)
-        .map(|((topic, ordinal, text), embedding)| (topic, ordinal, text, embedding.as_slice()))
+        .map(|((topic, ordinal, span), embedding)| {
+            (
+                topic,
+                ordinal,
+                span.text,
+                Some(span.header),
+                embedding.as_slice(),
+            )
+        })
         .collect();
     index().replace(&documents, encoding.as_deref())?;
     Ok(encoding)
@@ -257,17 +270,26 @@ where
 
 /// One span of a memory as it is indexed.
 struct Indexed {
-    /// What the lexical channels match, and what decides whether the index
-    /// already holds this span.
+    /// What the lexical channels match.
     text: String,
+    /// What it lost by being cut out: the memory's name, and the heading and
+    /// turn it continues. The memory's name alone for a memory indexed whole.
+    header: String,
     /// What its vector is embedded from: its header and text, or its text
     /// alone, as the index's [`pamin_index::Passage`] says.
     passage: String,
 }
 
 impl Indexed {
-    fn texts(spans: &[Self]) -> Vec<&str> {
-        spans.iter().map(|span| span.text.as_str()).collect()
+    /// What decides whether the index already holds these spans.
+    fn sources(spans: &[Self]) -> Vec<SpanSource<'_>> {
+        spans
+            .iter()
+            .map(|span| SpanSource {
+                text: &span.text,
+                header: &span.header,
+            })
+            .collect()
     }
 }
 
@@ -1231,6 +1253,7 @@ impl Engine {
                         state.topic_id,
                         ordinal as u32,
                         span.text.as_str(),
+                        Some(span.header.as_str()),
                         embedding.as_slice(),
                     )
                 })
@@ -1277,6 +1300,7 @@ impl Engine {
                         .map(|span| Indexed {
                             passage: passage.render(&span.header, &span.text),
                             text: span.text.clone(),
+                            header: span.header.clone(),
                         })
                         .collect();
                     self.models.cuts.put(state.id, cap, name, spans);
@@ -1284,6 +1308,7 @@ impl Engine {
                 }
                 _ => vec![Indexed {
                     text: content.to_string(),
+                    header: name.to_string(),
                     passage: passage.render(name, content),
                 }],
             }
@@ -1349,15 +1374,16 @@ impl Engine {
             // every state turns out held: which plan it runs on is the
             // question the check asks.
             let mut embedder = self.embedding()?;
-            let texts: Vec<Vec<&str>> = spans.iter().map(|spans| Indexed::texts(spans)).collect();
+            let sources: Vec<Vec<SpanSource<'_>>> =
+                spans.iter().map(|spans| Indexed::sources(spans)).collect();
             let passages: Vec<Vec<&str>> = spans
                 .iter()
                 .map(|spans| spans.iter().map(|span| span.passage.as_str()).collect())
                 .collect();
-            let wanted: Vec<(TopicId, &[&str])> = states
+            let wanted: Vec<(TopicId, &[SpanSource<'_>])> = states
                 .iter()
-                .zip(&texts)
-                .map(|(state, texts)| (state.topic_id, texts.as_slice()))
+                .zip(&sources)
+                .map(|(state, sources)| (state.topic_id, sources.as_slice()))
                 .collect();
             let passages: Vec<&[&str]> = passages.iter().map(Vec::as_slice).collect();
             write_unheld(|| self.index(), &mut *embedder, &wanted, &passages)
@@ -2667,10 +2693,10 @@ impl Engine {
         };
 
         let reused = off_the_runtime(|| {
-            let wanted: std::collections::HashMap<TopicId, Vec<&str>> = states
+            let wanted: std::collections::HashMap<TopicId, Vec<SpanSource<'_>>> = states
                 .iter()
                 .zip(&spans)
-                .map(|(state, spans)| (state.topic_id, Indexed::texts(spans)))
+                .map(|(state, spans)| (state.topic_id, Indexed::sources(spans)))
                 .collect();
             // Counted before any lock is taken, so a rebuild that can reuse
             // every vector never loads the model at all.
@@ -2736,7 +2762,13 @@ impl Engine {
                     .iter()
                     .zip(&embeddings)
                     .map(|((topic, ordinal, span), embedding)| {
-                        (*topic, *ordinal, span.text.as_str(), embedding.as_slice())
+                        (
+                            *topic,
+                            *ordinal,
+                            span.text.as_str(),
+                            Some(span.header.as_str()),
+                            embedding.as_slice(),
+                        )
                     })
                     .collect();
                 index.write_spans(&documents, encoding.as_deref())?;
@@ -2928,8 +2960,8 @@ pub struct SearchHit {
     /// than from the results, so it does not depend on how many were asked for.
     pub seed: Option<String>,
     /// For a memory the index cut into more than one span, the window of it
-    /// this hit is about: its best span and one either side. `None` for a
-    /// memory of one span, which is the whole of it.
+    /// this hit is about: its best span and what fits the view's token budget
+    /// around it. `None` for a memory of one span, which is the whole of it.
     pub span: Option<SpanView>,
 }
 
@@ -2963,6 +2995,32 @@ impl SpanView {
             range: first.range.start..last.range.end,
         })
     }
+
+    /// Span `ordinal` of `spans` and as many either side as fit with it in
+    /// `tokens`, grown one span at a time from the nearer side, or `None` when
+    /// there is no such span. The best span is always shown, however long.
+    ///
+    /// A budget rather than a count of spans, so what a hit shows does not
+    /// shrink with the cap an index is cut to: smaller spans make the
+    /// reranker's pairs cheaper, and the caller is shown as much around the
+    /// best one as before.
+    pub fn within(spans: &[pamin_index::spans::Span], ordinal: u32, tokens: usize) -> Option<Self> {
+        let at = ordinal as usize;
+        spans.get(at)?;
+        let (first, last) = grow(at, spans.len(), |first, last| {
+            spans[first..=last]
+                .iter()
+                .map(|span| span.tokens)
+                .sum::<usize>()
+                <= tokens
+        });
+        Some(Self {
+            ordinal,
+            of: spans.len() as u32,
+            header: spans[first].header.clone(),
+            range: spans[first].range.start..spans[last].range.end,
+        })
+    }
 }
 
 /// A search's fused results, best first, and what it resolved on the way.
@@ -2975,6 +3033,35 @@ struct Fused {
     results: Vec<FusedResult>,
     live: WorkingSet,
     paths: std::collections::HashMap<TopicId, Neighbor>,
+}
+
+/// The run of spans `first..=last` of `len` grown from span `at`, one span at
+/// a time and the nearer side first, while `fits` holds for the run it would
+/// become. Span `at` is always in it, whether or not it fits on its own.
+///
+/// The one rule for how much around a best span is shown, to the reranker
+/// against the room its pair leaves and to a caller against
+/// [`VIEW_TOKENS`], so that the two differ only in their budget. A neighbour
+/// that does not fit is skipped for the one on the other side, which may.
+fn grow(at: usize, len: usize, fits: impl Fn(usize, usize) -> bool) -> (usize, usize) {
+    let (mut first, mut last) = (at, at);
+    loop {
+        let before = first.checked_sub(1).map(|first| (first, last));
+        let after = (last + 1 < len).then_some((first, last + 1));
+        let order = if at - first <= last - at {
+            [before, after]
+        } else {
+            [after, before]
+        };
+        match order
+            .into_iter()
+            .flatten()
+            .find(|&(first, last)| fits(first, last))
+        {
+            Some(run) => (first, last) = run,
+            None => return (first, last),
+        }
+    }
 }
 
 impl Fused {
@@ -3031,9 +3118,9 @@ impl Fused {
 /// longer than that by construction.** Shown whole, as a memory of one span is,
 /// it would be judged by its opening whatever span the channels found it by --
 /// the failure cutting it was meant to remove. The best span is the one fusion
-/// weighed most ([`FusedResult::span`]); the previous span and then the next
-/// are added only while the whole pair still fits, so a neighbour is context
-/// the reranker reads rather than a tail it truncates.
+/// weighed most ([`FusedResult::span`]); its neighbours, nearer first, are
+/// added only while the whole pair still fits ([`grow`]), so a neighbour is
+/// context the reranker reads rather than a tail it truncates.
 ///
 /// A memory of one span is shown exactly as it was before spans. So is one
 /// whose best span the ledger no longer has -- the index can lag a write -- and
@@ -3093,26 +3180,22 @@ impl Window {
                 .collect();
             shown(&spans[first].header, &texts.join("\n"), seed)
         };
-        let fits = |first, last| self.counter.count(&render(first, last)) <= self.room;
-        let (mut first, mut last) = (best, best);
-        if first > 0 && fits(first - 1, last) {
-            first -= 1;
-        }
-        if last + 1 < spans.len() && fits(first, last + 1) {
-            last += 1;
-        }
+        let (first, last) = grow(best, spans.len(), |first, last| {
+            self.counter.count(&render(first, last)) <= self.room
+        });
         render(first, last)
     }
 
     /// The window a caller is shown of a memory cut into more than one span:
-    /// span `best` and one either side. `None` for a memory of one span, and
-    /// for one whose best span the ledger no longer has.
+    /// span `best` and what fits [`VIEW_TOKENS`] around it. `None` for a
+    /// memory of one span, and for one whose best span the ledger no longer
+    /// has.
     fn view(&self, state: &TopicState, name: &str, best: u32) -> Option<SpanView> {
         let spans = self.cut(state, name);
         if spans.len() == 1 {
             return None;
         }
-        SpanView::around(&spans, best, 1)
+        SpanView::within(&spans, best, VIEW_TOKENS)
     }
 
     /// Of a seed's memory, the span that names the topic the walk reached --
@@ -3528,13 +3611,14 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        GRAPH_SHOWN_AT_MOST, GRAPH_SHOWN_FROM, Window, best_first, can_be_seen, is_idle,
+        GRAPH_SHOWN_AT_MOST, GRAPH_SHOWN_FROM, SpanView, Window, best_first, can_be_seen, is_idle,
         path_strength, place, rerankable, runs_of_tokens, score_blend_order, seed_relevance, shown,
     };
     use pamin_core::settings::MODEL_IDLE;
     use pamin_core::{
         Channel, ChannelResults, ProjectId, TopicId, TopicState, TopicStateId, Validity,
     };
+    use pamin_index::SpanSource;
     use pamin_index::spans::TokenCount;
     use std::sync::Arc;
     use time::OffsetDateTime;
@@ -3617,6 +3701,11 @@ mod tests {
             "topic: p1a p1b p1c p1d p1e\np2a p2b p2c p2d p2e\np3a p3b p3c p3d p3e"
         );
         assert_eq!(
+            window(21).shown(&memory, "topic", 2, None),
+            "topic: p0a p0b p0c p0d p0e\np1a p1b p1c p1d p1e\np2a p2b p2c p2d p2e\np3a p3b p3c p3d p3e",
+            "more than one either side when the room holds it"
+        );
+        assert_eq!(
             window(11).shown(&memory, "topic", 0, None),
             "topic: p0a p0b p0c p0d p0e\np1a p1b p1c p1d p1e",
             "the next when there is no previous"
@@ -3648,23 +3737,38 @@ mod tests {
         let window = Window::new(5, Arc::new(Words), Arc::default(), Arc::default(), "q");
         let memory = state(&five_spans());
         let content = &memory.content;
-        let view = window.view(&memory, "topic", 0).unwrap();
-        assert_eq!((view.ordinal, view.of), (0, 5));
-        assert_eq!(
-            &content[view.range],
-            "p0a p0b p0c p0d p0e\n\np1a p1b p1c p1d p1e"
-        );
         let view = window.view(&memory, "topic", 4).unwrap();
-        assert_eq!(
-            &content[view.range],
-            "p3a p3b p3c p3d p3e\n\np4a p4b p4c p4d p4e"
-        );
+        assert_eq!((view.ordinal, view.of), (4, 5));
+        assert_eq!(&content[view.range], content.as_str(), "all fit the budget");
         assert_eq!(window.view(&memory, "topic", 5), None, "a stale span");
         assert_eq!(
             window.view(&state("a b c"), "topic", 0),
             None,
             "one span is the whole"
         );
+    }
+
+    #[test]
+    fn a_view_grows_from_the_nearer_side_while_it_fits() {
+        let memory = state(&five_spans());
+        let spans = pamin_index::spans::pack("topic", &memory.content, &Words, 5);
+        let per = spans[0].tokens;
+        let shown = |at, tokens| {
+            let view = SpanView::within(&spans, at, tokens).unwrap();
+            memory.content[view.range].to_string()
+        };
+        assert_eq!(shown(2, per), "p2a p2b p2c p2d p2e", "the best span alone");
+        assert_eq!(shown(2, 1), "p2a p2b p2c p2d p2e", "however long it is");
+        assert_eq!(
+            shown(2, 3 * per),
+            "p1a p1b p1c p1d p1e\n\np2a p2b p2c p2d p2e\n\np3a p3b p3c p3d p3e"
+        );
+        assert_eq!(
+            shown(0, 3 * per),
+            "p0a p0b p0c p0d p0e\n\np1a p1b p1c p1d p1e\n\np2a p2b p2c p2d p2e",
+            "what one side lacks, the other gives"
+        );
+        assert_eq!(SpanView::within(&spans, 5, per), None, "a stale span");
     }
 
     #[test]
@@ -4292,7 +4396,11 @@ mod tests {
                 .collect();
             let absent: Vec<TopicId> = absent.iter().map(|(topic, _)| *topic).collect();
 
-            let unheld = super::unheld(&skipping, &whole(&wanted), Some(PLAN));
+            let sources: Vec<(TopicId, SpanSource<'_>)> = wanted
+                .iter()
+                .map(|(topic, text)| (*topic, source(text)))
+                .collect();
+            let unheld = super::unheld(&skipping, &whole(&sources), Some(PLAN));
             let needed: Vec<(TopicId, &str)> = wanted
                 .iter()
                 .zip(&unheld)
@@ -4369,7 +4477,7 @@ mod tests {
             .expect("write");
         index.flush().expect("flush");
 
-        let pairs = [(cpu, "alpha"), (unrecorded, "alpha")];
+        let pairs = [(cpu, source("alpha")), (unrecorded, source("alpha"))];
         let wanted = whole(&pairs);
         assert_eq!(
             super::unheld(&index, &wanted, Some("cpu:one")),
@@ -4476,7 +4584,7 @@ mod tests {
 
         // The plan stays: the held state is skipped.
         let (_dir, index, held, new) = setup();
-        let pairs = [(held, "alpha"), (new, "beta")];
+        let pairs = [(held, source("alpha")), (new, source("beta"))];
         let wanted = whole(&pairs);
         let mut model = Moving::on("cpu:fallback");
         super::write_unheld(|| &index, &mut model, &wanted, &each(&["alpha", "beta"]))
@@ -4490,7 +4598,7 @@ mod tests {
         // The pass moves the model: the whole batch is embedded again, and
         // both documents name the plan that produced them.
         let (_dir, index, held, new) = setup();
-        let pairs = [(held, "alpha"), (new, "beta")];
+        let pairs = [(held, source("alpha")), (new, source("beta"))];
         let wanted = whole(&pairs);
         let mut model = Moving::on("cpu:fallback");
         model.moves = vec!["npu:restored".into()];
@@ -4507,7 +4615,7 @@ mod tests {
         // name one plan, the one the second pass ran under, rather than the
         // fresh half keeping the plan of a pass the batch moved off.
         let (_dir, index, held, new) = setup();
-        let pairs = [(held, "alpha"), (new, "beta")];
+        let pairs = [(held, source("alpha")), (new, source("beta"))];
         let wanted = whole(&pairs);
         let mut model = Moving::on("cpu:fallback");
         model.moves = vec!["npu:restored".into(), "cpu:fallback-again".into()];
@@ -4531,7 +4639,7 @@ mod tests {
         super::write_unheld(
             || &index,
             &mut model,
-            &whole(&[(held, "alpha")]),
+            &whole(&[(held, source("alpha"))]),
             &each(&["alpha"]),
         )
         .expect("sync");
@@ -4540,6 +4648,59 @@ mod tests {
     }
 
     /// A write the index has buffered and not yet flushed is already held.
+    /// A span whose text stayed while its header changed is embedded again.
+    ///
+    /// Its vector is embedded from the header as well, and the header changes
+    /// without the text when a topic is renamed, or when an edit changes how a
+    /// line is read: a heading indented four spaces is a paragraph, and the
+    /// trimmed spans after it keep their text under a different header.
+    #[test]
+    fn a_span_under_a_new_header_is_embedded_again() {
+        use pamin_index::{Access, Projection, ProjectionIndex, VectorIndex};
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let index: Arc<dyn Projection + Send + Sync> = Arc::new(
+            ProjectionIndex::open(
+                dir.path(),
+                &dir.path().join("legacy"),
+                VectorIndex::default(),
+                Access::ReadWrite,
+                0,
+            )
+            .expect("open index"),
+        );
+        let topic = TopicId::new();
+        let under = |header| {
+            [SpanSource {
+                text: "the rollback took an hour",
+                header,
+            }]
+        };
+        let mut model = Moving::on("cpu:plan");
+        let sync = |model: &mut Moving, spans: &[SpanSource<'_>]| {
+            super::write_unheld(
+                || &index,
+                model,
+                &[(topic, spans)],
+                &each(&["the rollback took an hour"]),
+            )
+            .expect("sync");
+        };
+        sync(&mut model, &under("incident > Timeline"));
+        sync(&mut model, &under("incident > Timeline"));
+        assert_eq!(model.passes.len(), 1, "the same header is held");
+        sync(&mut model, &under("incident"));
+        assert_eq!(model.passes.len(), 2, "a new header is not");
+        assert_eq!(
+            index.stored(&[topic]).expect("read back")[0][0]
+                .header
+                .as_deref(),
+            Some("incident"),
+            "and the header the vector now stands for is recorded"
+        );
+    }
+
     #[test]
     fn a_buffered_write_is_already_held() {
         use pamin_index::{Access, Projection, ProjectionIndex, VectorIndex};
@@ -4560,26 +4721,34 @@ mod tests {
             .upsert_encoded(&[(topic, "alpha", vector.as_slice())], plan)
             .expect("write");
         assert_eq!(
-            super::unheld(&index, &whole(&[(topic, "alpha")]), plan),
+            super::unheld(&index, &whole(&[(topic, source("alpha"))]), plan),
             [false]
         );
         assert_eq!(
-            super::unheld(&index, &whole(&[(topic, "Alpha")]), plan),
+            super::unheld(&index, &whole(&[(topic, source("Alpha"))]), plan),
             [true]
         );
         index.delete(&[topic]).expect("delete");
         assert_eq!(
-            super::unheld(&index, &whole(&[(topic, "alpha")]), plan),
+            super::unheld(&index, &whole(&[(topic, source("alpha"))]), plan),
             [true]
         );
     }
 
     /// Each memory as the one span it is when indexed whole.
-    fn whole<'a>(wanted: &'a [(TopicId, &'a str)]) -> Vec<(TopicId, &'a [&'a str])> {
+    fn whole<'a>(wanted: &'a [(TopicId, SpanSource<'a>)]) -> Vec<(TopicId, &'a [SpanSource<'a>])> {
         wanted
             .iter()
-            .map(|(topic, text)| (*topic, std::slice::from_ref(text)))
+            .map(|(topic, span)| (*topic, std::slice::from_ref(span)))
             .collect()
+    }
+
+    /// `text` as a memory of one span named `topic`.
+    fn source(text: &str) -> SpanSource<'_> {
+        SpanSource {
+            text,
+            header: "topic",
+        }
     }
 
     /// Each passage as a memory's only span.

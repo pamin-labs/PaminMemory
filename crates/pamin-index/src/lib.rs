@@ -55,8 +55,8 @@ pub const BUILD_FINGERPRINT: &str = env!("PAMIN_INFERENCE_BUILD");
 pub const BUILD_CARGO: &str = env!("PAMIN_INFERENCE_CARGO");
 pub use projection::{
     Access, Grain, Passage, Previous, Projection, ProjectionIndex, Segmentation, SpanDocument,
-    Stored, VectorDocument, VectorIndex, is_fragmented, segment_documents, vector_index_lags,
-    wastes_disk,
+    SpanSource, Stored, VectorDocument, VectorIndex, is_fragmented, segment_documents,
+    vector_index_lags, wastes_disk,
 };
 pub use reranking::{Ranked, Reranked, Reranker};
 pub use reshape::{Held, Reshape, Reshaped};

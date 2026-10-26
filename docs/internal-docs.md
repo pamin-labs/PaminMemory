@@ -1,50 +1,25 @@
-# Internal Documentation Submodule
+# Internal Documentation
 
-This repository includes an optional private submodule at `internal-docs`.
-
-The submodule points to `Pamin-Labs/InternalDocs`, which contains private planning, strategy, and research notes for Påmin Labs maintainers. It is not required to build, test, or use the public Påmin Memory project.
-
-## Public Users
-
-Clone the repository normally:
-
-```bash
-git clone https://github.com/Pamin-Labs/PaminMemory.git
-cd PaminMemory
-```
-
-Do not initialize submodules. If a tool tries to fetch `internal-docs` and reports an authentication or repository access error, that is expected for users who are not members of the private organization repository.
+Private planning, strategy, and research notes for Påmin Labs maintainers live in `Pamin-Labs/InternalDocs`. It is not required to build, test, or use the public Påmin Memory project, and this repository does not embed it.
 
 ## Team Members
 
-Team members with access to `Pamin-Labs/InternalDocs` can clone with submodules:
+Clone InternalDocs next to this repository:
 
 ```bash
-git clone --recurse-submodules git@github.com:Pamin-Labs/PaminMemory.git
-cd PaminMemory
+git clone git@github.com:Pamin-Labs/InternalDocs.git ../InternalDocs
 ```
 
-If the repository was already cloned without submodules:
+Tools and agents read it from `$PAMIN_LABS_DEV_INTERNAL_DOCS`, which defaults to `../InternalDocs`. Pull it before reading; the latest `main` is the current truth. The PaminMemory notes live under `pamin-memory/`.
 
-```bash
-git submodule update --init --recursive
-```
+Change InternalDocs through its own pull requests. Nothing in this repository needs to change when it does.
 
-The PaminMemory internal notes live under:
+## Citing Evidence
+
+Cite an InternalDocs record from a PR or a public document with a SHA permalink, so the citation keeps pointing at the version it was written against:
 
 ```text
-internal-docs/pamin-memory/
+https://github.com/Pamin-Labs/InternalDocs/blob/<sha>/pamin-memory/research/<date>/<record>.md
 ```
 
-## Updating The Submodule
-
-From inside `internal-docs`, pull or commit changes in the private repository first. Then return to the public repo and commit the updated submodule pointer:
-
-```bash
-cd internal-docs
-git pull
-cd ..
-git add internal-docs
-git commit -m "chore: update internal docs pointer"
-```
-
+Do not copy private content into public files.
