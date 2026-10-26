@@ -1458,8 +1458,8 @@ impl Engine {
         // finds no content to restate, and it would be held again -- and its
         // evidence copied again -- on every ingest. Its own last evidence is
         // what it is compared with instead. Not for a topic that has content:
-        // a section cut down below the filter's minimum leaves its old text
-        // searchable, and being held again on every ingest is what says so.
+        // a section cut down below the filter's minimum is held over it, and
+        // the ingest retires it, after which it has none and this applies.
         if !verdict.is_promoted() && current.is_none() {
             let last = repository::latest_hash_at(
                 self.database.pool(),
