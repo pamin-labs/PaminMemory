@@ -2188,6 +2188,27 @@ against the earlier cut that sized each to about 200 tokens:
 Conditions, both tables and the raw rows:
 [benchmarks/results/ingest/](../benchmarks/results/ingest/qasper-sections-2026-10-25.md).
 
+**Where evidence is spread over a document, heading sections and `part_of`
+are both worth having; a parent's text in the hit is not.** Qasper rarely asks
+about more than one section, so ingest was also measured on ConditionalQA:
+871 questions over 652 gov.uk pages, whose answers hold under conditions stated
+elsewhere on the page. Every question went through `search_reranked`, and was
+scored on whether *every* evidence sentence was read:
+
+- **Sections against whole pages:** every evidence sentence was in the first
+  10 hits for 0.805 of questions against 0.432, while returning 51.5% less
+  text.
+- **`part_of` between sections:** read to a fixed 1,000 tokens, every
+  sentence was found for 0.792 of questions against 0.755 (p = 0.0001). Among
+  the 267 needing a section and the one above it, 0.618 against 0.506.
+- **A `related_to` to the next sibling** added nothing over `part_of` alone.
+- **Showing each hit's parent section** raised covered@1 by 14.5%, but only by
+  returning 40% more text, and found no more within the same 1,000 tokens.
+  So a hit carries its parent's name, not its text.
+
+Latency was not measured. Conditions and every table:
+[benchmarks/results/ingest/](../benchmarks/results/ingest/conditionalqa-sections-2026-10-26.md).
+
 **Above this, nothing is measured.** The largest corpus here is 131,924
 documents. A million and beyond is untested — not projected, not extrapolated,
 untested — and the descriptor count is the first thing that would break: this

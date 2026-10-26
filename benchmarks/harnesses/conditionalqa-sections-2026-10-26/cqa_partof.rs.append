@@ -1,0 +1,84 @@
+
+/// SCRATCH: the sections project of an earlier `scratch_cqa` run
+/// (`CQA_NONCE`), its outline restated with `part_of` alone, searched again.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "scratch"]
+async fn scratch_cqa_partof() {
+    let home = harness::eval_home();
+    let workspace = Workspace::at(&home);
+    let counter = SpanTokens::load(&workspace.models_dir()).expect("BGE-M3's tokenizer");
+    let out = std::path::PathBuf::from(std::env::var("SCRATCH_OUT").expect("SCRATCH_OUT"));
+    let nonce = std::env::var("CQA_NONCE").expect("CQA_NONCE");
+    let (files, questions) = cqa_corpus();
+    let engine = Engine::open(
+        &workspace,
+        &format!("scratch-cqa-sections-{nonce}"),
+        VectorIndex::default(),
+        Access::ReadWrite,
+        &harness::settings(),
+    )
+    .await
+    .expect("open the engine");
+    let mut by_file: BTreeMap<String, Vec<Section>> = BTreeMap::new();
+    let mut part_of = Vec::new();
+    let mut siblings = 0;
+    for (name, text) in &files {
+        let unnamed = pamin_index::sections::unnamed(name, text, &counter);
+        let bases: Vec<String> = unnamed.iter().map(|s| s.base.clone()).collect();
+        let named = pamin_index::sections::named(unnamed, &[]);
+        let bases: Vec<&str> = bases.iter().map(String::as_str).collect();
+        for (from, to, placed) in pamin_index::sections::outline(&bases) {
+            match placed {
+                pamin_index::sections::Placed::Under => part_of.push((
+                    named[from].name.clone(),
+                    named[to].name.clone(),
+                    pamin_core::EdgeKind::PartOf,
+                )),
+                pamin_index::sections::Placed::Before => siblings += 1,
+            }
+        }
+        by_file.insert(name.clone(), named);
+    }
+    // Premise: the project is the one that run built, unchanged.
+    let memories: usize = by_file.values().map(Vec::len).sum();
+    let mut spans = 0;
+    for sections in by_file.values() {
+        for section in sections {
+            spans += engine.cut(&section.name, &section.content).expect("cut").len();
+        }
+    }
+    assert_eq!(engine.indexed_documents().expect("count") as usize, spans, "not the same project");
+
+    let live = |kind: &'static str| {
+        let pool = engine.database.pool().clone();
+        let project = engine.project;
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM relationships r
+                   JOIN relationship_versions v ON v.relationship_id = r.id
+                  WHERE r.project_id = $1 AND r.kind = $2 AND v.invalidated_at IS NULL",
+            )
+            .bind(project.0)
+            .bind(kind)
+            .fetch_one(&pool)
+            .await
+            .expect("count edges")
+        }
+    };
+    let (before_part, before_sib) = (live("part_of").await, live("related_to").await);
+    assert_eq!(before_part as usize, part_of.len(), "part_of edges before");
+    assert_eq!(before_sib as usize, siblings, "sibling edges before");
+    let names: Vec<String> = by_file.values().flatten().map(|s| s.name.clone()).collect();
+    engine.restate_outline(&names, &part_of).await.expect("outline");
+    let (after_part, after_sib) = (live("part_of").await, live("related_to").await);
+    assert_eq!(after_part as usize, part_of.len(), "part_of edges after");
+    assert_eq!(after_sib, 0, "sibling edges left open");
+    println!(
+        "  {memories} sections; part_of {before_part} -> {after_part}, related_to {before_sib} -> {after_sib}"
+    );
+
+    let mut rows = Vec::new();
+    cqa_search(&engine, "partof", &questions, &by_file, &counter, &mut rows).await;
+    std::fs::write(&out, serde_json::to_vec(&rows).expect("serialize")).expect("write");
+    println!("  rows: {}", out.display());
+}

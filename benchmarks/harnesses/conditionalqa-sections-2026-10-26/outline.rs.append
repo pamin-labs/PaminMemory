@@ -1,0 +1,368 @@
+
+// ---------------------------------------------------------------------------
+// SCRATCH (not tracked): gaps doc step 4. Heading sections searched through
+// `Engine::search_reranked` at the product's depths, before and after their
+// outline edges (`part_of`, next-sibling `related_to`) are stated on the same
+// project -- the same index both times, so the pair isolates the edges. On
+// Qasper (the papers `corpus` draws) and on the repository Markdown of q111
+// part 2 (`MD_DIR`: `files/`, `questions.jsonl` with byte-range evidence).
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Serialize)]
+struct OutlineRow {
+    corpus: &'static str,
+    arm: &'static str,
+    unit: String,
+    question: String,
+    ndcg10: f64,
+    covered: [f64; 3],
+    bytes: [usize; 3],
+    budget_recall_view: f64,
+    graph_hits10: usize,
+    search_ms: f64,
+}
+
+/// One question, for either corpus: the file its evidence is in, and each
+/// annotator's evidence as content words.
+struct Asked {
+    unit: String,
+    id: String,
+    file: String,
+    text: String,
+    evidence: Vec<Vec<HashSet<String>>>,
+}
+
+fn view_of(hit: &pamin_engine::SearchHit) -> &str {
+    match &hit.span {
+        Some(span) => &hit.state.content[span.range.clone()],
+        None => &hit.state.content,
+    }
+}
+
+fn covered_by(asked: &Asked, texts: &[&str]) -> f64 {
+    let mut read = HashSet::new();
+    for text in texts {
+        read.extend(words(text));
+    }
+    asked
+        .evidence
+        .iter()
+        .map(|cited| {
+            cited.iter().filter(|paragraph| covers(&read, paragraph)).count() as f64
+                / cited.len() as f64
+        })
+        .fold(0.0, f64::max)
+}
+
+/// `name`'s file: what precedes its headings and any `#n`.
+fn file_part(name: &str) -> &str {
+    let file = name.split(" › ").next().unwrap_or(name);
+    match file.rsplit_once(" #") {
+        Some((before, n)) if n.chars().all(|c| c.is_ascii_digit()) => before,
+        _ => file,
+    }
+}
+
+async fn outline_search(
+    engine: &Engine,
+    corpus: &'static str,
+    arm: &'static str,
+    asked: &[Asked],
+    sections: &BTreeMap<String, Vec<Section>>,
+    counter: &dyn TokenCount,
+    rows: &mut Vec<OutlineRow>,
+) {
+    for one in asked {
+        let started = Instant::now();
+        let hits = engine
+            .search_reranked(&one.text, LIMIT, harness::depths())
+            .await
+            .expect("search");
+        let ms = started.elapsed().as_secs_f64() * 1e3;
+        assert!(!hits.is_empty(), "no hits for {:?}", one.text);
+        let own: Vec<bool> = hits.iter().map(|hit| file_part(&hit.topic) == one.file).collect();
+        let views: Vec<&str> = hits.iter().map(view_of).collect();
+        let mut covered = [0.0; 3];
+        let mut bytes = [0; 3];
+        for (slot, k) in [1usize, 5, 10].iter().enumerate() {
+            let k = (*k).min(hits.len());
+            let texts: Vec<&str> = (0..k).filter(|i| own[*i]).map(|i| views[i]).collect();
+            covered[slot] = covered_by(one, &texts);
+            bytes[slot] = views[..k].iter().map(|text| text.len()).sum();
+        }
+        // Budget recall over what the hits return, read in rank order.
+        let mut left = BUDGET;
+        let mut read = Vec::new();
+        for (at, text) in views.iter().enumerate() {
+            if left == 0 {
+                break;
+            }
+            let offsets = counter.offsets(text);
+            let taken = if offsets.len() <= left {
+                *text
+            } else {
+                &text[..offsets[left].start]
+            };
+            left = left.saturating_sub(offsets.len());
+            if own[at] {
+                read.push(taken);
+            }
+        }
+        let budget_recall_view = covered_by(one, &read);
+
+        let is_relevant = |name: &str, content: &str| {
+            file_part(name) == one.file && covered_by(one, &[content]) > 0.0
+        };
+        let judged = sections[&one.file]
+            .iter()
+            .filter(|section| is_relevant(&section.name, &section.content))
+            .count();
+        let relevant: HashSet<&str> = hits
+            .iter()
+            .filter(|hit| is_relevant(&hit.topic, &hit.state.content))
+            .map(|hit| hit.topic.as_str())
+            .collect();
+        let topics: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
+        let mut scored = Scores::default();
+        scored.add(&topics, judged, |name| relevant.contains(name));
+        let graph_hits10 = hits
+            .iter()
+            .take(10)
+            .filter(|hit| hit.seed.is_some())
+            .count();
+        rows.push(OutlineRow {
+            corpus,
+            arm,
+            unit: one.unit.clone(),
+            question: one.id.clone(),
+            ndcg10: scored.per_query[0],
+            covered,
+            bytes,
+            budget_recall_view,
+            graph_hits10,
+            search_ms: ms,
+        });
+    }
+}
+
+/// Builds one project of heading sections, searches it, states its outline,
+/// and searches it again.
+async fn outline_corpus(
+    corpus: &'static str,
+    files: &[(String, String)],
+    asked: &[Asked],
+    workspace: &Workspace,
+    counter: &dyn TokenCount,
+    nonce: &str,
+    rows: &mut Vec<OutlineRow>,
+) {
+    let engine = Engine::open(
+        workspace,
+        &format!("scratch-outline-{corpus}-{nonce}"),
+        VectorIndex::default(),
+        Access::ReadWrite,
+        &harness::settings(),
+    )
+    .await
+    .expect("open the engine");
+    // Cut and named as `pamin ingest` does a first time, with the outline it
+    // states.
+    let mut by_file: BTreeMap<String, Vec<Section>> = BTreeMap::new();
+    let mut edges: Vec<(String, String, pamin_core::EdgeKind)> = Vec::new();
+    for (name, text) in files {
+        let unnamed = pamin_index::sections::unnamed(name, text, counter);
+        let bases: Vec<String> = unnamed.iter().map(|s| s.base.clone()).collect();
+        let named = pamin_index::sections::named(unnamed, &[]);
+        let bases: Vec<&str> = bases.iter().map(String::as_str).collect();
+        for (from, to, placed) in pamin_index::sections::outline(&bases) {
+            let kind = match placed {
+                pamin_index::sections::Placed::Under => pamin_core::EdgeKind::PartOf,
+                pamin_index::sections::Placed::Before => pamin_core::EdgeKind::RelatedTo,
+            };
+            edges.push((named[from].name.clone(), named[to].name.clone(), kind));
+        }
+        by_file.insert(name.clone(), named);
+    }
+    let mut written = 0;
+    for sections in by_file.values() {
+        for section in sections {
+            written += usize::from(
+                engine
+                    .remember_section(
+                        &section.name,
+                        &section.content,
+                        pamin_core::Validity::ALWAYS,
+                        ROOT,
+                    )
+                    .await
+                    .expect("record a section")
+                    .is_some(),
+            );
+        }
+    }
+    harness::drain(&engine).await;
+    let memories: usize = by_file.values().map(Vec::len).sum();
+    assert_eq!(written, memories, "{corpus}: not a fresh project");
+    println!(
+        "  {corpus}: {} files, {memories} sections, {} outline edges, {} questions",
+        by_file.len(),
+        edges.len(),
+        asked.len()
+    );
+
+    let count_edges = |engine: &Engine| {
+        let pool = engine.database.pool().clone();
+        let project = engine.project;
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM relationships r
+                   JOIN relationship_versions v ON v.relationship_id = r.id
+                  WHERE r.project_id = $1 AND v.invalidated_at IS NULL",
+            )
+            .bind(project.0)
+            .fetch_one(&pool)
+            .await
+            .expect("count edges")
+        }
+    };
+    let before = count_edges(&engine).await;
+    outline_search(&engine, corpus, "plain", asked, &by_file, counter, rows).await;
+
+    let sections: Vec<String> = by_file
+        .values()
+        .flatten()
+        .map(|section| section.name.clone())
+        .collect();
+    let added = engine
+        .restate_outline(&sections, &edges)
+        .await
+        .expect("state the outline");
+    let after = count_edges(&engine).await;
+    // Premise: the second pass differs from the first by the outline alone.
+    assert_eq!(added, edges.len(), "{corpus}: not every outline edge was added");
+    assert_eq!(after - before, edges.len() as i64, "{corpus}: edges {before} -> {after}");
+    outline_search(&engine, corpus, "outline", asked, &by_file, counter, rows).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "scratch"]
+async fn scratch_outline() {
+    let home = harness::eval_home();
+    let workspace = Workspace::at(&home);
+    let counter = SpanTokens::load(&workspace.models_dir()).expect("BGE-M3's tokenizer");
+    let out = std::path::PathBuf::from(std::env::var("SCRATCH_OUT").expect("SCRATCH_OUT"));
+    let nonce = format!(
+        "{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_secs()
+    );
+    let mut rows = Vec::new();
+
+    // Qasper.
+    let (papers, questions) = corpus();
+    let files: Vec<(String, String)> = papers
+        .iter()
+        .map(|paper| (paper.name.clone(), paper.markdown.clone()))
+        .collect();
+    let asked: Vec<Asked> = questions
+        .iter()
+        .enumerate()
+        .map(|(at, question)| Asked {
+            unit: question.paper.clone(),
+            id: format!("q{at}"),
+            file: question.file.clone(),
+            text: question.text.clone(),
+            evidence: question.evidence.clone(),
+        })
+        .collect();
+    outline_corpus("qasper", &files, &asked, &workspace, &counter, &nonce, &mut rows).await;
+
+    // Repository Markdown.
+    let root = std::path::PathBuf::from(std::env::var("MD_DIR").expect("MD_DIR"));
+    let mut paths = Vec::new();
+    let mut stack = vec![root.join("files")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "md") {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
+    let files: Vec<(String, String)> = paths
+        .iter()
+        .map(|path| {
+            (
+                path.strip_prefix(root.join("files"))
+                    .expect("under files")
+                    .to_string_lossy()
+                    .into_owned(),
+                std::fs::read_to_string(path).expect("read a file"),
+            )
+        })
+        .collect();
+    let texts: BTreeMap<&str, &str> = files.iter().map(|(n, t)| (n.as_str(), t.as_str())).collect();
+    let asked: Vec<Asked> = std::fs::read_to_string(root.join("questions.jsonl"))
+        .expect("questions")
+        .lines()
+        .map(|line| {
+            let q: serde_json::Value = serde_json::from_str(line).expect("a question");
+            let file = q["file"].as_str().expect("file").to_string();
+            let (start, end) = (
+                q["start"].as_u64().expect("start") as usize,
+                q["end"].as_u64().expect("end") as usize,
+            );
+            // Premise: the evidence is where its label says.
+            assert_eq!(&texts[file.as_str()][start..end], q["evidence"].as_str().expect("evidence"));
+            let evidence = words(q["evidence"].as_str().expect("evidence"));
+            Asked {
+                unit: file.clone(),
+                id: q["id"].as_str().expect("id").to_string(),
+                file,
+                text: q["question"].as_str().expect("question").to_string(),
+                evidence: vec![vec![evidence]],
+            }
+        })
+        .filter(|asked| !asked.evidence[0][0].is_empty())
+        .collect();
+    outline_corpus("md", &files, &asked, &workspace, &counter, &nonce, &mut rows).await;
+
+    std::fs::write(&out, serde_json::to_vec_pretty(&rows).expect("serialize")).expect("write");
+    for corpus in ["qasper", "md"] {
+        let pick = |arm: &str, metric: &dyn Fn(&OutlineRow) -> f64| -> (Vec<f64>, Vec<String>) {
+            rows.iter()
+                .filter(|r| r.corpus == corpus && r.arm == arm)
+                .map(|r| (metric(r), r.unit.clone()))
+                .unzip()
+        };
+        println!("\n  {corpus}: outline against plain, paired by file (Δ = outline − plain):");
+        let metrics: Vec<(&str, Box<dyn Fn(&OutlineRow) -> f64>)> = vec![
+            ("nDCG@10", Box::new(|r: &OutlineRow| r.ndcg10)),
+            ("covered@1", Box::new(|r: &OutlineRow| r.covered[0])),
+            ("covered@5", Box::new(|r: &OutlineRow| r.covered[1])),
+            ("covered@10", Box::new(|r: &OutlineRow| r.covered[2])),
+            ("bytes@10", Box::new(|r: &OutlineRow| r.bytes[2] as f64)),
+            ("budget recall (view)", Box::new(|r: &OutlineRow| r.budget_recall_view)),
+            ("graph hits in top 10", Box::new(|r: &OutlineRow| r.graph_hits10 as f64)),
+        ];
+        for (name, metric) in &metrics {
+            let (base, keys) = pick("plain", metric.as_ref());
+            let (new, _) = pick("outline", metric.as_ref());
+            let groups = vec![0; keys.len()];
+            let base = statistics::cluster_macro_contributions(&base, &groups, &keys);
+            let new = statistics::cluster_macro_contributions(&new, &groups, &keys);
+            println!(
+                "  {name:<22} plain {:.4}  outline {:.4}  {}",
+                mean(&base),
+                mean(&new),
+                statistics::compare(&base, &new)
+            );
+        }
+    }
+    println!("  rows: {}", out.display());
+}
