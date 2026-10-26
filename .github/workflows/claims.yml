@@ -1,0 +1,60 @@
+# Issue claims for external contributors (R20): `/claim` on an issue assigns the commenter and labels
+# it `claimed`; `/unclaim` releases it; a daily run releases claims older than 7 days that no open PR
+# references. The pamin-labs-dev merge gate lets an external PR through when it closes a claim of its author.
+name: Claims
+
+on:
+  issue_comment:
+    types: [created]
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  issues: write
+
+jobs:
+  command:
+    if: github.event_name == 'issue_comment' && !github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      COMMENT: ${{ github.event.comment.body }}
+      LOGIN: ${{ github.event.comment.user.login }}
+      ISSUE: ${{ github.event.issue.number }}
+      ASSIGNEES: ${{ join(github.event.issue.assignees.*.login, ' ') }}
+    steps:
+      - run: |
+          command=$(printf '%s' "$COMMENT" | head -1 | tr -d '\r' | awk '{print $1}')
+          case "$command" in
+            /claim)
+              if [ -n "$ASSIGNEES" ]; then
+                gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "This issue is already claimed by @${ASSIGNEES// /, @}."
+                exit 0
+              fi
+              gh label create claimed --repo "$GITHUB_REPOSITORY" --color 0e8a16 --description "Claimed with /claim" --force > /dev/null
+              gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --add-assignee "$LOGIN" --add-label claimed
+              gh issue comment "$ISSUE" --repo "$GITHUB_REPOSITORY" --body "Claimed by @$LOGIN for 7 days. Open a PR that says \`Closes #$ISSUE\`; comment \`/unclaim\` to release it." ;;
+            /unclaim)
+              case " $ASSIGNEES " in *" $LOGIN "*) ;; *) exit 0 ;; esac
+              gh issue edit "$ISSUE" --repo "$GITHUB_REPOSITORY" --remove-assignee "$LOGIN" --remove-label claimed ;;
+          esac
+
+  expire:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: |
+          cutoff=$(date -u -d '7 days ago' +%s)
+          gh issue list --repo "$GITHUB_REPOSITORY" --label claimed --state open --json number --jq '.[].number' | while read -r issue; do
+            claimed=$(gh api "repos/$GITHUB_REPOSITORY/issues/$issue/timeline" --paginate \
+              --jq '[.[] | select(.event == "labeled" and .label.name == "claimed") | .created_at] | last')
+            linked=$(gh api "repos/$GITHUB_REPOSITORY/issues/$issue/timeline" --paginate \
+              --jq '[.[] | select(.event == "cross-referenced" and .source.issue.pull_request != null and .source.issue.state == "open")] | length')
+            if [ "$(date -u -d "$claimed" +%s)" -lt "$cutoff" ] && [ "$linked" = 0 ]; then
+              assignees=$(gh issue view "$issue" --repo "$GITHUB_REPOSITORY" --json assignees --jq '[.assignees[].login] | join(",")')
+              gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --remove-label claimed --remove-assignee "$assignees"
+              gh issue comment "$issue" --repo "$GITHUB_REPOSITORY" --body "This claim expired after 7 days without a PR. Comment \`/claim\` to claim it again."
+            fi
+          done
