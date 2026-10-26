@@ -733,10 +733,17 @@ unchanged is retired, and the next ingest brings it back.
 
 `--keep-missing` only lists such sections, under `missing`, and leaves them
 searchable. So does any section somebody also wrote by hand with `pamin write`,
-whatever the flag: it is theirs as well as the file's. A section cut down below
-the filter's eight characters is left saying what it said too, and for as long
-as that lasts it is held on every ingest, counted under `held`, and its
-evidence recorded again each time.
+whatever the flag: it is theirs as well as the file's.
+
+**A section its file cut down to next to nothing is taken off too.** Text
+below the filter's eight characters — a `TBD` where a paragraph was — is held,
+counted under `held`, and would leave the section answering with the text the
+file no longer has. So it is retired as a section the file lost is, and listed
+under `removed`, `--keep-missing` or not: the file still has the section and
+says next to nothing in it. Ingesting it again while it says the same writes
+nothing, and once the file says something again the section is back. One
+somebody also wrote by hand stays, held on every ingest and its evidence
+recorded again each time.
 
 Nothing outside what the command named is looked at. A repository whose
 directory was renamed or checked out under another name is recorded afresh
