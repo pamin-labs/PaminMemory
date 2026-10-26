@@ -7,6 +7,7 @@
 
 
 - Before making changes, branch from the latest `main` with a concise name that matches the intended PR.
+- Coordinate through pamin-labs-dev before editing. With the plugin, its hooks and the `protocol` skill guide you. Without it (other agents, other tools), declare an intent with the `pamin-labs-dev` CLI first (`pamin-labs-dev intent declare ...`), work on its branch `<type>/i-<number>-<slug>`, and put `Intent: I-<number>` in the PR description; CI rejects PRs without a live intent for their branch. External contributors follow [CONTRIBUTING.md](CONTRIBUTING.md) instead.
 - Read the relevant `pamin-memory/` materials in InternalDocs before implementing PaminMemory changes. InternalDocs is a sibling clone at `$PAMIN_LABS_DEV_INTERNAL_DOCS` (default `../InternalDocs`); pull it first. See [docs/internal-docs.md](docs/internal-docs.md).
 - Keep private planning, monetization, strategy, and sensitive internal notes out of public files.
 - When internal documentation changes are needed, open a PR in the private `InternalDocs` repository. This repository keeps no pointer to it; cite InternalDocs evidence with SHA permalinks (`https://github.com/Pamin-Labs/InternalDocs/blob/<sha>/<path>`).
