@@ -33,6 +33,7 @@ sql_enum!(FilterDecision {
 
 sql_enum!(SourceKind {
     Manual => "manual",
+    File => "file",
 });
 
 sql_enum!(EdgeKind {
@@ -132,7 +133,20 @@ pub async fn ensure_source(
     kind: SourceKind,
     locator: &str,
 ) -> Result<SourceId> {
-    const FIND: &str = "SELECT id FROM sources WHERE project_id = $1 AND locator = $2 FOR UPDATE";
+    Ok(ensure_source_created(connection, project, kind, locator)
+        .await?
+        .0)
+}
+
+/// [`ensure_source`], saying whether this call created the source -- which is
+/// the first time anything was filed under `locator`.
+pub async fn ensure_source_created(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    kind: SourceKind,
+    locator: &str,
+) -> Result<(SourceId, bool)> {
+    const FIND: &str = "SELECT id, false AS created FROM sources WHERE project_id = $1 AND locator = $2 FOR UPDATE";
 
     let row = sqlx::query(
         "WITH found AS (
@@ -144,9 +158,9 @@ pub async fn ensure_source(
              ON CONFLICT (project_id, locator) DO NOTHING
              RETURNING id
          )
-         SELECT id FROM found
+         SELECT id, false AS created FROM found
          UNION ALL
-         SELECT id FROM inserted",
+         SELECT id, true AS created FROM inserted",
     )
     .bind(project.0)
     .bind(locator)
@@ -170,7 +184,7 @@ pub async fn ensure_source(
         }
     };
 
-    Ok(row.get::<uuid::Uuid, _>("id").into())
+    Ok((row.get::<uuid::Uuid, _>("id").into(), row.get("created")))
 }
 
 /// Evidence as the write path records it: the content, the filter's verdict
@@ -495,6 +509,62 @@ pub async fn create_topic_named(
     key: &str,
     tokens: usize,
 ) -> Result<LockedTopic> {
+    create_topic(connection, project, name, Some((key, tokens))).await
+}
+
+/// Files the name of the topic called `name` in the name index, if the topic
+/// exists and is not filed there yet.
+///
+/// For a topic `pamin ingest` created, which is left out of the index, when
+/// somebody writes it by hand: from then on it is theirs too, and a name
+/// somebody wrote is one a memory may name.
+///
+/// Returns the topic when this call filed it.
+pub async fn name_topic(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    name: &str,
+    key: &str,
+    tokens: usize,
+) -> Result<Option<TopicId>> {
+    let inserted: Option<(uuid::Uuid,)> = sqlx::query_as(
+        "INSERT INTO topic_name_tokens (project_id, topic_id, name_key, token_count)
+         SELECT project_id, id, $3, $4 FROM topics WHERE project_id = $1 AND name = $2
+         ON CONFLICT (project_id, topic_id) DO NOTHING
+         RETURNING topic_id",
+    )
+    .bind(project.0)
+    .bind(name)
+    .bind(key)
+    .bind(i16::try_from(tokens).unwrap_or(i16::MAX))
+    .fetch_optional(executor)
+    .await?;
+    Ok(inserted.map(|(topic,)| topic.into()))
+}
+
+/// [`create_topic_named`] for a topic no memory is expected to name: one cut
+/// out of a file, whose name is its path and headings.
+///
+/// Left out of the name index rather than filed there, because a name in it is
+/// a cost every later write pays and not only its own: mention derivation
+/// compares every run of a memory's tokens up to the widest name in the
+/// project, so one name of twenty tokens makes every memory written afterwards
+/// build four times the runs one of five did. A path no prose quotes in full
+/// buys nothing for that.
+pub async fn create_topic_unnamed(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    name: &str,
+) -> Result<LockedTopic> {
+    create_topic(connection, project, name, None).await
+}
+
+async fn create_topic(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    name: &str,
+    named: Option<(&str, usize)>,
+) -> Result<LockedTopic> {
     let inserted = sqlx::query(
         "WITH topic AS (
              INSERT INTO topics (id, project_id, name, created_at)
@@ -503,7 +573,7 @@ pub async fn create_topic_named(
              RETURNING id, name, path, created_at, current_state_id
          ), named AS (
              INSERT INTO topic_name_tokens (project_id, topic_id, name_key, token_count)
-             SELECT $2, id, $5, $6 FROM topic
+             SELECT $2, id, $5, $6 FROM topic WHERE $5::text IS NOT NULL
          )
          SELECT id, name, path, created_at, current_state_id FROM topic",
     )
@@ -511,8 +581,8 @@ pub async fn create_topic_named(
     .bind(project.0)
     .bind(name)
     .bind(OffsetDateTime::now_utc())
-    .bind(key)
-    .bind(tokens as i16)
+    .bind(named.map(|(key, _)| key))
+    .bind(named.map(|(_, tokens)| tokens as i16))
     .fetch_optional(&mut *connection)
     .await?;
 
@@ -968,6 +1038,52 @@ pub async fn soft_delete_topic_state(
     Ok(true)
 }
 
+/// Soft deletes every surviving version of a topic, so that it stands for
+/// nothing: off the retrieval surface, its pointer cleared, and the work that
+/// removes its document from the projection and closes the edges its content
+/// derived owed in the same transaction. Returns whether anything survived to
+/// delete.
+///
+/// What [`soft_delete_topic_state`] does to one version, done to all of them --
+/// for a memory whose source no longer says anything at all, which is what a
+/// section of a file becomes when the file stops having it. The rows and their
+/// evidence stay, so the history reads as it did; a later write to the topic
+/// appends a version as any write does, and brings it back.
+pub async fn retire_topic(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    topic: TopicId,
+) -> Result<bool> {
+    sqlx::query("SELECT id FROM topics WHERE id = $1 FOR UPDATE")
+        .bind(topic.0)
+        .execute(&mut *connection)
+        .await?;
+
+    let affected = sqlx::query(
+        "UPDATE topic_states SET deleted_at = $2
+         WHERE topic_id = $1 AND deleted_at IS NULL",
+    )
+    .bind(topic.0)
+    .bind(OffsetDateTime::now_utc())
+    .execute(&mut *connection)
+    .await?;
+
+    if affected.rows_affected() == 0 {
+        return Ok(false);
+    }
+
+    point_at(connection, topic, None).await?;
+    crate::jobs::enqueue_all(
+        &mut *connection,
+        project,
+        &[JobKind::SyncTopicIndex, JobKind::DeriveMentions],
+        Some(topic.0),
+    )
+    .await?;
+
+    Ok(true)
+}
+
 /// Recomputes every topic's current-state pointer from the ledger.
 ///
 /// Returns how many topics were pointing somewhere else. Nothing should be, and
@@ -1003,6 +1119,44 @@ pub async fn repair_current_state_pointers(pool: &PgPool, project: ProjectId) ->
     .await?;
 
     Ok(repaired.rows_affected())
+}
+
+/// Whether any evidence is filed under `locator`.
+pub async fn source_at(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    locator: &str,
+) -> Result<bool> {
+    let found: Option<(i32,)> =
+        sqlx::query_as("SELECT 1 FROM sources WHERE project_id = $1 AND locator = $2")
+            .bind(project.0)
+            .bind(locator)
+            .fetch_optional(executor)
+            .await?;
+    Ok(found.is_some())
+}
+
+/// The content hash of the newest evidence filed under `locator`, if any.
+///
+/// For a caller that has to know whether it is about to record what is
+/// already there, and has the locator rather than the source's id.
+pub async fn latest_hash_at(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    locator: &str,
+) -> Result<Option<String>> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT sv.content_hash FROM sources s
+           JOIN source_versions sv ON sv.project_id = s.project_id AND sv.source_id = s.id
+         WHERE s.project_id = $1 AND s.locator = $2
+         ORDER BY sv.version DESC LIMIT 1",
+    )
+    .bind(project.0)
+    .bind(locator)
+    .fetch_optional(executor)
+    .await?;
+
+    Ok(row.map(|(hash,)| hash))
 }
 
 /// Loads the newest evidence version for a source.
@@ -1271,6 +1425,126 @@ pub async fn names_matching(
             )
         })
         .collect())
+}
+
+/// Every topic in a project that belongs in the name index: all of them but
+/// the sections `pamin ingest` cut out of files, which
+/// [`create_topic_unnamed`] keeps out of it.
+///
+/// Told apart by their sources rather than their name. A section's evidence is
+/// filed under `file:{name}` and a manual memory's under `manual:{name}`, and
+/// the unique key on `(project_id, locator)` answers both for each topic,
+/// where a rule about what a name looks like would also catch a topic someone
+/// wrote by hand. A topic with both was written by hand as well as ingested,
+/// and keeps its name.
+pub async fn topics_to_name(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+) -> Result<Vec<Topic>> {
+    let rows = sqlx::query(
+        "SELECT t.id, t.name, t.path, t.created_at FROM topics t
+         WHERE t.project_id = $1
+           AND (NOT EXISTS (
+                    SELECT 1 FROM sources s
+                     WHERE s.project_id = t.project_id
+                       AND s.locator = 'file:' || t.name)
+                OR EXISTS (
+                    SELECT 1 FROM sources s
+                     WHERE s.project_id = t.project_id
+                       AND s.locator = 'manual:' || t.name))
+         ORDER BY t.name ASC",
+    )
+    .bind(project.0)
+    .fetch_all(executor)
+    .await?;
+
+    Ok(rows
+        .iter()
+        .map(|row| Topic {
+            id: row.get::<uuid::Uuid, _>("id").into(),
+            project_id: project,
+            name: row.get("name"),
+            path: row.get("path"),
+            created_at: row.get("created_at"),
+        })
+        .collect())
+}
+
+/// A topic `pamin ingest` has put on the retrieval surface.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileTopic {
+    pub name: String,
+    /// What it says now, which an ingest that retires it checks is still what
+    /// it says when it gets there.
+    pub current: TopicStateId,
+    /// The directory it was last ingested from.
+    pub root: Option<String>,
+}
+
+/// Every topic `pamin ingest` has put on the retrieval surface in this project.
+///
+/// One read for a whole ingest, rather than one per file: an ingest compares
+/// each file's sections against what an earlier ingest left under that file,
+/// and asking once per file would scan the project's sources once per file.
+pub async fn file_topic_names(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+) -> Result<Vec<FileTopic>> {
+    let rows: Vec<(String, uuid::Uuid, Option<String>)> = sqlx::query_as(
+        "SELECT t.name, t.current_state_id, s.root FROM sources s
+           JOIN topics t ON t.project_id = s.project_id AND t.name = substr(s.locator, 6)
+         WHERE s.project_id = $1 AND s.kind = 'file' AND t.current_state_id IS NOT NULL",
+    )
+    .bind(project.0)
+    .fetch_all(executor)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(name, current, root)| FileTopic {
+            name,
+            current: current.into(),
+            root,
+        })
+        .collect())
+}
+
+/// [`set_source_root`] for every source filed under `locators`, in one
+/// statement: for the sections an ingest found unchanged, which write nothing
+/// else, so that each records the tree it was last ingested from all the same.
+pub async fn set_roots_at(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    locators: &[String],
+    root: &str,
+) -> Result<()> {
+    if locators.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "UPDATE sources SET root = $3
+         WHERE project_id = $1 AND locator = ANY($2) AND root IS DISTINCT FROM $3",
+    )
+    .bind(project.0)
+    .bind(locators)
+    .bind(root)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Records `root` as the directory the file source was last ingested from.
+pub async fn set_source_root(
+    executor: impl PgExecutor<'_>,
+    source: SourceId,
+    root: &str,
+) -> Result<()> {
+    sqlx::query("UPDATE sources SET root = $2 WHERE id = $1 AND root IS DISTINCT FROM $2")
+        .bind(source.0)
+        .bind(root)
+        .execute(executor)
+        .await?;
+    Ok(())
 }
 
 /// Lists every topic in a project.
