@@ -3,7 +3,7 @@
 # - Cloud sessions load no plugins: run the same hook with the binary served by the Worker; the
 #   environment's network-secrets proxy adds the Access service token.
 # - Locally the organization plugin does the work; if it is not running in this session, deny edits.
-# Usage: pamin-labs-dev.sh session-start|pre-tool-use|stop, with the hook input on stdin.
+# Usage: pamin-labs-dev.sh session-start|pre-tool-use|stop|session-end, with the hook input on stdin.
 hook="$1"
 input="$(cat)"
 home="${PAMIN_LABS_DEV_HOME:-$HOME/.pamin-labs-dev}"
@@ -22,6 +22,8 @@ if [ "$CLAUDE_CODE_REMOTE" = true ]; then
     (cd "$tmp" && grep " $asset\$" SHA256SUMS | sha256sum -c - > /dev/null) || exit 0
     mkdir -p "$(dirname "$bin")" && chmod +x "$tmp/$asset" && mv "$tmp/$asset" "$bin" || exit 0
   fi
+  # No plugin monitor runs here: watch keeps the cache live and sends the heartbeat, and exits with Claude Code.
+  [ "$hook" = session-start ] && "$bin" watch > /dev/null 2>&1 &
   printf '%s' "$input" | exec "$bin" hook "$hook"
 fi
 
