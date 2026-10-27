@@ -107,6 +107,8 @@ pub enum Call {
     Topics(command::topics::Args),
     Reindex(command::reindex::Args),
     Cascade(command::cascade::Args),
+    Sync(command::sync::Args),
+    Unsync(command::unsync::Args),
     /// Stop the database, and the server answering this. The one call a client
     /// will not start a server in order to make.
     Stop,
@@ -129,6 +131,8 @@ impl Call {
             Self::Topics(_) => "topics",
             Self::Reindex(_) => "reindex",
             Self::Cascade(_) => "cascade",
+            Self::Sync(_) => "sync",
+            Self::Unsync(_) => "unsync",
             Self::Stop => "stop",
         }
     }

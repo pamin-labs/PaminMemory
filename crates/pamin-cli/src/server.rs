@@ -77,6 +77,7 @@ pub async fn run(workspace: &Workspace, server: Server) -> Result<()> {
         UnixListener::bind(&path).with_context(|| format!("binding {}", path.display()))?;
 
     tokio::spawn(maintain(Arc::clone(&session)));
+    session.set_syncing(crate::watch::Syncing::start(Arc::clone(&session)));
 
     tracing::info!(socket = %path.display(), "serving");
 
@@ -828,8 +829,8 @@ async fn answer(session: &Arc<Session>, request: Request) -> Result<Payload> {
     // Before the request, not after it: the loads are what the next search
     // would wait for, and this request is the earliest sign one is coming.
     // Not for `reindex`, which discards the index a warm-up would be holding
-    // open.
-    if !matches!(call, Call::Reindex(_)) {
+    // open, nor for the calls about synced paths, which never touch it.
+    if !matches!(call, Call::Reindex(_) | Call::Sync(_) | Call::Unsync(_)) {
         session.warm(&project, vector_index);
     }
 
@@ -863,6 +864,8 @@ async fn answer(session: &Arc<Session>, request: Request) -> Result<Payload> {
         Call::Cascade(args) => {
             json(command::cascade::answer(session, &project, vector_index, args).await?)?
         }
+        Call::Sync(_) => json(command::sync::list(session, &project).await?)?,
+        Call::Unsync(args) => json(command::sync::unsync(session, &project, args).await?)?,
         Call::Stop => unreachable!("answered above"),
     };
 

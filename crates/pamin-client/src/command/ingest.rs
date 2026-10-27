@@ -19,6 +19,16 @@ pub struct Args {
     /// them, rather than taking them off the retrieval surface.
     #[arg(long)]
     pub keep_missing: bool,
+
+    /// Ingest these paths once and stop keeping them in sync.
+    ///
+    /// By default the server keeps every path it ingests in sync: it watches
+    /// it and ingests what changes under it, and catches up on what changed
+    /// while it was not running. With this, it ingests them and forgets any
+    /// earlier ingest's asking for that.
+    #[arg(long)]
+    #[serde(default)]
+    pub no_sync: bool,
 }
 
 #[derive(Serialize, Deserialize)]
