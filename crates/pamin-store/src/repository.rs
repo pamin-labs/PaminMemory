@@ -1522,8 +1522,8 @@ pub struct Named {
 /// on the retrieval surface, is left out.
 ///
 /// For an ingest, which asks it about many sections at once: to number a
-/// file's sections against what they said before, and to tell which section
-/// gone from one name is one found under another.
+/// file's sections against what they said before, and to resolve the
+/// sections its outline relates.
 pub async fn current_named(
     executor: impl PgExecutor<'_>,
     project: ProjectId,

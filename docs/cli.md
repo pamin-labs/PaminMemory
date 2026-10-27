@@ -759,6 +759,24 @@ section naming a topic written by hand does. A topic written by hand keeps its
 name if it is later ingested, and one ingested first is named the first time
 somebody writes it by hand.
 
+**Each section is `part_of` the section above it**: the first section of the
+nearest heading above its own that has one, or the file's first section for one
+with none. Search follows these edges, so a section whose meaning depends on
+the section above it — a rule's conditions stated under the heading it sits
+under — brings that section along; `pamin neighbors` walks a file by them too.
+They are derived, restated on every ingest, and closed when a section moves or
+leaves its file. On ConditionalQA they raised how often every evidence sentence
+of a question needing a section and the one above it was read in the first
+1,000 tokens from 0.506 to 0.618, and over all questions from 0.755 to 0.792
+([measured](../benchmarks/results/ingest/conditionalqa-sections-2026-10-26.md)).
+
+A search hit on a section carries the name of the section it sits under, as
+`"parent"` in `--json` and a `part of` line in plain output, for a caller to
+`pamin read` when the hit depends on the heading above it. Its text is not
+returned with the hit: shown before every hit it put a question's context
+nearer the top, but only by returning 40% more to read, and read to the same
+1,000 tokens it found no more.
+
 `--json` carries every count, the `removed`, `missing`, `renamed` and `skipped` lists, and
 the same `cascade` and `cascade_lagging` as `import`.
 

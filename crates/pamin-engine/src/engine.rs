@@ -40,9 +40,14 @@ struct GraphRecallOptions {
 /// interchangeable. Provisional, like every other retrieval constant here.
 const MENTION_CONFIDENCE: f32 = 0.5;
 
-/// Every kind of edge the engine derives: what a memory names. A topic that
-/// resolves to nothing derives none of them.
-pub(crate) const DERIVED: [EdgeKind; 1] = [EdgeKind::Mentions];
+/// Every kind of edge the engine derives: what a memory names, and the section
+/// a section of a file sits under. A topic that resolves to nothing derives
+/// none of them.
+pub(crate) const DERIVED: [EdgeKind; 2] = [EdgeKind::Mentions, EdgeKind::PartOf];
+
+/// How much weight a section's `part_of` carries: a mention's. Provisional, as
+/// that is; the edge was measured at this weight.
+const PARENT_CONFIDENCE: f32 = MENTION_CONFIDENCE;
 
 /// How many topics the graph channel is willing to walk out from.
 ///
@@ -1815,6 +1820,59 @@ impl Engine {
             .await
     }
 
+    /// Restates which section each of `sections` sits under, as `parents`
+    /// names them: its `part_of` edge, which a search follows to the context a
+    /// section cut out of its file lost.
+    ///
+    /// As [`derive_mentions`](Self::derive_mentions) restates what a memory
+    /// names: asserted first, so an outline that has not changed writes
+    /// nothing, then every derived `part_of` out of `sections` that `parents`
+    /// no longer claims is closed -- a section moved, or its parent gone. Each
+    /// edge is caused by its section's current state. Returns how many edges
+    /// this call added.
+    pub async fn restate_parents(
+        &self,
+        sections: &[String],
+        parents: &[(String, String)],
+    ) -> Result<usize> {
+        let mut names: Vec<String> = sections.to_vec();
+        names.extend(parents.iter().map(|(_, parent)| parent.clone()));
+        names.sort_unstable();
+        names.dedup();
+        let found: std::collections::HashMap<String, repository::Named> =
+            repository::current_named(self.database.pool(), self.project, &names)
+                .await?
+                .into_iter()
+                .map(|named| (named.name.clone(), named))
+                .collect();
+
+        let mut kept: std::collections::BTreeMap<TopicId, Vec<TopicId>> = sections
+            .iter()
+            .filter_map(|section| Some((found.get(section)?.topic, Vec::new())))
+            .collect();
+        let mut claims = Vec::new();
+        for (section, parent) in parents {
+            let (Some(from), Some(to)) = (found.get(section), found.get(parent)) else {
+                continue;
+            };
+            claims.push((
+                from.topic,
+                to.topic,
+                EdgeClaim::derived(EdgeKind::PartOf, from.current, PARENT_CONFIDENCE),
+            ));
+            kept.entry(from.topic).or_default().push(to.topic);
+        }
+
+        let asserted = graph::assert_edges(self.database.pool(), self.project, &claims).await?;
+        let keep: Vec<(TopicId, Vec<TopicId>)> = kept.into_iter().collect();
+        graph::retract_derived_all(self.database.pool(), self.project, EdgeKind::PartOf, &keep)
+            .await?;
+        Ok(asserted
+            .iter()
+            .filter(|assertion| assertion.is_new())
+            .count())
+    }
+
     /// [`derive_mentions`](Self::derive_mentions) for many states, asking each
     /// of its questions once for all of them.
     ///
@@ -2195,6 +2253,54 @@ impl Engine {
     /// the product does fixed -- the reranker above all -- while one channel
     /// is taken out or reweighted.
     pub async fn search_reranked_with(
+        &self,
+        query: &str,
+        limit: u32,
+        depths: Depths,
+        fusion: Fusion,
+    ) -> Result<Vec<SearchHit>> {
+        let hits = self.ranked(query, limit, depths, fusion).await?;
+        self.with_parents(hits).await
+    }
+
+    /// Each hit with the name of the section it sits under, if it is a
+    /// section of a file with one: one read of the hits' `part_of` edges and
+    /// one of their targets' names, and the second not at all when no hit has
+    /// one.
+    async fn with_parents(&self, mut hits: Vec<SearchHit>) -> Result<Vec<SearchHit>> {
+        let topics: Vec<TopicId> = hits.iter().map(|hit| hit.state.topic_id).collect();
+        let edges = graph::targets(
+            self.database.pool(),
+            self.project,
+            &topics,
+            EdgeKind::PartOf,
+        )
+        .await?;
+        if edges.is_empty() {
+            return Ok(hits);
+        }
+        let mut parents: Vec<TopicId> = edges.iter().map(|(_, parent)| *parent).collect();
+        parents.sort_unstable();
+        parents.dedup();
+        let names: std::collections::HashMap<TopicId, String> =
+            repository::topics_by_id(self.database.pool(), self.project, &parents)
+                .await?
+                .into_iter()
+                .map(|(topic, name, _)| (topic, name))
+                .collect();
+        let parent_of: std::collections::HashMap<TopicId, TopicId> = edges.into_iter().collect();
+        for hit in &mut hits {
+            hit.parent = parent_of
+                .get(&hit.state.topic_id)
+                .and_then(|parent| names.get(parent))
+                .cloned();
+        }
+        Ok(hits)
+    }
+
+    /// [`search_reranked_with`](Self::search_reranked_with) without the
+    /// hits' parents.
+    async fn ranked(
         &self,
         query: &str,
         limit: u32,
@@ -2937,6 +3043,12 @@ pub struct SearchHit {
     /// this hit is about: its best span and what fits the view's token budget
     /// around it. `None` for a memory of one span, which is the whole of it.
     pub span: Option<SpanView>,
+    /// For a section of a file, the name of the section it sits under: the
+    /// context a section cut out of its file lost, for a caller to read when
+    /// the hit needs it. A name and not its text, which on ConditionalQA put
+    /// the context nearer the top only by returning more to read, and read to
+    /// the same budget found no more. `None` for a memory with no `part_of`.
+    pub parent: Option<String>,
 }
 
 /// Where in a memory a span, or a run of them, lies.
@@ -3060,6 +3172,7 @@ impl Fused {
                     result,
                     seed,
                     span,
+                    parent: None,
                 }
             })
             .collect()

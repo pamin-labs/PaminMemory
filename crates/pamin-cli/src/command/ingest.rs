@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 use pamin_client::command::ingest::{Args, Ingested, Renamed};
 use pamin_engine::{Owed, Retired};
 use pamin_index::VectorIndex;
-use pamin_index::sections::{SEPARATOR, Section, Unnamed, named, number, pairs, unnamed};
+use pamin_index::sections::{SEPARATOR, Section, Unnamed, named, number, pairs, parents, unnamed};
 use pamin_index::spans::TokenCount;
 use pamin_store::repository::FileTopic;
 
@@ -118,7 +118,7 @@ pub async fn execute(
     let engine = session.engine(project, vector_index).await?;
     let recorded =
         pamin_store::repository::file_topic_names(engine.database.pool(), engine.project).await?;
-    let cut = numbered(&engine, cut, &recorded).await?;
+    let (cut, parents) = numbered(&engine, cut, &recorded).await?;
 
     let read: Vec<(String, String)> = cut
         .iter()
@@ -218,6 +218,14 @@ pub async fn execute(
         )
         .await?;
     }
+
+    // After the sections are recorded, so each has the state its edge cites,
+    // and before retiring, whose sections no section sits under any more.
+    let sections: Vec<String> = cut
+        .iter()
+        .map(|(section, _)| section.name.clone())
+        .collect();
+    engine.restate_parents(&sections, &parents).await?;
 
     // After the sections are recorded, so a section that moved within a file
     // is written under its new name before its old one is retired, and before
@@ -325,11 +333,15 @@ async fn renamed(
 /// it was last ingested wherever a number is at stake: in a file where two
 /// sections share headings, or where an earlier ingest numbered one. Every
 /// other file's sections are named as they are cut, with no read.
+///
+/// And the section each sits under, by those names: the `part_of` edges
+/// [`Engine::restate_parents`](pamin_engine::Engine::restate_parents) states.
+#[allow(clippy::type_complexity)]
 async fn numbered(
     engine: &pamin_engine::Engine,
     cut: Vec<(String, String, Vec<Unnamed>)>,
     recorded: &[FileTopic],
-) -> Result<Vec<(String, String, Vec<Section>)>> {
+) -> Result<(Vec<(String, String, Vec<Section>)>, Vec<(String, String)>)> {
     // Per file, the earlier sections a number could be kept from.
     let wanted: Vec<Vec<String>> = cut
         .iter()
@@ -361,7 +373,8 @@ async fn numbered(
             .into_iter()
             .map(|named| (named.name, named.content))
             .collect();
-    Ok(cut
+    let mut edges = Vec::new();
+    let files = cut
         .into_iter()
         .zip(wanted)
         .map(|((file, root, sections), wanted)| {
@@ -372,9 +385,16 @@ async fn numbered(
                     Some(Section { name, content })
                 })
                 .collect();
-            (file, root, named(sections, &previous))
+            let bases: Vec<String> = sections.iter().map(|s| s.base.clone()).collect();
+            let sections = named(sections, &previous);
+            let bases: Vec<&str> = bases.iter().map(String::as_str).collect();
+            for (from, to) in parents(&bases) {
+                edges.push((sections[from].name.clone(), sections[to].name.clone()));
+            }
+            (file, root, sections)
         })
-        .collect())
+        .collect();
+    Ok((files, edges))
 }
 
 /// What a command's paths came to.

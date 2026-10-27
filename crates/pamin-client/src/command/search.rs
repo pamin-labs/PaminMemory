@@ -189,6 +189,11 @@ pub struct Hit {
     /// more of the memory around it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub span: Option<Span>,
+    /// For a section of a file, the section it sits under, by name: what to
+    /// `pamin read` when the hit depends on the heading above it. Absent for a
+    /// memory that sits under nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -210,8 +215,11 @@ pub fn render(results: &Results) -> String {
             let span = hit.span.as_ref().map_or(String::new(), |span| {
                 format!(" --span {} (of {}) {}:", span.ordinal, span.of, span.header)
             });
+            let parent = hit.parent.as_ref().map_or(String::new(), |parent| {
+                format!("\n        part of {parent}")
+            });
             format!(
-                "{:.4}  {} v{}{span}  {}\n        {}",
+                "{:.4}  {} v{}{span}  {}\n        {}{parent}",
                 hit.score,
                 hit.topic,
                 hit.version,
