@@ -1,0 +1,114 @@
+#!/bin/bash
+# Measures this branch (head) against the stack it builds on (base) through the
+# product entry point: the release `pamin` client and its resident server, run
+# as the unprivileged `pamintest` user against PostgreSQL 17.6.
+#
+# One workspace and one corpus copy per revision, both servers up, models
+# loaded by a warm-up search outside every arm. Arms are rotated between the
+# revisions each round (AB, BA, ...). Head ingests with --no-sync so the
+# watcher does not ingest an edit before the arm does.
+#   again   unchanged re-ingest of the whole corpus, 3 s after the last one
+#   edit    one word added to one file's first line of prose, then re-ingest
+# Per arm: client wall time; server-process CPU user+sys from /proc (PostgreSQL
+# backends NOT included); written/unchanged counts.
+#
+# Usage: measure.sh <base bin> <head bin> <corpus> <out dir> [rounds]
+set -euo pipefail
+BASE="$1"; HEAD="$2"; SRC="$3"; OUT="$4"; ROUNDS="${5:-5}"
+RUN=/home/pamintest/measure
+rm -rf "$RUN"; mkdir -p "$RUN"
+for rev in base head; do
+  mkdir -p "$RUN/$rev-home"
+  cp -r "$SRC" "$RUN/$rev-corpus"
+  printf '[serve]\npostgres_dir = "/home/pamintest/run/pg17"\n' > "$RUN/$rev-home/config.toml"
+  cp -r /home/pamintest/run/home/models "$RUN/$rev-home/models"
+done
+chown -R pamintest: "$RUN"
+bin() { [ "$1" = base ] && echo "$BASE" || echo "$HEAD"; }
+as_user() {
+  local rev="$1"; shift
+  runuser -u pamintest -- env HOME=/home/pamintest PAMIN_HOME="$RUN/$rev-home" \
+    SSL_CERT_FILE=/home/pamintest/run/ca.crt LD_LIBRARY_PATH="$(bin "$rev")" "$@"
+}
+declare -A PID
+for rev in base head; do
+  as_user $rev "$(bin $rev)/pamin" init >/dev/null
+  as_user $rev "$(bin $rev)/pamin" search "warm up the models" >/dev/null
+  PID[$rev]=$(pgrep -u pamintest -f "$(bin $rev)/pamin-server" | head -1)
+done
+TCK=$(getconf CLK_TCK)
+CSV="$OUT/ingest-arms.csv"
+{ echo "# $(nproc) cpus; load $(cut -d' ' -f1-3 /proc/loadavg); base pid ${PID[base]}, head pid ${PID[head]}"
+  echo "rev,arm,wall_s,server_cpu_s,files,sections,written,unchanged"; } | tee "$CSV"
+
+arm() {
+  local rev="$1" name="$2" pid="${PID[$1]}" before after start end json flags=""
+  [ "$rev" = head ] && flags="--no-sync"
+  sleep 3
+  before=$(awk '{print $14+$15}' "/proc/$pid/stat")
+  start=$(date +%s.%N)
+  json=$(as_user $rev "$(bin $rev)/pamin" --json ingest $flags "$RUN/$rev-corpus")
+  end=$(date +%s.%N)
+  after=$(awk '{print $14+$15}' "/proc/$pid/stat")
+  python3 -I - "$rev" "$name" "$start" "$end" "$before" "$after" "$TCK" "$json" <<'PY' | tee -a "$CSV"
+import json, sys
+rev, name, start, end, before, after, tck, out = sys.argv[1:]
+r = json.loads(out)
+print(",".join(str(x) for x in [rev, name, round(float(end) - float(start), 3),
+    round((int(after) - int(before)) / int(tck), 2), r["files"], r["sections"], r["written"], r["unchanged"]]))
+PY
+}
+edit() {
+  local corpus="$1" i="$2" file
+  file=$(find "$corpus" -name '*.md' -not -path '*/.*' | sort | sed -n "${i}p")
+  python3 -I - "$file" "$i" <<'PY'
+import sys
+path, i = sys.argv[1], sys.argv[2]
+lines = open(path).read().split("\n")
+fence = False
+for n, line in enumerate(lines):
+    s = line.strip()
+    if s.startswith(("```", "~~~")):
+        fence = not fence; continue
+    if fence or n == 0 or not s or s[0] in "#-*|>[<!" or s[0].isdigit():
+        continue
+    lines[n] = f"Edited{i} " + line
+    break
+open(path, "w").write("\n".join(lines))
+PY
+}
+
+for rev in base head; do arm $rev cold; done
+for i in $(seq 1 "$ROUNDS"); do
+  order="base head"; [ $((i % 2)) = 0 ] && order="head base"
+  for rev in $order; do arm $rev "again$i"; done
+  for rev in base head; do edit "$RUN/$rev-corpus" "$i"; done
+  for rev in $order; do arm $rev "edit$i"; done
+done
+
+# Search latency: the same queries against both, and against head with its
+# corpus kept in sync (the hit re-check runs) and not (it returns at once).
+QUERIES="$(dirname "$0")/queries.txt"
+SCSV="$OUT/search.csv"
+echo "rev,arm,round,query,wall_ms" > "$SCSV"
+search_arm() {
+  local rev="$1" name="$2" round="$3" n=0 start end
+  while read -r q; do
+    n=$((n+1))
+    start=$(date +%s%N)
+    as_user $rev "$(bin $rev)/pamin" search "$q" --json >/dev/null
+    end=$(date +%s%N)
+    echo "$rev,$name,$round,$n,$(( (end-start)/1000000 ))" >> "$SCSV"
+  done < "$QUERIES"
+}
+as_user head "$HEAD/pamin" ingest "$RUN/head-corpus" >/dev/null   # synced from here
+sleep 5
+for round in 1 2 3; do
+  search_arm base base $round
+  search_arm head synced $round
+  as_user head "$HEAD/pamin" unsync "$RUN/head-corpus" >/dev/null
+  search_arm head unsynced $round
+  as_user head "$HEAD/pamin" ingest "$RUN/head-corpus" >/dev/null
+  sleep 5
+done
+echo "# load at end $(cut -d' ' -f1-3 /proc/loadavg)" >> "$CSV"

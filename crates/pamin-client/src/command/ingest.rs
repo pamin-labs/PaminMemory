@@ -18,14 +18,17 @@ pub struct Args {
 
 #[derive(Serialize, Deserialize)]
 pub struct Ingested {
-    /// Files read.
+    /// Files ingested: read, or left unread because their record says they
+    /// have not changed since they last were.
     pub files: usize,
-    /// Sections cut out of them, each one memory.
+    /// Sections in them, each one memory: cut out of the files read, and
+    /// counted from the record of those left unread.
     pub sections: usize,
     /// Of those, the ones written as a new version of their memory.
     pub written: usize,
     /// The ones that said what their memory already did, which were left as
-    /// they were rather than recorded again.
+    /// they were rather than recorded again -- every section of a file left
+    /// unread among them.
     pub unchanged: usize,
     /// The ones the filter held in the evidence layer.
     pub held: usize,

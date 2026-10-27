@@ -22,9 +22,17 @@ struct Cli {
 
 impl Cli {
     fn new() -> Self {
-        Self {
-            home: tempfile::tempdir().expect("temp home"),
+        let home = tempfile::tempdir().expect("temp home");
+        // A PostgreSQL already installed, for a machine that cannot download
+        // one: written where `--postgres-dir` would read it.
+        if let Ok(dir) = std::env::var("PAMIN_TEST_POSTGRES_DIR") {
+            std::fs::write(
+                home.path().join("config.toml"),
+                format!("[serve]\npostgres_dir = {dir:?}\n"),
+            )
+            .expect("writing config.toml");
         }
+        Self { home }
     }
 
     fn home(&self) -> &Path {
