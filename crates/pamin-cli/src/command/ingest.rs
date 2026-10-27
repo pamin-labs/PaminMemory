@@ -38,21 +38,21 @@ const BETWEEN_CHECKS: usize = 1_000;
 const LEAST_AT_ONCE: usize = 2;
 
 /// A file to ingest, and the name its sections go by.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct File {
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct File {
     /// Its path from the root of the repository it is in, or from what was
     /// named on the command line when it is in none, with `/` between
     /// components -- and the root's own name first, so that two repositories'
     /// `README.md` are two files and not one.
-    name: String,
-    path: PathBuf,
+    pub(crate) name: String,
+    pub(crate) path: PathBuf,
     /// The directory it is named from, as a path.
-    root: String,
+    pub(crate) root: String,
 }
 
 /// A directory an ingest walked.
 #[derive(Debug)]
-struct Tree {
+pub(crate) struct Tree {
     /// Named as a file under it is named, up to it.
     name: String,
     /// The directory its files are named from, as a path.
@@ -69,6 +69,29 @@ pub async fn execute(
     args: Args,
 ) -> Result<Ingested> {
     let found = files(&args.paths)?;
+    let ingested = {
+        let ingesting = session.ingesting(project);
+        let _ingesting = ingesting.lock().await;
+        ingest(session, project, vector_index, found, Vec::new()).await?
+    };
+    Ok(ingested)
+}
+
+/// Ingests what was found, and takes `deleted` -- files known to be gone, by
+/// whoever noticed -- as files read and found empty, so their sections are
+/// retired, or renamed to a section found under a new name elsewhere in the
+/// same ingest.
+///
+/// The caller holds the project's [`Session::ingesting`] lock: two ingests of
+/// one project interleaving their writes could leave a record trusting text
+/// the other one replaced.
+pub(crate) async fn ingest(
+    session: &Session,
+    project: &str,
+    vector_index: VectorIndex,
+    found: Found,
+    deleted: Vec<File>,
+) -> Result<Ingested> {
     let project_id = session.project(project).await?;
     let database = session.database();
     let pool = database.pool();
@@ -105,6 +128,13 @@ pub async fn execute(
     } = tokio::task::spawn_blocking(move || look(files, &records, &models))
         .await
         .context("reading files")??;
+    let gone_files: Vec<(String, String)> = deleted
+        .iter()
+        .map(|file| (file.root.clone(), file.name.clone()))
+        .collect();
+    let files_read = cut.len();
+    let mut cut = cut;
+    cut.extend(deleted.into_iter().map(|file| (file, None, Vec::new())));
     skipped.extend(found.skipped);
     let trees = found.trees;
 
@@ -246,6 +276,7 @@ pub async fn execute(
         .zip(left)
         .filter(|(tree, _)| tree.whole)
         .flat_map(|(_, (left, _))| left)
+        .chain(gone_files)
         .filter(|(_, file)| !unsettled(file))
         .collect();
     left.sort();
@@ -283,7 +314,7 @@ pub async fn execute(
     .await?;
 
     Ok(Ingested {
-        files: read.len() + unchanged_files.len(),
+        files: files_read + unchanged_files.len(),
         sections: cut_sections + unchanged_sections,
         written: outcome.written,
         unchanged: outcome.unchanged + unchanged_sections,
@@ -306,17 +337,18 @@ pub async fn execute(
 const RACY_NS: i64 = 2_000_000_000;
 
 /// A file read and cut, with what its record will say once its sections are
-/// recorded.
+/// recorded -- or a file known to be gone, which has no sections and no
+/// record to write.
 struct Read {
     file: File,
-    record: FileRecord,
+    record: Option<FileRecord>,
     sections: Vec<Section>,
 }
 
 /// What looking at the found files came to.
 struct Looking {
     /// Read and cut into sections, unnamed until [`numbered`] names them.
-    read: Vec<(File, FileRecord, Vec<Unnamed>)>,
+    read: Vec<(File, Option<FileRecord>, Vec<Unnamed>)>,
     /// Left unread, their record trusted: name, root, and how many sections
     /// they held.
     unchanged: Vec<(String, String, usize)>,
@@ -395,7 +427,7 @@ fn look(
         };
         let counter: &dyn TokenCount = counter.as_ref();
         let sections = unnamed(&file.name, &text, counter);
-        looking.read.push((file, fresh, sections));
+        looking.read.push((file, Some(fresh), sections));
     }
     Ok(looking)
 }
@@ -625,8 +657,8 @@ async fn record(
 fn still_as_read(read: Vec<Read>) -> Vec<FileRecord> {
     read.into_iter()
         .filter_map(|read| {
+            let mut record = read.record?;
             let now = stat(&read.file.path).ok()?;
-            let mut record = read.record;
             record.sections = u32::try_from(read.sections.len()).unwrap_or(u32::MAX);
             now.same_file(&record).then_some(record)
         })
@@ -774,7 +806,7 @@ async fn renamed(
 async fn numbered(
     database: &pamin_store::Database,
     project: pamin_core::ProjectId,
-    cut: Vec<(File, FileRecord, Vec<Unnamed>)>,
+    cut: Vec<(File, Option<FileRecord>, Vec<Unnamed>)>,
     recorded: &[FileTopic],
 ) -> Result<(Vec<Read>, Vec<(String, String)>)> {
     // Per file, the earlier sections a number could be kept from.
@@ -838,13 +870,13 @@ async fn numbered(
 
 /// What a command's paths came to.
 #[derive(Debug)]
-struct Found {
+pub(crate) struct Found {
     /// Every file, once each, in name order.
-    files: Vec<File>,
+    pub(crate) files: Vec<File>,
     /// What was skipped, with why.
-    skipped: Vec<String>,
+    pub(crate) skipped: Vec<String>,
     /// Every directory walked.
-    trees: Vec<Tree>,
+    pub(crate) trees: Vec<Tree>,
 }
 
 /// Every file `paths` names, once each, in name order, and the ones skipped
