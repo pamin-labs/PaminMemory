@@ -44,6 +44,9 @@ pub struct Session {
     /// What the server's upkeep asks before it spends a model on work nobody
     /// is waiting for. See [`Session::serving`].
     serving: AtomicUsize,
+    /// One lock a project, held by every ingest of it. See
+    /// [`Session::ingesting`].
+    ingesting: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 /// A request being answered, for as long as this is held.
@@ -75,6 +78,7 @@ impl Session {
             engines: Registry::with_capacity(open_indexes),
             warming: std::sync::Mutex::default(),
             serving: AtomicUsize::new(0),
+            ingesting: std::sync::Mutex::default(),
         })
     }
 
@@ -147,6 +151,21 @@ impl Session {
                 .expect("the warming set is poisoned")
                 .remove(&key);
         });
+    }
+
+    /// The lock every ingest of `project` holds while it runs.
+    ///
+    /// An ingest reads a file, records its sections and then records the file
+    /// as read; a second ingest of the same file in between -- `pamin ingest`
+    /// beside the file watcher -- could record older text after newer and
+    /// leave a record trusting the newer. Within one project, ingests take
+    /// turns; projects do not wait for each other.
+    pub fn ingesting(&self, project: &str) -> Arc<Mutex<()>> {
+        let mut locks = self
+            .ingesting
+            .lock()
+            .expect("the ingest locks are poisoned");
+        Arc::clone(locks.entry(project.to_string()).or_default())
     }
 
     /// The models this process shares between its engines -- for a command
