@@ -1811,6 +1811,101 @@ pub async fn forget_file_record_of(
     Ok(())
 }
 
+/// A path `pamin ingest` keeps in sync. See `V19__synced_paths`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyncedPath {
+    /// The project's name.
+    pub project: String,
+    pub path: String,
+    pub vector_index: String,
+}
+
+/// Records `paths` as kept in sync for this project, under the vector index
+/// the ingest asked for.
+pub async fn sync_paths(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    paths: &[String],
+    vector_index: &str,
+) -> Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "INSERT INTO synced_paths (project_id, path, vector_index, added_at)
+         SELECT $1, path, $3, now() FROM unnest($2::text[]) AS path
+         ON CONFLICT (project_id, path) DO UPDATE SET vector_index = excluded.vector_index",
+    )
+    .bind(project.0)
+    .bind(paths)
+    .bind(vector_index)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Stops keeping `paths` in sync for this project, returning those that were.
+pub async fn unsync_paths(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    paths: &[String],
+) -> Result<Vec<String>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let removed: Vec<(String,)> = sqlx::query_as(
+        "DELETE FROM synced_paths WHERE project_id = $1 AND path = ANY($2) RETURNING path",
+    )
+    .bind(project.0)
+    .bind(paths)
+    .fetch_all(executor)
+    .await?;
+    Ok(removed.into_iter().map(|(path,)| path).collect())
+}
+
+/// The paths kept in sync in one project, by path.
+pub async fn synced_paths_of(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+) -> Result<Vec<SyncedPath>> {
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT p.name, s.path, s.vector_index
+           FROM synced_paths s JOIN projects p ON p.id = s.project_id
+          WHERE s.project_id = $1
+          ORDER BY s.path",
+    )
+    .bind(project.0)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(project, path, vector_index)| SyncedPath {
+            project,
+            path,
+            vector_index,
+        })
+        .collect())
+}
+
+/// Every path kept in sync, in every project, by project and path.
+pub async fn synced_paths(executor: impl PgExecutor<'_>) -> Result<Vec<SyncedPath>> {
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT p.name, s.path, s.vector_index
+           FROM synced_paths s JOIN projects p ON p.id = s.project_id
+          ORDER BY p.name, s.path",
+    )
+    .fetch_all(executor)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(project, path, vector_index)| SyncedPath {
+            project,
+            path,
+            vector_index,
+        })
+        .collect())
+}
+
 /// A topic as it stands now, found by name.
 #[derive(Clone, Debug)]
 pub struct Named {
