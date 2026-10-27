@@ -318,6 +318,9 @@ pub(crate) async fn ingest(
         .context("checking files after recording them")?;
     records.extend(refreshed);
     write_records(database, project_id, &records, &left).await?;
+    if outcome.written + outcome.removed.len() + outcome.renamed.len() > 0 {
+        session.changed_by_ingest(project);
+    }
 
     Ok(Ingested {
         files: read.len() + unchanged_files.len(),

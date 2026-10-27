@@ -50,6 +50,10 @@ const POLL: Duration = Duration::from_secs(30);
 /// How often a synced path that is not there is looked for.
 const MISSING: Duration = Duration::from_secs(60);
 
+/// The longest a search with a stale hit waits for an ingest of its project
+/// already running before it answers without ingesting the hit's file.
+const WAIT: Duration = Duration::from_secs(1);
+
 /// What the server is doing about each synced path, and how the command
 /// handlers reach it.
 pub struct Syncing {
@@ -786,24 +790,23 @@ fn sort(paths: &[PathBuf], dirs: &HashSet<PathBuf>, root: &Path) -> (Sorted, Vec
 /// Ingests the files behind these search hits that changed since they were
 /// last ingested, if nothing has yet: what a search is about to answer with is
 /// what the file says now, even while the watcher is still catching up or has
-/// not heard. True when that wrote, retired or renamed anything, so the search
-/// is asked again.
+/// not heard. What it changes counts in [`Session::ingested`], which is how the
+/// search knows to ask again.
 ///
 /// Only a file under a path kept in sync, as that path's ingest would, and
 /// not one whose synced path is not there, whose sections the watcher keeps.
-/// Not while another ingest of the project runs, which a search does not wait
-/// for: whatever it is ingesting, the watcher is too.
+/// Behind another ingest of the project for at most [`WAIT`].
 pub async fn freshen(
     session: &Session,
     project: &str,
     vector_index: VectorIndex,
     topics: &[String],
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<()> {
     let project_id = session.project(project).await?;
     let pool = session.database().pool();
     let roots = pamin_store::repository::file_roots_of(pool, project_id, topics).await?;
     if roots.is_empty() {
-        return Ok(false);
+        return Ok(());
     }
     let candidates: BTreeSet<(String, String)> = roots
         .iter()
@@ -815,7 +818,7 @@ pub async fn freshen(
     let records =
         pamin_store::repository::file_records_of(pool, project_id, &roots, &files).await?;
     if records.is_empty() {
-        return Ok(false);
+        return Ok(());
     }
     let synced: Vec<SyncedPath> = pamin_store::repository::synced_paths(pool)
         .await?
@@ -860,14 +863,16 @@ pub async fn freshen(
     })
     .await?;
     if stale.is_empty() {
-        return Ok(false);
+        return Ok(());
     }
 
+    // An ingest already running is most often the watcher on one file, which
+    // is over in well under a second; one that is not -- a catch-up of a
+    // large tree -- is not waited out.
     let ingesting = session.ingesting(project);
-    let Ok(_ingesting) = ingesting.try_lock() else {
-        return Ok(false);
+    let Ok(_ingesting) = tokio::time::timeout(WAIT, ingesting.lock()).await else {
+        return Ok(());
     };
-    let mut wrote = false;
     for (synced, changed, deleted) in stale {
         let found = Found {
             files: changed,
@@ -875,7 +880,7 @@ pub async fn freshen(
             trees: Vec::new(),
             dirs: Vec::new(),
         };
-        let ingested = ingest::ingest(
+        ingest::ingest(
             session,
             project,
             vector_index,
@@ -884,9 +889,8 @@ pub async fn freshen(
             synced.keep_missing,
         )
         .await?;
-        wrote |= ingested.written + ingested.removed.len() + ingested.renamed.len() > 0;
     }
-    Ok(wrote)
+    Ok(())
 }
 
 /// What a walk of `path` finds, walked off the runtime.

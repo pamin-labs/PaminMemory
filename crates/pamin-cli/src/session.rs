@@ -47,6 +47,9 @@ pub struct Session {
     /// One lock a project, held by every ingest of it. See
     /// [`Session::ingesting`].
     ingesting: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// How many ingests of each project have changed what it holds. See
+    /// [`Session::ingested`].
+    ingested: std::sync::Mutex<HashMap<String, u64>>,
     /// The file watcher keeping synced paths in sync, once the server has
     /// started it.
     syncing: std::sync::OnceLock<Arc<crate::watch::Syncing>>,
@@ -82,6 +85,7 @@ impl Session {
             warming: std::sync::Mutex::default(),
             serving: AtomicUsize::new(0),
             ingesting: std::sync::Mutex::default(),
+            ingested: std::sync::Mutex::default(),
             syncing: std::sync::OnceLock::new(),
         })
     }
@@ -170,6 +174,25 @@ impl Session {
             .lock()
             .expect("the ingest locks are poisoned");
         Arc::clone(locks.entry(project.to_string()).or_default())
+    }
+
+    /// How many ingests of `project` this process has seen change what it
+    /// holds: a search that ranked before an ingest finished asks again.
+    pub fn ingested(&self, project: &str) -> u64 {
+        let ingested = self
+            .ingested
+            .lock()
+            .expect("the ingest counts are poisoned");
+        ingested.get(project).copied().unwrap_or(0)
+    }
+
+    /// Counts an ingest of `project` that wrote, retired or renamed something.
+    pub fn changed_by_ingest(&self, project: &str) {
+        let mut ingested = self
+            .ingested
+            .lock()
+            .expect("the ingest counts are poisoned");
+        *ingested.entry(project.to_string()).or_default() += 1;
     }
 
     /// The file watcher, when the server has started one.
