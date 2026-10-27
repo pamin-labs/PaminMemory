@@ -50,6 +50,10 @@ const POLL: Duration = Duration::from_secs(30);
 /// How often a synced path that is not there is looked for.
 const MISSING: Duration = Duration::from_secs(60);
 
+/// The longest a search with a stale hit waits for an ingest of its project
+/// already running before it answers without ingesting the hit's file.
+const WAIT: Duration = Duration::from_secs(1);
+
 /// What the server is doing about each synced path, and how the command
 /// handlers reach it.
 pub struct Syncing {
@@ -904,6 +908,88 @@ fn sort(paths: &[PathBuf], dirs: &HashSet<PathBuf>, root: &Path) -> (Sorted, Vec
         }
     }
     (sorted, vanished)
+}
+
+/// Ingests the files behind these search hits that changed since they were
+/// last ingested, if nothing has yet: what a search is about to answer with is
+/// what the file says now, even while the watcher is still catching up or has
+/// not heard. What it changes counts in [`Session::ingested`], which is how the
+/// search knows to ask again.
+///
+/// Only a file under a path kept in sync, as that path's ingest would, and
+/// not one whose synced path is not there, whose sections the watcher keeps.
+/// Behind another ingest of the project for at most [`WAIT`].
+pub async fn freshen(
+    session: &Session,
+    project: &str,
+    vector_index: VectorIndex,
+    topics: &[String],
+) -> anyhow::Result<()> {
+    let project_id = session.project(project).await?;
+    let pool = session.database().pool();
+    let synced = pamin_store::repository::synced_paths_of(pool, project_id).await?;
+    if synced.is_empty() {
+        return Ok(());
+    }
+    let roots = pamin_store::repository::file_roots_of(pool, project_id, topics).await?;
+    if roots.is_empty() {
+        return Ok(());
+    }
+    let candidates: BTreeSet<(String, String)> = roots
+        .iter()
+        .flat_map(|(topic, root)| {
+            ingest::files_of(topic).map(move |file| (root.clone(), file.to_string()))
+        })
+        .collect();
+    let (roots, files): (Vec<String>, Vec<String>) = candidates.into_iter().unzip();
+    let records =
+        pamin_store::repository::file_records_of(pool, project_id, &roots, &files).await?;
+    if records.is_empty() {
+        return Ok(());
+    }
+
+    // What changed under a synced path that is there. A file gone is left to
+    // the watcher, which holds a deletion for the other half of a move: a
+    // search retiring it here would cost the moved section its history.
+    let stale = tokio::task::spawn_blocking(move || {
+        records
+            .into_iter()
+            .filter_map(|record| {
+                let path = ingest::on_disk(&record.root, &record.file);
+                let synced = synced.iter().any(|synced| {
+                    path.starts_with(&synced.path) && Path::new(&synced.path).exists()
+                });
+                if !synced || ingest::trusted(&record, &ingest::stat(&path).ok()?) {
+                    return None;
+                }
+                Some(File {
+                    name: record.file,
+                    path,
+                    root: record.root,
+                })
+            })
+            .collect::<Vec<File>>()
+    })
+    .await?;
+    if stale.is_empty() {
+        return Ok(());
+    }
+
+    // An ingest already running is most often the watcher on one file, which
+    // is over in well under a second; one that is not -- a catch-up of a
+    // large tree -- is not waited out.
+    let ingesting = session.ingesting(project);
+    let Ok(_ingesting) = tokio::time::timeout(WAIT, ingesting.lock()).await else {
+        return Ok(());
+    };
+    let found = Found {
+        files: stale,
+        skipped: Vec::new(),
+        trees: Vec::new(),
+        dirs: Vec::new(),
+    };
+    ingest::ingest(session, project, vector_index, found, Vec::new()).await?;
+    Ok(())
 }
 
 /// What a walk of `path` finds, walked off the runtime.

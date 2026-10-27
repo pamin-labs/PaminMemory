@@ -1,7 +1,8 @@
 # File records and re-ingest cost, 2026-10-27
 
 What recording each ingested file saves a re-ingest, measured through `pamin
-ingest` against the stack it builds on.
+ingest` against the stack it builds on, and what a search's re-check of its
+hits' files costs, measured through `pamin search`.
 
 **Conditions.** One 4-vCPU Intel Xeon in a cloud container on a host we do not
 control, 15 GB RAM; the one-minute load average was 2.06 when the run began and
@@ -15,7 +16,8 @@ tracked `.md` and `.txt` files outside `internal-docs` and dot-directories, cut
 into 388 sections by both builds. Server CPU is the server process's own user
 and system time: it excludes PostgreSQL's backends and the client. Harness and
 commands: [`benchmarks/harnesses/ingest-sync-2026-10-27`](../../harnesses/ingest-sync-2026-10-27/README.md).
-Raw rows: [`ingest-sync-arms-9505cf8-2026-10-27.csv`](ingest-sync-arms-9505cf8-2026-10-27.csv).
+Raw rows: [`ingest-sync-arms-9505cf8-2026-10-27.csv`](ingest-sync-arms-9505cf8-2026-10-27.csv),
+[`ingest-sync-search-9505cf8-2026-10-27.csv`](ingest-sync-search-9505cf8-2026-10-27.csv).
 
 `head` is `9505cf8`, the tip of the work this change is the first part of:
 file records, the ingest core split, file sync and the search re-check
@@ -44,5 +46,20 @@ every section, one query each. An edit costs `head` the one file. The
 individual commits -- the tokenizer kept loaded, records, the scoped section
 lookup -- were not measured apart: this is the stack against `base`.
 
-The harness also has search arms. They measure the search re-check of a
-later change and are reported with it.
+## Searching
+
+The same 20 queries, three rounds, one sample each per round.
+
+| arm | p50, all rounds | p95, all rounds | p50, rounds 2–3 | p95, rounds 2–3 |
+| --- | ---: | ---: | ---: | ---: |
+| `base` | 224 ms | 2,151 ms | 202 ms | 279 ms |
+| `head`, synced | 230 ms | 2,099 ms | 194 ms | 270 ms |
+| `head`, unsynced | 182 ms | 272 ms | 182 ms | 272 ms |
+
+**These do not separate the hit re-check's cost.** The arms ran in the same
+order every round -- `base`, then `synced` after an ingest, then `unsynced` --
+so the first queries of `base` and `synced` in round 1 paid a cold start
+(about 2 s, in `base` too) that `unsynced` never did, and the 12 ms between
+`synced` and `unsynced` over rounds 2–3 is inside what order alone could
+move. What the run does show is that a synced search is not slower than
+`base`'s. A rotated run is the measurement that would settle it.
