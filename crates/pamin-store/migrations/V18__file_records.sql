@@ -33,8 +33,15 @@ CREATE TABLE file_records (
     -- How many sections it was cut into, which an ingest that leaves it unread
     -- still counts.
     sections     INTEGER NOT NULL,
+    -- The server build that cut it. A file is cut by its build's rules, so a
+    -- record from another build is not trusted however the file's stat looks.
+    build        TEXT    NOT NULL,
     PRIMARY KEY (project_id, root, file)
 );
+
+-- A file's records under every root, for an ingest forgetting the other
+-- trees' records of a file whose sections it is about to rewrite.
+CREATE INDEX file_records_by_file ON file_records (project_id, file);
 
 -- The sections of a file, or of every file under a directory, found by their
 -- locator's prefix. In the "C" collation a prefix is a range of the index; in
