@@ -704,10 +704,27 @@ only to a name no topic already holds: a file moved out of the tree the command
 walked is still `removed`, and one moved onto an old section's name is recorded
 as new. Listed under `renamed`.
 
-On this repository's own 105 Markdown and text files, an
-unchanged re-ingest wrote nothing; the time it took was measured on an earlier
-cut that also split long sections into parts, and is not re-measured for this
-one ([measured](../benchmarks/results/ingest/ingest-cost-2026-10-23.md)).
+**A file that has not changed is not read again.** Each file an ingest reads
+leaves a record of its size, its modification and change times, its inode and
+a hash of its text, and the next ingest compares the file's metadata with it
+before opening the file, the way git's index tells a clean file from a stat.
+The same metadata means the same file, and its sections are counted under
+`unchanged` without being read; different metadata means it is read, and if
+its text hashes the same it is counted unchanged all the same, its record
+taking the new metadata. A file modified within two seconds of being read is
+read and hashed next time whatever its metadata says, since a second change
+inside one timestamp would not show. A section written by hand with `pamin
+write` makes its file's record untrue, and so does an ingest of another tree
+whose file of the same name rewrote its sections: either way the record goes,
+and the next ingest reads the file. A record also names the build that cut the
+file, so a new `pamin` reads every file once, in case it cuts them differently.
+An ingest that finds every file unchanged opens no index and loads no model.
+
+On this repository's own 112 Markdown and text files, an unchanged re-ingest
+took a median 0.017 s against 0.484 s when every file was read, and one edited
+file 0.301 s against 0.790 s, five runs each; the time a first ingest takes is
+the embedding of every section, and did not move
+([measured](../benchmarks/results/ingest/ingest-sync-2026-10-27.md)).
 
 **A section that is no longer there is taken off the retrieval surface**, and
 listed under `removed`: its heading removed, or renamed with its text rewritten past matching, or its file deleted
@@ -732,7 +749,9 @@ found back in its file with new text — is left as it now is; one found back
 unchanged is retired, and the next ingest brings it back.
 
 A section somebody also wrote by hand with `pamin write` is only listed, under
-`missing`, and left searchable: it is theirs as well as the file's.
+`missing`, and left searchable: it is theirs as well as the file's. A file with
+a section left this way is read again by the next ingest rather than trusted to
+its record.
 
 **A section its file cut down to next to nothing is taken off too.** Text
 below the filter's eight characters — a `TBD` where a paragraph was — is held,

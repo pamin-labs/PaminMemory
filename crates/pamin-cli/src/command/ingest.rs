@@ -6,10 +6,11 @@
 //! records a memory: against one open engine, several topics at once, with the
 //! projection catching up in rounds.
 //!
-//! Re-ingesting is the ordinary case. A section that says what its memory
-//! already does is left alone -- no evidence, no version, no work for the
-//! projection -- so ingesting an unchanged tree costs a read per section and a
-//! changed one costs what changed.
+//! Re-ingesting is the ordinary case. A file whose metadata is what its record
+//! says it was when it was last read is not read at all, and in a file that is,
+//! a section that says what its memory already does is left alone -- no
+//! evidence, no version, no work for the projection -- so ingesting an
+//! unchanged tree costs a stat per file and a changed one costs what changed.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -20,7 +21,7 @@ use pamin_engine::{Owed, Retired};
 use pamin_index::VectorIndex;
 use pamin_index::sections::{SEPARATOR, Section, Unnamed, named, number, pairs, parents, unnamed};
 use pamin_index::spans::TokenCount;
-use pamin_store::repository::FileTopic;
+use pamin_store::repository::{FileRecord, FileTopic};
 
 use crate::session::Session;
 
@@ -67,67 +68,115 @@ pub async fn execute(
     vector_index: VectorIndex,
     args: Args,
 ) -> Result<Ingested> {
-    let Found {
-        files,
-        mut skipped,
-        trees,
-    } = files(&args.paths)?;
+    let found = files(&args.paths)?;
+    let project_id = session.project(project).await?;
+    let database = session.database();
+    let pool = database.pool();
+    let started = time::OffsetDateTime::now_utc();
 
-    let mut texts = Vec::new();
-    // Found and not read: their sections are not missing, only unread.
-    let mut unread = Vec::new();
-    for file in files {
-        match std::fs::read(&file.path) {
-            Ok(bytes) => match String::from_utf8(bytes) {
-                Ok(text) => texts.push((file.name, file.root, text)),
-                Err(_) => {
-                    skipped.push(format!("{}: not UTF-8", file.path.display()));
-                    unread.push((file.name, file.root));
-                }
-            },
-            Err(error) => {
-                skipped.push(format!("{}: {error}", file.path.display()));
-                unread.push((file.name, file.root));
-            }
-        }
+    // What each file looked like when it was last read, so one that has not
+    // changed since is left unread.
+    let (roots, names): (Vec<String>, Vec<String>) = found
+        .files
+        .iter()
+        .map(|file| (file.root.clone(), file.name.clone()))
+        .unzip();
+    let mut records: std::collections::HashMap<String, Vec<FileRecord>> = Default::default();
+    for record in pamin_store::repository::file_records_of(pool, project_id, &roots, &names).await?
+    {
+        records.entry(record.file.clone()).or_default().push(record);
     }
 
-    // Counted by BGE-M3's own tokenizer, which is the reranker's vocabulary
-    // too: both are XLM-R's. Loaded off the runtime, as every model load is.
-    // Not loaded at all for an ingest that found nothing to read.
-    let models = session.workspace().models_dir();
-    let cut: Vec<(String, String, Vec<Unnamed>)> = tokio::task::spawn_blocking(move || {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        let counter = pamin_index::SpanTokens::load(&models)?;
-        let counter: &dyn TokenCount = &counter;
-        Ok::<_, pamin_index::IndexError>(
-            texts
-                .into_iter()
-                .map(|(name, root, text)| {
-                    let sections = unnamed(&name, &text, counter);
-                    (name, root, sections)
-                })
-                .collect::<Vec<_>>(),
-        )
-    })
-    .await
-    .context("cutting files into sections")??;
+    // Stat, read, hash and cut off the runtime: every one of them is blocking
+    // file work or CPU, and a tree is thousands of them. Cut by BGE-M3's own
+    // tokenizer, which is the reranker's vocabulary too: both are XLM-R's. The
+    // one the server's models keep, so it is read from disk once a process
+    // rather than once an ingest, and not at all for an ingest that read
+    // nothing.
+    let models = session.models().clone();
+    let files = found.files;
+    let Looking {
+        read: cut,
+        unchanged: unchanged_files,
+        refreshed,
+        unread,
+        unrecorded,
+        mut skipped,
+    } = tokio::task::spawn_blocking(move || look(files, &records, &models))
+        .await
+        .context("reading files")??;
+    skipped.extend(found.skipped);
+    let trees = found.trees;
 
-    let engine = session.engine(project, vector_index).await?;
-    let recorded =
-        pamin_store::repository::file_topic_names(engine.database.pool(), engine.project).await?;
-    let (cut, parents) = numbered(&engine, cut, &recorded).await?;
+    // Every record of a file read stops being true the moment this ingest
+    // writes its sections -- its own, and those of any other tree naming a
+    // file alike, which shares them -- so they all go first, before anything
+    // is written. A file this ingest then gives no record of its own, because
+    // it changed while being read, is read again next time rather than judged
+    // by a record of text it no longer holds.
+    let names: Vec<String> = cut.iter().map(|(file, _, _)| file.name.clone()).collect();
+    pamin_store::repository::forget_records_of_files(pool, project_id, &names).await?;
+
+    // Only the sections of the files in play: those read, and those of files
+    // under a directory walked that the walk no longer found. Those are the
+    // files its records name and the walk did not find -- unless a file under
+    // it had no record, which an ingest from before records existed may have
+    // left with sections in files since deleted, and then every section under
+    // the directory is looked at.
+    let found_files: std::collections::HashSet<(String, String)> = cut
+        .iter()
+        .map(|(file, _, _)| (file.root.clone(), file.name.clone()))
+        .chain(
+            unchanged_files
+                .iter()
+                .map(|(name, root, _)| (root.clone(), name.clone())),
+        )
+        .chain(
+            unread
+                .iter()
+                .map(|(name, root)| (root.clone(), name.clone())),
+        )
+        .collect();
+    let left = left_trees(database, project_id, &trees, &found_files).await?;
+    let mut prefixes: Vec<String> = cut.iter().map(|(file, _, _)| file.name.clone()).collect();
+    for (tree, (left, accounted)) in trees.iter().zip(&left) {
+        let prefix = format!("{}/", tree.name);
+        let unknown = unrecorded
+            .iter()
+            .any(|(name, root)| root == &tree.root && under(name, &tree.name))
+            || pamin_store::repository::count_file_topics_under(pool, project_id, &prefix).await?
+                > *accounted;
+        if unknown {
+            prefixes.push(prefix);
+        } else {
+            prefixes.extend(left.iter().map(|(_, file)| file.clone()));
+        }
+    }
+    let recorded = in_play(
+        pamin_store::repository::file_topics_under(pool, project_id, &prefixes).await?,
+        &cut.iter()
+            .map(|(file, _, _)| file.name.as_str())
+            .collect::<Vec<_>>(),
+        &trees,
+    );
+
+    let unchanged_sections: usize = unchanged_files.iter().map(|(_, _, n)| n).sum();
+    let unchanged_files: Vec<(String, String)> = unchanged_files
+        .into_iter()
+        .map(|(name, root, _)| (name, root))
+        .collect();
+    let (cut, parents) = numbered(database, project_id, cut, &recorded).await?;
 
     let read: Vec<(String, String)> = cut
         .iter()
-        .map(|(name, root, _)| (name.clone(), root.clone()))
+        .map(|read| (read.file.name.clone(), read.file.root.clone()))
         .collect();
-    let cut: Vec<(&Section, &str)> = cut
+    let sections_of: Vec<(&Section, &str)> = cut
         .iter()
-        .flat_map(|(_, root, sections)| {
-            sections.iter().map(move |section| (section, root.as_str()))
+        .flat_map(|read| {
+            read.sections
+                .iter()
+                .map(move |section| (section, read.file.root.as_str()))
         })
         .collect();
     let known: std::collections::HashSet<String> =
@@ -141,16 +190,323 @@ pub async fn execute(
     let mut gone = gone(
         &Looked {
             read: &read,
+            unchanged: &unchanged_files,
             unread: &unread,
             trees: &trees,
             exists: &|path: &Path| path.exists(),
         },
-        &cut.iter().map(|(section, _)| *section).collect::<Vec<_>>(),
+        &sections_of
+            .iter()
+            .map(|(section, _)| *section)
+            .collect::<Vec<_>>(),
         recorded,
     );
+
+    let mut outcome = Outcome::default();
+    // Nothing read and nothing to retire: no engine, no index, no models. A
+    // tree whose every file is unchanged ends here, having read none of them.
+    let retiring = gone.iter().any(|gone| gone.retirable);
+    if sections_of.is_empty() && !retiring {
+        outcome.missing = gone.into_iter().map(|gone| gone.name).collect();
+    } else {
+        let engine = session.engine(project, vector_index).await?;
+        outcome = record(
+            &engine,
+            &sections_of,
+            &parents,
+            &known,
+            &surfaced,
+            &mut gone,
+        )
+        .await?;
+    }
+    outcome.removed.sort();
+    outcome.missing.sort();
+    let cut_sections = sections_of.len();
+    drop(sections_of);
+
+    // Last, once everything above has succeeded: a record says a file's
+    // sections say what it does, which is only true now. Not for a file one of
+    // whose sections changed under this ingest, which is read again next time.
+    // Records of files that left a tree walked whole go with them; a walk that
+    // met an error cannot say a file left rather than went out of reach.
+    // Nor for a file with a section this ingest left on the surface although
+    // the file no longer has it -- written by hand too, or out of the reach of
+    // a walk that met an error -- which a later ingest must find again: a file
+    // read keeps no record, and a file gone keeps the one it has.
+    let unsettled = |file: &str| {
+        outcome
+            .changed
+            .iter()
+            .chain(&outcome.missing)
+            .any(|name| belongs(name, file))
+    };
+    let mut left: Vec<(String, String)> = trees
+        .iter()
+        .zip(left)
+        .filter(|(tree, _)| tree.whole)
+        .flat_map(|(_, (left, _))| left)
+        .filter(|(_, file)| !unsettled(file))
+        .collect();
+    left.sort();
+    left.dedup();
+    let settled: Vec<Read> = cut
+        .into_iter()
+        .filter(|read| !unsettled(&read.file.name))
+        .collect();
+    // Each settled file by its sections' names, for the check below.
+    let (mut roots, mut names, mut topics) = (Vec::new(), Vec::new(), Vec::new());
+    for read in &settled {
+        for section in &read.sections {
+            roots.push(read.file.root.clone());
+            names.push(read.file.name.clone());
+            topics.push(section.name.clone());
+        }
+    }
+    let mut records = tokio::task::spawn_blocking(move || still_as_read(settled))
+        .await
+        .context("checking files after recording them")?;
+    records.extend(refreshed);
+    write_records(database, project_id, &records, &left).await?;
+    // A section written by hand while this ingest recorded its file forgot a
+    // record that did not exist yet, and the one just written would trust the
+    // file over it. Asked of every hand write since a minute before this
+    // ingest began, the margin covering a write whose clock started first.
+    pamin_store::repository::forget_file_records_written_since(
+        pool,
+        project_id,
+        &roots,
+        &names,
+        &topics,
+        started - time::Duration::minutes(1),
+    )
+    .await?;
+
+    Ok(Ingested {
+        files: read.len() + unchanged_files.len(),
+        sections: cut_sections + unchanged_sections,
+        written: outcome.written,
+        unchanged: outcome.unchanged + unchanged_sections,
+        held: outcome.held,
+        removed: outcome.removed,
+        missing: outcome.missing,
+        renamed: outcome.renamed,
+        skipped,
+        cascade: outcome.cascade.unwrap_or("applied").to_string(),
+        cascade_lagging: outcome.lagging,
+    })
+}
+
+/// How far a timestamp may trail the read that took it and still be trusted.
+///
+/// A file modified within its filesystem's timestamp granularity of being read
+/// may change again with no change to its stat, so a record taken that close
+/// is checked by its text next time, the way git treats a "racily clean"
+/// entry. Two seconds covers the coarsest common granularity, FAT's.
+const RACY_NS: i64 = 2_000_000_000;
+
+/// A file read and cut, with what its record will say once its sections are
+/// recorded.
+struct Read {
+    file: File,
+    record: FileRecord,
+    sections: Vec<Section>,
+}
+
+/// What looking at the found files came to.
+struct Looking {
+    /// Read and cut into sections, unnamed until [`numbered`] names them.
+    read: Vec<(File, FileRecord, Vec<Unnamed>)>,
+    /// Left unread, their record trusted: name, root, and how many sections
+    /// they held.
+    unchanged: Vec<(String, String, usize)>,
+    /// Read, and found to say what their record does: the record with the
+    /// file's new stat, nothing else to do.
+    refreshed: Vec<FileRecord>,
+    /// Found and not read: their sections are not missing, only unread.
+    unread: Vec<(String, String)>,
+    /// Read for want of a record, by name and root.
+    unrecorded: Vec<(String, String)>,
+    skipped: Vec<String>,
+}
+
+/// Each file's stat, against its record: trusted, read and found the same,
+/// or read and cut.
+fn look(
+    files: Vec<File>,
+    records: &std::collections::HashMap<String, Vec<FileRecord>>,
+    models: &pamin_engine::Models,
+) -> Result<Looking> {
+    let mut looking = Looking {
+        read: Vec::new(),
+        unchanged: Vec::new(),
+        refreshed: Vec::new(),
+        unread: Vec::new(),
+        unrecorded: Vec::new(),
+        skipped: Vec::new(),
+    };
+    let mut counter = None;
+    for file in files {
+        let record = records
+            .get(&file.name)
+            .and_then(|records| records.iter().find(|record| record.root == file.root));
+        let (stat, text) = match stat(&file.path).and_then(|stat| {
+            if record.is_some_and(|record| trusted(record, &stat)) {
+                return Ok((stat, None));
+            }
+            let text = String::from_utf8(std::fs::read(&file.path)?)
+                .map_err(|_| std::io::Error::other("not UTF-8"))?;
+            Ok((stat, Some(text)))
+        }) {
+            Ok(looked) => looked,
+            Err(error) => {
+                looking
+                    .skipped
+                    .push(format!("{}: {error}", file.path.display()));
+                looking.unread.push((file.name, file.root));
+                continue;
+            }
+        };
+        let Some(text) = text else {
+            let sections = record.map_or(0, |record| record.sections as usize);
+            looking.unchanged.push((file.name, file.root, sections));
+            continue;
+        };
+        if record.is_none() {
+            looking
+                .unrecorded
+                .push((file.name.clone(), file.root.clone()));
+        }
+        let hash = pamin_engine::content_hash(&text);
+        let mut fresh = stat.recorded(&file, hash);
+        if let Some(record) = record
+            .filter(|record| record.content_hash == fresh.content_hash && record.build == build())
+        {
+            fresh.sections = record.sections;
+            looking
+                .unchanged
+                .push((file.name, file.root, record.sections as usize));
+            looking.refreshed.push(fresh);
+            continue;
+        }
+        let counter = match &counter {
+            Some(counter) => counter,
+            None => counter.insert(models.span_tokens()?),
+        };
+        let counter: &dyn TokenCount = counter.as_ref();
+        let sections = unnamed(&file.name, &text, counter);
+        looking.read.push((file, fresh, sections));
+    }
+    Ok(looking)
+}
+
+/// The server build cutting files, as a record keeps it: a file is cut by its
+/// build's rules, and one left unread is left on the cut it was given, so a
+/// new build reads every file once, whether or not it changed how files are
+/// cut.
+fn build() -> &'static str {
+    static BUILD: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(pamin_client::protocol::version);
+    &BUILD
+}
+
+/// A file's stat as a record keeps it, and when it was taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stat {
+    size: u64,
+    modified_ns: i64,
+    changed_ns: i64,
+    inode: u64,
+    read_ns: i64,
+}
+
+impl Stat {
+    fn recorded(&self, file: &File, content_hash: String) -> FileRecord {
+        FileRecord {
+            root: file.root.clone(),
+            file: file.name.clone(),
+            size: self.size,
+            modified_ns: self.modified_ns,
+            changed_ns: self.changed_ns,
+            inode: self.inode,
+            read_ns: self.read_ns,
+            content_hash,
+            sections: 0,
+            build: build().to_string(),
+        }
+    }
+
+    fn same_file(&self, record: &FileRecord) -> bool {
+        self.size == record.size
+            && self.modified_ns == record.modified_ns
+            && self.changed_ns == record.changed_ns
+            && self.inode == record.inode
+    }
+}
+
+/// The stat of `path`, following a link as reading it does, taken after the
+/// clock is read: a record must never claim a read later than its stat.
+fn stat(path: &Path) -> std::io::Result<Stat> {
+    use std::os::unix::fs::MetadataExt as _;
+    let read_ns = now_ns();
+    let meta = std::fs::metadata(path)?;
+    Ok(Stat {
+        size: meta.size(),
+        modified_ns: meta.mtime() * 1_000_000_000 + meta.mtime_nsec(),
+        changed_ns: meta.ctime() * 1_000_000_000 + meta.ctime_nsec(),
+        inode: meta.ino(),
+        read_ns,
+    })
+}
+
+fn now_ns() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_nanos()).unwrap_or(i64::MAX)
+        })
+}
+
+/// Whether `record` can be believed about a file whose stat is `stat` without
+/// reading it: the same stat, taken long enough after the file last changed
+/// that a change within the same timestamp would have shown.
+fn trusted(record: &FileRecord, stat: &Stat) -> bool {
+    record.build == build()
+        && stat.same_file(record)
+        && record.modified_ns.max(record.changed_ns) < record.read_ns.saturating_sub(RACY_NS)
+}
+
+/// What recording the read files' sections and retiring the gone ones did.
+#[derive(Default)]
+struct Outcome {
+    written: usize,
+    unchanged: usize,
+    held: usize,
+    removed: Vec<String>,
+    missing: Vec<String>,
+    renamed: Vec<Renamed>,
+    /// Sections whose topic changed under this ingest, so it left them be.
+    changed: Vec<String>,
+    lagging: bool,
+    cascade: Option<&'static str>,
+}
+
+/// Records the read files' sections against `engine`, renames the gone ones
+/// found under a new name, and retires the rest.
+async fn record(
+    engine: &pamin_engine::Engine,
+    cut: &[(&Section, &str)],
+    parents: &[(String, String)],
+    known: &std::collections::HashSet<String>,
+    surfaced: &std::collections::HashMap<String, pamin_core::TopicStateId>,
+    gone: &mut Vec<Gone>,
+) -> Result<Outcome> {
     // Before the sections are recorded, so a section found under a new name
     // is written to the topic it already was rather than to a new one.
-    let renamed = renamed(&engine, &cut, &known, &mut gone).await?;
+    let mut outcome = Outcome {
+        renamed: renamed(engine, cut, known, gone).await?,
+        ..Outcome::default()
+    };
 
     // Every section is a topic of its own -- its name holds its file's path,
     // and one file's names are numbered apart -- so they all run at once, in
@@ -159,14 +515,12 @@ pub async fn execute(
         .unwrap_or(LEAST_AT_ONCE)
         .max(LEAST_AT_ONCE);
 
-    let (mut written, mut unchanged, mut held) = (0, 0, 0);
     // The sections on the surface that the filter now holds, cut down to next
     // to nothing in their file.
     let mut emptied = Vec::new();
     // The sections found unchanged, by the root they were read from: each
     // records that root, in one statement a root, after the writes.
     let mut kept_at: std::collections::BTreeMap<&str, Vec<String>> = Default::default();
-    let mut lagging = false;
     let mut since_check = 0;
     for chunk in cut.chunks(at_once) {
         let recorded = futures::future::try_join_all(chunk.iter().map(|(section, root)| {
@@ -179,18 +533,18 @@ pub async fn execute(
         }))
         .await?;
 
-        for (outcome, (section, root)) in recorded.into_iter().zip(chunk) {
-            match outcome {
+        for (recorded, (section, root)) in recorded.into_iter().zip(chunk) {
+            match recorded {
                 None => {
-                    unchanged += 1;
+                    outcome.unchanged += 1;
                     kept_at
                         .entry(*root)
                         .or_default()
                         .push(pamin_engine::file_locator(&section.name));
                 }
-                Some((verdict, _)) if verdict.is_promoted() => written += 1,
+                Some((verdict, _)) if verdict.is_promoted() => outcome.written += 1,
                 Some(_) => {
-                    held += 1;
+                    outcome.held += 1;
                     if let Some(&current) = surfaced.get(&section.name) {
                         emptied.push((section.name.clone(), current));
                     }
@@ -203,7 +557,7 @@ pub async fn execute(
             since_check = 0;
             let behind = pamin_store::jobs::pending(engine.database.pool(), engine.project).await?;
             if !pamin_core::may_defer(behind) {
-                lagging = true;
+                outcome.lagging = true;
                 engine.drain_cascade(Owed::WhatAMemoryNeeds).await?;
             }
         }
@@ -225,21 +579,23 @@ pub async fn execute(
         .iter()
         .map(|(section, _)| section.name.clone())
         .collect();
-    engine.restate_parents(&sections, &parents).await?;
+    engine.restate_parents(&sections, parents).await?;
 
     // After the sections are recorded, so a section that moved within a file
     // is written under its new name before its old one is retired, and before
     // the drain, which removes what retiring left for the projection.
-    let mut removed = Vec::new();
-    let mut kept = Vec::new();
-    for gone in gone {
+    for gone in gone.iter() {
         if !gone.retirable {
-            kept.push(gone.name);
+            outcome.missing.push(gone.name.clone());
             continue;
         }
         match engine.retire_section(&gone.name, gone.current).await? {
-            Retired::Retired => removed.push(gone.name),
-            Retired::Kept | Retired::Changed => kept.push(gone.name),
+            Retired::Retired => outcome.removed.push(gone.name.clone()),
+            Retired::Kept => outcome.missing.push(gone.name.clone()),
+            Retired::Changed => {
+                outcome.missing.push(gone.name.clone());
+                outcome.changed.push(gone.name.clone());
+            }
             Retired::Absent => {}
         }
     }
@@ -249,30 +605,109 @@ pub async fn execute(
     // file says something again. One somebody also wrote by hand stays, the
     // held count saying so.
     for (name, current) in emptied {
-        if engine.retire_section(&name, current).await? == Retired::Retired {
-            removed.push(name);
+        match engine.retire_section(&name, current).await? {
+            Retired::Retired => outcome.removed.push(name),
+            Retired::Changed => outcome.changed.push(name),
+            Retired::Kept | Retired::Absent => {}
         }
     }
-    removed.sort();
-    kept.sort();
 
     engine.drain_cascade(Owed::WhatAMemoryNeeds).await?;
     engine.flush_what_is_applied().await?;
     let owed = pamin_store::jobs::pending(engine.database.pool(), engine.project).await?;
+    outcome.cascade = Some(if owed == 0 { "applied" } else { "queued" });
+    Ok(outcome)
+}
 
-    Ok(Ingested {
-        files: read.len(),
-        sections: cut.len(),
-        written,
-        unchanged,
-        held,
-        removed,
-        missing: kept,
-        renamed,
-        skipped,
-        cascade: if owed == 0 { "applied" } else { "queued" }.to_string(),
-        cascade_lagging: lagging,
-    })
+/// The records of the read files, for those whose stat is still what it was
+/// before they were read: one that changed while it was being recorded is
+/// left without one, so the next ingest reads it again.
+fn still_as_read(read: Vec<Read>) -> Vec<FileRecord> {
+    read.into_iter()
+        .filter_map(|read| {
+            let now = stat(&read.file.path).ok()?;
+            let mut record = read.record;
+            record.sections = u32::try_from(read.sections.len()).unwrap_or(u32::MAX);
+            now.same_file(&record).then_some(record)
+        })
+        .collect()
+}
+
+/// For each tree, the files its records name that the walk did not find --
+/// files that left it, by root and name -- and how many sections its records
+/// account for.
+async fn left_trees(
+    database: &pamin_store::Database,
+    project: pamin_core::ProjectId,
+    trees: &[Tree],
+    found: &std::collections::HashSet<(String, String)>,
+) -> Result<Vec<(Vec<(String, String)>, i64)>> {
+    let mut left = Vec::with_capacity(trees.len());
+    for tree in trees {
+        let prefix = format!("{}/", tree.name);
+        let records = pamin_store::repository::file_records_under(
+            database.pool(),
+            project,
+            &tree.root,
+            &prefix,
+        )
+        .await?;
+        let accounted = records
+            .iter()
+            .map(|record| i64::from(record.sections))
+            .sum();
+        let gone = records
+            .into_iter()
+            .map(|record| (record.root, record.file))
+            .filter(|key| !found.contains(key))
+            .collect();
+        left.push((gone, accounted));
+    }
+    Ok(left)
+}
+
+/// Whether the file named `name` is under the directory named `tree`.
+fn under(name: &str, tree: &str) -> bool {
+    name.strip_prefix(tree)
+        .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Writes the records of the files read and forgets those of files gone.
+async fn write_records(
+    database: &pamin_store::Database,
+    project: pamin_core::ProjectId,
+    records: &[FileRecord],
+    left: &[(String, String)],
+) -> Result<()> {
+    let (roots, files): (Vec<String>, Vec<String>) = left.iter().cloned().unzip();
+    pamin_store::repository::forget_file_records(database.pool(), project, &roots, &files).await?;
+    pamin_store::repository::put_file_records(database.pool(), project, records).await?;
+    Ok(())
+}
+
+/// The topics of `recorded` that belong to one of `files` or sit under one of
+/// `trees`: a prefix finds a file's sections and also those of any file whose
+/// name starts with its own.
+fn in_play(recorded: Vec<FileTopic>, files: &[&str], trees: &[Tree]) -> Vec<FileTopic> {
+    let files: std::collections::HashSet<&str> = files.iter().copied().collect();
+    recorded
+        .into_iter()
+        .filter(|topic| {
+            files_of(&topic.name).any(|file| files.contains(file))
+                || trees.iter().any(|tree| under(&topic.name, &tree.name))
+        })
+        .collect()
+}
+
+/// Every name a file could have for `name` to be one of its sections' names:
+/// the whole of it, or what comes before a heading or a number. Each one
+/// [`belongs`] confirms.
+fn files_of(name: &str) -> impl Iterator<Item = &str> {
+    name.match_indices(SEPARATOR)
+        .chain(name.match_indices(" #"))
+        .map(|(at, _)| &name[..at])
+        .chain(std::iter::once(name))
+        .filter(move |file| belongs(name, file))
 }
 
 /// The sections of `cut` that are ones in `gone` under a new name -- a file
@@ -336,12 +771,12 @@ async fn renamed(
 ///
 /// And the section each sits under, by those names: the `part_of` edges
 /// [`Engine::restate_parents`](pamin_engine::Engine::restate_parents) states.
-#[allow(clippy::type_complexity)]
 async fn numbered(
-    engine: &pamin_engine::Engine,
-    cut: Vec<(String, String, Vec<Unnamed>)>,
+    database: &pamin_store::Database,
+    project: pamin_core::ProjectId,
+    cut: Vec<(File, FileRecord, Vec<Unnamed>)>,
     recorded: &[FileTopic],
-) -> Result<(Vec<(String, String, Vec<Section>)>, Vec<(String, String)>)> {
+) -> Result<(Vec<Read>, Vec<(String, String)>)> {
     // Per file, the earlier sections a number could be kept from.
     let wanted: Vec<Vec<String>> = cut
         .iter()
@@ -349,7 +784,7 @@ async fn numbered(
             let bases: BTreeSet<&str> = sections.iter().map(|s| s.base.as_str()).collect();
             let earlier: Vec<String> = recorded
                 .iter()
-                .filter(|topic| belongs(&topic.name, file))
+                .filter(|topic| belongs(&topic.name, &file.name))
                 .filter(|topic| bases.iter().any(|base| number(&topic.name, base).is_some()))
                 .map(|topic| topic.name.clone())
                 .collect();
@@ -368,7 +803,7 @@ async fn numbered(
         .collect();
     let names: Vec<String> = wanted.iter().flatten().cloned().collect();
     let contents: std::collections::HashMap<String, String> =
-        pamin_store::repository::current_named(engine.database.pool(), engine.project, &names)
+        pamin_store::repository::current_named(database.pool(), project, &names)
             .await?
             .into_iter()
             .map(|named| (named.name, named.content))
@@ -377,7 +812,7 @@ async fn numbered(
     let files = cut
         .into_iter()
         .zip(wanted)
-        .map(|((file, root, sections), wanted)| {
+        .map(|((file, record, sections), wanted)| {
             let previous: Vec<Section> = wanted
                 .into_iter()
                 .filter_map(|name| {
@@ -391,7 +826,11 @@ async fn numbered(
             for (from, to) in parents(&bases) {
                 edges.push((sections[from].name.clone(), sections[to].name.clone()));
             }
-            (file, root, sections)
+            Read {
+                file,
+                record,
+                sections,
+            }
         })
         .collect();
     Ok((files, edges))
@@ -580,6 +1019,9 @@ fn walk(
 struct Looked<'a> {
     /// The files it read, by name and root.
     read: &'a [(String, String)],
+    /// The files it found and left unread because their record says they have
+    /// not changed: their sections are all still there.
+    unchanged: &'a [(String, String)],
     /// The files it found and could not read.
     unread: &'a [(String, String)],
     /// The directories it walked.
@@ -615,6 +1057,15 @@ struct Gone {
 /// sections are listed but not retirable.
 fn gone(looked: &Looked, cut: &[&Section], recorded: Vec<FileTopic>) -> Vec<Gone> {
     let present: BTreeSet<&str> = cut.iter().map(|section| section.name.as_str()).collect();
+    // By root and name, asked of every name a section's file could have, so a
+    // catch-up of thousands of files is not thousands of comparisons a section.
+    fn by_root(files: &[(String, String)]) -> std::collections::HashSet<(&str, &str)> {
+        files
+            .iter()
+            .map(|(file, root)| (root.as_str(), file.as_str()))
+            .collect()
+    }
+    let (read, unchanged) = (by_root(looked.read), by_root(looked.unchanged));
     let mut gone = Vec::new();
     for topic in recorded {
         if present.contains(topic.name.as_str()) {
@@ -624,11 +1075,10 @@ fn gone(looked: &Looked, cut: &[&Section], recorded: Vec<FileTopic>) -> Vec<Gone
             continue;
         };
         let name = topic.name.as_str();
-        let retirable = if looked
-            .read
-            .iter()
-            .any(|(file, at)| at == root && belongs(name, file))
-        {
+        if files_of(name).any(|file| unchanged.contains(&(root, file))) {
+            continue;
+        }
+        let retirable = if files_of(name).any(|file| read.contains(&(root, file))) {
             Some(true)
         } else {
             let file = file_of(name);
@@ -645,12 +1095,7 @@ fn gone(looked: &Looked, cut: &[&Section], recorded: Vec<FileTopic>) -> Vec<Gone
                 looked
                     .trees
                     .iter()
-                    .filter(|tree| {
-                        tree.root == root
-                            && file
-                                .strip_prefix(tree.name.as_str())
-                                .is_some_and(|rest| rest.starts_with('/'))
-                    })
+                    .filter(|tree| tree.root == root && under(file, &tree.name))
                     .map(|tree| tree.whole)
                     .reduce(|left, right| left || right)
                     .map(|whole| whole && !(looked.exists)(&on_disk(root, file)))
@@ -813,6 +1258,7 @@ mod tests {
         let gone = gone(
             &Looked {
                 read: &[read("repo/a.md")],
+                unchanged: &[],
                 unread: &[],
                 trees: &[],
                 exists: &|_: &Path| false,
@@ -837,6 +1283,7 @@ mod tests {
         let gone = gone(
             &Looked {
                 read: &[read("repo/docs/a.md")],
+                unchanged: &[],
                 unread: &[read("repo/docs/unreadable.md")],
                 trees: &[tree("repo/docs", true)],
                 exists: &|_: &Path| false,
@@ -873,6 +1320,7 @@ mod tests {
         let gone = gone(
             &Looked {
                 read: &[read("repo/a.md")],
+                unchanged: &[],
                 unread: &[],
                 trees: &[tree("repo", true)],
                 exists: &|_: &Path| false,
@@ -895,6 +1343,7 @@ mod tests {
         let gone = gone(
             &Looked {
                 read: &[read("repo/docs/a.md")],
+                unchanged: &[],
                 unread: &[],
                 trees: &[tree("repo/docs", false)],
                 exists: &|_: &Path| false,
@@ -921,6 +1370,7 @@ mod tests {
         let gone = gone(
             &Looked {
                 read: &[],
+                unchanged: &[],
                 unread: &[],
                 trees: &[tree("repo", true)],
                 exists: &|path: &Path| path == Path::new("/home/a/repo/.github/CONTRIBUTING.md"),
@@ -942,6 +1392,154 @@ mod tests {
             on_disk("/home/a/repo", "repo/docs/a.md"),
             Path::new("/home/a/repo/docs/a.md")
         );
+    }
+
+    /// A file left unread because its record says it has not changed still
+    /// has every section it had: none is gone, under a walked tree or not.
+    #[test]
+    fn a_file_left_unread_as_unchanged_is_not_gone() {
+        let gone = gone(
+            &Looked {
+                read: &[read("repo/docs/a.md")],
+                unchanged: &[read("repo/docs/same.md"), read("repo/b › c.md")],
+                unread: &[],
+                trees: &[tree("repo", true)],
+                exists: &|_: &Path| true,
+            },
+            &[],
+            vec![
+                recorded("repo/docs/same.md › Usage", ROOT),
+                recorded("repo/docs/same.md #2", ROOT),
+                recorded("repo/b › c.md › Heading", ROOT),
+                recorded("repo/docs/a.md › Old", ROOT),
+            ],
+        );
+        assert_eq!(listed(&gone), [("repo/docs/a.md › Old", true)]);
+    }
+
+    /// Every name a section's file could have is tried, the whole of it among
+    /// them, and only those [`belongs`] confirms: a file whose own name holds
+    /// a heading's separator is found as itself.
+    #[test]
+    fn a_sections_file_is_found_among_every_name_it_could_have() {
+        let files = |name| files_of(name).collect::<Vec<_>>();
+        assert_eq!(files("r/a.md"), ["r/a.md"]);
+        assert_eq!(
+            files("r/a.md › H › I"),
+            ["r/a.md", "r/a.md › H", "r/a.md › H › I"]
+        );
+        assert_eq!(
+            files("r/a.md #2 › H"),
+            ["r/a.md #2", "r/a.md", "r/a.md #2 › H"]
+        );
+        assert_eq!(files("r/a #x.md"), ["r/a #x.md"]);
+    }
+
+    /// The prefix the store matches by finds a file's sections and every file
+    /// whose name starts with its own; only the file's own are in play, and
+    /// whatever sits under a walked tree.
+    #[test]
+    fn only_the_sections_of_the_files_and_trees_looked_at_are_in_play() {
+        let kept = in_play(
+            vec![
+                recorded("repo/a.md › H", ROOT),
+                recorded("repo/a.md #2", ROOT),
+                recorded("repo/a.md.bak › H", ROOT),
+                recorded("repo/docs/b.md", ROOT),
+                recorded("repo/docsier/c.md", ROOT),
+            ],
+            &["repo/a.md"],
+            &[tree("repo/docs", true)],
+        );
+        let names: Vec<&str> = kept.iter().map(|topic| topic.name.as_str()).collect();
+        assert_eq!(names, ["repo/a.md › H", "repo/a.md #2", "repo/docs/b.md"]);
+    }
+
+    fn record_of(stat: &Stat) -> FileRecord {
+        let file = File {
+            name: "repo/a.md".into(),
+            path: PathBuf::from("/home/a/repo/a.md"),
+            root: ROOT.into(),
+        };
+        stat.recorded(&file, "hash".into())
+    }
+
+    /// A record is believed only for the very stat it was taken with, and only
+    /// when that stat was taken well after the file last changed: a file
+    /// modified within a timestamp's granularity of being read may change
+    /// again without its stat showing it.
+    #[test]
+    fn a_record_is_trusted_for_its_own_stat_taken_after_the_file_settled() {
+        let second = 1_000_000_000;
+        let settled = Stat {
+            size: 10,
+            modified_ns: 100 * second,
+            changed_ns: 100 * second,
+            inode: 7,
+            read_ns: 200 * second,
+        };
+        let record = record_of(&settled);
+        assert!(trusted(&record, &settled));
+        // Cut by another build: read again, whatever its stat says.
+        let other = FileRecord {
+            build: "another build".into(),
+            ..record.clone()
+        };
+        assert!(!trusted(&other, &settled));
+        for moved in [
+            Stat {
+                size: 11,
+                ..settled
+            },
+            Stat {
+                modified_ns: 101 * second,
+                ..settled
+            },
+            Stat {
+                changed_ns: 101 * second,
+                ..settled
+            },
+            Stat {
+                inode: 8,
+                ..settled
+            },
+        ] {
+            assert!(!trusted(&record, &moved), "{moved:?}");
+        }
+        // Read within two seconds of a change, to the file or its inode.
+        for racy in [
+            Stat {
+                read_ns: 101 * second,
+                ..settled
+            },
+            Stat {
+                changed_ns: 199 * second,
+                ..settled
+            },
+        ] {
+            assert!(!trusted(&record_of(&racy), &racy), "{racy:?}");
+        }
+    }
+
+    /// A file's stat is what a record keeps: its size, both times to the
+    /// nanosecond and its inode, with the clock read before them.
+    #[test]
+    fn a_stat_is_taken_after_the_clock_and_moves_with_a_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.md");
+        std::fs::write(&path, "one").unwrap();
+        let before = now_ns();
+        let first = stat(&path).unwrap();
+        assert!(first.read_ns >= before);
+        assert_eq!(first.size, 3);
+        assert!(first.modified_ns <= first.read_ns + RACY_NS);
+        assert_eq!(stat(&path).unwrap().inode, first.inode);
+        // An atomic save: a new file renamed over the old one.
+        let next = dir.path().join("a.md.tmp");
+        std::fs::write(&next, "two!").unwrap();
+        std::fs::rename(&next, &path).unwrap();
+        let second = stat(&path).unwrap();
+        assert!(!second.same_file(&record_of(&first)));
     }
 
     #[test]
