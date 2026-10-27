@@ -23,7 +23,6 @@ pub async fn list(session: &Session, project: &str) -> Result<Synced> {
                 state: status.state.name().to_string(),
                 synced_at: status.synced_at.map(validity::render),
                 error: status.error,
-                keep_missing: synced.keep_missing,
                 path: synced.path,
             }
         })

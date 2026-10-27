@@ -5,8 +5,6 @@ CREATE TABLE synced_paths (
     project_id   UUID        NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
     -- Canonical, as the ingest resolved it: a file or a directory.
     path         TEXT        NOT NULL,
-    -- What the ingest was told about sections its files lose.
-    keep_missing BOOLEAN     NOT NULL,
     -- The vector index the ingest asked for, for an ingest nobody asks for.
     vector_index TEXT        NOT NULL,
     added_at     TIMESTAMPTZ NOT NULL,

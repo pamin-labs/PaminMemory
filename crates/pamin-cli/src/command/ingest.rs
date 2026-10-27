@@ -72,15 +72,7 @@ pub async fn execute(
     let ingested = {
         let ingesting = session.ingesting(project);
         let _ingesting = ingesting.lock().await;
-        ingest(
-            session,
-            project,
-            vector_index,
-            found,
-            Vec::new(),
-            args.keep_missing,
-        )
-        .await?
+        ingest(session, project, vector_index, found, Vec::new()).await?
     };
     keep_in_sync(session, project, vector_index, &args).await?;
     Ok(ingested)
@@ -116,13 +108,12 @@ async fn keep_in_sync(
         return Ok(());
     }
     let label = vector_index.label();
-    pamin_store::repository::sync_paths(pool, project_id, &paths, args.keep_missing, label).await?;
+    pamin_store::repository::sync_paths(pool, project_id, &paths, label).await?;
     if let Some(syncing) = session.syncing() {
         for path in paths {
             syncing.add(pamin_store::repository::SyncedPath {
                 project: project.to_string(),
                 path,
-                keep_missing: args.keep_missing,
                 vector_index: label.to_string(),
             });
         }
@@ -144,7 +135,6 @@ pub(crate) async fn ingest(
     vector_index: VectorIndex,
     found: Found,
     deleted: Vec<File>,
-    keep_missing: bool,
 ) -> Result<Ingested> {
     let project_id = session.project(project).await?;
     let database = session.database();
@@ -290,7 +280,7 @@ pub(crate) async fn ingest(
     let mut outcome = Outcome::default();
     // Nothing read and nothing to retire: no engine, no index, no models. A
     // tree whose every file is unchanged ends here, having read none of them.
-    let retiring = !keep_missing && gone.iter().any(|gone| gone.retirable);
+    let retiring = gone.iter().any(|gone| gone.retirable);
     if sections_of.is_empty() && !retiring {
         outcome.missing = gone.into_iter().map(|gone| gone.name).collect();
     } else {
@@ -302,7 +292,6 @@ pub(crate) async fn ingest(
             &known,
             &surfaced,
             &mut gone,
-            keep_missing,
         )
         .await?;
     }
@@ -317,9 +306,9 @@ pub(crate) async fn ingest(
     // Records of files that left a tree walked whole go with them; a walk that
     // met an error cannot say a file left rather than went out of reach.
     // Nor for a file with a section this ingest left on the surface although
-    // the file no longer has it -- under --keep-missing, or written by hand --
-    // which an ingest without the flag must find again: a file read keeps no
-    // record, and a file gone keeps the one it has.
+    // the file no longer has it -- written by hand too, or out of the reach of
+    // a walk that met an error -- which a later ingest must find again: a file
+    // read keeps no record, and a file gone keeps the one it has.
     let unsettled = |file: &str| {
         outcome
             .changed
@@ -591,7 +580,6 @@ async fn record(
     known: &std::collections::HashSet<String>,
     surfaced: &std::collections::HashMap<String, pamin_core::TopicStateId>,
     gone: &mut Vec<Gone>,
-    keep_missing: bool,
 ) -> Result<Outcome> {
     // Before the sections are recorded, so a section found under a new name
     // is written to the topic it already was rather than to a new one.
@@ -677,7 +665,7 @@ async fn record(
     // is written under its new name before its old one is retired, and before
     // the drain, which removes what retiring left for the projection.
     for gone in gone.iter() {
-        if keep_missing || !gone.retirable {
+        if !gone.retirable {
             outcome.missing.push(gone.name.clone());
             continue;
         }
@@ -694,9 +682,8 @@ async fn record(
     // A held write leaves the topic's state as it was, so a section its file
     // emptied would still be found by the text the file no longer has. Taken
     // off the surface as a section the file lost is, and back on it once the
-    // file says something again -- under --keep-missing too, since the file
-    // still has the section and only says next to nothing in it. One somebody
-    // also wrote by hand stays, the held count saying so.
+    // file says something again. One somebody also wrote by hand stays, the
+    // held count saying so.
     for (name, current) in emptied {
         match engine.retire_section(&name, current).await? {
             Retired::Retired => outcome.removed.push(name),

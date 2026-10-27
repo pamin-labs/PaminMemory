@@ -747,18 +747,16 @@ for this one. And a section another ingest wrote again after this one looked —
 found back in its file with new text — is left as it now is; one found back
 unchanged is retired, and the next ingest brings it back.
 
-`--keep-missing` only lists such sections, under `missing`, and leaves them
-searchable. So does any section somebody also wrote by hand with `pamin write`,
-whatever the flag: it is theirs as well as the file's. A file with a section
-left this way is read again by the next ingest rather than trusted to its
-record, so an ingest without the flag finds the section gone and retires it.
+A section somebody also wrote by hand with `pamin write` is only listed, under
+`missing`, and left searchable: it is theirs as well as the file's. A file with
+a section left this way is read again by the next ingest rather than trusted to
+its record.
 
 **A section its file cut down to next to nothing is taken off too.** Text
 below the filter's eight characters — a `TBD` where a paragraph was — is held,
 counted under `held`, and would leave the section answering with the text the
 file no longer has. So it is retired as a section the file lost is, and listed
-under `removed`, `--keep-missing` or not: the file still has the section and
-says next to nothing in it. Ingesting it again while it says the same writes
+under `removed`. Ingesting it again while it says the same writes
 nothing, and once the file says something again the section is back. One
 somebody also wrote by hand stays, held on every ingest and its evidence
 recorded again each time.
@@ -807,8 +805,7 @@ the same `cascade` and `cascade_lagging` as `import`.
 second after the last change — an edit, an editor's save by renaming a new
 file over the old, a new file or folder, a deletion, a move — so a search finds
 what a file says now without anybody ingesting it again. It is the ingest a
-person runs, with the path's `--keep-missing`, so what it records is what
-`pamin ingest` would have. A file gone with nothing new beside it is held one
+person runs, so what it records is what `pamin ingest` would have. A file gone with nothing new beside it is held one
 second more before its sections are retired, in case it is half of a move
 whose other half is on its way: both reach one ingest, and the section keeps
 its history under its new name.
