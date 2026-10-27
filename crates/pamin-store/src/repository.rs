@@ -1509,6 +1509,231 @@ pub async fn file_topic_names(
         .collect())
 }
 
+/// [`file_topic_names`] for the files an ingest is looking at, rather than
+/// every file the project has: the topics whose name starts with one of
+/// `prefixes` -- a file's name, or a directory's followed by `/`.
+///
+/// A prefix is a match on the start of the name and nothing more, so `a.md`
+/// also finds `a.md.bak`'s sections; the caller keeps what belongs to it.
+/// Each prefix is a range of the `C`-collated locator index, given as bounds
+/// rather than a `LIKE` pattern: a parameter's pattern is unknown when the
+/// statement is planned, and a range of parameters is not.
+pub async fn file_topics_under(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    prefixes: &[String],
+) -> Result<Vec<FileTopic>> {
+    if prefixes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (low, high): (Vec<String>, Vec<String>) = prefixes
+        .iter()
+        .map(|prefix| {
+            let low = format!("file:{prefix}");
+            // Above every string that starts with `low`: no character sorts
+            // after the last one Unicode has, in UTF-8 bytes or code points.
+            let high = format!("{low}{}", char::MAX);
+            (low, high)
+        })
+        .unzip();
+    let rows: Vec<(String, uuid::Uuid, Option<String>)> = sqlx::query_as(
+        r#"SELECT DISTINCT t.name, t.current_state_id, s.root
+             FROM unnest($2::text[], $3::text[]) AS r (low, high)
+             JOIN sources s
+               ON s.project_id = $1 AND s.kind = 'file'
+              AND (s.locator COLLATE "C") >= r.low AND (s.locator COLLATE "C") < r.high
+             JOIN topics t ON t.project_id = s.project_id AND t.name = substr(s.locator, 6)
+            WHERE t.current_state_id IS NOT NULL"#,
+    )
+    .bind(project.0)
+    .bind(&low)
+    .bind(&high)
+    .fetch_all(executor)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(name, current, root)| FileTopic {
+            name,
+            current: current.into(),
+            root,
+        })
+        .collect())
+}
+
+/// What a file looked like when an ingest read it. See `V18__file_records`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileRecord {
+    pub root: String,
+    pub file: String,
+    pub size: u64,
+    pub modified_ns: i64,
+    pub changed_ns: i64,
+    pub inode: u64,
+    pub read_ns: i64,
+    pub content_hash: String,
+    pub sections: u32,
+}
+
+/// The records of these files, each named from the root beside it.
+pub async fn file_records_of(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    roots: &[String],
+    files: &[String],
+) -> Result<Vec<FileRecord>> {
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query(
+        "SELECT f.root, f.file, f.size, f.modified_ns, f.changed_ns, f.inode, f.read_ns,
+                f.content_hash, f.sections
+           FROM unnest($2::text[], $3::text[]) AS k (root, file)
+           JOIN file_records f ON f.project_id = $1 AND f.root = k.root AND f.file = k.file",
+    )
+    .bind(project.0)
+    .bind(roots)
+    .bind(files)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows.iter().map(file_record).collect())
+}
+
+/// Every record under `root` whose file starts with `prefix`: what a tree held
+/// when it was last ingested, for a caller asking what has left it.
+pub async fn file_records_under(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    root: &str,
+    prefix: &str,
+) -> Result<Vec<FileRecord>> {
+    let rows = sqlx::query(
+        "SELECT root, file, size, modified_ns, changed_ns, inode, read_ns, content_hash, sections
+           FROM file_records
+          WHERE project_id = $1 AND root = $2 AND starts_with(file, $3)",
+    )
+    .bind(project.0)
+    .bind(root)
+    .bind(prefix)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows.iter().map(file_record).collect())
+}
+
+fn file_record(row: &sqlx::postgres::PgRow) -> FileRecord {
+    // Stored in a BIGINT's bits; see the migration.
+    FileRecord {
+        root: row.get("root"),
+        file: row.get("file"),
+        size: row.get::<i64, _>("size") as u64,
+        modified_ns: row.get("modified_ns"),
+        changed_ns: row.get("changed_ns"),
+        inode: row.get::<i64, _>("inode") as u64,
+        read_ns: row.get("read_ns"),
+        content_hash: row.get("content_hash"),
+        sections: row.get::<i32, _>("sections").max(0) as u32,
+    }
+}
+
+/// Records these files as read, replacing what was recorded of them.
+pub async fn put_file_records(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    records: &[FileRecord],
+) -> Result<()> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    let column = |f: fn(&FileRecord) -> i64| records.iter().map(f).collect::<Vec<i64>>();
+    let roots: Vec<&str> = records.iter().map(|r| r.root.as_str()).collect();
+    let files: Vec<&str> = records.iter().map(|r| r.file.as_str()).collect();
+    let hashes: Vec<&str> = records.iter().map(|r| r.content_hash.as_str()).collect();
+    let sections: Vec<i32> = records
+        .iter()
+        .map(|r| i32::try_from(r.sections).unwrap_or(i32::MAX))
+        .collect();
+    sqlx::query(
+        "INSERT INTO file_records AS f
+                (project_id, root, file, size, modified_ns, changed_ns, inode, read_ns,
+                 content_hash, sections)
+         SELECT $1, * FROM unnest($2::text[], $3::text[], $4::bigint[], $5::bigint[],
+                                  $6::bigint[], $7::bigint[], $8::bigint[], $9::text[],
+                                  $10::int[])
+         ON CONFLICT (project_id, root, file) DO UPDATE
+            SET size = excluded.size, modified_ns = excluded.modified_ns,
+                changed_ns = excluded.changed_ns, inode = excluded.inode,
+                read_ns = excluded.read_ns, content_hash = excluded.content_hash,
+                sections = excluded.sections",
+    )
+    .bind(project.0)
+    .bind(&roots)
+    .bind(&files)
+    .bind(column(|r| r.size as i64))
+    .bind(column(|r| r.modified_ns))
+    .bind(column(|r| r.changed_ns))
+    .bind(column(|r| r.inode as i64))
+    .bind(column(|r| r.read_ns))
+    .bind(&hashes)
+    .bind(&sections)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Forgets what was recorded of these files: each `files[i]` under `roots[i]`
+/// when `elsewhere` is false, or under every root but `roots[i]` when it is
+/// true -- for an ingest that rewrote sections another tree's file of the same
+/// name had recorded as its own.
+pub async fn forget_file_records(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    roots: &[String],
+    files: &[String],
+    elsewhere: bool,
+) -> Result<()> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "DELETE FROM file_records f
+          USING unnest($2::text[], $3::text[]) AS k (root, file)
+          WHERE f.project_id = $1 AND f.file = k.file AND (f.root = k.root) <> $4",
+    )
+    .bind(project.0)
+    .bind(roots)
+    .bind(files)
+    .bind(elsewhere)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Forgets the record of the file `topic` was cut from, if it is a section of
+/// one: a write to it other than its file's leaves the file saying something
+/// its section no longer does, which only reading the file again can settle.
+///
+/// The file is the record whose name the topic's starts with, as a section's
+/// does: the whole name, or the name and then ` › ` or ` #`.
+pub async fn forget_file_record_of(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    topic: &str,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM file_records f
+          USING sources s
+          WHERE s.project_id = $1 AND s.locator = 'file:' || $2
+            AND f.project_id = $1 AND f.root = s.root
+            AND ($2 = f.file OR starts_with($2, f.file || ' › ')
+                 OR starts_with($2, f.file || ' #'))",
+    )
+    .bind(project.0)
+    .bind(topic)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
 /// A topic as it stands now, found by name.
 #[derive(Clone, Debug)]
 pub struct Named {
