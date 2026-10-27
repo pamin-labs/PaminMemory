@@ -704,10 +704,25 @@ only to a name no topic already holds: a file moved out of the tree the command
 walked is still `removed`, and one moved onto an old section's name is recorded
 as new. Listed under `renamed`.
 
+**A file that has not changed is not read again.** Each file an ingest reads
+leaves a record of its size, its modification and change times, its inode and
+a hash of its text, and the next ingest compares the file's metadata with it
+before opening the file, the way git's index tells a clean file from a stat.
+The same metadata means the same file, and its sections are counted under
+`unchanged` without being read; different metadata means it is read, and if
+its text hashes the same it is counted unchanged all the same, its record
+taking the new metadata. A file modified within two seconds of being read is
+read and hashed next time whatever its metadata says, since a second change
+inside one timestamp would not show. A section written by hand with `pamin
+write` makes its file's record untrue, and so does an ingest of another tree
+whose file of the same name rewrote its sections: either way the record goes,
+and the next ingest reads the file. An ingest that finds every file unchanged
+opens no index and loads no model.
+
 On this repository's own 105 Markdown and text files, an
 unchanged re-ingest wrote nothing; the time it took was measured on an earlier
-cut that also split long sections into parts, and is not re-measured for this
-one ([measured](../benchmarks/results/ingest/ingest-cost-2026-10-23.md)).
+cut that also split long sections into parts and read every file, and is not
+re-measured for this one ([measured](../benchmarks/results/ingest/ingest-cost-2026-10-23.md)).
 
 **A section that is no longer there is taken off the retrieval surface**, and
 listed under `removed`: its heading removed, or renamed with its text rewritten past matching, or its file deleted
