@@ -1595,6 +1595,7 @@ pub struct FileRecord {
     pub read_ns: i64,
     pub content_hash: String,
     pub sections: u32,
+    pub build: String,
 }
 
 /// The records of these files, each named from the root beside it.
@@ -1609,7 +1610,7 @@ pub async fn file_records_of(
     }
     let rows = sqlx::query(
         "SELECT f.root, f.file, f.size, f.modified_ns, f.changed_ns, f.inode, f.read_ns,
-                f.content_hash, f.sections
+                f.content_hash, f.sections, f.build
            FROM unnest($2::text[], $3::text[]) AS k (root, file)
            JOIN file_records f ON f.project_id = $1 AND f.root = k.root AND f.file = k.file",
     )
@@ -1630,7 +1631,8 @@ pub async fn file_records_under(
     prefix: &str,
 ) -> Result<Vec<FileRecord>> {
     let rows = sqlx::query(
-        "SELECT root, file, size, modified_ns, changed_ns, inode, read_ns, content_hash, sections
+        "SELECT root, file, size, modified_ns, changed_ns, inode, read_ns, content_hash, sections,
+                build
            FROM file_records
           WHERE project_id = $1 AND root = $2 AND starts_with(file, $3)",
     )
@@ -1654,6 +1656,7 @@ fn file_record(row: &sqlx::postgres::PgRow) -> FileRecord {
         read_ns: row.get("read_ns"),
         content_hash: row.get("content_hash"),
         sections: row.get::<i32, _>("sections").max(0) as u32,
+        build: row.get("build"),
     }
 }
 
@@ -1670,6 +1673,7 @@ pub async fn put_file_records(
     let roots: Vec<&str> = records.iter().map(|r| r.root.as_str()).collect();
     let files: Vec<&str> = records.iter().map(|r| r.file.as_str()).collect();
     let hashes: Vec<&str> = records.iter().map(|r| r.content_hash.as_str()).collect();
+    let builds: Vec<&str> = records.iter().map(|r| r.build.as_str()).collect();
     let sections: Vec<i32> = records
         .iter()
         .map(|r| i32::try_from(r.sections).unwrap_or(i32::MAX))
@@ -1677,15 +1681,15 @@ pub async fn put_file_records(
     sqlx::query(
         "INSERT INTO file_records AS f
                 (project_id, root, file, size, modified_ns, changed_ns, inode, read_ns,
-                 content_hash, sections)
+                 content_hash, sections, build)
          SELECT $1, * FROM unnest($2::text[], $3::text[], $4::bigint[], $5::bigint[],
                                   $6::bigint[], $7::bigint[], $8::bigint[], $9::text[],
-                                  $10::int[])
+                                  $10::int[], $11::text[])
          ON CONFLICT (project_id, root, file) DO UPDATE
             SET size = excluded.size, modified_ns = excluded.modified_ns,
                 changed_ns = excluded.changed_ns, inode = excluded.inode,
                 read_ns = excluded.read_ns, content_hash = excluded.content_hash,
-                sections = excluded.sections",
+                sections = excluded.sections, build = excluded.build",
     )
     .bind(project.0)
     .bind(&roots)
@@ -1697,6 +1701,7 @@ pub async fn put_file_records(
     .bind(column(|r| r.read_ns))
     .bind(&hashes)
     .bind(&sections)
+    .bind(&builds)
     .execute(executor)
     .await?;
     Ok(())
@@ -1728,6 +1733,64 @@ pub async fn forget_file_records(
     .execute(executor)
     .await?;
     Ok(())
+}
+
+/// Forgets the record of each `files[i]` under `roots[i]` one of whose
+/// sections, `topics[i]`, was written by hand since `since`: a write that may
+/// have landed while an ingest was recording that file, after its own
+/// [`forget_file_record_of`] found no record yet to forget.
+pub async fn forget_file_records_written_since(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    roots: &[String],
+    files: &[String],
+    topics: &[String],
+    since: OffsetDateTime,
+) -> Result<()> {
+    if topics.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "DELETE FROM file_records f
+          USING unnest($2::text[], $3::text[], $4::text[]) AS k (root, file, topic)
+           JOIN sources s ON s.project_id = $1 AND s.locator = 'manual:' || k.topic
+           JOIN source_versions v
+             ON v.project_id = $1 AND v.source_id = s.id AND v.recorded_at >= $5
+          WHERE f.project_id = $1 AND f.root = k.root AND f.file = k.file",
+    )
+    .bind(project.0)
+    .bind(roots)
+    .bind(files)
+    .bind(topics)
+    .bind(since)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// How many sections a file's prefix range holds on the retrieval surface:
+/// every file whose name starts with `prefix`, for a caller comparing it with
+/// what the records under that prefix account for.
+pub async fn count_file_topics_under(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    prefix: &str,
+) -> Result<i64> {
+    let low = format!("file:{prefix}");
+    let high = format!("{low}{}", char::MAX);
+    let (count,): (i64,) = sqlx::query_as(
+        r#"SELECT count(*) FROM sources s
+             JOIN topics t ON t.project_id = s.project_id AND t.name = substr(s.locator, 6)
+            WHERE s.project_id = $1 AND s.kind = 'file'
+              AND (s.locator COLLATE "C") >= $2 AND (s.locator COLLATE "C") < $3
+              AND t.current_state_id IS NOT NULL"#,
+    )
+    .bind(project.0)
+    .bind(&low)
+    .bind(&high)
+    .fetch_one(executor)
+    .await?;
+    Ok(count)
 }
 
 /// Forgets the record of the file `topic` was cut from, if it is a section of
@@ -1810,6 +1873,31 @@ pub async fn unsync_paths(
     .fetch_all(executor)
     .await?;
     Ok(removed.into_iter().map(|(path,)| path).collect())
+}
+
+/// The paths kept in sync in one project, by path.
+pub async fn synced_paths_of(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+) -> Result<Vec<SyncedPath>> {
+    let rows: Vec<(String, String, bool, String)> = sqlx::query_as(
+        "SELECT p.name, s.path, s.keep_missing, s.vector_index
+           FROM synced_paths s JOIN projects p ON p.id = s.project_id
+          WHERE s.project_id = $1
+          ORDER BY s.path",
+    )
+    .bind(project.0)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(project, path, keep_missing, vector_index)| SyncedPath {
+            project,
+            path,
+            keep_missing,
+            vector_index,
+        })
+        .collect())
 }
 
 /// Every path kept in sync, in every project, by project and path.
