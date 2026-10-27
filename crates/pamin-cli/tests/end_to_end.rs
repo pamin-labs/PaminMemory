@@ -22,9 +22,17 @@ struct Cli {
 
 impl Cli {
     fn new() -> Self {
-        Self {
-            home: tempfile::tempdir().expect("temp home"),
+        let home = tempfile::tempdir().expect("temp home");
+        // A PostgreSQL already installed, for a machine that cannot download
+        // one: written where `--postgres-dir` would read it.
+        if let Ok(dir) = std::env::var("PAMIN_TEST_POSTGRES_DIR") {
+            std::fs::write(
+                home.path().join("config.toml"),
+                format!("[serve]\npostgres_dir = {dir:?}\n"),
+            )
+            .expect("writing config.toml");
         }
+        Self { home }
     }
 
     fn home(&self) -> &Path {
@@ -2429,7 +2437,9 @@ fn an_ingested_file_is_found_by_section_and_re_ingested_by_change() {
     put(&tree.path().join("docs/image.png"), "not text");
 
     let docs = tree.path().join("docs");
-    let first = cli.json(&["ingest", docs.to_str().expect("a path")]);
+    // `--no-sync` in every test of what an ingest records: a watcher reaching
+    // an edit first would leave the next ingest finding it unchanged.
+    let first = cli.json(&["ingest", "--no-sync", docs.to_str().expect("a path")]);
     assert_eq!(first["files"], 1, "{first}");
     assert_eq!(first["sections"], 2, "{first}");
     assert_eq!(first["written"], 2, "{first}");
@@ -2444,7 +2454,7 @@ fn an_ingested_file_is_found_by_section_and_re_ingested_by_change() {
     // The same tree named relatively from inside it: the same sections,
     // nothing to record.
     let relative = Command::new(env!("CARGO_BIN_EXE_pamin"))
-        .args(["ingest", "docs", "--json"])
+        .args(["ingest", "--no-sync", "docs", "--json"])
         .current_dir(tree.path())
         .env("PAMIN_HOME", cli.home())
         .output()
@@ -2478,7 +2488,7 @@ fn an_ingested_file_is_found_by_section_and_re_ingested_by_change() {
     let without_rollback =
         format!("# Deploy\n\n{deploy} Releases are cut every tuesday morning.\n");
     put(&ops, &without_rollback);
-    let edited = cli.json(&["ingest", ops.to_str().expect("a path")]);
+    let edited = cli.json(&["ingest", "--no-sync", ops.to_str().expect("a path")]);
     assert_eq!(edited["sections"], 1, "{edited}");
     assert_eq!(edited["written"], 1, "{edited}");
     assert_eq!(
@@ -2506,7 +2516,7 @@ fn an_ingested_file_is_found_by_section_and_re_ingested_by_change() {
         &ops,
         &format!("# Deploy\n\n{deploy}\n\n## Rollback\n\n{rollback}\n"),
     );
-    let back = cli.json(&["ingest", docs.to_str().expect("a path")]);
+    let back = cli.json(&["ingest", "--no-sync", docs.to_str().expect("a path")]);
     assert_eq!(back["written"], 2, "{back}");
     let found = cli.json(&["search", "how do we roll back to the previous release"]);
     assert_eq!(
@@ -2517,7 +2527,12 @@ fn an_ingested_file_is_found_by_section_and_re_ingested_by_change() {
 
     // Under --keep-missing, a section the file lost is only listed.
     put(&ops, &without_rollback);
-    let kept = cli.json(&["ingest", "--keep-missing", docs.to_str().expect("a path")]);
+    let kept = cli.json(&[
+        "ingest",
+        "--no-sync",
+        "--keep-missing",
+        docs.to_str().expect("a path"),
+    ]);
     assert_eq!(kept["removed"], serde_json::json!([]), "{kept}");
     assert_eq!(
         kept["missing"],
@@ -2568,14 +2583,14 @@ fn a_section_inserted_above_its_twin_leaves_the_twin_its_name() {
                   written to be safe against the release before it, so both can run \
                   against the same schema while traffic moves across.";
     put(&notes, &format!("# Notes\n\n{first}\n"));
-    let once = cli.json(&["ingest", notes.to_str().expect("a path")]);
+    let once = cli.json(&["ingest", "--no-sync", notes.to_str().expect("a path")]);
     assert_eq!(once["written"], 1, "{once}");
 
     put(
         &notes,
         &format!("# Notes\n\n{second}\n\n# Notes\n\n{first}\n"),
     );
-    let twice = cli.json(&["ingest", notes.to_str().expect("a path")]);
+    let twice = cli.json(&["ingest", "--no-sync", notes.to_str().expect("a path")]);
     assert_eq!(twice["sections"], 2, "{twice}");
     assert_eq!(twice["written"], 1, "the twin was rewritten: {twice}");
     assert_eq!(twice["unchanged"], 1, "{twice}");
@@ -2629,7 +2644,7 @@ fn a_section_is_part_of_the_section_above_it() {
         &ops,
         &format!("# Deploy\n\n{deploy}\n\n## Canary\n\n{canary}\n\n## Rollback\n\n{rollback}\n"),
     );
-    let first = cli.json(&["ingest", ops.to_str().expect("a path")]);
+    let first = cli.json(&["ingest", "--no-sync", ops.to_str().expect("a path")]);
     assert_eq!(first["sections"], 3, "{first}");
 
     let edges = |topic: &str| -> Vec<(String, String, String)> {
@@ -2672,7 +2687,7 @@ fn a_section_is_part_of_the_section_above_it() {
     assert_eq!(canary["parent"], deploy_name.as_str(), "{canary}");
 
     // Unchanged, re-ingested: nothing new to say.
-    let again = cli.json(&["ingest", ops.to_str().expect("a path")]);
+    let again = cli.json(&["ingest", "--no-sync", ops.to_str().expect("a path")]);
     assert_eq!(again["unchanged"], 3, "{again}");
     assert_eq!(edges(&deploy_name).len(), 2);
 
@@ -2681,7 +2696,7 @@ fn a_section_is_part_of_the_section_above_it() {
         &ops,
         &format!("# Deploy\n\n{deploy}\n\n## Canary\n\n{canary}\n"),
     );
-    let fewer = cli.json(&["ingest", ops.to_str().expect("a path")]);
+    let fewer = cli.json(&["ingest", "--no-sync", ops.to_str().expect("a path")]);
     assert_eq!(
         fewer["removed"],
         serde_json::json!([rollback_name]),
@@ -2734,7 +2749,7 @@ fn a_renamed_heading_or_moved_folder_keeps_its_sections() {
     };
     // The repository's root each time, as a tree is re-ingested: only a walk
     // of the tree can say a file has gone from where it was.
-    let ingest = || cli.json(&["ingest", tree.path().to_str().expect("a path")]);
+    let ingest = || cli.json(&["ingest", "--no-sync", tree.path().to_str().expect("a path")]);
     let mentioning = || -> Vec<String> {
         cli.json(&["neighbors", "oncall_rota", "--kind", "mentions"])["neighbors"]
             .as_array()
@@ -2809,7 +2824,7 @@ fn a_section_its_file_emptied_is_no_longer_found() {
                 go through the pipeline like every other change.";
     put(&notes, text);
     let path = notes.to_str().expect("a path");
-    let first = cli.json(&["ingest", path]);
+    let first = cli.json(&["ingest", "--no-sync", path]);
     assert_eq!(first["written"], 1, "{first}");
     let query = "what happens to the staging cluster on friday";
     let found = cli.json(&["search", query]);
@@ -2819,7 +2834,7 @@ fn a_section_its_file_emptied_is_no_longer_found() {
         .to_string();
 
     put(&notes, "TBD\n");
-    let emptied = cli.json(&["ingest", path]);
+    let emptied = cli.json(&["ingest", "--no-sync", path]);
     assert_eq!(emptied["held"], 1, "{emptied}");
     assert_eq!(
         emptied["removed"],
@@ -2837,15 +2852,191 @@ fn a_section_its_file_emptied_is_no_longer_found() {
     );
 
     // Held again, and nothing more to retire: no evidence copied, no work.
-    let again = cli.json(&["ingest", path]);
+    let again = cli.json(&["ingest", "--no-sync", path]);
     assert_eq!(again["unchanged"], 1, "{again}");
     assert_eq!(again["removed"], serde_json::json!([]), "{again}");
 
     put(&notes, text);
-    let back = cli.json(&["ingest", path]);
+    let back = cli.json(&["ingest", "--no-sync", path]);
     assert_eq!(back["written"], 1, "{back}");
     let found = cli.json(&["search", query]);
     assert_eq!(found["hits"][0]["topic"], section.as_str(), "{found}");
+
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
+}
+
+/// The hits of a search, each as its topic and its content.
+fn hit_texts(cli: &Cli, query: &str) -> Vec<(String, String)> {
+    cli.json(&["search", query, "--limit", "5"])["hits"]
+        .as_array()
+        .expect("hits")
+        .iter()
+        .map(|hit| {
+            (
+                hit["topic"].as_str().expect("a topic").to_string(),
+                hit["content"].as_str().expect("content").to_string(),
+            )
+        })
+        .collect()
+}
+
+/// Waits up to ten seconds for some hit of `query` to hold `word`, or with
+/// `present` false for none to.
+fn eventually_found(cli: &Cli, query: &str, word: &str, present: bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let found = hit_texts(cli, query)
+            .iter()
+            .any(|(_, content)| content.contains(word));
+        if found == present {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{word:?} was {} after ten seconds",
+            if present {
+                "never found"
+            } else {
+                "still found"
+            }
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// A paragraph about `words`, long enough to be a section of its own.
+fn paragraph(heading: &str, words: &str) -> String {
+    format!(
+        "# {heading}\n\n{words} is what this paragraph is about, written out at length so \
+         that it is long enough to be a section of its own rather than merged into a \
+         neighbour, which takes about fifty tokens of ordinary prose.\n"
+    )
+}
+
+/// A tree ingested once is kept in sync with no ingest after: an edit, an
+/// atomic save, a new folder, a deletion and a move reach search on their own,
+/// and so do edits made while the server was stopped. What an ingest skips --
+/// an ignored folder, a path given `--no-sync`, a path unsynced -- is not, each
+/// shown beside an edit that is, so a watcher that heard nothing cannot pass.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn an_ingested_tree_is_kept_in_sync_without_ingesting_again() {
+    let cli = Cli::new();
+    let mut server = cli.serve();
+    cli.run(&["init"]);
+
+    let tree = tempfile::tempdir().expect("temp tree");
+    let repo = tree.path().join("repo");
+    std::fs::create_dir_all(repo.join(".git")).expect("a repository root");
+    put(&repo.join(".gitignore"), "target/\n");
+    put(&repo.join("docs/a.md"), &paragraph("Alpha", "alpha apples"));
+    put(
+        &repo.join("docs/b.md"),
+        &paragraph("Bravo", "bravo bananas"),
+    );
+    put(
+        &repo.join("guides/c.md"),
+        &paragraph("Charlie", "charlie cherries"),
+    );
+    put(
+        &repo.join("target/built.md"),
+        &paragraph("Built", "built bricks"),
+    );
+    let solo = tree.path().join("solo");
+    put(&solo.join("s.md"), &paragraph("Solo", "solo sardines"));
+    let repo_path = repo.to_str().expect("utf-8");
+    let first = cli.json(&["ingest", repo_path]);
+    assert_eq!(first["written"], 3, "{first}");
+    cli.json(&["ingest", "--no-sync", solo.to_str().expect("utf-8")]);
+    let synced = cli.json(&["sync"]);
+    assert_eq!(
+        synced["paths"].as_array().expect("paths").len(),
+        1,
+        "{synced}"
+    );
+
+    // An edit in place, and a search before the watcher's quiet second is out
+    // answering with it all the same, for words only the old text held.
+    put(
+        &repo.join("docs/a.md"),
+        &paragraph("Alpha", "alpha apricots"),
+    );
+    let hits = hit_texts(&cli, "alpha apples");
+    assert!(
+        hits.iter().any(|(_, content)| content.contains("apricots")),
+        "a search straight after an edit answered with the old text: {hits:?}"
+    );
+
+    // An editor's save: a new file renamed over the old one.
+    put(
+        &repo.join("docs/.b.md.swp"),
+        &paragraph("Bravo", "bravo blueberries"),
+    );
+    std::fs::rename(repo.join("docs/.b.md.swp"), repo.join("docs/b.md")).expect("renaming");
+    eventually_found(&cli, "blueberries", "blueberries", true);
+
+    // A new folder, walked and watched.
+    put(&repo.join("notes/d.md"), &paragraph("Delta", "delta dates"));
+    eventually_found(&cli, "dates", "dates", true);
+
+    // A move keeps the section: its old name is an alias of the new one.
+    std::fs::rename(repo.join("guides/c.md"), repo.join("docs/c.md")).expect("moving");
+    let moved = "repo/docs/c.md › Charlie";
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while cli.json(&["read", "repo/guides/c.md › Charlie"])["topic"] != moved {
+        assert!(
+            Instant::now() < deadline,
+            "the moved section was not renamed"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // A deletion.
+    std::fs::remove_file(repo.join("docs/b.md")).expect("deleting");
+    eventually_found(&cli, "blueberries", "blueberries", false);
+
+    // Never heard of: an ignored folder and a path given --no-sync, each
+    // beside an edit that is.
+    put(
+        &repo.join("target/built.md"),
+        &paragraph("Built", "built kumquats"),
+    );
+    put(&solo.join("s.md"), &paragraph("Solo", "solo salmon"));
+    put(
+        &repo.join("docs/a.md"),
+        &paragraph("Alpha", "alpha avocados"),
+    );
+    eventually_found(&cli, "avocados", "avocados", true);
+    std::thread::sleep(Duration::from_secs(2));
+    eventually_found(&cli, "kumquats", "kumquats", false);
+    eventually_found(&cli, "salmon", "salmon", false);
+
+    // Edits while the server is stopped are caught up when it starts.
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
+    put(
+        &repo.join("docs/a.md"),
+        &paragraph("Alpha", "alpha artichokes"),
+    );
+    std::fs::remove_file(repo.join("notes/d.md")).expect("deleting");
+    let mut server = cli.serve();
+    eventually_found(&cli, "artichokes", "artichokes", true);
+    eventually_found(&cli, "dates", "dates", false);
+
+    // Unsynced, an edit is left alone; the control is the edit before it.
+    let unsynced = cli.json(&["unsync", repo_path]);
+    assert_eq!(
+        unsynced["removed"].as_array().expect("removed").len(),
+        1,
+        "{unsynced}"
+    );
+    put(
+        &repo.join("docs/a.md"),
+        &paragraph("Alpha", "alpha anchovies"),
+    );
+    std::thread::sleep(Duration::from_secs(2));
+    eventually_found(&cli, "anchovies", "anchovies", false);
 
     server.kill().expect("stopping the server");
     server.wait().expect("reaping the server");
