@@ -2934,6 +2934,9 @@ fn an_ingested_tree_is_kept_in_sync_without_ingesting_again() {
         1,
         "{synced}"
     );
+    // The models loaded before any wait is timed: a first search loads the
+    // reranker, which a debug build takes most of a wait to do.
+    cli.json(&["search", "warm up the models"]);
 
     // An edit in place, and a search before the watcher's quiet second is out
     // answering with it all the same, for words only the old text held.

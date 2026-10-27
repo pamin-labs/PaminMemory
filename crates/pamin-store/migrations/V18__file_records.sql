@@ -39,8 +39,8 @@ CREATE TABLE file_records (
     PRIMARY KEY (project_id, root, file)
 );
 
--- A file's records under every root, for an ingest forgetting the other
--- trees' records of a file whose sections it is about to rewrite.
+-- A file's records under every root, for an ingest forgetting each record of a
+-- file whose sections it is about to rewrite.
 CREATE INDEX file_records_by_file ON file_records (project_id, file);
 
 -- The sections of a file, or of every file under a directory, found by their

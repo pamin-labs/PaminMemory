@@ -1707,16 +1707,12 @@ pub async fn put_file_records(
     Ok(())
 }
 
-/// Forgets what was recorded of these files: each `files[i]` under `roots[i]`
-/// when `elsewhere` is false, or under every root but `roots[i]` when it is
-/// true -- for an ingest that rewrote sections another tree's file of the same
-/// name had recorded as its own.
+/// Forgets what was recorded of each `files[i]` under `roots[i]`.
 pub async fn forget_file_records(
     executor: impl PgExecutor<'_>,
     project: ProjectId,
     roots: &[String],
     files: &[String],
-    elsewhere: bool,
 ) -> Result<()> {
     if files.is_empty() {
         return Ok(());
@@ -1724,14 +1720,32 @@ pub async fn forget_file_records(
     sqlx::query(
         "DELETE FROM file_records f
           USING unnest($2::text[], $3::text[]) AS k (root, file)
-          WHERE f.project_id = $1 AND f.file = k.file AND (f.root = k.root) <> $4",
+          WHERE f.project_id = $1 AND f.root = k.root AND f.file = k.file",
     )
     .bind(project.0)
     .bind(roots)
     .bind(files)
-    .bind(elsewhere)
     .execute(executor)
     .await?;
+    Ok(())
+}
+
+/// Forgets what was recorded of these files under every root: for an ingest
+/// about to rewrite their sections, which every tree naming a file alike
+/// shares, so no record of them is true until the ingest writes its own.
+pub async fn forget_records_of_files(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    files: &[String],
+) -> Result<()> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    sqlx::query("DELETE FROM file_records WHERE project_id = $1 AND file = ANY($2)")
+        .bind(project.0)
+        .bind(files)
+        .execute(executor)
+        .await?;
     Ok(())
 }
 
