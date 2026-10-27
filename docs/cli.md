@@ -716,8 +716,9 @@ read and hashed next time whatever its metadata says, since a second change
 inside one timestamp would not show. A section written by hand with `pamin
 write` makes its file's record untrue, and so does an ingest of another tree
 whose file of the same name rewrote its sections: either way the record goes,
-and the next ingest reads the file. An ingest that finds every file unchanged
-opens no index and loads no model.
+and the next ingest reads the file. A record also names the build that cut the
+file, so a new `pamin` reads every file once, in case it cuts them differently.
+An ingest that finds every file unchanged opens no index and loads no model.
 
 On this repository's own 105 Markdown and text files, an
 unchanged re-ingest wrote nothing; the time it took was measured on an earlier
@@ -748,7 +749,9 @@ unchanged is retired, and the next ingest brings it back.
 
 `--keep-missing` only lists such sections, under `missing`, and leaves them
 searchable. So does any section somebody also wrote by hand with `pamin write`,
-whatever the flag: it is theirs as well as the file's.
+whatever the flag: it is theirs as well as the file's. A file with a section
+left this way is read again by the next ingest rather than trusted to its
+record, so an ingest without the flag finds the section gone and retires it.
 
 **A section its file cut down to next to nothing is taken off too.** Text
 below the filter's eight characters — a `TBD` where a paragraph was — is held,
@@ -830,15 +833,18 @@ followed.
 
 **A search does not wait for the watcher.** Before it answers, it compares the
 files its hits were cut from with their records, a stat each, and ingests any
-that changed under a synced path, then searches again if that changed what
-pamin holds. A search issued in the second after an edit, or while a server
-that was stopped is still catching up, answers with what the file says now.
-Behind an ingest of the project already running it waits a second at most, and
-then answers as it found it.
+that changed under a synced path, then searches again if that or the watcher
+changed what pamin holds while it ranked. A search issued in the second after
+an edit, or while a server that was stopped is still catching up, answers with
+what the file says now. Two limits: a file that is gone is left to the watcher,
+which holds a deletion a second in case it is half of a move; and behind an
+ingest of the project already running a search waits a second at most, then
+answers as it found it.
 
-`--no-sync` ingests the paths once and stops keeping them in sync if an
-earlier ingest asked for it. Paths ingested before sync existed are kept in
-sync from their next ingest.
+`--no-sync` ingests the paths once and stops keeping those exact paths in sync
+if an earlier ingest asked for it; a file under a directory that is itself
+kept in sync is still kept by it. Paths ingested before sync existed are kept
+in sync from their next ingest.
 
 ## `pamin sync`
 
