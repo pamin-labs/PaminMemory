@@ -846,8 +846,8 @@ fn is_idle(last_used: Instant, now: Instant, idle: Duration) -> bool {
 /// Part of what recording a memory means rather than a detail of the caller:
 /// the ledger uses it to recognise the same content arriving twice, so two
 /// callers computing it two ways would be two callers disagreeing about what
-/// the same memory is.
-fn content_hash(content: &str) -> String {
+/// the same memory is. A file's record hashes the file's text the same way.
+pub fn content_hash(content: &str) -> String {
     use sha2::Digest as _;
     format!("{:x}", sha2::Sha256::digest(content.as_bytes()))
 }
@@ -1726,6 +1726,13 @@ impl Engine {
                 },
             )
             .await?;
+            // A section of a file written by hand no longer says what its file
+            // does, so the file's record, which says it does, goes with the
+            // write: the next ingest reads the file rather than trusting it.
+            if kind == SourceKind::Manual && found {
+                repository::forget_file_record_of(&mut *transaction, self.project, request.topic)
+                    .await?;
+            }
             (version, Some(state))
         } else {
             let (version, _) =
