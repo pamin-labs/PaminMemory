@@ -553,10 +553,11 @@ impl Models {
     /// What a memory is cut into spans by: the embedder's own tokenizer,
     /// counting tokens as the embedder will read them, without its weights.
     ///
-    /// Loaded the first time an index cut into spans writes, and kept: it is
-    /// the vocabulary the embedder shares (see `pamin_index::tokenizer`), not
-    /// a second copy of it, and an index of whole memories never loads it.
-    fn span_tokens(&self) -> Result<Arc<SpanTokens>, pamin_index::IndexError> {
+    /// Loaded the first time an index cut into spans writes, or an ingest cuts
+    /// a file into sections, and kept: it is the vocabulary the embedder
+    /// shares (see `pamin_index::tokenizer`), not a second copy of it, and an
+    /// index of whole memories never loads it. Blocking on the first call.
+    pub fn span_tokens(&self) -> Result<Arc<SpanTokens>, pamin_index::IndexError> {
         let mut held = self
             .span_tokens
             .lock()
@@ -845,8 +846,8 @@ fn is_idle(last_used: Instant, now: Instant, idle: Duration) -> bool {
 /// Part of what recording a memory means rather than a detail of the caller:
 /// the ledger uses it to recognise the same content arriving twice, so two
 /// callers computing it two ways would be two callers disagreeing about what
-/// the same memory is.
-fn content_hash(content: &str) -> String {
+/// the same memory is. A file's record hashes the file's text the same way.
+pub fn content_hash(content: &str) -> String {
     use sha2::Digest as _;
     format!("{:x}", sha2::Sha256::digest(content.as_bytes()))
 }
@@ -1725,6 +1726,13 @@ impl Engine {
                 },
             )
             .await?;
+            // A section of a file written by hand no longer says what its file
+            // does, so the file's record, which says it does, goes with the
+            // write: the next ingest reads the file rather than trusting it.
+            if kind == SourceKind::Manual && found {
+                repository::forget_file_record_of(&mut *transaction, self.project, request.topic)
+                    .await?;
+            }
             (version, Some(state))
         } else {
             let (version, _) =
