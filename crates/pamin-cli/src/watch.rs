@@ -642,6 +642,13 @@ impl Watcher {
                     continue;
                 }
             };
+            tracing::debug!(
+                path = %key.1,
+                heard = paths.len(),
+                changed = sorted.changed.len(),
+                deleted = sorted.deleted.len(),
+                "sorted what changed"
+            );
             // A file gone with nothing new beside it may be half a move whose
             // other half is still to come: held for one more quiet period, so
             // both reach one ingest and the section keeps its history. What

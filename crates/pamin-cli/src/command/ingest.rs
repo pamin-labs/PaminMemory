@@ -182,15 +182,14 @@ pub(crate) async fn ingest(
     skipped.extend(found.skipped);
     let trees = found.trees;
 
-    // The sections of a file are shared by every tree that names a file alike,
-    // so the records other trees keep of these files stop being true the
-    // moment this ingest writes: they go first, before anything is written,
-    // so no failure part way leaves one trusting text it no longer holds.
-    let (roots, names): (Vec<String>, Vec<String>) = cut
-        .iter()
-        .map(|(file, _, _)| (file.root.clone(), file.name.clone()))
-        .unzip();
-    pamin_store::repository::forget_file_records(pool, project_id, &roots, &names, true).await?;
+    // Every record of a file read stops being true the moment this ingest
+    // writes its sections -- its own, and those of any other tree naming a
+    // file alike, which shares them -- so they all go first, before anything
+    // is written. A file this ingest then gives no record of its own, because
+    // it changed while being read, is read again next time rather than judged
+    // by a record of text it no longer holds.
+    let names: Vec<String> = cut.iter().map(|(file, _, _)| file.name.clone()).collect();
+    pamin_store::repository::forget_records_of_files(pool, project_id, &names).await?;
 
     // Only the sections of the files in play: those read, and those of files
     // under a directory walked that the walk no longer found. Those are the
@@ -760,8 +759,7 @@ async fn write_records(
     left: &[(String, String)],
 ) -> Result<()> {
     let (roots, files): (Vec<String>, Vec<String>) = left.iter().cloned().unzip();
-    pamin_store::repository::forget_file_records(database.pool(), project, &roots, &files, false)
-        .await?;
+    pamin_store::repository::forget_file_records(database.pool(), project, &roots, &files).await?;
     pamin_store::repository::put_file_records(database.pool(), project, records).await?;
     Ok(())
 }
