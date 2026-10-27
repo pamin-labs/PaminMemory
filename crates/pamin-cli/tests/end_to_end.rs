@@ -2525,27 +2525,6 @@ fn an_ingested_file_is_found_by_section_and_re_ingested_by_change() {
         "{found}"
     );
 
-    // Under --keep-missing, a section the file lost is only listed.
-    put(&ops, &without_rollback);
-    let kept = cli.json(&[
-        "ingest",
-        "--no-sync",
-        "--keep-missing",
-        docs.to_str().expect("a path"),
-    ]);
-    assert_eq!(kept["removed"], serde_json::json!([]), "{kept}");
-    assert_eq!(
-        kept["missing"],
-        serde_json::json!([rollback_section]),
-        "{kept}"
-    );
-    let still = cli.json(&["search", "how do we roll back to the previous release"]);
-    assert_eq!(
-        still["hits"][0]["topic"],
-        rollback_section.as_str(),
-        "{still}"
-    );
-
     server.kill().expect("stopping the server");
     server.wait().expect("reaping the server");
 }
@@ -3048,67 +3027,6 @@ fn an_ingested_tree_is_kept_in_sync_without_ingesting_again() {
     );
     std::thread::sleep(Duration::from_secs(2));
     eventually_found(&cli, "anchovies", "anchovies", false);
-
-    server.kill().expect("stopping the server");
-    server.wait().expect("reaping the server");
-}
-
-/// What an ingest under `--keep-missing` leaves on the surface, a later ingest
-/// without it still takes off: a heading the file lost, and a file the tree
-/// lost. The file's record must not let the later ingest skip it.
-#[test]
-#[ignore = "provisions postgres and downloads model weights"]
-fn what_keep_missing_kept_a_later_ingest_retires() {
-    let cli = Cli::new();
-    let mut server = cli.serve();
-    cli.run(&["init"]);
-    let tree = tempfile::tempdir().expect("temp tree");
-    let docs = tree.path().join("docs");
-    let a = format!(
-        "{}\n{}",
-        paragraph("Alpha", "alpha apples"),
-        paragraph("Heading", "heading hazelnuts")
-    );
-    put(&docs.join("a.md"), &a);
-    put(&docs.join("b.md"), &paragraph("Bravo", "bravo bananas"));
-    let path = docs.to_str().expect("utf-8");
-    let first = cli.json(&["ingest", "--no-sync", path]);
-    assert_eq!(first["written"], 3, "{first}");
-
-    // Past the racy window, so the records written next are trusted.
-    std::thread::sleep(Duration::from_secs(3));
-    put(&docs.join("a.md"), &paragraph("Alpha", "alpha apples"));
-    std::fs::remove_file(docs.join("b.md")).expect("deleting");
-    let kept = cli.json(&["ingest", "--no-sync", "--keep-missing", path]);
-    assert_eq!(
-        kept["missing"].as_array().expect("missing").len(),
-        2,
-        "{kept}"
-    );
-    assert_eq!(kept["removed"], serde_json::json!([]), "{kept}");
-
-    std::thread::sleep(Duration::from_secs(3));
-    let retired = cli.json(&["ingest", "--no-sync", path]);
-    let mut removed: Vec<String> = retired["removed"]
-        .as_array()
-        .expect("removed")
-        .iter()
-        .map(|name| name.as_str().expect("a name").to_string())
-        .collect();
-    removed.sort();
-    assert_eq!(
-        removed.len(),
-        2,
-        "what --keep-missing kept was not retired: {retired}"
-    );
-    assert!(
-        removed.iter().any(|name| name.ends_with("b.md › Bravo")),
-        "{retired}"
-    );
-    assert!(
-        removed.iter().any(|name| name.ends_with("› Heading")),
-        "{retired}"
-    );
 
     server.kill().expect("stopping the server");
     server.wait().expect("reaping the server");

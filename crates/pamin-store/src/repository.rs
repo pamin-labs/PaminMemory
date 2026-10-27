@@ -1825,31 +1825,27 @@ pub struct SyncedPath {
     /// The project's name.
     pub project: String,
     pub path: String,
-    pub keep_missing: bool,
     pub vector_index: String,
 }
 
-/// Records `paths` as kept in sync for this project, replacing what an
-/// earlier ingest of them said.
+/// Records `paths` as kept in sync for this project, under the vector index
+/// the ingest asked for.
 pub async fn sync_paths(
     executor: impl PgExecutor<'_>,
     project: ProjectId,
     paths: &[String],
-    keep_missing: bool,
     vector_index: &str,
 ) -> Result<()> {
     if paths.is_empty() {
         return Ok(());
     }
     sqlx::query(
-        "INSERT INTO synced_paths (project_id, path, keep_missing, vector_index, added_at)
-         SELECT $1, path, $3, $4, now() FROM unnest($2::text[]) AS path
-         ON CONFLICT (project_id, path) DO UPDATE
-            SET keep_missing = excluded.keep_missing, vector_index = excluded.vector_index",
+        "INSERT INTO synced_paths (project_id, path, vector_index, added_at)
+         SELECT $1, path, $3, now() FROM unnest($2::text[]) AS path
+         ON CONFLICT (project_id, path) DO UPDATE SET vector_index = excluded.vector_index",
     )
     .bind(project.0)
     .bind(paths)
-    .bind(keep_missing)
     .bind(vector_index)
     .execute(executor)
     .await?;
@@ -1880,8 +1876,8 @@ pub async fn synced_paths_of(
     executor: impl PgExecutor<'_>,
     project: ProjectId,
 ) -> Result<Vec<SyncedPath>> {
-    let rows: Vec<(String, String, bool, String)> = sqlx::query_as(
-        "SELECT p.name, s.path, s.keep_missing, s.vector_index
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT p.name, s.path, s.vector_index
            FROM synced_paths s JOIN projects p ON p.id = s.project_id
           WHERE s.project_id = $1
           ORDER BY s.path",
@@ -1891,10 +1887,9 @@ pub async fn synced_paths_of(
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(project, path, keep_missing, vector_index)| SyncedPath {
+        .map(|(project, path, vector_index)| SyncedPath {
             project,
             path,
-            keep_missing,
             vector_index,
         })
         .collect())
@@ -1902,8 +1897,8 @@ pub async fn synced_paths_of(
 
 /// Every path kept in sync, in every project, by project and path.
 pub async fn synced_paths(executor: impl PgExecutor<'_>) -> Result<Vec<SyncedPath>> {
-    let rows: Vec<(String, String, bool, String)> = sqlx::query_as(
-        "SELECT p.name, s.path, s.keep_missing, s.vector_index
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT p.name, s.path, s.vector_index
            FROM synced_paths s JOIN projects p ON p.id = s.project_id
           ORDER BY p.name, s.path",
     )
@@ -1911,10 +1906,9 @@ pub async fn synced_paths(executor: impl PgExecutor<'_>) -> Result<Vec<SyncedPat
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(project, path, keep_missing, vector_index)| SyncedPath {
+        .map(|(project, path, vector_index)| SyncedPath {
             project,
             path,
-            keep_missing,
             vector_index,
         })
         .collect())

@@ -941,35 +941,27 @@ pub async fn freshen(
         return Ok(());
     }
 
-    // What changed, by the synced path it is under. A file gone is left to
+    // What changed under a synced path that is there. A file gone is left to
     // the watcher, which holds a deletion for the other half of a move: a
     // search retiring it here would cost the moved section its history.
     let stale = tokio::task::spawn_blocking(move || {
-        let mut stale: Vec<(SyncedPath, Vec<File>)> = Vec::new();
-        for record in records {
-            let path = ingest::on_disk(&record.root, &record.file);
-            let Some(synced) = synced
-                .iter()
-                .find(|synced| path.starts_with(&synced.path) && Path::new(&synced.path).exists())
-            else {
-                continue;
-            };
-            let file = File {
-                name: record.file.clone(),
-                path: path.clone(),
-                root: record.root.clone(),
-            };
-            match ingest::stat(&path) {
-                Ok(stat) if !ingest::trusted(&record, &stat) => {
-                    match stale.iter_mut().find(|(s, _)| s.path == synced.path) {
-                        Some((_, changed)) => changed.push(file),
-                        None => stale.push((synced.clone(), vec![file])),
-                    }
+        records
+            .into_iter()
+            .filter_map(|record| {
+                let path = ingest::on_disk(&record.root, &record.file);
+                let synced = synced.iter().any(|synced| {
+                    path.starts_with(&synced.path) && Path::new(&synced.path).exists()
+                });
+                if !synced || ingest::trusted(&record, &ingest::stat(&path).ok()?) {
+                    return None;
                 }
-                _ => {}
-            }
-        }
-        stale
+                Some(File {
+                    name: record.file,
+                    path,
+                    root: record.root,
+                })
+            })
+            .collect::<Vec<File>>()
     })
     .await?;
     if stale.is_empty() {
@@ -983,23 +975,13 @@ pub async fn freshen(
     let Ok(_ingesting) = tokio::time::timeout(WAIT, ingesting.lock()).await else {
         return Ok(());
     };
-    for (synced, changed) in stale {
-        let found = Found {
-            files: changed,
-            skipped: Vec::new(),
-            trees: Vec::new(),
-            dirs: Vec::new(),
-        };
-        ingest::ingest(
-            session,
-            project,
-            vector_index,
-            found,
-            Vec::new(),
-            synced.keep_missing,
-        )
-        .await?;
-    }
+    let found = Found {
+        files: stale,
+        skipped: Vec::new(),
+        trees: Vec::new(),
+        dirs: Vec::new(),
+    };
+    ingest::ingest(session, project, vector_index, found, Vec::new()).await?;
     Ok(())
 }
 
@@ -1028,15 +1010,7 @@ async fn ingest_for(
     let ingesting = session.ingesting(&synced.project);
     let _ingesting = ingesting.lock().await;
     let _serving = session.serving();
-    ingest::ingest(
-        session,
-        &synced.project,
-        vector_index,
-        found,
-        deleted,
-        synced.keep_missing,
-    )
-    .await
+    ingest::ingest(session, &synced.project, vector_index, found, deleted).await
 }
 
 #[cfg(test)]
@@ -1146,7 +1120,6 @@ mod tests {
         let synced = |path: &str| SyncedPath {
             project: "p".into(),
             path: path.into(),
-            keep_missing: false,
             vector_index: "memory".into(),
         };
         let dir = tempfile::tempdir().unwrap();

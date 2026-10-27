@@ -15,11 +15,6 @@ pub struct Args {
     #[arg(required = true)]
     pub paths: Vec<PathBuf>,
 
-    /// Leave sections these files no longer have searchable, and only list
-    /// them, rather than taking them off the retrieval surface.
-    #[arg(long)]
-    pub keep_missing: bool,
-
     /// Ingest these paths once and stop keeping them in sync.
     ///
     /// By default the server keeps every path it ingests in sync: it watches
@@ -52,8 +47,9 @@ pub struct Ingested {
     /// longer there, which this ingest took off the retrieval surface. Their
     /// history stays, and ingesting the section again brings it back.
     pub removed: Vec<String>,
-    /// The same, left searchable: every one of them under `--keep-missing`,
-    /// and otherwise those somebody also wrote by hand.
+    /// The same, left searchable because this ingest cannot take them off:
+    /// those somebody also wrote by hand, and those of a file it could not
+    /// read or a directory whose walk met an error.
     pub missing: Vec<String>,
     /// Sections found under a new name -- their file moved, or a heading above
     /// them renamed -- whose memory was renamed rather than recorded afresh,

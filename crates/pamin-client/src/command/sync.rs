@@ -14,9 +14,6 @@ pub struct Synced {
 #[derive(Serialize, Deserialize)]
 pub struct SyncedPath {
     pub path: String,
-    /// Whether sections its files lose are only listed, as `--keep-missing`
-    /// asked.
-    pub keep_missing: bool,
     /// How the server is following it: `watching`, `polling` when the
     /// operating system would not watch it any more, `missing` when it is not
     /// there, or `starting` until the server has caught up on it.
@@ -37,9 +34,6 @@ pub fn render(result: &Synced) -> String {
         out.push_str(&format!("\n  {} ({}", synced.path, synced.state));
         if let Some(at) = &synced.synced_at {
             out.push_str(&format!(", synced {at}"));
-        }
-        if synced.keep_missing {
-            out.push_str(", keeping missing sections");
         }
         out.push(')');
         if let Some(error) = &synced.error {
