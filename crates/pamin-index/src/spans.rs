@@ -6,10 +6,11 @@
 //! each fit is what lets the rest be found.
 //!
 //! The cut follows the text's own structure. A memory is read as blocks --
-//! fenced code, ATX headings, conversation turns and paragraphs -- and the
+//! fenced code, ATX headings, conversation turns, tables and paragraphs -- and the
 //! blocks are packed in order into spans of at most `cap` tokens, with no
 //! overlap and a heading always opening a span. A block too large for one span
-//! is cut where its kind allows: code at its lines, prose at its sentences,
+//! is cut where its kind allows: code at its lines, a table at its rows, prose
+//! at its sentences,
 //! and a line or sentence still too large at its tokens, into pieces of near
 //! equal size.
 //!
@@ -18,7 +19,8 @@
 //! passage it is embedded from today, and a corpus whose memories all fit
 //! indexes as it did before spans. Every other span is trimmed of whitespace
 //! at both ends, and its header carries what the span lost by being cut out:
-//! the heading it sits under and the speaker of the turn it continues.
+//! the heading it sits under, and the speaker of the turn or the header row of
+//! the table it continues.
 //!
 //! A pure function of the content, the token counter and the cap, so spans
 //! need not be stored anywhere they cannot be computed again.
@@ -51,7 +53,7 @@ pub struct Span {
     pub ordinal: u32,
     /// Where it lies in the memory's content, in bytes.
     pub range: Range<usize>,
-    /// The memory's name, and the heading and turn it continues.
+    /// The memory's name, and the heading, turn or table it continues.
     pub header: String,
     /// The content in `range`.
     pub text: String,
@@ -144,13 +146,13 @@ pub fn pack(name: &str, content: &str, counter: &dyn TokenCount, cap: usize) -> 
                 .filter(|&block| blocks[block].range.start < range.start)
                 .and_then(|block| heading(&content[blocks[block].range.clone()]))
                 .filter(|heading| !heading.is_empty());
-            let turn = span
-                .turn
+            let continued = span
+                .continued
                 .filter(|&block| blocks[block].range.start < range.start)
-                .and_then(|block| turn(&content[blocks[block].range.clone()]));
+                .and_then(|block| opening(content, &blocks[block]));
             Span {
                 ordinal: ordinal as u32,
-                header: header(name, heading, turn.as_deref(), counter),
+                header: header(name, heading, continued.as_deref(), counter),
                 text: content[range.clone()].to_string(),
                 range,
                 tokens: span.tokens,
@@ -166,6 +168,7 @@ enum Kind {
     Fence,
     Heading,
     Turn,
+    Table,
     Paragraph,
 }
 
@@ -188,8 +191,8 @@ struct Unit {
     heading: bool,
     /// The heading block this piece sits under, which may be its own.
     heading_block: Option<usize>,
-    /// The turn block this piece belongs to.
-    turn: Option<usize>,
+    /// The turn or table block this piece belongs to.
+    continued: Option<usize>,
 }
 
 /// A span while it is being packed.
@@ -198,9 +201,10 @@ struct Packed {
     end: usize,
     tokens: usize,
     headings_only: bool,
-    /// What its header is made from: its first piece's heading and turn.
+    /// What its header is made from: its first piece's heading, and the turn
+    /// or table it belongs to.
     heading_block: Option<usize>,
-    turn: Option<usize>,
+    continued: Option<usize>,
 }
 
 impl From<Unit> for Packed {
@@ -211,7 +215,7 @@ impl From<Unit> for Packed {
             tokens: unit.tokens,
             headings_only: unit.heading,
             heading_block: unit.heading_block,
-            turn: unit.turn,
+            continued: unit.continued,
         }
     }
 }
@@ -263,10 +267,11 @@ fn blocks(content: &str) -> Vec<Block> {
             }
             Kind::Turn
         } else {
+            let table = index < lines.len() && table(text, line(index));
             while index < lines.len() && !blank(line(index)) && !opens(line(index)) {
                 index += 1;
             }
-            Kind::Paragraph
+            if table { Kind::Table } else { Kind::Paragraph }
         };
         let last = (first..index)
             .rev()
@@ -295,7 +300,7 @@ fn units(content: &str, blocks: &[Block], counter: &dyn TokenCount, cap: usize) 
             opens: is_heading && first,
             heading: is_heading,
             heading_block,
-            turn: (block.kind == Kind::Turn).then_some(index),
+            continued: matches!(block.kind, Kind::Turn | Kind::Table).then_some(index),
         };
         let tokens = counter.count(&content[block.range.clone()]);
         if tokens <= cap {
@@ -303,7 +308,7 @@ fn units(content: &str, blocks: &[Block], counter: &dyn TokenCount, cap: usize) 
             continue;
         }
         let pieces = match block.kind {
-            Kind::Fence => lines(content, block.range.clone()),
+            Kind::Fence | Kind::Table => lines(content, block.range.clone()),
             _ => sentences(content, block.range.clone()),
         };
         for piece in pieces {
@@ -409,28 +414,26 @@ fn fit<'a>(text: &'a str, budget: usize, counter: &dyn TokenCount) -> &'a str {
     ""
 }
 
-/// A span's header: `name`, then the heading it sits under, then the date and
-/// speaker of the turn it continues, in at most [`HEADER_TOKENS`] tokens. The
-/// heading is shortened first; a header still too long is cut whole.
+/// A span's header: `name`, then the heading it sits under, then the opening
+/// of the turn or table it continues, in at most [`HEADER_TOKENS`] tokens.
+/// Each part is shortened to the room the parts before it leave, so the
+/// heading keeps its words ahead of a long table header row; a header still
+/// too long is cut whole.
 fn header(
     name: &str,
     heading: Option<&str>,
-    turn: Option<&str>,
+    continued: Option<&str>,
     counter: &dyn TokenCount,
 ) -> String {
-    let compose = |heading: Option<&str>| {
-        let mut header = name.to_string();
-        for part in [heading, turn].into_iter().flatten() {
-            header.push_str(" > ");
-            header.push_str(part);
-        }
-        header
-    };
-    let mut header = compose(None);
-    if let Some(heading) = heading {
+    let mut header = name.to_string();
+    for part in [heading, continued].into_iter().flatten() {
         let mut room = HEADER_TOKENS.saturating_sub(counter.count(&header));
         while room > 0 {
-            let candidate = compose(Some(fit(heading, room, counter)).filter(|h| !h.is_empty()));
+            let piece = fit(part, room, counter);
+            if piece.is_empty() {
+                break;
+            }
+            let candidate = format!("{header} > {piece}");
             if counter.count(&candidate) <= HEADER_TOKENS {
                 header = candidate;
                 break;
@@ -492,6 +495,40 @@ fn heading(line: &str) -> Option<&str> {
     } else {
         text
     })
+}
+
+/// What a span continuing `block` is headed with: the date and speaker of a
+/// turn, or the header row of a table.
+fn opening(content: &str, block: &Block) -> Option<String> {
+    let text = &content[block.range.clone()];
+    match block.kind {
+        Kind::Turn => turn(text),
+        Kind::Table => text.lines().next().map(|row| row.trim().to_string()),
+        _ => None,
+    }
+}
+
+/// Whether `line` and the `next` one open a table: a header row, then a
+/// delimiter row of as many cells, each a run of `-` with optional `:` at
+/// either end.
+fn table(line: &str, next: &str) -> bool {
+    let delimiter = cells(next).all(|cell| {
+        let cell = cell.strip_prefix(':').unwrap_or(cell);
+        let cell = cell.strip_suffix(':').unwrap_or(cell);
+        !cell.is_empty() && cell.bytes().all(|b| b == b'-')
+    });
+    line.contains('|')
+        && next.contains('|')
+        && delimiter
+        && cells(line).count() == cells(next).count()
+}
+
+/// The cells of a table row, trimmed, without the optional outer pipes.
+fn cells(row: &str) -> impl Iterator<Item = &str> {
+    let row = row.trim();
+    let row = row.strip_prefix('|').unwrap_or(row);
+    let row = row.strip_suffix('|').unwrap_or(row);
+    row.split('|').map(str::trim)
 }
 
 /// The date and speaker of the turn `line` opens, if it opens one: `[date]
@@ -773,6 +810,78 @@ mod tests {
         let header = &spans[1].header;
         assert!(header.starts_with("topic name > w0 w1 "), "{header}");
         assert_eq!(Words.count(header), HEADER_TOKENS);
+    }
+
+    /// A table too long for one span is cut at its rows, and every span
+    /// that continues it is headed with its header row, so the columns a
+    /// row's cells belong to are not lost.
+    #[test]
+    fn a_long_table_is_cut_at_its_rows_under_its_header_row() {
+        let rows = (0..40)
+            .map(|row| format!("| tool{row} | version {row} | owner{row} |"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let content = format!(
+            "## Inventory\n\n| Tool | Version | Owner |\n|:-----|-----:|---|\n{rows}\n\nAfter the table."
+        );
+        let spans = pack("deps", &content, &Words, 40);
+        check(&content, &spans, 40);
+        let tabled = spans
+            .iter()
+            .filter(|span| span.text.starts_with("| tool"))
+            .collect::<Vec<_>>();
+        assert!(tabled.len() > 2, "{:#?}", texts(&spans));
+        for span in tabled {
+            assert_eq!(span.header, "deps > Inventory > | Tool | Version | Owner |");
+            assert!(
+                span.text.split("\n\n").next().is_some_and(|table| table
+                    .lines()
+                    .all(|row| row.starts_with('|') && row.ends_with('|'))),
+                "a row was cut: {:?}",
+                span.text
+            );
+        }
+    }
+
+    /// A line with pipes is a table only when a delimiter row of as many
+    /// cells follows it; otherwise it is prose, cut at its sentences.
+    #[test]
+    fn pipes_without_a_delimiter_row_are_prose() {
+        assert!(table("| a | b |", "|---|:-:|"));
+        assert!(table("a | b", "--- | ---"));
+        assert!(!table("| a | b |", "|---|"));
+        assert!(!table("a | b", "---"));
+        assert!(!table("a | b", "| x | y |"));
+        assert!(!table("no pipes here", "|---|"));
+    }
+
+    /// A long table header row takes only the room the heading leaves, so
+    /// the heading a question names is not pushed out of the header.
+    #[test]
+    fn a_heading_keeps_its_room_ahead_of_a_table_header_row() {
+        let columns = (0..30).map(|c| format!("c{c}")).collect::<Vec<_>>();
+        let header_row = format!("| {} |", columns.join(" | "));
+        let delimiter = format!("|{}|", vec!["---"; 30].join("|"));
+        let rows = (0..30)
+            .map(|row| format!("| {} |", vec![format!("r{row}"); 30].join(" | ")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let content =
+            format!("## Rotated rerun of the verifier\n\n{header_row}\n{delimiter}\n{rows}");
+        let spans = pack("notes", &content, &Words, 120);
+        check(&content, &spans, 120);
+        let continuing = spans
+            .iter()
+            .find(|span| span.text.starts_with("| r"))
+            .expect("a continuing span");
+        assert!(
+            continuing
+                .header
+                .starts_with("notes > Rotated rerun of the verifier > | c0 "),
+            "{}",
+            continuing.header
+        );
+        assert!(Words.count(&continuing.header) <= HEADER_TOKENS);
     }
 
     /// The same memory always packs the same way, and every packing holds
