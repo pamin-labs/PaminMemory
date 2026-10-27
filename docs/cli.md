@@ -720,10 +720,11 @@ and the next ingest reads the file. A record also names the build that cut the
 file, so a new `pamin` reads every file once, in case it cuts them differently.
 An ingest that finds every file unchanged opens no index and loads no model.
 
-On this repository's own 105 Markdown and text files, an
-unchanged re-ingest wrote nothing; the time it took was measured on an earlier
-cut that also split long sections into parts and read every file, and is not
-re-measured for this one ([measured](../benchmarks/results/ingest/ingest-cost-2026-10-23.md)).
+On this repository's own 112 Markdown and text files, an unchanged re-ingest
+took a median 0.017 s against 0.484 s when every file was read, and one edited
+file 0.301 s against 0.790 s, five runs each; the time a first ingest takes is
+the embedding of every section, and did not move
+([measured](../benchmarks/results/ingest/ingest-sync-2026-10-27.md)).
 
 **A section that is no longer there is taken off the retrieval surface**, and
 listed under `removed`: its heading removed, or renamed with its text rewritten past matching, or its file deleted
