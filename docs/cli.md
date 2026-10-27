@@ -828,6 +828,14 @@ caught up. A synced path that is not there keeps its sections and is looked
 for every minute; a folder it was ingested from that has moved is not
 followed.
 
+**A search does not wait for the watcher.** Before it answers, it compares the
+files its hits were cut from with their records, a stat each, and ingests any
+that changed under a synced path, then searches again if that changed what
+pamin holds. A search issued in the second after an edit, or while a server
+that was stopped is still catching up, answers with what the file says now.
+It does not wait for an ingest of the project already running, whose files the
+watcher has in hand.
+
 `--no-sync` ingests the paths once and stops keeping them in sync if an
 earlier ingest asked for it. Paths ingested before sync existed are kept in
 sync from their next ingest.

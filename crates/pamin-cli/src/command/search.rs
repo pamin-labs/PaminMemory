@@ -21,9 +21,23 @@ pub async fn execute(
         rerank: args.rerank_depth,
         effort: args.search_effort,
     };
-    let hits = engine
+    let mut hits = engine
         .search_reranked(&args.query, args.limit, depths)
         .await?;
+    // A hit from a file that changed since it was ingested answers with what
+    // the file said then: the file is ingested now, and the search asked
+    // again, if that changed what pamin holds. A failure is the watcher's to
+    // report, not the search's.
+    let topics: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
+    match crate::watch::freshen(session, project, vector_index, &topics).await {
+        Ok(true) => {
+            hits = engine
+                .search_reranked(&args.query, args.limit, depths)
+                .await?;
+        }
+        Ok(false) => {}
+        Err(error) => tracing::warn!(error = format!("{error:#}"), "freshening hits failed"),
+    }
 
     let results = Results {
         query: args.query,
