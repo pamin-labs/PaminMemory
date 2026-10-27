@@ -829,6 +829,16 @@ caught up. A synced path that is not there keeps its sections and is looked
 for every minute; a folder it was ingested from that has moved is not
 followed.
 
+**A search does not wait for the watcher.** Before it answers, it compares the
+files its hits were cut from with their records, a stat each, and ingests any
+that changed under a synced path, then searches again if that or the watcher
+changed what pamin holds while it ranked. A search issued in the second after
+an edit, or while a server that was stopped is still catching up, answers with
+what the file says now. Two limits: a file that is gone is left to the watcher,
+which holds a deletion a second in case it is half of a move; and behind an
+ingest of the project already running a search waits a second at most, then
+answers as it found it.
+
 `--no-sync` ingests the paths once and stops keeping those exact paths in sync
 if an earlier ingest asked for it; a file under a directory that is itself
 kept in sync is still kept by it. Paths ingested before sync existed are kept

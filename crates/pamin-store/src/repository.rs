@@ -1561,6 +1561,28 @@ pub async fn file_topics_under(
         .collect())
 }
 
+/// Which of `topics` are sections of a file, each with the directory its file
+/// was last ingested from.
+pub async fn file_roots_of(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    topics: &[String],
+) -> Result<Vec<(String, String)>> {
+    if topics.is_empty() {
+        return Ok(Vec::new());
+    }
+    let locators: Vec<String> = topics.iter().map(|topic| format!("file:{topic}")).collect();
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT substr(locator, 6), root FROM sources
+          WHERE project_id = $1 AND locator = ANY($2) AND root IS NOT NULL",
+    )
+    .bind(project.0)
+    .bind(&locators)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows)
+}
+
 /// What a file looked like when an ingest read it. See `V18__file_records`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileRecord {
