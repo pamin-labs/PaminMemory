@@ -833,8 +833,8 @@ files its hits were cut from with their records, a stat each, and ingests any
 that changed under a synced path, then searches again if that changed what
 pamin holds. A search issued in the second after an edit, or while a server
 that was stopped is still catching up, answers with what the file says now.
-It does not wait for an ingest of the project already running, whose files the
-watcher has in hand.
+Behind an ingest of the project already running it waits a second at most, and
+then answers as it found it.
 
 `--no-sync` ingests the paths once and stops keeping them in sync if an
 earlier ingest asked for it. Paths ingested before sync existed are kept in
