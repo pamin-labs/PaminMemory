@@ -149,6 +149,13 @@ impl Session {
         });
     }
 
+    /// The models this process shares between its engines -- for a command
+    /// that needs one of them, such as the span tokenizer, before or without
+    /// opening an engine.
+    pub fn models(&self) -> &Models {
+        &self.models
+    }
+
     pub fn database(&self) -> &Database {
         &self.database
     }
