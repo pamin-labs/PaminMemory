@@ -93,15 +93,16 @@ pub async fn execute(
     }
 
     // Counted by BGE-M3's own tokenizer, which is the reranker's vocabulary
-    // too: both are XLM-R's. Loaded off the runtime, as every model load is.
-    // Not loaded at all for an ingest that found nothing to read.
-    let models = session.workspace().models_dir();
+    // too: both are XLM-R's. The one the server's models keep, so it is read
+    // from disk once a process rather than once an ingest -- off the runtime,
+    // as every model load is, and not at all for an ingest that read nothing.
+    let models = session.models().clone();
     let cut: Vec<(String, String, Vec<Unnamed>)> = tokio::task::spawn_blocking(move || {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        let counter = pamin_index::SpanTokens::load(&models)?;
-        let counter: &dyn TokenCount = &counter;
+        let counter = models.span_tokens()?;
+        let counter: &dyn TokenCount = counter.as_ref();
         Ok::<_, pamin_index::IndexError>(
             texts
                 .into_iter()
