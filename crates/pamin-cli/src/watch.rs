@@ -172,6 +172,7 @@ struct Followed {
 }
 
 impl Followed {
+    /// Reads the file system, to name the path's root: off the runtime.
     fn new(synced: SyncedPath) -> Self {
         let path = PathBuf::from(&synced.path);
         Self {
@@ -197,6 +198,15 @@ impl Followed {
     fn named(&self, path: &Path) -> Option<File> {
         ingest::file(path, &self.root)
     }
+
+    /// When polling or looking for it is next due.
+    fn due(&self) -> Option<Instant> {
+        match self.state {
+            State::Polling => Some(self.looked + POLL),
+            State::Missing => Some(self.looked + MISSING),
+            State::Starting | State::Watching => None,
+        }
+    }
 }
 
 /// The watcher's state, owned by its one task.
@@ -220,9 +230,11 @@ struct Watcher {
     /// Everything is caught up on at the next ingest, because the operating
     /// system lost events.
     rescan: bool,
-    /// The synced directories with a recursive stream of their own, on macOS.
+    /// The followed directories with a recursive stream of their own, on
+    /// macOS: one each, so ending one never silences another inside it.
     streams: HashSet<PathBuf>,
     /// Never watched: the workspace's own files change with every write.
+    /// Canonical, as the paths a walk and an event carry are.
     workspace: PathBuf,
 }
 
@@ -239,7 +251,9 @@ impl Watcher {
                 None
             }
         };
-        let workspace = session.workspace().root().to_path_buf();
+        let workspace = session.workspace().root();
+        let workspace =
+            std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
         Self {
             session,
             syncing,
@@ -268,19 +282,35 @@ impl Watcher {
             Err(error) => tracing::warn!(%error, "reading the synced paths failed"),
         }
 
-        // Fine enough that an ingest starts within a tenth of a second of
-        // [`QUIET`], and a tick that finds nothing due costs a comparison.
-        let mut tick = tokio::time::interval(Duration::from_millis(100));
+        // Asleep until something is due: an idle server with synced paths
+        // wakes for an event, a command, or a poll, and for nothing else.
         loop {
+            let due = self
+                .next_due()
+                .unwrap_or_else(|| Instant::now() + Duration::from_secs(3600));
             tokio::select! {
                 Some(event) = self.events.recv() => self.heard(event),
                 Some(change) = changes.recv() => match change {
                     Change::Add(synced) => self.follow(synced).await,
                     Change::Remove { project, path } => self.unfollow(&project, &path),
                 },
-                _ = tick.tick() => self.due().await,
+                () = tokio::time::sleep_until(due.into()) => self.due().await,
             }
         }
+    }
+
+    /// The soonest of: the ingest of what changed, the held deletions, a poll,
+    /// a look for a missing path.
+    fn next_due(&self) -> Option<Instant> {
+        let changed = match (self.first, self.last) {
+            (Some(first), Some(last)) => Some((last + QUIET).min(first + LONGEST)),
+            _ => None,
+        };
+        changed
+            .into_iter()
+            .chain(self.held_until)
+            .chain(self.followed.iter().filter_map(Followed::due))
+            .min()
     }
 
     /// An event from the operating system: what it names is pending.
@@ -332,13 +362,7 @@ impl Watcher {
             self.flush().await;
         }
         for at in 0..self.followed.len() {
-            let followed = &self.followed[at];
-            let due = match followed.state {
-                State::Polling => followed.looked.elapsed() >= POLL,
-                State::Missing => followed.looked.elapsed() >= MISSING,
-                State::Starting | State::Watching => false,
-            };
-            if due {
+            if self.followed[at].due().is_some_and(|due| now >= due) {
                 self.followed[at].looked = Instant::now();
                 self.catch_up(at).await;
             }
@@ -346,12 +370,26 @@ impl Watcher {
     }
 
     /// Follows a synced path: watches it, then catches up on it. In that
-    /// order, so a change made while the catch-up walks is heard of.
+    /// order, so a change made while the catch-up walks is heard of. A path
+    /// already followed only takes the new settings: the ingest that synced it
+    /// again has just read it.
     async fn follow(&mut self, synced: SyncedPath) {
-        self.unfollow(&synced.project, &synced.path);
+        if let Some(followed) = self.followed.iter_mut().find(|followed| {
+            followed.synced.project == synced.project && followed.synced.path == synced.path
+        }) {
+            followed.synced = synced;
+            return;
+        }
         self.syncing
             .update(&synced, |status| status.state = State::Starting);
-        self.followed.push(Followed::new(synced));
+        let followed = match tokio::task::spawn_blocking(move || Followed::new(synced)).await {
+            Ok(followed) => followed,
+            Err(error) => {
+                tracing::warn!(%error, "following a synced path failed");
+                return;
+            }
+        };
+        self.followed.push(followed);
         let at = self.followed.len() - 1;
         self.catch_up(at).await;
     }
@@ -376,21 +414,22 @@ impl Watcher {
     /// nobody was listening.
     async fn catch_up(&mut self, at: usize) {
         let path = self.followed[at].path.clone();
-        if path.exists() {
-            self.followed[at].file = !path.is_dir();
-        } else {
-            let followed = &mut self.followed[at];
-            followed.state = State::Missing;
-            followed.looked = Instant::now();
-            let dirs: Vec<PathBuf> = followed.dirs.drain().collect();
-            self.syncing.update(&self.followed[at].synced, |status| {
-                status.state = State::Missing
-            });
-            for dir in dirs {
-                self.unwatch(&dir);
+        match tokio::fs::metadata(&path).await {
+            Ok(meta) => self.followed[at].file = !meta.is_dir(),
+            Err(_) => {
+                let followed = &mut self.followed[at];
+                followed.state = State::Missing;
+                followed.looked = Instant::now();
+                let dirs: Vec<PathBuf> = followed.dirs.drain().collect();
+                self.syncing.update(&self.followed[at].synced, |status| {
+                    status.state = State::Missing
+                });
+                for dir in dirs {
+                    self.unwatch(&dir);
+                }
+                self.end_stream(&path);
+                return;
             }
-            self.end_stream(&path);
-            return;
         }
         let found = match walked(&path).await {
             Ok(found) => found,
@@ -402,7 +441,7 @@ impl Watcher {
         let dirs: HashSet<PathBuf> = if self.followed[at].file {
             path.parent().map(Path::to_path_buf).into_iter().collect()
         } else {
-            found.dirs.iter().cloned().collect()
+            found.dirs.into_iter().collect()
         };
         self.watch_dirs(at, dirs);
         // Walked again by the ingest, after the watches: a file created
@@ -419,60 +458,88 @@ impl Watcher {
 
     /// Makes `dirs` the directories watched for a followed path.
     fn watch_dirs(&mut self, at: usize, dirs: HashSet<PathBuf>) {
+        let dirs: HashSet<PathBuf> = dirs
+            .into_iter()
+            .filter(|dir| !dir.starts_with(&self.workspace))
+            .collect();
         let before = std::mem::take(&mut self.followed[at].dirs);
         for dir in before.difference(&dirs) {
             self.unwatch(dir);
         }
+        let synced = self.followed[at].path.clone();
         let mut refused = false;
-        for dir in dirs.difference(&before) {
-            if !self.watch(dir, &self.followed[at].path.clone()) {
+        let mut watched = HashSet::new();
+        for dir in dirs {
+            if before.contains(&dir) || self.watch(&dir, &synced) {
+                watched.insert(dir);
+            } else {
                 refused = true;
             }
         }
-        let followed = &mut self.followed[at];
-        followed.dirs = dirs;
-        followed.state = if refused || self.os.is_none() {
+        self.followed[at].dirs = watched;
+        self.settle(at, refused);
+    }
+
+    /// Records whether every directory of a followed path is watched.
+    fn settle(&mut self, at: usize, refused: bool) {
+        let state = if refused || self.os.is_none() {
             State::Polling
         } else {
             State::Watching
         };
-        let state = followed.state;
+        self.followed[at].state = state;
         self.syncing
             .update(&self.followed[at].synced, |status| status.state = state);
     }
 
-    /// Watches `dir` for a followed path rooted at `synced`, or counts one more
-    /// path wanting it. False when the operating system refused.
+    /// Watches `dir` for the followed path `synced`, or counts one more path
+    /// wanting it. False when the operating system refused, for any reason: a
+    /// directory it would not watch is one whose changes are never heard of,
+    /// and is polled instead.
     fn watch(&mut self, dir: &Path, synced: &Path) -> bool {
+        let Some(os) = self.os.as_mut() else {
+            return false;
+        };
+        // On macOS one recursive stream a followed directory, filtered by the
+        // walked directories; elsewhere one watch a directory.
+        if cfg!(target_os = "macos") {
+            if !self.streams.contains(synced) {
+                if let Err(error) = os.watch(synced, notify::RecursiveMode::Recursive) {
+                    tracing::debug!(dir = %synced.display(), %error, "not watched");
+                    return false;
+                }
+                self.streams.insert(synced.to_path_buf());
+            }
+            *self.watches.entry(dir.to_path_buf()).or_default() += 1;
+            return true;
+        }
         if let Some(count) = self.watches.get_mut(dir) {
             *count += 1;
+            return true;
+        }
+        match os.watch(dir, notify::RecursiveMode::NonRecursive) {
+            Ok(()) => {
+                self.watches.insert(dir.to_path_buf(), 1);
+                true
+            }
+            Err(error) => {
+                tracing::debug!(dir = %dir.display(), %error, "not watched");
+                false
+            }
+        }
+    }
+
+    /// Watches `dir` afresh, keeping its count: a directory deleted and made
+    /// again, or replaced by a move, is a new inode its old watch never sees.
+    fn rewatch(&mut self, dir: &Path) -> bool {
+        if cfg!(target_os = "macos") {
             return true;
         }
         let Some(os) = self.os.as_mut() else {
             return false;
         };
-        // On macOS one recursive stream a synced directory, filtered by the
-        // walked directories; elsewhere one watch a directory.
-        let (target, mode) = if cfg!(target_os = "macos") {
-            if !self.streams.insert(synced.to_path_buf()) {
-                self.watches.insert(dir.to_path_buf(), 1);
-                return true;
-            }
-            (synced, notify::RecursiveMode::Recursive)
-        } else {
-            (dir, notify::RecursiveMode::NonRecursive)
-        };
-        let refused = match os.watch(target, mode) {
-            Ok(()) => false,
-            Err(error) => {
-                tracing::debug!(dir = %target.display(), %error, "not watched");
-                matches!(error.kind, notify::ErrorKind::MaxFilesWatch)
-            }
-        };
-        if !refused {
-            self.watches.insert(dir.to_path_buf(), 1);
-        }
-        !refused
+        let _ = os.unwatch(dir);
+        os.watch(dir, notify::RecursiveMode::NonRecursive).is_ok()
     }
 
     fn unwatch(&mut self, dir: &Path) {
@@ -492,7 +559,7 @@ impl Watcher {
         }
     }
 
-    /// Ends the recursive stream of a synced directory nothing follows any
+    /// Ends the recursive stream of a followed directory nothing follows any
     /// more, on macOS.
     fn end_stream(&mut self, path: &Path) {
         let followed = self.followed.iter().any(|followed| followed.path == path);
@@ -560,11 +627,11 @@ impl Watcher {
             }
             // The synced path itself gone, or a `.gitignore` changing what a
             // walk finds: walked afresh rather than sorted.
-            let refreshed = !self.followed[at].path.exists()
-                || paths
-                    .iter()
-                    .any(|path| path.file_name().is_some_and(|name| name == ".gitignore"));
-            if refreshed {
+            let gone = tokio::fs::metadata(&self.followed[at].path).await.is_err();
+            let ignores = paths
+                .iter()
+                .any(|path| path.file_name().is_some_and(|name| name == ".gitignore"));
+            if gone || ignores {
                 self.catch_up(at).await;
                 continue;
             }
@@ -608,10 +675,10 @@ impl Watcher {
     async fn sort(&mut self, at: usize, paths: &[PathBuf]) -> anyhow::Result<Sorted> {
         let followed = &self.followed[at];
         if followed.file {
-            let path = &followed.path;
+            let path = followed.path.clone();
             let mut sorted = Sorted::default();
-            if let Some(file) = followed.named(path) {
-                if path.exists() {
+            if let Some(file) = followed.named(&path) {
+                if tokio::fs::metadata(&path).await.is_ok() {
                     sorted.changed.push(file);
                 } else {
                     sorted.deleted.push(file);
@@ -622,70 +689,121 @@ impl Watcher {
         let dirs = followed.dirs.clone();
         let root = followed.root.clone();
         let paths = paths.to_vec();
-        let (sorted, vanished) =
+        let (mut sorted, vanished) =
             tokio::task::spawn_blocking(move || sort(&paths, &dirs, &root)).await?;
 
         // A directory that is gone takes its files with it, and the operating
         // system says so of the directory alone: its files are what its
-        // records name.
-        let mut sorted = sorted;
+        // records name, and what its sections say they were cut from, for a
+        // file whose record was lost.
         for dir in &vanished {
-            let gone: Vec<PathBuf> = self.followed[at]
-                .dirs
-                .iter()
-                .filter(|watched| watched.starts_with(dir))
-                .cloned()
-                .collect();
-            for watched in gone {
-                self.followed[at].dirs.remove(&watched);
-                self.unwatch(&watched);
-            }
-            let Some(named) = self.followed[at].named(dir) else {
-                continue;
-            };
-            let project = self
-                .session
-                .project(&self.followed[at].synced.project)
-                .await?;
-            let records = pamin_store::repository::file_records_under(
-                self.session.database().pool(),
-                project,
-                &named.root,
-                &format!("{}/", named.name),
-            )
-            .await?;
-            sorted
-                .deleted
-                .extend(records.into_iter().map(|record| File {
-                    path: ingest::on_disk(&record.root, &record.file),
-                    name: record.file,
-                    root: record.root,
-                }));
+            self.forget_dirs_under(at, dir);
+            sorted.deleted.extend(self.files_under(at, dir).await?);
         }
-        // A directory that is new is walked, and watched, before its files
-        // are ingested.
-        for dir in &sorted.new_dirs {
-            let found = walked(dir).await?;
-            let mut dirs = self.followed[at].dirs.clone();
-            for walked in &found.dirs {
-                if dirs.insert(walked.clone()) {
-                    self.watch(walked, &self.followed[at].path.clone());
-                }
-            }
-            self.followed[at].dirs = dirs;
-            let root = self.followed[at].root.clone();
-            sorted.changed.extend(
-                found
-                    .files
-                    .iter()
-                    .filter_map(|file| ingest::file(&file.path, &root)),
-            );
+        // A directory that lists now -- new, moved in, or deleted and made
+        // again -- is watched afresh and then walked, so a file written into
+        // it meanwhile is found by the walk or heard of by the watch.
+        for dir in std::mem::take(&mut sorted.new_dirs) {
+            self.forget_dirs_under(at, &dir);
+            let files = self.adopt(at, &dir).await?;
+            sorted.changed.extend(files);
         }
         sorted.changed.sort();
         sorted.changed.dedup();
         sorted.deleted.sort();
         sorted.deleted.dedup();
         Ok(sorted)
+    }
+
+    /// Stops watching `dir` and every directory under it for a followed path.
+    fn forget_dirs_under(&mut self, at: usize, dir: &Path) {
+        let under: Vec<PathBuf> = self.followed[at]
+            .dirs
+            .iter()
+            .filter(|watched| watched.starts_with(dir))
+            .cloned()
+            .collect();
+        for watched in under {
+            self.followed[at].dirs.remove(&watched);
+            self.unwatch(&watched);
+        }
+    }
+
+    /// The files of a followed path that were under the directory `dir`, now
+    /// gone: those its records name, and those its sections were cut from.
+    async fn files_under(&self, at: usize, dir: &Path) -> anyhow::Result<Vec<File>> {
+        let Some(named) = self.followed[at].named(dir) else {
+            return Ok(Vec::new());
+        };
+        let project = self
+            .session
+            .project(&self.followed[at].synced.project)
+            .await?;
+        let pool = self.session.database().pool();
+        let prefix = format!("{}/", named.name);
+        let records =
+            pamin_store::repository::file_records_under(pool, project, &named.root, &prefix)
+                .await?;
+        let sections = pamin_store::repository::file_topics_under(
+            pool,
+            project,
+            std::slice::from_ref(&prefix),
+        )
+        .await?;
+        let mut files: BTreeSet<String> = records.into_iter().map(|record| record.file).collect();
+        files.extend(
+            sections
+                .into_iter()
+                .filter(|topic| topic.root.as_deref() == Some(named.root.as_str()))
+                .map(|topic| ingest::file_of(&topic.name).to_string()),
+        );
+        Ok(files
+            .into_iter()
+            .map(|file| File {
+                path: ingest::on_disk(&named.root, &file),
+                name: file,
+                root: named.root.clone(),
+            })
+            .collect())
+    }
+
+    /// Watches the directory `dir` under a followed path, walks it, watches
+    /// what the walk went into, and walks it again: the files under it, named
+    /// from the followed path's root.
+    async fn adopt(&mut self, at: usize, dir: &Path) -> anyhow::Result<Vec<File>> {
+        let synced = self.followed[at].path.clone();
+        let mut refused = !self.watch_one(at, dir, &synced);
+        let found = walked(dir).await?;
+        for walked in &found.dirs {
+            if !walked.starts_with(&self.workspace) && !self.followed[at].dirs.contains(walked) {
+                refused |= !self.watch_one(at, walked, &synced);
+            }
+        }
+        let found = walked(dir).await?;
+        if refused {
+            self.settle(at, true);
+        }
+        let root = self.followed[at].root.clone();
+        Ok(found
+            .files
+            .iter()
+            .filter_map(|file| ingest::file(&file.path, &root))
+            .collect())
+    }
+
+    /// Watches one directory of a followed path, afresh if another followed
+    /// path already counts it.
+    fn watch_one(&mut self, at: usize, dir: &Path, synced: &Path) -> bool {
+        let watched = if let Some(count) = self.watches.get_mut(dir) {
+            *count += 1;
+            self.rewatch(dir)
+        } else {
+            self.watch(dir, synced)
+        };
+        if self.watches.contains_key(dir) {
+            self.followed[at].dirs.insert(dir.to_path_buf());
+        }
+        watched
     }
 
     /// Ingests `found` and `deleted` for a followed path, the way `pamin
@@ -728,14 +846,14 @@ struct Sorted {
     changed: Vec<File>,
     /// Files gone: deleted, moved out, or renamed away.
     deleted: Vec<File>,
-    /// Directories that list now and were not walked before.
+    /// Directories that list now: new, moved in, or made again.
     new_dirs: Vec<PathBuf>,
 }
 
 /// Sorts changed `paths` by listing each one's directory as a walk would: a
 /// file that lists is changed, a walked kind of file that no longer appears in
-/// its directory at all is gone, and a directory that lists and was not walked
-/// is new. A directory among `dirs` that no longer appears is returned apart,
+/// its directory at all is gone, and a directory that lists is to be walked --
+/// one already walked may have been deleted and made again. A directory among `dirs` that no longer appears is returned apart,
 /// for its files to be found from their records. A path in a directory the
 /// walk does not go into is dropped: hidden, ignored, or outside.
 ///
@@ -768,9 +886,7 @@ fn sort(paths: &[PathBuf], dirs: &HashSet<PathBuf>, root: &Path) -> (Sorted, Vec
         let present = path.file_name().is_some_and(|name| names.contains(name));
         if listed.contains(path) {
             if path.is_dir() {
-                if !dirs.contains(path) {
-                    sorted.new_dirs.push(path.clone());
-                }
+                sorted.new_dirs.push(path.clone());
             } else if let Some(file) = ingest::file(path, root) {
                 sorted.changed.push(file);
             }
@@ -804,6 +920,10 @@ pub async fn freshen(
 ) -> anyhow::Result<()> {
     let project_id = session.project(project).await?;
     let pool = session.database().pool();
+    let synced = pamin_store::repository::synced_paths_of(pool, project_id).await?;
+    if synced.is_empty() {
+        return Ok(());
+    }
     let roots = pamin_store::repository::file_roots_of(pool, project_id, topics).await?;
     if roots.is_empty() {
         return Ok(());
@@ -820,15 +940,12 @@ pub async fn freshen(
     if records.is_empty() {
         return Ok(());
     }
-    let synced: Vec<SyncedPath> = pamin_store::repository::synced_paths(pool)
-        .await?
-        .into_iter()
-        .filter(|synced| synced.project == project)
-        .collect();
 
-    // What changed, by the synced path it is under.
+    // What changed, by the synced path it is under. A file gone is left to
+    // the watcher, which holds a deletion for the other half of a move: a
+    // search retiring it here would cost the moved section its history.
     let stale = tokio::task::spawn_blocking(move || {
-        let mut stale: Vec<(SyncedPath, Vec<File>, Vec<File>)> = Vec::new();
+        let mut stale: Vec<(SyncedPath, Vec<File>)> = Vec::new();
         for record in records {
             let path = ingest::on_disk(&record.root, &record.file);
             let Some(synced) = synced
@@ -842,23 +959,16 @@ pub async fn freshen(
                 path: path.clone(),
                 root: record.root.clone(),
             };
-            let at = match stale.iter().position(|(s, _, _)| s.path == synced.path) {
-                Some(at) => at,
-                None => {
-                    stale.push((synced.clone(), Vec::new(), Vec::new()));
-                    stale.len() - 1
-                }
-            };
             match ingest::stat(&path) {
-                Ok(stat) if ingest::trusted(&record, &stat) => {}
-                Ok(_) => stale[at].1.push(file),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    stale[at].2.push(file)
+                Ok(stat) if !ingest::trusted(&record, &stat) => {
+                    match stale.iter_mut().find(|(s, _)| s.path == synced.path) {
+                        Some((_, changed)) => changed.push(file),
+                        None => stale.push((synced.clone(), vec![file])),
+                    }
                 }
-                Err(_) => {}
+                _ => {}
             }
         }
-        stale.retain(|(_, changed, deleted)| !changed.is_empty() || !deleted.is_empty());
         stale
     })
     .await?;
@@ -873,7 +983,7 @@ pub async fn freshen(
     let Ok(_ingesting) = tokio::time::timeout(WAIT, ingesting.lock()).await else {
         return Ok(());
     };
-    for (synced, changed, deleted) in stale {
+    for (synced, changed) in stale {
         let found = Found {
             files: changed,
             skipped: Vec::new(),
@@ -885,7 +995,7 @@ pub async fn freshen(
             project,
             vector_index,
             found,
-            deleted,
+            Vec::new(),
             synced.keep_missing,
         )
         .await?;
@@ -909,7 +1019,8 @@ async fn ingest_for(
 ) -> anyhow::Result<pamin_client::command::ingest::Ingested> {
     let project = session.project(&synced.project).await?;
     let dir = session.workspace().index_dir(project);
-    let vector_index = match ProjectionIndex::built_for(&dir)? {
+    let built = tokio::task::spawn_blocking(move || ProjectionIndex::built_for(&dir)).await??;
+    let vector_index = match built {
         Some(built) => built,
         None => VectorIndex::parse(&synced.vector_index)
             .ok_or_else(|| anyhow::anyhow!("unknown vector index {:?}", synced.vector_index))?,
@@ -1013,6 +1124,19 @@ mod tests {
         let (sorted, vanished) = sort(&[root.join("docs")], &dirs, &root);
         assert_eq!(vanished, [root.join("docs")]);
         assert_eq!(sorted, Sorted::default());
+    }
+
+    /// A directory already walked that an event names again -- deleted and
+    /// made again, or replaced by a move -- is walked afresh, since its old
+    /// watch was on an inode that is gone.
+    #[test]
+    fn a_directory_made_again_is_walked_again() {
+        let (_tree, root, dirs) = tree();
+        std::fs::remove_dir_all(root.join("docs")).unwrap();
+        put(&root.join("docs/a.md"), "# A made again");
+        let (sorted, vanished) = sort(&[root.join("docs")], &dirs, &root);
+        assert_eq!(sorted.new_dirs, [root.join("docs")]);
+        assert!(vanished.is_empty());
     }
 
     /// A followed path covers what is under it by whole components, and a

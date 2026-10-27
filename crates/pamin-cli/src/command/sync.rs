@@ -9,10 +9,11 @@ use crate::session::Session;
 
 /// Every path of this project kept in sync, and how each stands.
 pub async fn list(session: &Session, project: &str) -> Result<Synced> {
-    let synced = pamin_store::repository::synced_paths(session.database().pool()).await?;
+    let project_id = session.project(project).await?;
+    let synced =
+        pamin_store::repository::synced_paths_of(session.database().pool(), project_id).await?;
     let paths = synced
         .into_iter()
-        .filter(|synced| synced.project == project)
         .map(|synced| {
             let status = session
                 .syncing()
@@ -39,7 +40,7 @@ pub async fn unsync(session: &Session, project: &str, args: UnsyncArgs) -> Resul
     let mut unknown = Vec::new();
     for path in &args.paths {
         let mut spellings = vec![path.display().to_string()];
-        if let Ok(resolved) = std::fs::canonicalize(path) {
+        if let Ok(resolved) = tokio::fs::canonicalize(path).await {
             spellings.push(resolved.display().to_string());
         }
         let gone = pamin_store::repository::unsync_paths(
