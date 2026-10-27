@@ -47,6 +47,9 @@ pub struct Session {
     /// One lock a project, held by every ingest of it. See
     /// [`Session::ingesting`].
     ingesting: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// The file watcher keeping synced paths in sync, once the server has
+    /// started it.
+    syncing: std::sync::OnceLock<Arc<crate::watch::Syncing>>,
 }
 
 /// A request being answered, for as long as this is held.
@@ -79,6 +82,7 @@ impl Session {
             warming: std::sync::Mutex::default(),
             serving: AtomicUsize::new(0),
             ingesting: std::sync::Mutex::default(),
+            syncing: std::sync::OnceLock::new(),
         })
     }
 
@@ -166,6 +170,16 @@ impl Session {
             .lock()
             .expect("the ingest locks are poisoned");
         Arc::clone(locks.entry(project.to_string()).or_default())
+    }
+
+    /// The file watcher, when the server has started one.
+    pub fn syncing(&self) -> Option<&Arc<crate::watch::Syncing>> {
+        self.syncing.get()
+    }
+
+    /// Hands the session the file watcher the server started on it.
+    pub fn set_syncing(&self, syncing: Arc<crate::watch::Syncing>) {
+        let _ = self.syncing.set(syncing);
     }
 
     /// The models this process shares between its engines -- for a command

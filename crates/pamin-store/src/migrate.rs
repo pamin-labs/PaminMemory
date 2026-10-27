@@ -112,6 +112,11 @@ fn migrations() -> Vec<Migration> {
             "file_records",
             include_str!("../migrations/V18__file_records.sql"),
         ),
+        migration(
+            19,
+            "synced_paths",
+            include_str!("../migrations/V19__synced_paths.sql"),
+        ),
     ]
 }
 

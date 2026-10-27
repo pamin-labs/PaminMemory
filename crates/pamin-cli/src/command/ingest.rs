@@ -74,7 +74,51 @@ pub async fn execute(
         let _ingesting = ingesting.lock().await;
         ingest(session, project, vector_index, found, Vec::new()).await?
     };
+    keep_in_sync(session, project, vector_index, &args).await?;
     Ok(ingested)
+}
+
+/// Keeps the paths an ingest was given in sync from now on, or stops keeping
+/// them under `--no-sync`. Each as it resolves, which is how the server watches
+/// it and how `pamin sync` lists it.
+async fn keep_in_sync(
+    session: &Session,
+    project: &str,
+    vector_index: VectorIndex,
+    args: &Args,
+) -> Result<()> {
+    let mut paths = Vec::new();
+    for path in &args.paths {
+        if let Some(path) = tokio::fs::canonicalize(path)
+            .await
+            .ok()
+            .and_then(|path| path.to_str().map(str::to_string))
+        {
+            paths.push(path);
+        }
+    }
+    let project_id = session.project(project).await?;
+    let pool = session.database().pool();
+    if args.no_sync {
+        for path in pamin_store::repository::unsync_paths(pool, project_id, &paths).await? {
+            if let Some(syncing) = session.syncing() {
+                syncing.remove(project, &path);
+            }
+        }
+        return Ok(());
+    }
+    let label = vector_index.label();
+    pamin_store::repository::sync_paths(pool, project_id, &paths, label).await?;
+    if let Some(syncing) = session.syncing() {
+        for path in paths {
+            syncing.add(pamin_store::repository::SyncedPath {
+                project: project.to_string(),
+                path,
+                vector_index: label.to_string(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Ingests what was found, and takes `deleted` -- files known to be gone, by
@@ -877,6 +921,9 @@ pub(crate) struct Found {
     pub(crate) skipped: Vec<String>,
     /// Every directory walked.
     pub(crate) trees: Vec<Tree>,
+    /// Every directory the walks went into, the trees themselves among them:
+    /// what a watcher watches, and nothing a walk skips.
+    pub(crate) dirs: Vec<PathBuf>,
 }
 
 /// Every file `paths` names, once each, in name order, and the ones skipped
@@ -887,10 +934,11 @@ pub(crate) struct Found {
 /// is skipped and reported, as one that is not UTF-8 is. Two files that would
 /// go by one name are a refusal too: they would be one topic, which each
 /// ingest would hand from one to the other.
-fn files(paths: &[PathBuf]) -> Result<Found> {
+pub(crate) fn files(paths: &[PathBuf]) -> Result<Found> {
     let mut files = BTreeSet::new();
     let mut skipped = Vec::new();
     let mut trees = Vec::new();
+    let mut dirs = Vec::new();
     for path in paths {
         // Resolved here rather than by the client, which made it absolute but
         // left `..` and links in it: two spellings of one file must give its
@@ -899,7 +947,7 @@ fn files(paths: &[PathBuf]) -> Result<Found> {
             std::fs::canonicalize(path).with_context(|| format!("reading {}", path.display()))?;
         let root = root(&path);
         if path.is_dir() {
-            let whole = walk(&path, &root, &mut files, &mut skipped);
+            let whole = walk(&path, &root, &mut files, &mut dirs, &mut skipped);
             match file(&path, &root) {
                 Some(tree) => trees.push(Tree {
                     name: tree.name,
@@ -944,6 +992,7 @@ fn files(paths: &[PathBuf]) -> Result<Found> {
         files: files.into_iter().collect(),
         skipped,
         trees,
+        dirs,
     })
 }
 
@@ -958,7 +1007,7 @@ fn files(paths: &[PathBuf]) -> Result<Found> {
 /// `.git/modules`, and is passed over, so a file in a submodule is named alike
 /// whether the superproject or the submodule was ingested. A worktree's is a
 /// file too, pointing anywhere else, and is a root.
-fn root(path: &Path) -> PathBuf {
+pub(crate) fn root(path: &Path) -> PathBuf {
     let start = if path.is_dir() {
         path
     } else {
@@ -981,7 +1030,7 @@ fn root(path: &Path) -> PathBuf {
 /// The file at `path`, named from `root`; `None` when a component of its name
 /// is not UTF-8, which a topic's name has to be and which a lossy conversion
 /// would let two files share.
-fn file(path: &Path, root: &Path) -> Option<File> {
+pub(crate) fn file(path: &Path, root: &Path) -> Option<File> {
     let relative = path.strip_prefix(root).unwrap_or(path);
     let mut components = Vec::new();
     if let Some(root) = root.file_name() {
@@ -997,33 +1046,19 @@ fn file(path: &Path, root: &Path) -> Option<File> {
     })
 }
 
-/// The files under `directory` with one of [`EXTENSIONS`] -- and whether the
-/// walk met no error, so that a file it did not find is one that is not
-/// there -- skipping hidden
-/// entries -- `.git` among them -- symbolic links, which could lead out of the
-/// tree or round in a circle, and whatever git ignores there. A repository's
-/// `node_modules/` or `target/` is full of Markdown nobody wrote for it.
+/// The files under `directory` with one of [`EXTENSIONS`], and the
+/// directories the walk went into -- and whether the walk met no error, so
+/// that a file it did not find is one that is not there. By the rules of
+/// [`walker`].
 fn walk(
     directory: &Path,
     root: &Path,
     files: &mut BTreeSet<File>,
+    dirs: &mut Vec<PathBuf>,
     skipped: &mut Vec<String>,
 ) -> bool {
-    let walk = ignore::WalkBuilder::new(directory)
-        .hidden(true)
-        .follow_links(false)
-        // Git's rules only: `.gitignore` in the tree and above it,
-        // `.git/info/exclude` and the user's global excludes, inside a
-        // repository. Not ripgrep's own `.ignore` and `.rgignore`, which a
-        // user writing them meant for a search tool.
-        .ignore(false)
-        .parents(true)
-        .git_ignore(true)
-        .git_exclude(true)
-        .git_global(true)
-        .build();
     let mut whole = true;
-    for entry in walk {
+    for entry in walker(directory).build() {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
@@ -1033,6 +1068,10 @@ fn walk(
             }
         };
         let path = entry.path();
+        if entry.file_type().is_some_and(|kind| kind.is_dir()) {
+            dirs.push(path.to_path_buf());
+            continue;
+        }
         let is_text = entry.file_type().is_some_and(|kind| kind.is_file()) && walked_kind(path);
         if !is_text {
             continue;
@@ -1045,6 +1084,45 @@ fn walk(
         }
     }
     whole
+}
+
+/// The walk of `directory` an ingest reads a tree with, skipping hidden
+/// entries -- `.git` among them -- symbolic links, which could lead out of the
+/// tree or round in a circle, and whatever git ignores there. A repository's
+/// `node_modules/` or `target/` is full of Markdown nobody wrote for it.
+fn walker(directory: &Path) -> ignore::WalkBuilder {
+    let mut walker = ignore::WalkBuilder::new(directory);
+    walker
+        .hidden(true)
+        .follow_links(false)
+        // Git's rules only: `.gitignore` in the tree and above it,
+        // `.git/info/exclude` and the user's global excludes, inside a
+        // repository. Not ripgrep's own `.ignore` and `.rgignore`, which a
+        // user writing them meant for a search tool.
+        .ignore(false)
+        .parents(true)
+        .git_ignore(true)
+        .git_exclude(true)
+        .git_global(true);
+    walker
+}
+
+/// What a walk would find directly inside `directory`, by the walk's own
+/// rules: its directories, and its files of a kind a walk reads. Empty when it
+/// cannot be read -- gone, or never there.
+pub(crate) fn listed(directory: &Path) -> BTreeSet<PathBuf> {
+    walker(directory)
+        .max_depth(Some(1))
+        .build()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.depth() == 1)
+        .filter(|entry| {
+            entry
+                .file_type()
+                .is_some_and(|kind| kind.is_dir() || (kind.is_file() && walked_kind(entry.path())))
+        })
+        .map(|entry| entry.into_path())
+        .collect()
 }
 
 /// Where an ingest looked.
@@ -1147,7 +1225,7 @@ fn gone(looked: &Looked, cut: &[&Section], recorded: Vec<FileTopic>) -> Vec<Gone
 
 /// Where the file named `file`, named from `root`, would be: its name is the
 /// root's own name and then its path from the root.
-fn on_disk(root: &str, file: &str) -> PathBuf {
+pub(crate) fn on_disk(root: &str, file: &str) -> PathBuf {
     let root = Path::new(root);
     let relative = match root.file_name() {
         Some(_) => file.split_once('/').map_or("", |(_, rest)| rest),
@@ -1158,7 +1236,7 @@ fn on_disk(root: &str, file: &str) -> PathBuf {
 
 /// The name of the file the section named `name` was cut out of: its name up
 /// to its headings, without the number it was given.
-fn file_of(name: &str) -> &str {
+pub(crate) fn file_of(name: &str) -> &str {
     let mut file = name.split(SEPARATOR).next().unwrap_or(name);
     while let Some((before, _)) = file
         .rsplit_once(" #")
@@ -1171,7 +1249,7 @@ fn file_of(name: &str) -> &str {
 
 /// Whether a walk reads a file at `path`: one with an extension of
 /// [`EXTENSIONS`].
-fn walked_kind(path: &Path) -> bool {
+pub(crate) fn walked_kind(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
@@ -1769,6 +1847,7 @@ mod tests {
             files: found,
             skipped,
             trees,
+            ..
         } = files(&[root.to_path_buf()]).expect("files");
         std::fs::set_permissions(root.join("locked"), std::fs::Permissions::from_mode(0o755))
             .unwrap();

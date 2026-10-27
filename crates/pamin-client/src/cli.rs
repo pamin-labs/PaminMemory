@@ -97,6 +97,12 @@ pub enum Command {
     /// Find the topics already here, by what they are called or what they hold.
     Topics(command::topics::Args),
 
+    /// List the paths the server keeps in sync with their files.
+    Sync(command::sync::Args),
+
+    /// Stop keeping ingested paths in sync with their files.
+    Unsync(command::unsync::Args),
+
     /// Rebuild the projection index from PostgreSQL.
     Reindex(command::reindex::Args),
 
@@ -219,6 +225,8 @@ pub async fn run(cli: Cli, matches: clap::ArgMatches) -> Result<Option<Unserved>
         Command::Unlink(args) => protocol::Call::Unlink(args),
         Command::Neighbors(args) => protocol::Call::Neighbors(args),
         Command::Topics(args) => protocol::Call::Topics(args),
+        Command::Sync(args) => protocol::Call::Sync(args),
+        Command::Unsync(args) => protocol::Call::Unsync(args),
         Command::Reindex(args) => protocol::Call::Reindex(args),
         Command::Cascade(args) => protocol::Call::Cascade(args),
     };
@@ -376,14 +384,24 @@ const REMOVED: &[(&str, &str)] = &[
 /// else's. And an ingested file's sections are named by its path, so the same
 /// file has to arrive as the same path however it was spelled.
 fn absolute_paths(call: protocol::Call) -> Result<protocol::Call> {
-    let protocol::Call::Ingest(mut args) = call else {
-        return Ok(call);
+    let absolute = |paths: &mut Vec<std::path::PathBuf>| -> Result<()> {
+        for path in paths {
+            *path = std::path::absolute(&*path)
+                .with_context(|| format!("resolving {}", path.display()))?;
+        }
+        Ok(())
     };
-    for path in &mut args.paths {
-        *path =
-            std::path::absolute(&*path).with_context(|| format!("resolving {}", path.display()))?;
+    match call {
+        protocol::Call::Ingest(mut args) => {
+            absolute(&mut args.paths)?;
+            Ok(protocol::Call::Ingest(args))
+        }
+        protocol::Call::Unsync(mut args) => {
+            absolute(&mut args.paths)?;
+            Ok(protocol::Call::Unsync(args))
+        }
+        call => Ok(call),
     }
-    Ok(protocol::Call::Ingest(args))
 }
 
 /// Reads standard input into the one argument that takes it.
@@ -463,6 +481,14 @@ fn render(
         protocol::Call::Topics(_) => {
             let result: command::topics::Topics = parse(value, "topics")?;
             format.emit(&result, || command::topics::render(&result));
+        }
+        protocol::Call::Sync(_) => {
+            let result: command::sync::Synced = parse(value, "sync")?;
+            format.emit(&result, || command::sync::render(&result));
+        }
+        protocol::Call::Unsync(_) => {
+            let result: command::unsync::Unsynced = parse(value, "unsync")?;
+            format.emit(&result, || command::unsync::render(&result));
         }
         protocol::Call::Reindex(_) => {
             let result: command::reindex::Reindexed = parse(value, "reindex")?;
