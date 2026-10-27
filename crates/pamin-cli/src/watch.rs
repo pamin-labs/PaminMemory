@@ -783,6 +783,112 @@ fn sort(paths: &[PathBuf], dirs: &HashSet<PathBuf>, root: &Path) -> (Sorted, Vec
     (sorted, vanished)
 }
 
+/// Ingests the files behind these search hits that changed since they were
+/// last ingested, if nothing has yet: what a search is about to answer with is
+/// what the file says now, even while the watcher is still catching up or has
+/// not heard. True when that wrote, retired or renamed anything, so the search
+/// is asked again.
+///
+/// Only a file under a path kept in sync, as that path's ingest would, and
+/// not one whose synced path is not there, whose sections the watcher keeps.
+/// Not while another ingest of the project runs, which a search does not wait
+/// for: whatever it is ingesting, the watcher is too.
+pub async fn freshen(
+    session: &Session,
+    project: &str,
+    vector_index: VectorIndex,
+    topics: &[String],
+) -> anyhow::Result<bool> {
+    let project_id = session.project(project).await?;
+    let pool = session.database().pool();
+    let roots = pamin_store::repository::file_roots_of(pool, project_id, topics).await?;
+    if roots.is_empty() {
+        return Ok(false);
+    }
+    let candidates: BTreeSet<(String, String)> = roots
+        .iter()
+        .flat_map(|(topic, root)| {
+            ingest::files_of(topic).map(move |file| (root.clone(), file.to_string()))
+        })
+        .collect();
+    let (roots, files): (Vec<String>, Vec<String>) = candidates.into_iter().unzip();
+    let records =
+        pamin_store::repository::file_records_of(pool, project_id, &roots, &files).await?;
+    if records.is_empty() {
+        return Ok(false);
+    }
+    let synced: Vec<SyncedPath> = pamin_store::repository::synced_paths(pool)
+        .await?
+        .into_iter()
+        .filter(|synced| synced.project == project)
+        .collect();
+
+    // What changed, by the synced path it is under.
+    let stale = tokio::task::spawn_blocking(move || {
+        let mut stale: Vec<(SyncedPath, Vec<File>, Vec<File>)> = Vec::new();
+        for record in records {
+            let path = ingest::on_disk(&record.root, &record.file);
+            let Some(synced) = synced
+                .iter()
+                .find(|synced| path.starts_with(&synced.path) && Path::new(&synced.path).exists())
+            else {
+                continue;
+            };
+            let file = File {
+                name: record.file.clone(),
+                path: path.clone(),
+                root: record.root.clone(),
+            };
+            let at = match stale.iter().position(|(s, _, _)| s.path == synced.path) {
+                Some(at) => at,
+                None => {
+                    stale.push((synced.clone(), Vec::new(), Vec::new()));
+                    stale.len() - 1
+                }
+            };
+            match ingest::stat(&path) {
+                Ok(stat) if ingest::trusted(&record, &stat) => {}
+                Ok(_) => stale[at].1.push(file),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    stale[at].2.push(file)
+                }
+                Err(_) => {}
+            }
+        }
+        stale.retain(|(_, changed, deleted)| !changed.is_empty() || !deleted.is_empty());
+        stale
+    })
+    .await?;
+    if stale.is_empty() {
+        return Ok(false);
+    }
+
+    let ingesting = session.ingesting(project);
+    let Ok(_ingesting) = ingesting.try_lock() else {
+        return Ok(false);
+    };
+    let mut wrote = false;
+    for (synced, changed, deleted) in stale {
+        let found = Found {
+            files: changed,
+            skipped: Vec::new(),
+            trees: Vec::new(),
+            dirs: Vec::new(),
+        };
+        let ingested = ingest::ingest(
+            session,
+            project,
+            vector_index,
+            found,
+            deleted,
+            synced.keep_missing,
+        )
+        .await?;
+        wrote |= ingested.written + ingested.removed.len() + ingested.renamed.len() > 0;
+    }
+    Ok(wrote)
+}
+
 /// What a walk of `path` finds, walked off the runtime.
 async fn walked(path: &Path) -> anyhow::Result<Found> {
     let path = path.to_path_buf();

@@ -436,7 +436,7 @@ fn look(
 
 /// A file's stat as a record keeps it, and when it was taken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Stat {
+pub(crate) struct Stat {
     size: u64,
     modified_ns: i64,
     changed_ns: i64,
@@ -469,7 +469,7 @@ impl Stat {
 
 /// The stat of `path`, following a link as reading it does, taken after the
 /// clock is read: a record must never claim a read later than its stat.
-fn stat(path: &Path) -> std::io::Result<Stat> {
+pub(crate) fn stat(path: &Path) -> std::io::Result<Stat> {
     use std::os::unix::fs::MetadataExt as _;
     let read_ns = now_ns();
     let meta = std::fs::metadata(path)?;
@@ -493,7 +493,7 @@ fn now_ns() -> i64 {
 /// Whether `record` can be believed about a file whose stat is `stat` without
 /// reading it: the same stat, taken long enough after the file last changed
 /// that a change within the same timestamp would have shown.
-fn trusted(record: &FileRecord, stat: &Stat) -> bool {
+pub(crate) fn trusted(record: &FileRecord, stat: &Stat) -> bool {
     stat.same_file(record)
         && record.modified_ns.max(record.changed_ns) < record.read_ns.saturating_sub(RACY_NS)
 }
@@ -738,7 +738,7 @@ fn in_play(recorded: Vec<FileTopic>, files: &[&str], trees: &[Tree]) -> Vec<File
 /// Every name a file could have for `name` to be one of its sections' names:
 /// the whole of it, or what comes before a heading or a number. Each one
 /// [`belongs`] confirms.
-fn files_of(name: &str) -> impl Iterator<Item = &str> {
+pub(crate) fn files_of(name: &str) -> impl Iterator<Item = &str> {
     name.match_indices(SEPARATOR)
         .chain(name.match_indices(" #"))
         .map(|(at, _)| &name[..at])
