@@ -664,8 +664,13 @@ long section is found by any part of it and a hit shows the part that matched.
 A section of fewer than 48 tokens joins a neighbour — a heading with nothing
 under it the section after it, a short opening at the top of the file the
 section after it, anything else the one before. Two sections under the same
-headings are numbered `#2`, `#3`. YAML front matter is left out when its first
-line is a `key:` and it holds no blank line.
+headings are numbered `#2`, `#3`, and keep their numbers from one ingest to the
+next: each is matched to the section it was by its text — the same text first,
+then at least 80% of its three-word runs in common — and only the rest take
+free numbers, in file order. So a section inserted above its twin is `#2`,
+rather than taking the twin's name and making the twin's text a new version of
+somebody else's section. YAML front matter is left out when its first line is
+a `key:` and it holds no blank line.
 
 ```console
 $ sed -i 's/ten minutes/fifteen minutes/' docs/ops.md
@@ -674,22 +679,38 @@ Ingested 1 files as 2 sections: 1 written, 1 unchanged, 0 held in evidence only
 $ sed -i 's/## Rollback/## Rolling back/' docs/ops.md
 $ pamin ingest docs
 Ingested 1 files as 2 sections: 1 written, 1 unchanged, 0 held in evidence only
-1 sections from an earlier ingest are no longer in these files and were taken off the retrieval surface:
-  handbook/docs/ops.md › Deploy › Rollback
+1 sections were found under a new name and renamed, keeping their history:
+  handbook/docs/ops.md › Deploy › Rollback -> handbook/docs/ops.md › Deploy › Rolling back
 ```
 
 **Ingesting again records only what changed.** A section that says what its
 topic already does is left as it is, with nothing written; a changed section is
 a new version of its topic, as any write is, and only it is embedded again. An
-edit to a section's text changes that section alone. Renaming a heading renames every
-section under it: each is recorded afresh under its new name, and the old ones
-are taken off the retrieval surface. On this repository's own 105 Markdown and text files, an
+edit to a section's text changes that section alone.
+
+**A section found under a new name is renamed, not recorded afresh.** Renaming
+a heading changes the name of every section under it, and moving a file or a
+folder within a tree changes every name in it. A section an ingest finds gone
+from one name is matched to one appearing under a new name — the same text
+first, then at least 80% of its three-word runs in common, one to one — and its
+topic takes the new name, keeping its versions, its evidence and the edges to
+it; its new text, if it changed, is a new version. The old name stays as an
+alias: `pamin read`, `pamin link` and `pamin neighbors` still find the topic by
+it, and `read` answers with the name it goes by now. A renamed section is
+owed to the index again, because its name is read into the header of every
+span, and a span is re-embedded when its header changes. Only a section the
+ingest could otherwise have taken off the retrieval surface is renamed, and
+only to a name no topic already holds: a file moved out of the tree the command
+walked is still `removed`, and one moved onto an old section's name is recorded
+as new. Listed under `renamed`.
+
+On this repository's own 105 Markdown and text files, an
 unchanged re-ingest wrote nothing; the time it took was measured on an earlier
 cut that also split long sections into parts, and is not re-measured for this
 one ([measured](../benchmarks/results/ingest/ingest-cost-2026-10-23.md)).
 
 **A section that is no longer there is taken off the retrieval surface**, and
-listed under `removed`: its heading renamed or removed, or its file deleted
+listed under `removed`: its heading removed, or renamed with its text rewritten past matching, or its file deleted
 from a directory the command walked, moved out of it, or now ignored by git.
 Every version of its topic is soft deleted, so search no longer returns it, and
 the edges its content derived are closed. Nothing is lost: the ledger keeps
@@ -738,7 +759,7 @@ section naming a topic written by hand does. A topic written by hand keeps its
 name if it is later ingested, and one ingested first is named the first time
 somebody writes it by hand.
 
-`--json` carries every count, the `removed`, `missing` and `skipped` lists, and
+`--json` carries every count, the `removed`, `missing`, `renamed` and `skipped` lists, and
 the same `cascade` and `cascade_lagging` as `import`.
 
 ## `pamin read`

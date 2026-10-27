@@ -2517,6 +2517,161 @@ fn an_ingested_file_is_found_by_section_and_re_ingested_by_change() {
     server.wait().expect("reaping the server");
 }
 
+/// A section inserted above another under the same headings takes a new
+/// number, rather than the name of the one already there.
+///
+/// Numbered in file order alone, the inserted section would take `Notes` and
+/// the one that had it would become `Notes #2`: both names would change hands,
+/// and each section's text would be written as a new version of the other.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn a_section_inserted_above_its_twin_leaves_the_twin_its_name() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+    let tree = tempfile::tempdir().expect("temp tree");
+    std::fs::create_dir_all(tree.path().join(".git")).expect("a repository root");
+    let notes = tree.path().join("notes.md");
+    let name = format!(
+        "{}/notes.md › Notes",
+        tree.path()
+            .file_name()
+            .expect("a name")
+            .to_str()
+            .expect("utf-8")
+    );
+    let first = "The staging cluster is rebuilt from scratch every friday evening, \
+                 so anything deployed there by hand is gone on monday morning and \
+                 has to be redeployed through the pipeline instead. Nobody keeps \
+                 state there that they cannot rebuild, and the seed data comes from \
+                 the nightly anonymised snapshot of production.";
+    let second = "Database migrations run before the application starts, and a \
+                  migration that fails leaves the previous release serving traffic \
+                  until whoever is on call rolls it forward by hand. A migration is \
+                  written to be safe against the release before it, so both can run \
+                  against the same schema while traffic moves across.";
+    put(&notes, &format!("# Notes\n\n{first}\n"));
+    let once = cli.json(&["ingest", notes.to_str().expect("a path")]);
+    assert_eq!(once["written"], 1, "{once}");
+
+    put(
+        &notes,
+        &format!("# Notes\n\n{second}\n\n# Notes\n\n{first}\n"),
+    );
+    let twice = cli.json(&["ingest", notes.to_str().expect("a path")]);
+    assert_eq!(twice["sections"], 2, "{twice}");
+    assert_eq!(twice["written"], 1, "the twin was rewritten: {twice}");
+    assert_eq!(twice["unchanged"], 1, "{twice}");
+    assert_eq!(twice["removed"], serde_json::json!([]), "{twice}");
+
+    let kept = cli.json(&["read", &name]);
+    assert_eq!(kept["version"], 1, "{kept}");
+    assert_eq!(kept["content"], format!("# Notes\n\n{first}"), "{kept}");
+    let inserted = cli.json(&["read", &format!("{name} #2")]);
+    assert_eq!(
+        inserted["content"],
+        format!("# Notes\n\n{second}"),
+        "{inserted}"
+    );
+}
+
+/// A section found under a new name -- its heading renamed, or its folder
+/// moved -- keeps its topic: its history, the edges to it, and the old name,
+/// which still finds it.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn a_renamed_heading_or_moved_folder_keeps_its_sections() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+    cli.run(&[
+        "write",
+        "--topic",
+        "oncall_rota",
+        "the oncall rota rotates every monday morning",
+    ]);
+    let tree = tempfile::tempdir().expect("temp tree");
+    std::fs::create_dir_all(tree.path().join(".git")).expect("a repository root");
+    let root = tree
+        .path()
+        .file_name()
+        .expect("a name")
+        .to_str()
+        .expect("utf-8")
+        .to_string();
+    let deploy = "The deployment pipeline builds every commit on the main branch and \
+                  promotes the build to production once the canary has served traffic \
+                  for thirty minutes without raising an alarm. Every stage records what \
+                  it built and from which commit, so a release can always be traced \
+                  back to the change that produced it.";
+    let rollback = "A rollback reverts the deployment pipeline to the previous release tag. \
+                    Whoever is on the oncall_rota starts it from the release dashboard, \
+                    and the previous build is serving again within ten minutes because \
+                    its image is still cached on every node in the cluster.";
+    let write = |dir: &str, heading: &str| {
+        put(
+            &tree.path().join(dir).join("ops.md"),
+            &format!("# Deploy\n\n{deploy}\n\n## {heading}\n\n{rollback}\n"),
+        );
+    };
+    // The repository's root each time, as a tree is re-ingested: only a walk
+    // of the tree can say a file has gone from where it was.
+    let ingest = || cli.json(&["ingest", tree.path().to_str().expect("a path")]);
+    let mentioning = || -> Vec<String> {
+        cli.json(&["neighbors", "oncall_rota", "--kind", "mentions"])["neighbors"]
+            .as_array()
+            .expect("neighbors")
+            .iter()
+            .map(|neighbor| neighbor["topic"].as_str().expect("a topic").to_string())
+            .collect()
+    };
+
+    write("docs", "Rollback");
+    let first = ingest();
+    assert_eq!(first["written"], 2, "{first}");
+    let original = format!("{root}/docs/ops.md › Deploy › Rollback");
+    assert_eq!(mentioning(), std::slice::from_ref(&original));
+
+    // The heading renamed: one section renamed, and its new text a version.
+    write("docs", "Rolling back");
+    let renamed_heading = format!("{root}/docs/ops.md › Deploy › Rolling back");
+    let second = ingest();
+    assert_eq!(
+        second["renamed"],
+        serde_json::json!([{"from": original, "to": renamed_heading}]),
+        "{second}"
+    );
+    assert_eq!(second["removed"], serde_json::json!([]), "{second}");
+    assert_eq!(second["written"], 1, "{second}");
+    let read = cli.json(&["read", &renamed_heading]);
+    assert_eq!(
+        read["version"], 2,
+        "the renamed section lost its history: {read}"
+    );
+    // The old name still reaches it, under its new one.
+    assert_eq!(
+        cli.json(&["read", &original])["topic"],
+        renamed_heading.as_str()
+    );
+    assert_eq!(
+        mentioning(),
+        std::slice::from_ref(&renamed_heading),
+        "the mention edge was lost"
+    );
+
+    // The folder moved: every section renamed, none written.
+    std::fs::rename(tree.path().join("docs"), tree.path().join("guides")).expect("a move");
+    let third = ingest();
+    assert_eq!(
+        third["renamed"].as_array().map(Vec::len),
+        Some(2),
+        "{third}"
+    );
+    assert_eq!(third["written"], 0, "{third}");
+    assert_eq!(third["unchanged"], 2, "{third}");
+    let moved = format!("{root}/guides/ops.md › Deploy › Rolling back");
+    assert_eq!(cli.json(&["read", &moved])["version"], 2);
+    assert_eq!(mentioning(), [moved]);
+}
+
 /// A section its file cut down to next to nothing -- below what the filter
 /// promotes -- is not left answering with the text the file no longer has. It
 /// is taken off the surface, and back on it once the file says something again.
