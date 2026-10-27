@@ -797,6 +797,64 @@ nearer the top, but only by returning 40% more to read, and read to the same
 `--json` carries every count, the `removed`, `missing`, `renamed` and `skipped` lists, and
 the same `cascade` and `cascade_lagging` as `import`.
 
+### Keeping files in sync
+
+**Every path an ingest is given is kept in sync** unless it is given
+`--no-sync`. The server watches it and ingests what changes under it one
+second after the last change — an edit, an editor's save by renaming a new
+file over the old, a new file or folder, a deletion, a move — so a search finds
+what a file says now without anybody ingesting it again. It is the ingest a
+person runs, with the path's `--keep-missing`, so what it records is what
+`pamin ingest` would have. A file gone with nothing new beside it is held one
+second more before its sections are retired, in case it is half of a move
+whose other half is on its way: both reach one ingest, and the section keeps
+its history under its new name.
+
+What is watched is exactly what an ingest walks: each folder the walk goes into
+has a watch of its own, and a folder it skips — hidden, ignored by git, behind
+a link — has none, so a change under `node_modules/` or `target/` is never
+heard of. A change to a `.gitignore` walks the path again. On macOS, where file
+events come from one stream for the whole synced folder, a change in a folder
+the walk skips is heard of and dropped. A file named on its own is watched
+through its folder, since an editor's save replaces the file being watched.
+The workspace's own folder is never watched.
+
+**A server that was not running catches up when it starts**, in the
+background: it walks every synced path again and ingests what changed, which
+for a file that has not changed is a stat against its record. Where the
+operating system refuses a watch — Linux's `fs.inotify.max_user_watches` — the
+path is looked at every 30 seconds instead; where it lost events, every path is
+caught up. A synced path that is not there keeps its sections and is looked
+for every minute; a folder it was ingested from that has moved is not
+followed.
+
+`--no-sync` ingests the paths once and stops keeping them in sync if an
+earlier ingest asked for it. Paths ingested before sync existed are kept in
+sync from their next ingest.
+
+## `pamin sync`
+
+Lists the paths the server keeps in sync for the project, how it follows each
+— `watching`, `polling`, `missing`, or `starting` until it has caught up — when
+it last ingested what changed under one, and why that last ingest failed if it
+did:
+
+```console
+$ pamin sync
+1 paths kept in sync:
+  /home/me/handbook (watching, synced 2026-10-27T01:36:02Z)
+```
+
+## `pamin unsync`
+
+Stops keeping paths in sync, matching each as given and as it resolves. Their
+sections stay as they are; ingesting a path again keeps it in sync again.
+
+```console
+$ pamin unsync docs
+No longer kept in sync: /home/me/handbook/docs
+```
+
 ## `pamin read`
 
 Reads a topic at a version. `--version-offset` counts back from the current one.
