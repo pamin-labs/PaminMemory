@@ -553,10 +553,11 @@ impl Models {
     /// What a memory is cut into spans by: the embedder's own tokenizer,
     /// counting tokens as the embedder will read them, without its weights.
     ///
-    /// Loaded the first time an index cut into spans writes, and kept: it is
-    /// the vocabulary the embedder shares (see `pamin_index::tokenizer`), not
-    /// a second copy of it, and an index of whole memories never loads it.
-    fn span_tokens(&self) -> Result<Arc<SpanTokens>, pamin_index::IndexError> {
+    /// Loaded the first time an index cut into spans writes, or an ingest cuts
+    /// a file into sections, and kept: it is the vocabulary the embedder
+    /// shares (see `pamin_index::tokenizer`), not a second copy of it, and an
+    /// index of whole memories never loads it. Blocking on the first call.
+    pub fn span_tokens(&self) -> Result<Arc<SpanTokens>, pamin_index::IndexError> {
         let mut held = self
             .span_tokens
             .lock()
