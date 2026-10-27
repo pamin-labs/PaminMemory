@@ -45,6 +45,13 @@ allow = [
 name = "option-ext"
 allow = ["MPL-2.0"]
 
+# CC0-1.0 for exactly one crate as well: `notify`, the file watcher, dedicates
+# itself to the public domain, which asks nothing of whoever links it. Allowed
+# for it alone so that another crate arriving under CC0 is still a decision.
+[[licenses.exceptions]]
+name = "notify"
+allow = ["CC0-1.0"]
+
 [bans]
 # Not gated. Duplicate versions are a build-time cost this project measures
 # through `ci/budget.py`'s dependency count instead, where the number is
