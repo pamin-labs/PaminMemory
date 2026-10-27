@@ -15,6 +15,7 @@ mod registry;
 mod server;
 mod session;
 mod settings;
+mod watch;
 
 use anyhow::Result;
 use pamin_client::cli::{self, Command, Unserved};

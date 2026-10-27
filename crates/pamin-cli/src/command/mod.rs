@@ -16,6 +16,7 @@ pub mod reindex;
 pub mod resolve;
 pub mod search;
 pub mod stop;
+pub mod sync;
 pub mod topics;
 pub mod unlink;
 pub mod write;
