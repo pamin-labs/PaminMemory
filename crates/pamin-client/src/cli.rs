@@ -73,6 +73,9 @@ pub enum Command {
     /// Record many memories from a file, in one call.
     Import(command::import::Args),
 
+    /// Record Markdown and text files as memories, one per section.
+    Ingest(command::ingest::Args),
+
     /// Read a topic's current or historical state.
     Read(command::read::Args),
 
@@ -208,6 +211,7 @@ pub async fn run(cli: Cli, matches: clap::ArgMatches) -> Result<Option<Unserved>
         Command::Init => protocol::Call::Init,
         Command::Write(args) => protocol::Call::Write(args),
         Command::Import(args) => protocol::Call::Import(args),
+        Command::Ingest(args) => protocol::Call::Ingest(args),
         Command::Read(args) => protocol::Call::Read(args),
         Command::Search(args) => protocol::Call::Search(args),
         Command::Grep(args) => protocol::Call::Grep(args),
@@ -223,6 +227,7 @@ pub async fn run(cli: Cli, matches: clap::ArgMatches) -> Result<Option<Unserved>
     // server has no standard input, and `git log | pamin write` is in the
     // reference.
     let call = fill_from_stdin(call)?;
+    let call = absolute_paths(call)?;
 
     let request = protocol::Request {
         version: protocol::version(),
@@ -364,6 +369,23 @@ const REMOVED: &[(&str, &str)] = &[
     ),
 ];
 
+/// Makes the paths `ingest` was given absolute, against this directory.
+///
+/// The server is started by whichever client first needed one, in that
+/// client's directory, so a relative path would be read against somebody
+/// else's. And an ingested file's sections are named by its path, so the same
+/// file has to arrive as the same path however it was spelled.
+fn absolute_paths(call: protocol::Call) -> Result<protocol::Call> {
+    let protocol::Call::Ingest(mut args) = call else {
+        return Ok(call);
+    };
+    for path in &mut args.paths {
+        *path =
+            std::path::absolute(&*path).with_context(|| format!("resolving {}", path.display()))?;
+    }
+    Ok(protocol::Call::Ingest(args))
+}
+
 /// Reads standard input into the one argument that takes it.
 fn fill_from_stdin(call: protocol::Call) -> Result<protocol::Call> {
     let protocol::Call::Write(mut args) = call else {
@@ -405,6 +427,10 @@ fn render(
         protocol::Call::Import(_) => {
             let result: command::import::Imported = parse(value, "import")?;
             format.emit(&result, || command::import::render(&result));
+        }
+        protocol::Call::Ingest(_) => {
+            let result: command::ingest::Ingested = parse(value, "ingest")?;
+            format.emit(&result, || command::ingest::render(&result));
         }
         protocol::Call::Write(_) => {
             let result: command::write::Written = parse(value, "write")?;

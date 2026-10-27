@@ -607,6 +607,140 @@ says whether that happened.
 
 `--valid-from` and `--valid-to` apply to every memory in the file.
 
+## `pamin ingest`
+
+Records Markdown and text files as memories, one per section. Here, in a git
+repository `handbook` whose `docs/ops.md` holds a `# Deploy` section with a
+`## Rollback` under it:
+
+```console
+$ pamin ingest docs
+Ingested 1 files as 2 sections: 2 written, 0 unchanged, 0 held in evidence only
+```
+
+A path is a file or a directory. A directory is read recursively for `.md`,
+`.markdown` and `.txt` files, skipping hidden entries — `.git` among them —
+symbolic links, and, inside a git repository, whatever git ignores: its
+`.gitignore` files, including any above the directory named,
+`.git/info/exclude` and the global excludes of the user the server runs as. A file named on the command line is read whatever it is called
+and wherever a link it is leads, and is cut as Markdown whatever it holds, so
+`# ` at the start of a line of code is a heading to it. The paths are made
+absolute by the client before the request leaves, because the server reading
+them may have been started from another directory.
+
+**A file is cut where its headings are.** A heading outside a fenced block —
+`#` to `######`, or a paragraph underlined with `===` or `---` — opens a
+section, and the section's topic is the file's path and the headings above it,
+each cut to 80 characters, joined by ` › `:
+
+```console
+$ pamin search "how do we roll back a release" --limit 2    # second hit trimmed
+0.1136  handbook/docs/ops.md › Deploy › Rollback v1  ## Rollback
+
+A rollback reverts the deployment pipeline to the previous release tag. The
+oncall engineer starts it from the release dashboard, and the previous build is
+serving again within ten minutes because its image is still cached on every
+node in the cluster.
+        lexical_segmented#1 lexical_ngram#1 vector#1 reranked
+0.1042  handbook/docs/ops.md › Deploy v1  # Deploy
+…
+```
+
+The path runs from the root of the git repository the file is in — a
+submodule's being its superproject's — the root's own name first, so ingesting a tree and ingesting one file of it name that file
+alike, and two repositories' `README.md` are two files. Outside a repository it
+runs from the directory named, or for a file named on its own, from the
+directory it is in. Two files that would still go by one name are refused
+rather than recorded under one topic.
+
+The topic is also what each section is embedded and reranked under, as
+`{topic}: {content}`, so a section about "Rollback" in `docs/ops.md` is read
+with both. The heading line stays in the section's content too, which is what
+the two lexical channels index.
+
+**A section is one memory however long it is.** Its size is left to the index,
+which cuts every memory into spans and ranks a topic by its best span, so a
+long section is found by any part of it and a hit shows the part that matched.
+A section of fewer than 48 tokens joins a neighbour — a heading with nothing
+under it the section after it, a short opening at the top of the file the
+section after it, anything else the one before. Two sections under the same
+headings are numbered `#2`, `#3`. YAML front matter is left out when its first
+line is a `key:` and it holds no blank line.
+
+```console
+$ sed -i 's/ten minutes/fifteen minutes/' docs/ops.md
+$ pamin ingest docs
+Ingested 1 files as 2 sections: 1 written, 1 unchanged, 0 held in evidence only
+$ sed -i 's/## Rollback/## Rolling back/' docs/ops.md
+$ pamin ingest docs
+Ingested 1 files as 2 sections: 1 written, 1 unchanged, 0 held in evidence only
+1 sections from an earlier ingest are no longer in these files and were taken off the retrieval surface:
+  handbook/docs/ops.md › Deploy › Rollback
+```
+
+**Ingesting again records only what changed.** A section that says what its
+topic already does is left as it is, with nothing written; a changed section is
+a new version of its topic, as any write is, and only it is embedded again. An
+edit to a section's text changes that section alone. Renaming a heading renames every
+section under it: each is recorded afresh under its new name, and the old ones
+are taken off the retrieval surface. On this repository's own 105 Markdown and text files, an
+unchanged re-ingest wrote nothing; the time it took was measured on an earlier
+cut that also split long sections into parts, and is not re-measured for this
+one ([measured](../benchmarks/results/ingest/ingest-cost-2026-10-23.md)).
+
+**A section that is no longer there is taken off the retrieval surface**, and
+listed under `removed`: its heading renamed or removed, or its file deleted
+from a directory the command walked, moved out of it, or now ignored by git.
+Every version of its topic is soft deleted, so search no longer returns it, and
+the edges its content derived are closed. Nothing is lost: the ledger keeps
+every version and its evidence, `pamin grep` still finds the text, and
+ingesting the section again brings it back as a new version — though until
+then `pamin read` reports the topic has no live version, and `pamin topics`
+still lists its name.
+
+Only what the command could see is retired. A file it found and could not read
+is not where a section went missing, and its sections stay. Under a directory
+whose walk met an error — a subdirectory it could not open — a file it did not
+find may only have been out of reach, so its sections are listed under
+`missing` and stay; so are those of a file the walk skipped that is still on
+disk, hidden or ignored by git and named on its own some earlier time. A section is retired only from the tree it was last
+ingested from: each file's sections record that directory, so another tree
+whose files are named alike, another clone or another `notes`, is not taken
+for this one. And a section another ingest wrote again after this one looked —
+found back in its file with new text — is left as it now is; one found back
+unchanged is retired, and the next ingest brings it back.
+
+A section somebody also wrote by hand with `pamin write` is only listed, under
+`missing`, and left searchable: it is theirs as well as the file's.
+
+**A section its file cut down to next to nothing is taken off too.** Text
+below the filter's eight characters — a `TBD` where a paragraph was — is held,
+counted under `held`, and would leave the section answering with the text the
+file no longer has. So it is retired as a section the file lost is, and listed
+under `removed`. Ingesting it again while it says the same writes
+nothing, and once the file says something again the section is back. One
+somebody also wrote by hand stays, held on every ingest and its evidence
+recorded again each time.
+
+Nothing outside what the command named is looked at. A repository whose
+directory was renamed or checked out under another name is recorded afresh
+under its new names, and its old sections stay searchable and are listed
+nowhere. And two directories of the same name ingested by separate commands
+name their files alike, so where both have a file of the same name, each
+records that file's sections as new versions of the other's wherever the two
+differ, and the sections remember whichever tree was ingested last.
+
+Ingested topics are kept out of the name index the graph channel matches
+memories against. A path and its headings are a name no memory spells out in
+full, and a wide name makes every later write compare longer runs of its text.
+A memory naming an ingested section therefore derives no edge to it, while a
+section naming a topic written by hand does. A topic written by hand keeps its
+name if it is later ingested, and one ingested first is named the first time
+somebody writes it by hand.
+
+`--json` carries every count, the `removed`, `missing` and `skipped` lists, and
+the same `cascade` and `cascade_lagging` as `import`.
+
 ## `pamin read`
 
 Reads a topic at a version. `--version-offset` counts back from the current one.
