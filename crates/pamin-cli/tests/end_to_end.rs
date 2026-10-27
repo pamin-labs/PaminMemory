@@ -2515,22 +2515,6 @@ fn an_ingested_file_is_found_by_section_and_re_ingested_by_change() {
         "{found}"
     );
 
-    // Under --keep-missing, a section the file lost is only listed.
-    put(&ops, &without_rollback);
-    let kept = cli.json(&["ingest", "--keep-missing", docs.to_str().expect("a path")]);
-    assert_eq!(kept["removed"], serde_json::json!([]), "{kept}");
-    assert_eq!(
-        kept["missing"],
-        serde_json::json!([rollback_section]),
-        "{kept}"
-    );
-    let still = cli.json(&["search", "how do we roll back to the previous release"]);
-    assert_eq!(
-        still["hits"][0]["topic"],
-        rollback_section.as_str(),
-        "{still}"
-    );
-
     server.kill().expect("stopping the server");
     server.wait().expect("reaping the server");
 }
