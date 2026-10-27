@@ -225,7 +225,7 @@ pub async fn execute(
     let mut removed = Vec::new();
     let mut kept = Vec::new();
     for gone in gone {
-        if args.keep_missing || !gone.retirable {
+        if !gone.retirable {
             kept.push(gone.name);
             continue;
         }
@@ -238,9 +238,8 @@ pub async fn execute(
     // A held write leaves the topic's state as it was, so a section its file
     // emptied would still be found by the text the file no longer has. Taken
     // off the surface as a section the file lost is, and back on it once the
-    // file says something again -- under --keep-missing too, since the file
-    // still has the section and only says next to nothing in it. One somebody
-    // also wrote by hand stays, the held count saying so.
+    // file says something again. One somebody also wrote by hand stays, the
+    // held count saying so.
     for (name, current) in emptied {
         if engine.retire_section(&name, current).await? == Retired::Retired {
             removed.push(name);
