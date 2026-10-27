@@ -710,16 +710,14 @@ for this one. And a section another ingest wrote again after this one looked —
 found back in its file with new text — is left as it now is; one found back
 unchanged is retired, and the next ingest brings it back.
 
-`--keep-missing` only lists such sections, under `missing`, and leaves them
-searchable. So does any section somebody also wrote by hand with `pamin write`,
-whatever the flag: it is theirs as well as the file's.
+A section somebody also wrote by hand with `pamin write` is only listed, under
+`missing`, and left searchable: it is theirs as well as the file's.
 
 **A section its file cut down to next to nothing is taken off too.** Text
 below the filter's eight characters — a `TBD` where a paragraph was — is held,
 counted under `held`, and would leave the section answering with the text the
 file no longer has. So it is retired as a section the file lost is, and listed
-under `removed`, `--keep-missing` or not: the file still has the section and
-says next to nothing in it. Ingesting it again while it says the same writes
+under `removed`. Ingesting it again while it says the same writes
 nothing, and once the file says something again the section is back. One
 somebody also wrote by hand stays, held on every ingest and its evidence
 recorded again each time.
