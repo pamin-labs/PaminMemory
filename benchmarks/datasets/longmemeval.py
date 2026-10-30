@@ -51,6 +51,15 @@ def sample(entries, n, seed=20260917):
     return chosen[:n]
 
 
+def questions(entry, per_unit=1, seed=None):
+    """None to sample: the unit is the question, scored by `score`.
+
+    `run.py` keys a LongMemEval row by unit alone, which an empty list gives
+    it; `per_unit` and `seed` are the shared shape.
+    """
+    return []
+
+
 def turns_of(entry):
     """Every turn of every session in this question's haystack.
 
