@@ -42,6 +42,43 @@ def shim_stats():
         return {}
 
 
+def merged(group):
+    """Consecutive turns stored as one unit, named after the first.
+
+    The first turn's id keeps the unit's session recoverable, so a dataset
+    that scores sessions ranks it exactly as it ranks a turn.
+    """
+    return {**group[0], "record": "\n".join(t["record"] for t in group)}
+
+
+def rounds(turns):
+    """One unit per exchange: a user turn and every turn up to the next one."""
+    groups = []
+    for t in turns:
+        if (not groups or t["speaker"] == "user"
+                or t["session"] != groups[-1][0]["session"]):
+            groups.append([])
+        groups[-1].append(t)
+    return [merged(g) for g in groups]
+
+
+SEGMENT_TURNS = int(os.environ.get("SEGMENT_TURNS", "4"))
+
+
+def segments(turns):
+    """Fixed windows of `SEGMENT_TURNS` turns, never crossing a session.
+
+    No model decides where a topic ends, because the write path calls none;
+    a fixed window is the segmenter that keeps that true.
+    """
+    by_session = collections.defaultdict(list)
+    for t in turns:
+        by_session[t["session"]].append(t)
+    return [merged(g[i:i + SEGMENT_TURNS])
+            for g in by_session.values()
+            for i in range(0, len(g), SEGMENT_TURNS)]
+
+
 class Bm25:
     """No memory system: Okapi BM25 over the same turns."""
 
@@ -93,6 +130,9 @@ class Pamin:
     name = "pamin"
     store_path = PAMIN_HOME
     holder = "pamin"       # the resident server holds the index and the model
+    # Arms storing other units need projects of their own: `import`
+    # deduplicates by topic, and a round is named after its first turn.
+    PREFIX = "locomo"
 
     def _run(self, project, args, timeout=3600):
         quoted = " ".join(shlex.quote(a) for a in args)
@@ -109,7 +149,7 @@ class Pamin:
         # left over from an earlier run returns in a second and reports
         # that second as the ingest cost.
         tag = os.environ.get("RUN_TAG", "r1")
-        self.project = ("locomo" + tag
+        self.project = (self.PREFIX + tag
                         + re.sub(r"[^a-z0-9]", "", conversation_id.lower())[:26])
         path = f"{WORK}/ndjson/{self.project}.ndjson"
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -266,6 +306,44 @@ class PaminLedger:
         out = self._run(self.project,
                         ["search", question, "--limit", str(TOP_K), "--json"])
         return [h["content"] for h in json.loads(out)["hits"]]
+
+
+class Bm25Round(Bm25):
+    """BM25 over exchanges rather than turns."""
+
+    name = "bm25-round"
+
+    def ingest(self, conversation_id, turns):
+        return super().ingest(conversation_id, rounds(turns))
+
+
+class Bm25Segment(Bm25):
+    """BM25 over fixed windows of turns."""
+
+    name = "bm25-segment"
+
+    def ingest(self, conversation_id, turns):
+        return super().ingest(conversation_id, segments(turns))
+
+
+class PaminRound(Pamin):
+    """The flat arm storing each exchange, not each turn, as one memory."""
+
+    name = "pamin-round"
+    PREFIX = "round"
+
+    def ingest(self, conversation_id, turns):
+        return super().ingest(conversation_id, rounds(turns))
+
+
+class PaminSegment(Pamin):
+    """The flat arm storing fixed windows of turns as one memory each."""
+
+    name = "pamin-segment"
+    PREFIX = "segment"
+
+    def ingest(self, conversation_id, turns):
+        return super().ingest(conversation_id, segments(turns))
 
 
 def project_for(kind, unit):
@@ -671,7 +749,11 @@ class Mem0Wide(Mem0):
 
 ARMS = {
     "bm25": Bm25,
+    "bm25-round": Bm25Round,
+    "bm25-segment": Bm25Segment,
     "pamin": Pamin,
+    "pamin-round": PaminRound,
+    "pamin-segment": PaminSegment,
     "pamin-wide": PaminWide,
     "pamin-ledger": PaminLedger,
     "pamin-dated": PaminDated,
