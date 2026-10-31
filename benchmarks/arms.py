@@ -825,6 +825,114 @@ class Mem0Wide(Mem0):
     LIMIT = 30
 
 
+SECOM_DIR = os.environ.get("SECOM_DIR", "/tmp/ext/SeCom")
+
+
+class SeCom:
+    """SeCom (ICLR 2025) through its own code: segmenter, compressor, retriever.
+
+    Its segmenter is asked through the shared endpoint, so the model is the
+    one every other arm uses rather than its default gpt-4o-mini. Segments and
+    their compressed keys are cached per conversation, because both are the
+    expensive half and neither depends on the question. Retrieval ranks the
+    compressed keys and returns the original segments, as SeCom's `retrieve`
+    does.
+    """
+
+    name = "secom"
+    store_path = None
+    holder = None
+    CONFIG = "bm25.yaml"
+    _system = None
+
+    @classmethod
+    def system(cls):
+        if SeCom._system is None:
+            import sys
+            import types
+            # SeCom's utils import vllm for a local-model path this arm never
+            # takes; a stub stands in rather than a GPU inference stack.
+            sys.modules.setdefault("vllm", types.SimpleNamespace(LLM=None, SamplingParams=None))
+            sys.path.insert(0, SECOM_DIR)
+            os.environ.setdefault("OPENAI_API_BASE", SHIM)
+            os.environ.setdefault("OPENAI_API_KEY", "shim")
+            from secom import SeCom as Upstream
+            SeCom._system = Upstream(
+                config_path=f"{SECOM_DIR}/secom/configs/{cls.CONFIG}")
+        return SeCom._system
+
+    @staticmethod
+    def sessions(turns):
+        by_session = collections.defaultdict(list)
+        for t in turns:
+            by_session[t["session"]].append(t["record"])
+        return list(by_session.values())
+
+    @classmethod
+    def cached(cls, conversation_id, kind, build):
+        path = f"{WORK}/secom/{conversation_id}-{kind}.json"
+        if os.path.exists(path):
+            return json.load(open(path))
+        value = build()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(value, f)
+        return value
+
+    @classmethod
+    def segments(cls, conversation_id, turns):
+        return cls.cached(conversation_id, "segments",
+                          lambda: cls.system().segment(cls.sessions(turns)))
+
+    def ingest(self, conversation_id, turns):
+        from langchain_core.documents import Document
+        started = time.time()
+        system = self.system()
+        units = self.segments(conversation_id, turns)
+        keys = self.cached(conversation_id, "compressed",
+                           lambda: system.compress(units))
+        bank = [Document(page_content="\n".join(key), metadata={"content": unit})
+                for unit, key in zip(units, keys)]
+        retriever = system.config.retriever
+        system.init_retriever_external_memory(
+            bank, topk=TOP_K, storage=retriever.storage,
+            embedding_model=retriever.get("embedding_model", ""), device_map="cpu")
+        self.retriever = system.retriever
+        return time.time() - started, len(turns)
+
+    def recall(self, question):
+        return ["\n".join(d.metadata["content"]) for d in self.retriever.invoke(question)]
+
+
+class SeComMpnet(SeCom):
+    """SeCom with its default dense retriever, MPNet over FAISS."""
+
+    name = "secom-mpnet"
+    CONFIG = "mpnet.yaml"
+
+
+class PaminSeComSegments(Pamin):
+    """The flat arm storing SeCom's segments, verbatim, as one memory each.
+
+    Separates SeCom's unit from SeCom's retriever: the same segments, found
+    by `pamin search` instead of BM25 over compressed keys.
+    """
+
+    name = "pamin-secom-seg"
+    PREFIX = "secomseg"
+
+    def ingest(self, conversation_id, turns):
+        groups, rest = [], iter(turns)
+        for segment in SeCom.segments(conversation_id, turns):
+            group = [next(rest) for _ in segment]
+            # A segmenter that miscounts a session's exchanges would shift
+            # every later segment onto the wrong turns, silently.
+            if [t["record"] for t in group] != segment:
+                raise RuntimeError(f"{conversation_id}: segments do not tile the turns")
+            groups.append(merged(group))
+        return super().ingest(conversation_id, groups)
+
+
 ARMS = {
     "bm25": Bm25,
     "bm25-round": Bm25Round,
@@ -834,6 +942,9 @@ ARMS = {
     "pamin-round": PaminRound,
     "pamin-segment": PaminSegment,
     "pamin-topic": PaminTopic,
+    "pamin-secom-seg": PaminSeComSegments,
+    "secom": SeCom,
+    "secom-mpnet": SeComMpnet,
     "pamin-wide": PaminWide,
     "pamin-ledger": PaminLedger,
     "pamin-dated": PaminDated,
