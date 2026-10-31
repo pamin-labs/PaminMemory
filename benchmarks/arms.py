@@ -79,6 +79,61 @@ def segments(turns):
             for i in range(0, len(g), SEGMENT_TURNS)]
 
 
+TOPIC_PROMPT = """Split this conversation into topical segments: each segment \
+is a run of consecutive turns about one topic. Turns are numbered from 0.
+
+{turns}
+
+Reply with only a JSON list of the turn numbers where a segment starts, in \
+increasing order, beginning with 0. Example: [0, 4, 7]"""
+
+
+def topic_starts(session):
+    """Where each topic starts in one session, as a model segments it.
+
+    SeCom's segmenter, prompted zero-shot. The answer is cached per session
+    on disk, so every arm and every rerun stores the same segments and a
+    session shared by two haystacks is segmented once. Each turn is shown
+    cut to 400 characters: enough to see its topic, and it keeps a session's
+    prompt within what one call is given.
+    """
+    import hashlib
+    import urllib.request
+    digest = hashlib.sha1(
+        json.dumps([t["record"] for t in session]).encode()).hexdigest()
+    path = f"{WORK}/topics/{digest}.json"
+    if os.path.exists(path):
+        return json.load(open(path))
+    listing = "\n".join(f"Turn {i}: {t['record'][:400]}" for i, t in enumerate(session))
+    request = urllib.request.Request(
+        f"{SHIM}/chat/completions",
+        data=json.dumps({"model": "segmenter", "messages": [
+            {"role": "user", "content": TOPIC_PROMPT.format(turns=listing)}]}).encode(),
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=300) as r:
+        answer = json.load(r)["choices"][0]["message"]["content"]
+    found = re.search(r"\[[\d,\s]*\]", answer)
+    if not found:
+        raise RuntimeError(f"segmenter answered without a list: {answer[:200]}")
+    starts = sorted({s for s in json.loads(found.group()) if 0 <= s < len(session)} | {0})
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(starts, f)
+    return starts
+
+
+def topics(turns):
+    """One unit per topic segment, never crossing a session."""
+    by_session = collections.defaultdict(list)
+    for t in turns:
+        by_session[t["session"]].append(t)
+    units = []
+    for group in by_session.values():
+        starts = topic_starts(group) + [len(group)]
+        units.extend(merged(group[a:b]) for a, b in zip(starts, starts[1:]))
+    return units
+
+
 class Bm25:
     """No memory system: Okapi BM25 over the same turns."""
 
@@ -324,6 +379,29 @@ class Bm25Segment(Bm25):
 
     def ingest(self, conversation_id, turns):
         return super().ingest(conversation_id, segments(turns))
+
+
+class Bm25Topic(Bm25):
+    """BM25 over topic segments a model marked."""
+
+    name = "bm25-topic"
+
+    def ingest(self, conversation_id, turns):
+        return super().ingest(conversation_id, topics(turns))
+
+
+class PaminTopic(Pamin):
+    """The flat arm storing each topic segment a model marked as one memory.
+
+    The only arm here with a model on its write path, which the shim's call
+    count for its ingest shows.
+    """
+
+    name = "pamin-topic"
+    PREFIX = "topic"
+
+    def ingest(self, conversation_id, turns):
+        return super().ingest(conversation_id, topics(turns))
 
 
 class PaminRound(Pamin):
@@ -751,9 +829,11 @@ ARMS = {
     "bm25": Bm25,
     "bm25-round": Bm25Round,
     "bm25-segment": Bm25Segment,
+    "bm25-topic": Bm25Topic,
     "pamin": Pamin,
     "pamin-round": PaminRound,
     "pamin-segment": PaminSegment,
+    "pamin-topic": PaminTopic,
     "pamin-wide": PaminWide,
     "pamin-ledger": PaminLedger,
     "pamin-dated": PaminDated,
