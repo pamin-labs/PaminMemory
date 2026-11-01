@@ -8,9 +8,9 @@
 
 - Before making changes, branch from the latest `main` with a concise name that matches the intended PR.
 - Coordinate through pamin-labs-dev before editing. With the plugin, its hooks and the `protocol` skill guide you. Without it (other agents, other tools), declare an intent with the `pamin-labs-dev` CLI first (`pamin-labs-dev intent declare ...`), work on its branch `<type>/i-<number>-<slug>`, and put `Intent: I-<number>` in the PR description; CI rejects PRs without a live intent for their branch. External contributors follow [CONTRIBUTING.md](CONTRIBUTING.md) instead.
-- Read the relevant `pamin-memory/` materials in InternalDocs before implementing PaminMemory changes. InternalDocs is a sibling clone at `$PAMIN_LABS_DEV_INTERNAL_DOCS` (default `../InternalDocs`); pull it first. See [docs/internal-docs.md](docs/internal-docs.md).
+- Read the relevant `pamin-memory/` materials in InternalDocs before implementing PaminMemory changes. InternalDocs is a sibling clone at `$PAMIN_LABS_DEV_INTERNAL_DOCS` (default `../internal-docs`); pull it first. See [docs/internal-docs.md](docs/internal-docs.md).
 - Keep private planning, monetization, strategy, and sensitive internal notes out of public files.
-- When internal documentation changes are needed, open a PR in the private `InternalDocs` repository. This repository keeps no pointer to it; cite InternalDocs evidence with SHA permalinks (`https://github.com/Pamin-Labs/InternalDocs/blob/<sha>/<path>`).
+- When internal documentation changes are needed, open a PR in the private `internal-docs` repository. This repository keeps no pointer to it; cite InternalDocs evidence with SHA permalinks (`https://github.com/pamin-labs/internal-docs/blob/<sha>/<path>`).
 - Do not recreate local private planning folders in this repository.
 - Prefer `rtk <command>` for shell commands when `rtk` is available.
 - Keep one implementation per concern. Before adding logic that cuts, scores,
@@ -73,10 +73,10 @@ going stale.
 - Commit titles, commit messages, and PR titles must follow Conventional Commits:
 
 ```text
-<type>[optional scope]: <description>
+<type>(<scope>): <description>
 ```
 
-- Prefer standard types such as `feat`, `fix`, `docs`, `refactor`, `test`, `build`, `ci`, and `chore`.
+- The scope is required: the crate or area the change is about, for example `fix(engine): ...`. Prefer standard types such as `feat`, `fix`, `docs`, `refactor`, `test`, `build`, `ci`, and `chore`.
 - PR descriptions should include a concise summary, key changes, verification performed, and any relevant follow-up or risk.
 - PR descriptions must not include private internal-doc details.
 - Do not put agent session links or session identifiers in commit messages, PR

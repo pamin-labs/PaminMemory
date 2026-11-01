@@ -26,7 +26,6 @@ jobs:
       - name: Organization PR
         if: github.event.pull_request.head.repo.full_name == github.repository
         env:
-          GH_TOKEN: ${{ secrets.PAMIN_LABS_DEV_TOKEN }}
           PAMIN_LABS_DEV_ACCESS_CLIENT_ID: ${{ secrets.PAMIN_LABS_DEV_ACCESS_CLIENT_ID }}
           PAMIN_LABS_DEV_ACCESS_CLIENT_SECRET: ${{ secrets.PAMIN_LABS_DEV_ACCESS_CLIENT_SECRET }}
           TITLE: ${{ github.event.pull_request.title }}
@@ -36,7 +35,10 @@ jobs:
           PLD: pamin-labs-dev-x86_64-unknown-linux-musl
         run: |
           cd "$RUNNER_TEMP"
-          gh release download --repo pamin-labs/pamin-labs-dev --pattern "$PLD" --pattern SHA256SUMS > /dev/null
+          # Public, read-only release mirror (InternalDocs ADR-007); no GitHub token needed.
+          bin=https://dev.paminlabs.com/v1/bin
+          tag="$(curl -fsS "$bin/LATEST")"
+          curl -fsS -o "$PLD" "$bin/$tag/$PLD" && curl -fsS -o SHA256SUMS "$bin/$tag/SHA256SUMS"
           grep " $PLD\$" SHA256SUMS | sha256sum -c - > /dev/null && chmod +x "$PLD"
           printf '%s' "$BODY" > body
           cd "$GITHUB_WORKSPACE"
