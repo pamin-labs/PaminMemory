@@ -198,7 +198,7 @@ impl Repository {
             let _ = std::fs::remove_file(&own);
         }
         let fetched = fetched?;
-        crate::activity::fetched();
+        pamin_runtime::activity::fetched();
         self.pin_fetched(&fetched);
         Ok(fetched)
     }
@@ -310,7 +310,7 @@ pub(crate) struct File<'a> {
     file: &'a str,
 }
 
-impl crate::prepared::Download for File<'_> {
+impl pamin_runtime::prepared::Download for File<'_> {
     fn label(&self) -> String {
         if self.repository.revision == "main" {
             format!("{}/{}", self.repository.name, self.file)
@@ -330,8 +330,8 @@ impl crate::prepared::Download for File<'_> {
         self.repository.cached(self.file)
     }
 
-    fn fetch(&self) -> Result<PathBuf> {
-        self.repository.get(self.file)
+    fn fetch(&self) -> pamin_runtime::Result<PathBuf> {
+        Ok(self.repository.get(self.file)?)
     }
 
     /// Removes the file's snapshot entry and then the blob it points at, so
@@ -349,7 +349,7 @@ impl crate::prepared::Download for File<'_> {
     /// directory that is itself a link, which is how
     /// several workspaces share one cache; or a blob that resolves outside the
     /// model directory because its repository was linked in from another cache.
-    fn remove(&self) -> Result<bool> {
+    fn remove(&self) -> pamin_runtime::Result<bool> {
         if std::env::var_os("HF_HOME").is_some()
             || std::fs::symlink_metadata(self.cache_dir)?.is_symlink()
             || std::fs::symlink_metadata(self.cache_dir.join(format!(
@@ -485,7 +485,7 @@ fn cached_at(cache_dir: &Path, name: &str, revision: &str, file: &str) -> Option
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::prepared::Download;
+    use pamin_runtime::prepared::Download;
 
     const NAME: &str = "someone/model";
     const FILE: &str = "onnx/model.onnx";
