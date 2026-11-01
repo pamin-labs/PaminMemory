@@ -16,8 +16,13 @@ pub struct Args {
     pub query: Option<String>,
 
     /// How many to return.
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = default_limit())]
+    #[serde(default = "default_limit")]
     pub limit: u32,
+}
+
+fn default_limit() -> u32 {
+    20
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]

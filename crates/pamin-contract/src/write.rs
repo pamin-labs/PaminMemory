@@ -19,9 +19,11 @@ pub struct Args {
     /// The work is queued rather than skipped. The server runs it once no
     /// request is being answered, and `pamin cascade drain` runs it at once.
     #[arg(long)]
+    #[serde(default)]
     pub defer: bool,
 
     #[command(flatten)]
+    #[serde(default)]
     pub validity: validity::Flags,
 }
 

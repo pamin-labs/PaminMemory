@@ -12,18 +12,24 @@ pub struct Args {
     /// How many edges to traverse.
     #[arg(
         long,
-        default_value_t = 2,
+        default_value_t = default_depth(),
         value_parser = clap::value_parser!(u8).range(0..=MAX_DEPTH as i64)
     )]
+    #[serde(default = "default_depth")]
     pub depth: u8,
 
     /// Restrict traversal to one relationship kind. Repeatable.
     #[arg(long = "kind")]
+    #[serde(default)]
     pub kinds: Vec<String>,
 
     /// Only follow edges asserted to hold at this RFC 3339 instant.
     #[arg(long)]
     pub at: Option<String>,
+}
+
+fn default_depth() -> u8 {
+    2
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
