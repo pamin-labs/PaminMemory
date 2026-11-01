@@ -2079,14 +2079,18 @@ dependencies = [
 [[package]]
 name = "pamin-runtime"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fbd3147b2e27c3dfd8beecabaeefc786a42f5fb72facc5f273d0d41b4d51a039"
 dependencies = [
  "half",
  "libc",
  "ort",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "thiserror",
  "tracing",
+ "uuid",
  "windows-sys 0.61.2",
 ]
 
