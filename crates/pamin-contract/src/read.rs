@@ -10,6 +10,7 @@ pub struct Args {
 
     /// How many versions back from the current one. Zero is current.
     #[arg(long, default_value_t = 0)]
+    #[serde(default)]
     pub version_offset: u32,
 
     /// Read one span of a memory the index cut into spans, from 0, rather

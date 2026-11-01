@@ -12,7 +12,8 @@ pub struct Args {
     pub to: String,
 
     /// Which relationship to retract.
-    #[arg(long, default_value = "related_to")]
+    #[arg(long, default_value_t = default_kind())]
+    #[serde(default = "default_kind")]
     pub kind: String,
 
     /// Why it is being retracted, which decides what history keeps.
@@ -20,8 +21,18 @@ pub struct Args {
     /// `closed` means the relationship ended: it held until now, and queries
     /// about earlier instants still find it. `deleted` means the claim was
     /// wrong: it never held, and no query finds it at any instant.
-    #[arg(long, default_value = "closed", value_parser = ["closed", "deleted"])]
+    #[arg(long, default_value_t = default_reason(), value_parser = ["closed", "deleted"])]
+    #[serde(default = "default_reason")]
     pub reason: String,
+}
+
+/// The relationship `link` asserts and `unlink` retracts when none is named.
+pub(crate) fn default_kind() -> String {
+    "related_to".to_string()
+}
+
+fn default_reason() -> String {
+    "closed".to_string()
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]

@@ -10,11 +10,17 @@ pub struct Args {
 
     /// Ignore case.
     #[arg(short = 'i', long)]
+    #[serde(default)]
     pub ignore_case: bool,
 
     /// How many matches to return.
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = default_limit())]
+    #[serde(default = "default_limit")]
     pub limit: u32,
+}
+
+fn default_limit() -> u32 {
+    20
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]

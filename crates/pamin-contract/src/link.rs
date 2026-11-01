@@ -15,10 +15,12 @@ pub struct Args {
 
     /// What the relationship is: mentions, supports, contradicts, supersedes,
     /// related_to, part_of, derived_from, same_as, or depends_on.
-    #[arg(long, default_value = "related_to")]
+    #[arg(long, default_value_t = crate::unlink::default_kind())]
+    #[serde(default = "crate::unlink::default_kind")]
     pub kind: String,
 
     #[command(flatten)]
+    #[serde(default)]
     pub validity: validity::Flags,
 }
 

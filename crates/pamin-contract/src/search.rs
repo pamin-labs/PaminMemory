@@ -12,7 +12,8 @@ pub struct Args {
     pub query: String,
 
     /// How many results to return.
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = default_limit())]
+    #[serde(default = "default_limit")]
     pub limit: u32,
 
     /// How many candidates each channel contributes before fusion.
@@ -21,15 +22,18 @@ pub struct Args {
     /// that tunes this. An agent wanting control over retrieval should reach
     /// for the primitives — `grep`, `read`, `neighbors` — rather than adjust
     /// ranking internals it has no way to evaluate.
-    #[arg(long, default_value_t = Depths::DEFAULT.channel)]
+    #[arg(long, default_value_t = default_channel_depth())]
+    #[serde(default = "default_channel_depth")]
+    #[schemars(skip)]
     pub channel_depth: std::num::NonZeroU32,
 
     /// How many edges the graph channel walks out from its seeds.
     #[arg(
         long,
-        default_value_t = Depths::DEFAULT.graph,
+        default_value_t = default_graph_depth(),
         value_parser = clap::value_parser!(u8).range(0..=pamin_core::graph::MAX_DEPTH as i64)
     )]
+    #[serde(default = "default_graph_depth")]
     pub graph_depth: u8,
 
     /// How many fused candidates the reranker reads. For measuring the
@@ -61,10 +65,26 @@ pub struct Args {
     /// with its version, so a client that stopped sending it could neither
     /// use such a server nor replace it -- the reason `Request::profile` is
     /// still sent.
-    #[arg(skip = String::from("accurate"))]
-    #[serde(default)]
+    #[arg(skip = retired_tier())]
+    #[serde(default = "retired_tier")]
     #[schemars(skip)]
     pub rerank: String,
+}
+
+fn default_limit() -> u32 {
+    5
+}
+
+fn default_channel_depth() -> std::num::NonZeroU32 {
+    Depths::DEFAULT.channel
+}
+
+fn default_graph_depth() -> u8 {
+    Depths::DEFAULT.graph
+}
+
+fn retired_tier() -> String {
+    "accurate".to_string()
 }
 
 fn default_rerank_depth() -> std::num::NonZeroUsize {
