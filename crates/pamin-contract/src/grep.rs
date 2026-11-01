@@ -3,6 +3,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Find an exact string in everything ever written, including writes the
+/// filter held back from memory. No ranking and no model.
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     /// The exact string to find. Not a pattern.

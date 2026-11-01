@@ -3,6 +3,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Read one topic: its current state, an earlier version, or some of the spans
+/// of a long memory around a search hit.
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     /// The topic to read.

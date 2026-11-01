@@ -5,6 +5,7 @@ expression: "schema_for! (neighbors::Args)"
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Args",
+  "description": "List the topics connected to one through the relationship graph, without\nranking them.",
   "type": "object",
   "properties": {
     "at": {

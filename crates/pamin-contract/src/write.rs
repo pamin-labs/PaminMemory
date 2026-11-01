@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::validity;
 
+/// Record a memory under a topic. Writing to an existing topic adds a version;
+/// content too short to carry a durable claim is kept as evidence only.
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     /// The topic this memory belongs to.

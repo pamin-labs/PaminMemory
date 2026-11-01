@@ -5,6 +5,7 @@ expression: "schema_for! (write::Args)"
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Args",
+  "description": "Record a memory under a topic. Writing to an existing topic adds a version;\ncontent too short to carry a durable claim is kept as evidence only.",
   "type": "object",
   "properties": {
     "content": {

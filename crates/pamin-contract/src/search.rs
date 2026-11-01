@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 
 pub use super::read::Span;
 
+/// Search memories by meaning and wording. Returns each matching topic at its
+/// current state, with a `why` trace of the channels and graph paths that found
+/// it. Ranked, so use grep, read or neighbors when you need certainty.
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     /// What to search for, in any language.

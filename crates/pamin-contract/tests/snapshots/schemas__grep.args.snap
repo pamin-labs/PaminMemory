@@ -5,6 +5,7 @@ expression: "schema_for! (grep::Args)"
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Args",
+  "description": "Find an exact string in everything ever written, including writes the\nfilter held back from memory. No ranking and no model.",
   "type": "object",
   "properties": {
     "ignore_case": {

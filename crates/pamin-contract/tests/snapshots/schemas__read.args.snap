@@ -5,6 +5,7 @@ expression: "schema_for! (read::Args)"
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Args",
+  "description": "Read one topic: its current state, an earlier version, or some of the spans\nof a long memory around a search hit.",
   "type": "object",
   "properties": {
     "around": {

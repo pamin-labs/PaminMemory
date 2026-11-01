@@ -4,6 +4,8 @@ use pamin_core::graph::MAX_DEPTH;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// List the topics connected to one through the relationship graph, without
+/// ranking them.
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     /// The topic to walk out from.
