@@ -64,3 +64,8 @@ docker-compose.override.yml
 *.swp
 *.swo
 *~
+
+# A local override of a published dependency, such as
+# `[patch.crates-io] pamin-runtime = { path = "../pamin-runtime" }`, for
+# developing the two together. Never committed.
+.cargo/config.toml
