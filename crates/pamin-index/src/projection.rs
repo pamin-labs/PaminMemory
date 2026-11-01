@@ -26,7 +26,7 @@ use zvec_rust::{
 
 use crate::error::{IndexError, Result};
 use crate::segmentation::Segmenter;
-use crate::vector_math::dot;
+use pamin_runtime::kernels::dot;
 
 const COLLECTION: &str = "memories";
 
