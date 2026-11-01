@@ -863,11 +863,37 @@ struct Sorted {
 /// Gone is decided from the directory's own listing of names rather than from
 /// asking whether the path exists, which on a case-insensitive filesystem a
 /// file renamed `Notes.md` to `notes.md` would answer yes to.
+///
+/// A directory that is there but cannot be listed -- its permissions changed,
+/// or the server out of file descriptors -- cannot say a file left it, so its
+/// paths are dropped, as a walk that met an error retires nothing. Only one
+/// that is gone, or no longer a directory, lists as empty.
 fn sort(paths: &[PathBuf], dirs: &HashSet<PathBuf>, root: &Path) -> (Sorted, Vec<PathBuf>) {
+    sort_by(paths, dirs, root, &listing)
+}
+
+/// What a walk would find directly inside `dir`, and the names of everything
+/// in it.
+fn listing(dir: &Path) -> std::io::Result<Listing> {
+    let names = std::fs::read_dir(dir)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .collect();
+    Ok((ingest::listed(dir), names))
+}
+
+type Listing = (BTreeSet<PathBuf>, HashSet<std::ffi::OsString>);
+
+/// [`sort`], with each directory listed by `list`.
+fn sort_by(
+    paths: &[PathBuf],
+    dirs: &HashSet<PathBuf>,
+    root: &Path,
+    list: &dyn Fn(&Path) -> std::io::Result<Listing>,
+) -> (Sorted, Vec<PathBuf>) {
     let mut sorted = Sorted::default();
     let mut vanished = Vec::new();
-    let mut listings: HashMap<PathBuf, (BTreeSet<PathBuf>, HashSet<std::ffi::OsString>)> =
-        HashMap::new();
+    let mut listings: HashMap<PathBuf, Option<Listing>> = HashMap::new();
     for path in paths {
         let Some(parent) = path.parent() else {
             continue;
@@ -875,17 +901,30 @@ fn sort(paths: &[PathBuf], dirs: &HashSet<PathBuf>, root: &Path) -> (Sorted, Vec
         if !dirs.contains(parent) {
             continue;
         }
-        let (listed, names) = listings.entry(parent.to_path_buf()).or_insert_with(|| {
-            let names = std::fs::read_dir(parent)
-                .map(|entries| {
-                    entries
-                        .filter_map(Result::ok)
-                        .map(|entry| entry.file_name())
-                        .collect()
-                })
-                .unwrap_or_default();
-            (ingest::listed(parent), names)
-        });
+        let listing = listings
+            .entry(parent.to_path_buf())
+            .or_insert_with(|| match list(parent) {
+                Ok(listing) => Some(listing),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    Some(Listing::default())
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        directory = %parent.display(),
+                        "listing a synced directory failed; its changes wait for the next one"
+                    );
+                    None
+                }
+            });
+        let Some((listed, names)) = listing else {
+            continue;
+        };
         let present = path.file_name().is_some_and(|name| names.contains(name));
         if listed.contains(path) {
             if path.is_dir() {
@@ -1019,6 +1058,28 @@ mod tests {
         let (sorted, vanished) = sort(&[root.join("docs")], &dirs, &root);
         assert_eq!(vanished, [root.join("docs")]);
         assert_eq!(sorted, Sorted::default());
+    }
+
+    /// A directory that is there but cannot be listed says nothing of what
+    /// left it: neither its files nor its subdirectories are gone.
+    #[test]
+    fn a_directory_that_cannot_be_listed_loses_nothing() {
+        let (_tree, root, dirs) = tree();
+        let docs = root.join("docs");
+        let refused = |dir: &Path| {
+            if dir == docs {
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            } else {
+                listing(dir)
+            }
+        };
+        std::fs::create_dir_all(docs.join("sub")).unwrap();
+        let mut dirs = dirs;
+        dirs.insert(docs.join("sub"));
+        let paths = [docs.join("a.md"), docs.join("sub")];
+        let (sorted, vanished) = sort_by(&paths, &dirs, &root, &refused);
+        assert_eq!(sorted, Sorted::default());
+        assert!(vanished.is_empty());
     }
 
     /// A directory already walked that an event names again -- deleted and
