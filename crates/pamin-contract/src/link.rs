@@ -1,10 +1,11 @@
 //! `pamin link` — assert a relationship the text does not state.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::validity;
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     /// The topic the relationship starts from.
     pub from: String,
@@ -21,7 +22,7 @@ pub struct Args {
     pub validity: validity::Flags,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Linked {
     pub from: String,
     pub to: String,

@@ -1,8 +1,9 @@
 //! `pamin grep` — find exact strings in the evidence, with nothing ranking.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     /// The exact string to find. Not a pattern.
     pub literal: String,
@@ -16,7 +17,7 @@ pub struct Args {
     pub limit: u32,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Match {
     /// Where the evidence came from.
     pub source: String,
@@ -31,7 +32,7 @@ pub struct Match {
     pub excerpt: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Matches {
     pub literal: String,
     pub matches: Vec<Match>,

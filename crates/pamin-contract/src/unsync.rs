@@ -2,9 +2,10 @@
 
 use std::path::PathBuf;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     /// Paths an ingest was given, as `pamin sync` lists them. Made absolute
     /// here, as `ingest` makes its paths.
@@ -12,7 +13,7 @@ pub struct Args {
     pub paths: Vec<PathBuf>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Unsynced {
     /// The paths no longer kept in sync. Their sections stay as they are.
     pub removed: Vec<String>,

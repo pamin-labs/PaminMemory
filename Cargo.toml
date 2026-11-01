@@ -32,6 +32,10 @@ anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
+# JSON Schema 2020-12 for the operation contract, the shape MCP tools are
+# described in. A caret, not a pin, so it unifies with the one pamin-kit uses:
+# the contract's types must implement that crate's trait.
+schemars = "1.2"
 serde_json = { version = "1", features = ["raw_value"] }
 thiserror = "2"
 time = { version = "0.3", features = ["serde-well-known"] }

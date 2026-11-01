@@ -1,8 +1,9 @@
 //! `pamin read` — read a topic's current or historical state.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     /// The topic to read.
     pub topic: String,
@@ -24,7 +25,7 @@ pub struct Args {
 }
 
 /// Where in a memory a span, or a run of them, lies.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Span {
     /// The span asked about, from 0.
     pub ordinal: u32,
@@ -38,7 +39,7 @@ pub struct Span {
     pub end: usize,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Read {
     pub topic: String,
     pub version: u32,

@@ -1,10 +1,11 @@
 //! `pamin write` — record a memory.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::validity;
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     /// The topic this memory belongs to.
     #[arg(long)]
@@ -24,7 +25,7 @@ pub struct Args {
     pub validity: validity::Flags,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Written {
     pub topic: String,
     /// Absent when the filter held the content in the evidence layer.

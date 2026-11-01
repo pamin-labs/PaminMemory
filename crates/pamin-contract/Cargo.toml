@@ -10,9 +10,10 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-pamin-core = { workspace = true }
+pamin-core = { workspace = true, features = ["schemars"] }
 anyhow = { workspace = true }
 clap = { workspace = true }
+schemars = { workspace = true }
 serde = { workspace = true }
 time = { workspace = true }
 

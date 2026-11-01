@@ -1,11 +1,12 @@
 //! `pamin search` — retrieve memories, with the reasoning attached.
 
 use pamin_core::{Channel, Depths, Derivation, EdgeKind, Why};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub use super::read::Span;
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     /// What to search for, in any language.
     pub query: String,
@@ -39,6 +40,7 @@ pub struct Args {
         default_value_t = Depths::DEFAULT.rerank
     )]
     #[serde(default = "default_rerank_depth")]
+    #[schemars(skip)]
     pub rerank_depth: std::num::NonZeroUsize,
 
     /// How wide the vector graph is searched. For measuring recall against
@@ -49,6 +51,7 @@ pub struct Args {
         default_value_t = Depths::DEFAULT.effort
     )]
     #[serde(default = "default_search_effort")]
+    #[schemars(skip)]
     pub search_effort: std::num::NonZeroU32,
 
     /// Always `accurate`, and read by nothing in this build.
@@ -60,6 +63,7 @@ pub struct Args {
     /// still sent.
     #[arg(skip = String::from("accurate"))]
     #[serde(default)]
+    #[schemars(skip)]
     pub rerank: String,
 }
 
@@ -88,7 +92,7 @@ fn default_search_effort() -> std::num::NonZeroU32 {
 /// A separate type rather than `#[serde(skip)]` on the core one. Skipping
 /// would make the field deserialize as zero on the far side of the socket,
 /// and a number that is quietly wrong is a worse price than the tokens.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Trace {
     Channel {
@@ -147,7 +151,7 @@ impl From<Why> for Trace {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Hit {
     /// What to pass to `pamin read` to see this topic's other versions.
     ///
@@ -196,7 +200,7 @@ pub struct Hit {
     pub parent: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Results {
     pub query: String,
     pub hits: Vec<Hit>,

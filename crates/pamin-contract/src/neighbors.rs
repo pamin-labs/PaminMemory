@@ -1,9 +1,10 @@
 //! `pamin neighbors` — walk the graph directly, without ranking anything.
 
 use pamin_core::graph::MAX_DEPTH;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     /// The topic to walk out from.
     pub topic: String,
@@ -25,7 +26,7 @@ pub struct Args {
     pub at: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Neighbor {
     pub topic: String,
     pub hops: u8,
@@ -46,7 +47,7 @@ pub struct Neighbor {
     pub confidence: f32,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Neighborhood {
     pub topic: String,
     pub depth: u8,

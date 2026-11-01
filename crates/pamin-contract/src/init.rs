@@ -1,8 +1,9 @@
 //! `pamin init` — provision the local database.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Initialized {
     pub project: String,
     pub home: String,

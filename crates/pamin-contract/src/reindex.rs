@@ -1,11 +1,12 @@
 //! `pamin reindex` — rebuild the projection index from PostgreSQL.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {}
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Reindexed {
     /// Topics written to the projection. One document each, whatever a topic's
     /// version history holds -- searching ranks what a topic says now.

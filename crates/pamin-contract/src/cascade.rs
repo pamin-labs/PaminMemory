@@ -1,14 +1,15 @@
 //! `pamin cascade` — run and inspect the work a write left behind.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     #[command(subcommand)]
     pub command: Command,
 }
 
-#[derive(clap::Subcommand, Serialize, Deserialize)]
+#[derive(clap::Subcommand, Serialize, Deserialize, JsonSchema)]
 pub enum Command {
     /// Run every job that is due, then stop.
     Drain,
@@ -26,7 +27,7 @@ pub enum Command {
     Discard,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Drained {
     pub completed: usize,
     pub failed: usize,
@@ -45,13 +46,13 @@ pub struct Drained {
     pub segments: Option<Segments>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Segments {
     pub holds: u64,
     pub wants: u64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Failure {
     pub job: String,
     pub subject: Option<String>,
@@ -59,12 +60,12 @@ pub struct Failure {
     pub error: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Failures {
     pub failed: Vec<Failure>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Moved {
     pub jobs: u64,
 }

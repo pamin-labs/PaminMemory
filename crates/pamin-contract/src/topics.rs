@@ -1,9 +1,10 @@
 //! `pamin topics` — what is already here, so a writer does not invent a name
 //! for something that already has one.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     /// What the topic might be about, or be called. Omit to list recent ones.
     ///
@@ -19,7 +20,7 @@ pub struct Args {
     pub limit: u32,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Found {
     pub topic: String,
     /// `name` when the name index matched, `content` when a memory under it
@@ -28,7 +29,7 @@ pub struct Found {
     pub how: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Topics {
     /// Absent when nothing was asked for, so the list is simply what is here.
     #[serde(skip_serializing_if = "Option::is_none")]
