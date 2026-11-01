@@ -1,6 +1,6 @@
 [package]
 name = "pamin-contract"
-description = "PaminMemory's operation contract: request and result types shared by the CLI, the socket and MCP."
+description = "pamin-memory's operation contract: request and result types shared by the CLI, the socket and MCP."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,4 +1,4 @@
-//! PaminMemory's operation contract: each operation's arguments, the result
+//! pamin-memory's operation contract: each operation's arguments, the result
 //! it answers with, and how that result reads as text.
 //!
 //! The one definition every surface uses. The CLI parses these arguments,
