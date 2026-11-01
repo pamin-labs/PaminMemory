@@ -14,7 +14,7 @@ version = "0.0.1"
 edition = "2024"
 rust-version = "1.98.1"
 license = "Apache-2.0"
-repository = "https://github.com/Pamin-Labs/PaminMemory"
+repository = "https://github.com/pamin-labs/pamin-memory"
 
 [workspace.dependencies]
 pamin-client = { path = "crates/pamin-client" }
