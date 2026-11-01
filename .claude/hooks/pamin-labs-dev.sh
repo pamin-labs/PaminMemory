@@ -1,6 +1,6 @@
 #!/bin/sh
 # Repository fallback for pamin-labs-dev (InternalDocs pamin-labs-dev/architecture/0.1.0/p3-design.md, section 4).
-# - Cloud sessions load no plugins: run the same hook with the binary served by the Worker; the
+# - Cloud sessions load no plugins: run the same hook with the binary from the public /v1/bin mirror; the
 #   environment's network-secrets proxy adds the Access service token.
 # - Locally the organization plugin does the work; if it is not running in this session, deny edits.
 # Usage: pamin-labs-dev.sh session-start|pre-tool-use|stop|session-end, with the hook input on stdin.
@@ -9,7 +9,7 @@ input="$(cat)"
 home="${PAMIN_LABS_DEV_HOME:-$HOME/.pamin-labs-dev}"
 
 if [ "$CLAUDE_CODE_REMOTE" = true ]; then
-  server="https://dev.paminlabs.com/v1/raw/releases"
+  server="https://dev.paminlabs.com/v1/bin"
   tag="$(curl -fsS "$server/LATEST" 2> /dev/null)" || exit 0
   case "$(uname -m)" in
     aarch64 | arm64) asset=pamin-labs-dev-aarch64-unknown-linux-musl ;;
