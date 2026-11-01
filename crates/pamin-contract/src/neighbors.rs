@@ -16,6 +16,7 @@ pub struct Args {
         value_parser = clap::value_parser!(u8).range(0..=MAX_DEPTH as i64)
     )]
     #[serde(default = "default_depth")]
+    #[schemars(range(max = MAX_DEPTH))]
     pub depth: u8,
 
     /// Restrict traversal to one relationship kind. Repeatable.

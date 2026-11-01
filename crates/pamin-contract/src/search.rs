@@ -34,6 +34,7 @@ pub struct Args {
         value_parser = clap::value_parser!(u8).range(0..=pamin_core::graph::MAX_DEPTH as i64)
     )]
     #[serde(default = "default_graph_depth")]
+    #[schemars(range(max = pamin_core::graph::MAX_DEPTH))]
     pub graph_depth: u8,
 
     /// How many fused candidates the reranker reads. For measuring the
