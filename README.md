@@ -147,7 +147,7 @@ a bill.
 No Docker. No API key. No configuration. `init` provisions a local PostgreSQL and starts the server, which begins fetching the embedding model in the background; a write that arrives before it is ready waits for it. The reranker downloads on the first search.
 
 ```bash
-cargo install --path crates/pamin-cli
+cargo install --path crates/cli
 
 pamin init
 pamin write --topic deployment_pipeline "deploys through the ci pipeline"
@@ -383,7 +383,7 @@ question returned the same p.
 than the fusion this now ships.** Every other figure on this page is produced by
 a test in this repository. That one was not: four pages quoted it and nothing in
 the tree could run it, because it came from a program that was never committed.
-The harness now exists — `cargo test -p pamin-engine --test monolingual --
+The harness now exists — `cargo test -p memory-engine --test monolingual --
 --ignored` — and the first thing it found was that on that corpus the four
 channels fused scored *below* the embedding model on its own. The fusion weight
 has been halved since, which puts fusion ahead there and takes the XQuAD-R row

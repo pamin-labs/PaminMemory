@@ -1,0 +1,34 @@
+---
+source: crates/contract/tests/schemas.rs
+expression: "schema_for! (unlink::Args)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Args",
+  "description": "Retract a relationship, keeping the record that it was claimed.",
+  "type": "object",
+  "properties": {
+    "from": {
+      "description": "The topic the relationship starts from.",
+      "type": "string"
+    },
+    "kind": {
+      "description": "Which relationship to retract.",
+      "type": "string",
+      "default": "related_to"
+    },
+    "reason": {
+      "description": "Why it is being retracted, which decides what history keeps.\n\n`closed` means the relationship ended: it held until now, and queries\nabout earlier instants still find it. `deleted` means the claim was\nwrong: it never held, and no query finds it at any instant.",
+      "type": "string",
+      "default": "closed"
+    },
+    "to": {
+      "description": "The topic it points at.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "from",
+    "to"
+  ]
+}

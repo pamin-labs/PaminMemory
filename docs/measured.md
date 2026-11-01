@@ -94,8 +94,8 @@ Both corpora are fetched rather than vendored. For XQuAD-R, prepare a fresh
 persistent cache, then run only the search test:
 
 ```sh
-env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p pamin-engine --test crosslingual prepare_pinned_xquad_models -- --exact --ignored
-env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_EVAL_DEVICE=cpu cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
+env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p memory-engine --test crosslingual prepare_pinned_xquad_models -- --exact --ignored
+env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_EVAL_DEVICE=cpu cargo test -p memory-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
 python3 benchmarks/results/retrieval/verify_xquad_models.py /path/to/eval-home/models xquad-run.log
 ```
 
@@ -137,7 +137,7 @@ one query moving a great deal. That matters at the sizes being reported: the
 fusion weight moved on +0.0056 and the reranker is priced at −0.0152, and both
 are small enough that a handful of queries decides them. The harnesses now
 report per-query wins, losses and a paired randomisation p beside every mean — see
-`crates/pamin-engine/tests/statistics/mod.rs` and the section in
+`crates/engine/tests/statistics/mod.rs` and the section in
 [ADR 0001](adr/0001-tech-selection.md). Until a figure below carries a win/loss
 count, read it as a difference of means and nothing stronger.
 
@@ -275,7 +275,7 @@ on the twenty queries built to need it.
 The weight was never chosen: every unnamed channel defaults to 1.0 and this one
 was never named. It is three tenths now -- 1.0 and 0.5 are significantly worse
 once the sweep is priced as one family, and 0.15 cannot be told apart -- and every
-floor clears. The sweep is in `pamin_core::fusion`.
+floor clears. The sweep is in `memory_core::fusion`.
 
 **Twenty queries written by the mechanism's authors are not evidence on their
 own, so the graph was then measured on a corpus nobody here wrote.** MuSiQue's
@@ -296,7 +296,7 @@ shown the graph's ten strongest finds below its head: of 153 supporting titles
 the graph alone found, none had reached the head (median fused rank 99, taken
 while a support rule, since measured as a no-op on these questions and
 removed, also held them down). The
-harness is `pamin-engine/tests/multihop.rs`, and it asserts the graph keeps
+harness is `engine/tests/multihop.rs`, and it asserts the graph keeps
 paying.
 
 **Showing more graph finds buys nothing, and the first attempt to choose them
@@ -370,7 +370,7 @@ recomputation from the trace on every search.
 
 No group is worse; the own corpus's one loss is a cross-lingual query that
 drops by 0.0078. Every clause holds, so the threshold ships
-(`GRAPH_SHOWN_FROM` and `GRAPH_SHOWN_AT_MOST` in `pamin-engine`). Times are
+(`GRAPH_SHOWN_FROM` and `GRAPH_SHOWN_AT_MOST` in `memory-engine`). Times are
 geometric means of per-question ratios on four cores that other evaluations
 were sharing. The 0.6834 and 0.7131 above were measured with ten.
 
@@ -708,8 +708,8 @@ arms cannot be re-run from the repository. With no arm eligible, the rule did
 not re-sweep the n-gram weight, and it stays at an eighth.
 
 **A learned fusion head was fitted and does not generalise.** The `FEATURES`
-arm (`pamin-engine/tests/features`, since replaced by the `REPLAY_OUT` record
-in `pamin-engine/tests/reranking/record.rs`, which holds the same per-candidate
+arm (`engine/tests/features`, since replaced by the `REPLAY_OUT` record
+in `engine/tests/reranking/record.rs`, which holds the same per-candidate
 channel ranks and scores and, for the superset it scores, the model's) dumped every fused candidate with each
 channel's rank and score, and the shipped combiner rebuilt from the dump alone
 matches the engine bit for bit on all 3,537 question-groups of the own corpus,
@@ -918,7 +918,7 @@ nDCG@10 moved significantly in no group: XQuAD-R cross-lingual −0.0004,
 same-language −0.0002, MIRACL −0.0011, MuSiQue +0.0005, every p above 0.4.
 The rule the batching was chosen by, written down before anything was timed,
 and the pilot of seven candidates are at `BATCH_TOKENS` in
-`crates/pamin-index/src/reranking.rs`.
+`crates/index/src/reranking.rs`.
 
 Both columns run a call's passes one after another, each pass with every core
 and up to four pairs. On a multi-core CPU the passes of one rerank now run
@@ -936,7 +936,7 @@ nDCG@10 change was detected in any group (Holm-corrected p = 1.00 in each):
 XQuAD-R cross-lingual −0.0001 [−0.0020, +0.0016], same-language −0.0012
 [−0.0037, +0.0011], single-target −0.0013 [−0.0052, +0.0026] (1,190 queries
 each), MuSiQue 2-hop +0.0040 [−0.0029, +0.0113] (its first 200 questions). The table is at `CPU_BATCH` in
-`crates/pamin-index/src/reranking.rs`. Accelerators, and a CPU with an
+`crates/index/src/reranking.rs`. Accelerators, and a CPU with an
 inference budget of one thread, where passes cannot overlap, still group up to
 four pairs within 512 padded tokens. The write-ups, raw rows, per-query dumps
 and harnesses are retained for maintainers in the private InternalDocs repository (see
@@ -1444,7 +1444,7 @@ reranker loaded beside the current one; a current server loads only the
 570 MB reranker.
 
 **And where those seven gigabytes are.** The `MEMORY` arm of
-`pamin-engine/tests/monolingual.rs` reads `/proc/self/smaps` after each thing a
+`engine/tests/monolingual.rs` reads `/proc/self/smaps` after each thing a
 server loads, on MIRACL at the shipped configuration. Anonymous memory -- the
 part only the process can give back:
 
@@ -1473,8 +1473,8 @@ since the change below.
 
 **The weights are mapped now, not copied.** On the CPU each model loads from a
 copy the runtime maps from disk -- written once from the download; see
-`crates/pamin-index/src/prepared.rs` -- and
-`crates/pamin-index/tests/prepared.rs` measures it through `Reranker::load`
+`crates/index/src/prepared.rs` -- and
+`crates/index/tests/prepared.rs` measures it through `Reranker::load`
 and `Embedder::load`. Each load runs in a fresh process, and what is counted
 is live anonymous memory with the model loaded, after `malloc_trim`, in MiB as
 the test prints it:
@@ -1542,8 +1542,8 @@ process, 280 MiB for each. The `accurate`
 reranker describes exactly BGE-M3's model, every piece and score bit for bit, and `fast`
 differs only in leaving a default flag unstated, so a loaded model now finds
 one already built rather than building its own; see
-`crates/pamin-index/src/tokenizer.rs`.
-`crates/pamin-index/tests/shared_vocabulary.rs` measures it with BGE-M3 and
+`crates/index/src/tokenizer.rs`.
+`crates/index/tests/shared_vocabulary.rs` measures it with BGE-M3 and
 the `accurate` reranker both loaded, as a server searching at the defaults
 holds them, through `Embedder::load` and `Reranker::load` against `fastembed`
 loading the same prepared copies the way the product did before. Each arm is a
@@ -1572,7 +1572,7 @@ median -2.5%, while one arm's own rounds moved by up to 40%.
 
 The 280 MiB is `tokenizers`' own Unigram model, a trie with a hash map in every
 node. The shared vocabulary has since been held in a double-array trie instead
-(see `crates/pamin-index/src/tokenizer.rs`), with ids tested equal to that
+(see `crates/index/src/tokenizer.rs`), with ids tested equal to that
 model's. The figures above are for the layout before it. The same measuring
 child, run before (`ad33d2d`) and after (`c176020`) in the order A B, B A,
 A B on a shared 4-vCPU Xeon with a warm page cache, gave these medians of

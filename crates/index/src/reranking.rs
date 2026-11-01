@@ -1,0 +1,2830 @@
+//! A second pass over the shortlist.
+//!
+//! Fusion orders candidates by the ranks four channels gave them, and it never
+//! reads a candidate and the query together. A cross-encoder does, which is why
+//! it can fix an ordering fusion got wrong and why it costs what it costs: the
+//! query and the document go through one model jointly, so nothing about a
+//! document can be computed before the query arrives. That is a property of the
+//! architecture rather than of this implementation, and it is why the
+//! literature's answers to cross-encoder latency all change the architecture --
+//! precomputing part of the document's representation at index time, or moving
+//! to late interaction. Both trade the cost for storage proportional to
+//! documents times tokens times width, which for a store meant to hold millions
+//! of memories is tens of gigabytes. So the cost is paid at query time or not
+//! at all.
+//!
+//! That arithmetic is right at millions and was quoted here as though it
+//! settled the question at any size, which it does not: 128-dimensional int8
+//! token vectors are about 67 MB over XQuAD-R's 13,014 sentences and 1.35 GB
+//! over MIRACL's 131,924 passages, against indexes of 119 MB and 1.1 GB. Two
+//! to three times the index is an argument, not a foreclosure. Nor is the
+//! licence one any more: `lightonai/mLateOn` is Apache-2.0, multilingual and
+//! carries its own int8 ONNX, where `jina-colbert-v2` is CC-BY-NC-4.0,
+//! `answerai-colbert-small-v1` is English, and `colbert-xm` selects a
+//! per-language adapter at runtime that does not fit one static graph.
+//!
+//! An earlier version of this note gave the remaining obstacle as language
+//! coverage -- nine training languages against this product's eleven, with
+//! Swahili absent. **That was backwards.** The model's own paper
+//! (`arXiv:2607.27178`, 2026) is largely about generalising to languages
+//! absent from retrieval training, and reports its unseen-language MIRACL
+//! average about ten points above the dense model it is paired with. MIRACL
+//! Swahili is not the case that rules mLateOn out; it is the case mLateOn
+//! claims, and it is where this stack is weakest.
+//!
+//! It was then built and measured, which ended it: over the exact candidates
+//! the `accurate` tier is offered, reordering by MaxSim scored 0.5857 on
+//! XQuAD-R's cross-lingual group against 0.6114 for not reranking at all and
+//! 0.6597 for `accurate` -- worse than every tier, including `off`. The storage
+//! it would have needed was never built, and the implementation was deleted.
+//! `docs/adr/0001-tech-selection.md` has the table.
+//!
+//! ## What it is worth, measured
+//!
+//! On 13,014 sentences in eleven languages, reranking the fused shortlist:
+//!
+//! | | cross-lingual | same-language | per query | of which reranking |
+//! |---|---|---|---|---|
+//! | off | — | — | 53 ms | — |
+//! | `fast` | **+0.0381** | **-0.0053** | 264 ms | 211 ms |
+//! | `accurate` | **+0.0448** | **+0.0017** | 1001 ms | 948 ms |
+//!
+//! Those score columns are differences of means, which is all this project
+//! could report until `tests/statistics` existed. Re-taken query by query at
+//! the lexical weight that ships now, the `fast` tier reads:
+//!
+//! | group | mean | wins / losses / ties | p |
+//! |---|---|---|---|
+//! | cross-lingual | **+0.0403** | 547 / 206 / 437 | 0.0001 |
+//! | same-language | **-0.0061** | 3 / 19 / 1,168 | 0.0007 |
+//!
+//! Both are real, and the second one is more interesting than its mean. The
+//! reranker touches twenty-two same-language queries out of 1,190 and makes
+//! nineteen of them worse. The damage is not diffuse and small; it is
+//! concentrated and consistent, and it looks small only because the confinement
+//! to unlexical candidates keeps it away from almost every query.
+//!
+//! Measured through `Engine::search_reranked` -- the entry point `pamin search`
+//! calls -- with `TIERS=1` on the cross-lingual harness, over all 1,190
+//! queries. An earlier version of this table came from a scratch program that
+//! reordered a dumped shortlist with its own copy of the pipeline, and it
+//! overstated both gains by about half.
+//!
+//! The latency here replaces 204 ms and 508 ms, which replaced an earlier
+//! 1795 ms for `accurate`. Re-running the same harness on the same machine and
+//! workspace returns twice the recorded cost for `accurate`, so the first
+//! figure was too high and its correction too low. The quality columns do
+//! reproduce, to a thousandth rather than exactly -- the claim that these
+//! tiers "return the same four decimals on every run" was a claim about a
+//! fixed corpus and index, and the index is maintained between runs.
+//!
+//! Three things in that table need saying.
+//!
+//! **The same-language column is nearly, but not exactly, zero.** Every
+//! reranker tried -- three, across two orders of magnitude in size -- improves
+//! cross-lingual ranking and damages same-language ranking, because the fused
+//! list is already good at same-language and a cross-encoder reorders it worse.
+//! So only the candidates no lexical channel found are reranked, and they are
+//! placed back into the positions they already held. That confines the damage
+//! but does not eliminate it, and the earlier claim that the group "cannot
+//! move" was wrong: a same-language answer the lexical channels *missed* is an
+//! unlexical candidate like any other, and reordering can carry it down.
+//! Sixty-one same-language queries leave something below rank ten before
+//! reranking and seventy-one after. The cost is small and it is real.
+//! (Unrestricted, two of those models scored +0.1698 / -0.2109 and +0.1678 /
+//! -0.0806 on the scratch harness. Not re-measured here.)
+//!
+//! **`accurate` is better on both groups, not just the first.** It is the only
+//! tier that does not cost same-language ranking.
+//!
+//! **`fast` was the default on latency, not on quality.** It is a twelve-layer
+//! distilled MiniLM with 21M encoder parameters against XLM-RoBERTa-large's
+//! 303M -- fourteen times smaller, and its pass costs 211 ms against 948, so
+//! 4.5x. For that it gives up 0.0067 cross-lingual and the 0.0070
+//! same-language that `accurate` gains. Whether six sevenths of the gain is
+//! worth a quarter of the latency was a workspace's call while there were
+//! tiers to choose between; there is one reranker now, and it is `accurate`.
+//! That is the finding of [Shallow Cross-Encoders for Low-Latency
+//! Retrieval](https://arxiv.org/abs/2403.20222) arrived at independently: under
+//! a latency budget a shallow model beats a full-scale one, because the budget
+//! buys more candidates.
+//!
+//! ## And on a corpus that is not parallel text, the gap doubles
+//!
+//! Everything above is XQuAD-R, where the eleven versions of a sentence are
+//! translations of each other. MIRACL's Swahili dev split is not: 131,924 real
+//! passages averaging 229 characters, 482 queries, human relevance judgements,
+//! one language throughout.
+//!
+//! | | nDCG@10 | gain | a search | of which reranking |
+//! |---|---|---|---|---|
+//! | off | 0.7158 | — | 142 ms | — |
+//! | `fast` | 0.7359 | **+0.0201** | 474 ms | 332 ms |
+//! | `accurate` | 0.7654 | **+0.0496** | 1867 ms | 1725 ms |
+//!
+//! `fast` is worth about half what it is worth on parallel sentences. That much
+//! was expected: the pass only reorders what the lexical channels missed, and
+//! across a language boundary that is nearly the whole shortlist while within
+//! one language it is a fraction -- 84 of 482 queries leave a relevant passage
+//! below rank ten here against 1,042 of 1,190 there.
+//!
+//! **`accurate` was expected to shrink with it and does the opposite.** It
+//! gains more on this corpus than on the other, +0.0496 against +0.0458, so the
+//! ratio between the two tiers goes from 1.2 to 2.5. The passages are long and
+//! genuinely varied, which is where twenty-one million parameters start to tell
+//! against three hundred million. The shallow-cross-encoder argument the
+//! default leans on was validated on parallel single sentences, and this is the
+//! shape of corpus it does not describe.
+//!
+//! What it costs is the other half. Reranking is 332 ms and 1725 ms here
+//! against 165 and 469 on sentences, because a cross-encoder reads the
+//! candidate and `MAX_TOKENS` actually binds on a passage. Two seconds a search
+//! is not an interactive budget, which is why `fast` stayed the default -- and
+//! on real passages that choice gave up three fifths of the available gain
+//! rather than a fifth. The section below is why it no longer does.
+//!
+//! recall@50 is 0.9494 for all three tiers, to four decimals, as on the other
+//! corpus: the pass reorders a shortlist and never changes it.
+//!
+//! **And on this corpus the pass is worth less than nothing, which survives
+//! being tested.** On the `speed` profile at the shipped lexical weight, the
+//! `fast` tier scores 0.6730 against fusion's 0.6882: **-0.0152, 37 wins
+//! against 57 losses over 482 queries, p = 0.0129**. It reaches ninety-four
+//! queries and loses on more of them than it wins. That is the same shape as
+//! the same-language group above, on a corpus where every query is
+//! same-language -- so the two corpora agree about what this tier does when a
+//! query and its answer share a language, and disagree only about how many such
+//! queries there are.
+//!
+//! ## Why `accurate` is the default
+//!
+//! The ranking this project works to is accuracy, then latency, then memory,
+//! then disk. `fast` was chosen on the second; put to the first, query by query
+//! against `accurate` through `search_reranked`:
+//!
+//! | corpus, group | `accurate` against `fast` | wins / losses / ties | p |
+//! |---|---|---|---|
+//! | XQuAD-R, cross-lingual | **+0.0086** | 1,190 queries | 0.0015 |
+//! | XQuAD-R, same-language | **+0.0066** | 1,190 queries | 0.0001 |
+//! | MIRACL Swahili, `speed` profile | **+0.0411** | 83 / 12 / 387 | 0.0001 |
+//! | own corpus, cross-lingual | +0.0151 | 16 / 11 / 16 | 0.37 |
+//! | own corpus, relational | +0.0096 | 3 / 1 / 16 | 0.63 |
+//!
+//! It is never worse, significantly better wherever there are enough queries
+//! to say, and on the one non-parallel corpus the gap is four hundredths.
+//! `fast` meanwhile loses to no reranking at all on both same-language
+//! measurements: -0.0060 on XQuAD-R (p = 0.0002) and -0.0154 on MIRACL
+//! (35 wins, 58 losses, p = 0.014) -- so the tier that shipped was, for any
+//! query whose answer shares its language, worse than asking for nothing.
+//!
+//! What it costs is written down rather than argued away: 1522 ms a search on
+//! XQuAD-R against 359, about a quarter of `fast`'s throughput, and 571 MB
+//! loaded against 119. The `fast` tier has since been removed: the product
+//! runs this one reranker (see `docs/adr/0001-tech-selection.md`).
+//!
+//!
+//! ## What is not paid twice
+//!
+//! A cross-encoder cannot precompute anything about a memory before the query
+//! arrives -- that is what joint encoding means, and it is why the literature's
+//! answers to this latency all change the architecture: precomputing part of a
+//! document's representation at index time, or moving to late interaction.
+//! Both trade the cost for storage proportional to documents times tokens times
+//! width, and both would mean shipping and maintaining a re-export of somebody
+//! else's weights split in two. Neither is ruled out; neither is here, and the
+//! storage is the smaller of the two obstacles -- see the module notes above
+//! for the sizes and for the licence wall that is the larger one.
+//!
+//! [`Reranker::counted`] measures reuse of complete batch contexts. It does
+//! not measure document recurrence: changing neighbours can make a repeated
+//! document a cache miss. Evaluating precomputed document layers requires a
+//! separate document-recurrence measurement and a storage/cost comparison.
+//!
+//! What is kept is a complete ordered batch's logits, within one loaded model
+//! and tokenizer. With this INT8 export, a pair's score can depend on its batch
+//! neighbours and padding, so reusing it in a different context is incorrect.
+//! The cache includes every pair identity and the logical and physical shapes;
+//! changed contexts are scored again. An identical batch avoids a model forward
+//! pass. The most recent complete input list also skips tokenization and batch
+//! planning when its ordered pair identities and effective limits match and
+//! every referenced batch is still cached. Changed inputs or evicted references
+//! require tokenizing all pairs and planning their complete batches before
+//! lookup. Hashing, cache lookup and retrieval still cost work; this is not a
+//! zero-cost search. Loading another model or tokenizer creates a new cache.
+//!
+//! ## What the numbers do not say
+//!
+//! They were measured on four cores. Published figures for a MiniLM
+//! cross-encoder on CPU are 0.5 to 3 ms per pair; this measures 9.75, and the
+//! gap is two layers' worth of depth and a quarter of the cores. On an ordinary
+//! server the retired `fast` tier should have been tens of milliseconds rather
+//! than 165.
+//!
+//! The latency column is also the soft one. The same configuration measured in
+//! two separate runs of the harness differs by as much as a fifth, so only
+//! figures taken inside one run are comparable with each other. The nDCG
+//! columns have no such problem: they repeat to four decimals.
+//!
+//! What was a caveat here -- that all of this was measured on parallel text,
+//! and a corpus whose candidates are not translations of each other might
+//! divide the gain differently -- is now the MIRACL section above. It does
+//! divide it differently, and not in the direction the caveat guessed.
+
+use std::num::NonZeroUsize;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+use sha2::{Digest, Sha256};
+use tokenizers::Encoding;
+
+use crate::encoder::Encoder;
+use crate::error::{IndexError, Result};
+use crate::hub::Repository;
+use pamin_runtime::device::Device;
+
+/// The reranker: bge-reranker-v2-m3 (XLM-RoBERTa-large), 570 MB. Worth more
+/// the less the corpus looks like a parallel sentence benchmark.
+///
+/// On XQuAD-R it was 2.8x the latency of the retired MiniLM `fast` tier for
+/// 22% more gain, and better than it on *both* groups. On MIRACL's Swahili
+/// passages it is worth **two and a half times** what `fast` was, +0.0496
+/// against +0.0201, because a twenty-one-million parameter model runs out of
+/// capacity on long real text where a three-hundred-million one does not. The
+/// module note has the paired numbers.
+///
+/// The weights are PaminLabs' re-export of `onnx-community`'s int8 file:
+/// SmoothQuant (alpha 0.75) moves activation outliers on the q/k/v and first
+/// feed-forward inputs into the weights before they are quantized, with one
+/// `Mul` per smoothed input left in the graph. The fp16 file accelerators load
+/// and the tokenizer are upstream's, byte for byte.
+const REPOSITORY: &str = "pamin-labs/bge-reranker-v2-m3-sq-int8-onnx";
+
+/// The commit of [`REPOSITORY`] every file is read at, so that the weights a
+/// measurement priced are the weights that load.
+const REVISION: &str = "eb7411f3a2e11886fdcddbcd25f99c16309c0d28";
+
+/// The name this reranker had when it was one tier of several. It is part of
+/// every execution plan's key and of the provider label evaluations record
+/// (`reranking accurate`), so plans measured and records written under the
+/// tier keep matching.
+pub const TIER: &str = "accurate";
+
+// How many fused results the reranker reads by default, with what settled it;
+// in `memory_core::search` beside the other defaults the command line shows.
+pub use memory_core::search::RERANK_DEPTH as DEPTH;
+
+/// How many padded tokens go through the model at once, on an accelerator; on
+/// the CPU a pass takes one pair (see [`CPU_BATCH`]), which this never limits.
+///
+/// Five hundred and twelve, with at most [`BATCH`] pairs, and the control is
+/// the tokens rather than the count. A batch is padded to its longest member,
+/// and on four cores a pair also costs more the more padded tokens share its
+/// pass, so chunks of eight lost twice: to padding where short and long pairs
+/// met, and to size where every pair was long -- MuSiQue's graph candidates,
+/// which carry their seed's text, filled eight-pair passes with 256-token
+/// rows. So every offered pair is tokenized once, sorted by its real length
+/// and then its position, and each pass takes the next pair while the pass
+/// stays within this many padded tokens.
+///
+/// Settled by a rule written down before anything was timed. A pilot of 24
+/// queries a corpus ran seven candidates beside the batching this replaced --
+/// sorted by characters, consecutive chunks of eight -- through
+/// `Engine::search_reranked` at the shipped depth, all in one process, each
+/// query through every candidate in rotated order. A whole search, as the
+/// median of each query's ratio to chunks of eight:
+///
+/// | candidate | XQuAD-R | MIRACL | MuSiQue | pooled |
+/// |---|---|---|---|---|
+/// | chunks of four | 0.814 | 0.710 | 0.708 | 0.742 |
+/// | 512 tokens | 0.766 | 0.576 | 0.556 | 0.626 |
+/// | 1,024 tokens | 0.922 | 0.840 | 0.690 | 0.811 |
+/// | 2,048 tokens | 1.292 | 1.109 | 1.057 | 1.149 |
+/// | **512 tokens, four pairs** | **0.746** | **0.583** | **0.523** | **0.610** |
+/// | 1,024 tokens, four pairs | 0.806 | 0.616 | 0.633 | 0.680 |
+/// | 2,048 tokens, four pairs | 0.827 | 0.695 | 0.704 | 0.739 |
+///
+/// A budget of 2,048 with no cap is *slower* than chunks of eight: it packs a
+/// dozen and more pairs into a pass, which pads more than chunks of eight did
+/// and costs more a token besides.
+///
+/// The winner then went through every query, because grouping is not
+/// score-neutral: the int8 export quantizes activations per tensor, so rows
+/// padded together share one scale and a pair's score depends on its
+/// neighbours. Paired against chunks of eight by sign-flip, 10,000 draws:
+///
+/// | group | queries | nDCG@10 | wins / losses | p | a search | faster on |
+/// |---|---|---|---|---|---|---|
+/// | XQuAD-R cross-lingual | 1,190 | −0.0004 | 166 / 192 | 0.60 | 0.833 | 1,053 of 1,187 |
+/// | XQuAD-R same-language | 1,190 | −0.0002 | 5 / 6 | 0.62 | (the same searches) | |
+/// | MIRACL Swahili | 482 | −0.0011 | 13 / 11 | 0.42 | 0.800 | 461 of 482 |
+/// | MuSiQue, 2-hop | 1,000 | +0.0005 | 27 / 17 | 0.63 | 0.810 | 944 of 997 |
+///
+/// Not significantly worse in any group, and faster on 2,458 of 2,666 pooled
+/// searches with a pooled ratio of 0.814, so it ships. The pilot's larger
+/// saving was taken at a load average of 11 to 12 on four cores and this at 6
+/// to 8; the saving grows with contention, and it is the paired ratio rather
+/// than either set of milliseconds that carries. Measured on the `accurate`
+/// tier.
+pub(crate) const BATCH_TOKENS: usize = 512;
+
+/// How many pairs go through the model at once, at most, on an accelerator.
+/// See [`BATCH_TOKENS`].
+const BATCH: usize = 4;
+
+/// How many pairs go through the model at once on the CPU: one.
+///
+/// On the CPU the passes of one rerank run side by side, one thread each, on
+/// one shared session (see `forward`), so the cores are already divided
+/// between passes, and grouping pairs into a pass adds padding without adding
+/// cores. One pair a pass also makes a pair's score its own: the int8
+/// export quantizes a pass's activations together, so in a pass of four a
+/// pair's score depended on its neighbours. [`BATCH_TOKENS`] does not bind
+/// here, since no pair is longer than [`MAX_TOKENS`].
+///
+/// Measured against four pairs on the same build, at the entry point. Timing,
+/// `pamin search` through a resident server, 4 vCPU Xeon (AVX-512 VNNI),
+/// three rotated runs of 120 warm queries an arm: p50 0.834 of four pairs'
+/// [0.757, 0.931], p95 0.850 [0.715, 0.997], peak resident memory of the
+/// search server 0.884. Accuracy, `Engine::search_reranked` over copies of one
+/// index, paired by query (sign-flip; p as drawn, then Holm over every group):
+///
+/// | group | queries | nDCG@10, four pairs | one pair | difference | p | p, Holm |
+/// |---|---|---|---|---|---|---|
+/// | XQuAD-R cross-lingual | 1,190 | 0.7231 | 0.7229 | -0.0001 | 0.87 | 1.00 |
+/// | XQuAD-R same-language | 1,190 | 0.8679 | 0.8667 | -0.0012 | 0.33 | 1.00 |
+/// | XQuAD-R single target | 1,190 | 0.6662 | 0.6649 | -0.0013 | 0.51 | 1.00 |
+/// | MuSiQue 2-hop, first 200 | 200 | 0.7669 | 0.7709 | +0.0040 | 0.28 | 1.00 |
+///
+/// Rankings move -- about a third of top-fives -- but no group significantly,
+/// and recall@50 is unchanged. On an accelerator nothing has measured one
+/// pair a pass, so [`BATCH`] stays there; nor on a CPU whose inference budget
+/// is one thread, where the passes cannot overlap and thirty singleton passes
+/// would run one after another -- that case keeps [`BATCH`], as before.
+const CPU_BATCH: usize = 1;
+
+/// The most pairs a pass of `model` takes. See [`batch_on`]; one for a graph
+/// that only a pass of one unpadded row scores correctly, even once its passes
+/// no longer run side by side.
+fn batch(model: &Encoder, settings: &crate::InferenceSettings) -> usize {
+    if model.takes_one_row() {
+        return 1;
+    }
+    batch_on(
+        model.runs_side_by_side(),
+        side_by_side_budget(settings),
+        settings.rerank.batch,
+    )
+}
+
+/// `explicit`, or by default [`CPU_BATCH`] where passes run side by side and
+/// more than one can run at once -- the budget `Encoder::run_each` divides
+/// them over -- and [`BATCH`] otherwise: on an accelerator, and on a CPU with
+/// a budget of one thread.
+fn batch_on(side_by_side: bool, budget: usize, explicit: Option<NonZeroUsize>) -> usize {
+    let overlap = side_by_side && budget > 1;
+    explicit.map_or(if overlap { CPU_BATCH } else { BATCH }, NonZeroUsize::get)
+}
+
+/// How the passes over a mapped copy are shaped. The copy is loaded side by
+/// side, so a pass takes one pair where [`batch_on`] says so, and a pass of
+/// one pair is never padded; any more and the rows of a pass can be.
+fn cpu_passes(settings: &crate::InferenceSettings) -> pamin_runtime::prepared::Passes {
+    if batch_on(true, side_by_side_budget(settings), settings.rerank.batch) == 1 {
+        pamin_runtime::prepared::Passes::OneRow
+    } else {
+        pamin_runtime::prepared::Passes::Padded
+    }
+}
+
+/// The inference budget, as `Encoder::run_each` reads it; one if unreadable.
+fn side_by_side_budget(settings: &crate::InferenceSettings) -> usize {
+    settings.budget().unwrap_or(1)
+}
+
+/// The longest candidate the model reads.
+///
+/// Two hundred and fifty-six, and halving it is not the free saving this used
+/// to record. The claim here was that 128 "changed latency by a fifth and
+/// nothing else". Measured through the engine, at a depth of twenty:
+///
+/// | tokens | cross-lingual | same-language | a search |
+/// |---|---|---|---|
+/// | 128 | 0.6077 | 0.7974 | 207 ms |
+/// | **256** | **0.6091** | **0.7974** | **217 ms** |
+///
+/// Both halves were wrong. The saving is five per cent rather than twenty, and
+/// it costs 0.0014 of cross-lingual ranking rather than nothing. A batch is
+/// padded to its longest member and not to this limit, so the limit only
+/// truncates the candidates that genuinely exceed it -- on a corpus of
+/// sentences, few of them. It earns its place by bounding the worst case rather
+/// than by shaping the ordinary one: one long memory cannot make one query
+/// slow.
+///
+/// **On a corpus of passages it binds, and now there are numbers for both.**
+/// The harnesses count the length of every candidate that reaches the model:
+///
+/// | corpus | mean | longest |
+/// |---|---|---|
+/// | XQuAD-R, sentences | 165 characters | 1,341 |
+/// | MIRACL Swahili, Wikipedia passages | 311 characters | 5,567 |
+///
+/// Characters rather than tokens, as [`Reranker::counted`] reports them. A
+/// 5,567-character passage is far past this limit
+/// whatever the script, so on MIRACL the truncation is doing real work, and the
+/// sentence-corpus measurement above says nothing about what it costs there.
+///
+/// **So 192 and 384 were run where it binds, and neither ships.** On MuSiQue
+/// half the pairs reach this limit, because a graph candidate carries its
+/// seed's text. Every query of each corpus, at a depth of thirty and batched
+/// by [`BATCH_TOKENS`], each limit paired against 256 in the same process,
+/// sign-flip over 10,000 draws; a search is the median of each query's ratio:
+///
+/// | tokens | XQuAD-R cross-lingual | MIRACL | MuSiQue | a search: XQuAD-R, MIRACL, MuSiQue |
+/// |---|---|---|---|---|
+/// | 192 | −0.0003 (p 0.07) | −0.0005 (p 0.44) | **−0.0045 (p 0.010)** | 0.993, 0.946, 0.801 |
+/// | **256** | **0.6676** | **0.7883** | **0.6842** | **1** |
+/// | 384 | +0.0000 (p 0.50) | +0.0006 (p 0.25) | −0.0016 (p 0.31) | 1.002, 1.029, 1.321 |
+///
+/// Same-language moved by nothing either way. The rule, written down before
+/// the runs, shipped 384 only if it was significantly better somewhere and
+/// worse nowhere, and 192 only if it was worse nowhere: 384 is better
+/// nowhere, and costs a third more a search on MuSiQue for a reading of the
+/// seed's text that did not help; 192 is a fifth cheaper there and loses
+/// significantly on exactly the corpus where it truncates.
+pub const MAX_TOKENS: usize = 256;
+
+/// Which export of the model to fetch, for the device it will run on.
+///
+/// On an accelerator, the half-precision export: an int8 graph of
+/// `MatMulInteger` and `DynamicQuantizeLinear` is a CPU format that GPU
+/// providers run poorly or partly on the CPU anyway. On the CPU, the one int8
+/// export.
+fn onnx(device: Device) -> &'static str {
+    if device != Device::Cpu {
+        "onnx/model_fp16.onnx"
+    } else {
+        "onnx/model_int8.onnx"
+    }
+}
+
+/// The key the reranker's execution plans are measured and cached under.
+fn plan_key(repository: &str, settings: &crate::InferenceSettings) -> String {
+    let budget = side_by_side_budget(settings);
+    let cpu = batch_on(true, budget, settings.rerank.batch);
+    let accelerator = batch_on(false, budget, settings.rerank.batch);
+    let crate::RerankSettings {
+        max_tokens,
+        batch_tokens,
+        ..
+    } = settings.rerank;
+    format!("reranker-v5:{TIER}:{repository}:{max_tokens}:{cpu}/{accelerator}:{batch_tokens}")
+}
+
+/// How many logical pair scores are remembered across complete batches.
+///
+/// The cache belongs to one loaded model. A repeated list can reuse its
+/// batches, while a changed neighbour or padded shape must be scored again:
+/// this model's dynamic int8 quantization is not pair-independent.
+const REMEMBERED_SCORES: usize = 4096;
+
+type PairKey = [u8; 32];
+
+fn pair_key(query: &str, document: &str) -> PairKey {
+    let mut hash = Sha256::new();
+    for text in [query, document] {
+        hash.update((text.len() as u64).to_le_bytes());
+        hash.update(text.as_bytes());
+    }
+    hash.finalize().into()
+}
+
+/// Complete ordered batch identity, within the immutable loaded model.
+/// No document text or token encodings are kept after a rank call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct BatchKey([u8; 32]);
+
+impl BatchKey {
+    fn of(pairs: &[PairKey], logical: (usize, usize), physical: (usize, usize)) -> Self {
+        let mut hash = Sha256::new();
+        for value in [logical.0, logical.1, physical.0, physical.1] {
+            hash.update((value as u64).to_le_bytes());
+        }
+        for pair in pairs {
+            hash.update(pair);
+        }
+        Self(hash.finalize().into())
+    }
+}
+
+/// One exact raw ordered input and effective limits, scoped to this model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ListKey([u8; 32]);
+
+impl ListKey {
+    fn of(pairs: &[PairKey], limits: (usize, usize)) -> Self {
+        let mut hash = Sha256::new();
+        for value in [pairs.len(), limits.0, limits.1] {
+            hash.update((value as u64).to_le_bytes());
+        }
+        for pair in pairs {
+            hash.update(pair);
+        }
+        Self(hash.finalize().into())
+    }
+}
+
+struct BatchReference {
+    key: BatchKey,
+    positions: Vec<usize>,
+}
+
+/// Only the last successful bounded plan. Scores stay in the sole FIFO map;
+/// these references retain neither texts, token encodings nor copied logits.
+struct LastPlan {
+    key: ListKey,
+    rows: usize,
+    groups: Vec<BatchReference>,
+}
+
+impl LastPlan {
+    /// Validate every reference and original position before committing work.
+    /// A missing/evicted batch or malformed plan takes the full planner path.
+    fn visit(&self, scores: &Scores, mut row: impl FnMut(usize, f32)) -> bool {
+        if self.rows > REMEMBERED_SCORES || self.groups.len() > self.rows {
+            return false;
+        }
+        let mut seen = vec![false; self.rows];
+        for group in &self.groups {
+            let Some(values) = scores.get(group.key) else {
+                return false;
+            };
+            if values.len() != group.positions.len() || group.positions.is_empty() {
+                return false;
+            }
+            for (position, value) in group.positions.iter().zip(values) {
+                let Some(visited) = seen.get_mut(*position) else {
+                    return false;
+                };
+                if *visited {
+                    return false;
+                }
+                *visited = true;
+                row(*position, *value);
+            }
+        }
+        seen.iter().all(|visited| *visited)
+    }
+}
+
+/// Scores already computed, oldest complete batch first. Capacity counts
+/// logical score slots rather than batch entries. Hashes include duplicates
+/// and row order, because both can change the model's activation range.
+#[derive(Default)]
+struct Scores {
+    known: std::collections::HashMap<BatchKey, Vec<f32>>,
+    order: std::collections::VecDeque<BatchKey>,
+    remembered: usize,
+    last: Option<LastPlan>,
+    hits: u64,
+    misses: u64,
+}
+
+impl Scores {
+    fn invalidate(&mut self) {
+        self.known.clear();
+        self.order.clear();
+        self.remembered = 0;
+        self.last = None;
+    }
+
+    /// Staged cached logits cannot cross a successful backend replacement.
+    /// An entirely uncached replacement already scored the complete request.
+    fn replaced(&mut self, cached: u64) -> bool {
+        self.invalidate();
+        cached != 0
+    }
+
+    fn get(&self, key: BatchKey) -> Option<&[f32]> {
+        self.known.get(&key).map(Vec::as_slice)
+    }
+
+    /// Exact whole-input shortcut only: all score references must survive.
+    /// Failure leaves the last successful plan and counters untouched.
+    fn replay(&self, key: ListKey, rows: usize) -> Option<Attempt> {
+        let plan = self.last.as_ref()?;
+        if plan.key != key || plan.rows != rows || rows > REMEMBERED_SCORES {
+            return None;
+        }
+        let mut values = vec![f32::MIN; rows];
+        if !plan.visit(self, |position, value| values[position] = value) {
+            return None;
+        }
+        Some(Attempt {
+            values,
+            hits: rows as u64,
+            keep_plan: true,
+            ..Attempt::default()
+        })
+    }
+
+    /// Whole-batch FIFO. An oversized batch neither enters the cache nor
+    /// purges entries it could not coexist with even in an empty cache.
+    fn put(&mut self, key: BatchKey, values: Vec<f32>) {
+        if values.len() > REMEMBERED_SCORES {
+            return;
+        }
+        if let Some(previous) = self.known.get_mut(&key) {
+            debug_assert_eq!(previous.len(), values.len());
+            *previous = values;
+            return;
+        }
+        while self.remembered + values.len() > REMEMBERED_SCORES {
+            let oldest = self.order.pop_front().expect("nonempty score cache");
+            self.remembered -= self.known.remove(&oldest).expect("queued batch").len();
+        }
+        self.remembered += values.len();
+        self.known.insert(key, values);
+        self.order.push_back(key);
+    }
+
+    /// Consult only fully planned batches. Nothing is committed until every
+    /// missed batch succeeds, so a later model failure cannot leave partial
+    /// scores, cache entries or lifetime counters behind.
+    ///
+    /// The missed batches go to `forward` together, in plan order, and come
+    /// back as each one's scores and the time all of them took.
+    fn score(
+        &self,
+        planned: Vec<Batch>,
+        keys: &[PairKey],
+        characters: impl Fn(usize) -> usize,
+        forward: impl FnOnce(Vec<Vec<Encoding>>) -> Scored,
+        memo: Option<ListKey>,
+    ) -> Result<Attempt> {
+        let mut attempt = Attempt {
+            values: vec![f32::MIN; keys.len()],
+            next_plan: memo
+                .filter(|_| keys.len() <= REMEMBERED_SCORES)
+                .map(|key| LastPlan {
+                    key,
+                    rows: keys.len(),
+                    groups: Vec::with_capacity(planned.len()),
+                }),
+            ..Attempt::default()
+        };
+        let mut missed = Vec::new();
+        let mut encodings = Vec::new();
+        for batch in planned {
+            let count = batch.positions.len();
+            let identities: Vec<_> = batch.positions.iter().map(|at| keys[*at]).collect();
+            let key = BatchKey::of(&identities, (count, batch.longest()), batch.shape);
+            if let Some(plan) = &mut attempt.next_plan {
+                plan.groups.push(BatchReference {
+                    key,
+                    positions: batch.positions.clone(),
+                });
+            }
+            if let Some(values) = self.get(key) {
+                if values.len() != count {
+                    return Err(IndexError::Engine(
+                        "cached reranker batch has the wrong number of scores".into(),
+                    ));
+                }
+                attempt.hits += count as u64;
+                for (position, value) in batch.positions.iter().zip(values) {
+                    attempt.values[*position] = *value;
+                }
+                continue;
+            }
+            attempt.misses += count as u64;
+            attempt.work.pairs += count as u64;
+            attempt.work.tokens += batch.encodings.iter().map(|e| e.len() as u64).sum::<u64>();
+            attempt.work.padded_tokens += (batch.shape.0 * batch.shape.1) as u64;
+            attempt.work.batches += 1;
+            for position in &batch.positions {
+                let length = characters(*position);
+                attempt.lengths.total += length as u64;
+                attempt.lengths.longest = attempt.lengths.longest.max(length);
+            }
+            missed.push((key, batch.positions));
+            encodings.push(batch.encodings);
+        }
+        if missed.is_empty() {
+            return Ok(attempt);
+        }
+        let (scored, forward_us) = forward(encodings)?;
+        attempt.work.forward_us += forward_us;
+        if scored.len() != missed.len() {
+            return Err(IndexError::Engine(
+                "reranker returned the wrong number of batches".into(),
+            ));
+        }
+        for ((key, positions), values) in missed.into_iter().zip(scored) {
+            if values.len() != positions.len() {
+                return Err(IndexError::Engine(
+                    "reranker returned the wrong number of scores".into(),
+                ));
+            }
+            for (position, value) in positions.iter().zip(&values) {
+                attempt.values[*position] = *value;
+            }
+            attempt.pending.push((key, values));
+        }
+        Ok(attempt)
+    }
+}
+
+#[derive(Default)]
+struct Attempt {
+    values: Vec<f32>,
+    next_plan: Option<LastPlan>,
+    keep_plan: bool,
+    pending: Vec<(BatchKey, Vec<f32>)>,
+    hits: u64,
+    misses: u64,
+    work: Work,
+    lengths: Lengths,
+}
+
+impl Attempt {
+    fn commit(
+        self,
+        scores: &mut Scores,
+        work: &mut Work,
+        lengths: &mut Lengths,
+        encode_us: u64,
+    ) -> Vec<f32> {
+        for (key, values) in self.pending {
+            scores.put(key, values);
+        }
+        if !self.keep_plan {
+            // FIFO insertion can evict a batch used earlier in this same call.
+            // Install only a complete surviving plan, and never purge scores.
+            scores.last = self.next_plan.filter(|plan| plan.visit(scores, |_, _| {}));
+        }
+        scores.hits += self.hits;
+        scores.misses += self.misses;
+        work.add(self.work);
+        work.encode_us += encode_us;
+        lengths.total += self.lengths.total;
+        lengths.longest = lengths.longest.max(self.lengths.longest);
+        self.values
+    }
+}
+
+/// One candidate's place in the reranked order, and what the model scored it.
+///
+/// The score is here because the position alone cannot answer the question
+/// that decides whether to keep a candidate at all: a shortlist where the
+/// model put daylight between the second and the third is a different
+/// shortlist from one where it could barely separate them, and both look
+/// identical as an order. That is what the 2025 threshold result turns on --
+/// dropping candidates below a cut rather than reordering all of them -- and
+/// this project could not have measured it, because `rank` computed these
+/// scores and discarded them.
+///
+/// **Never comparable across queries.** A cross-encoder's logit is calibrated
+/// against nothing; it separates candidates within one shortlist and says
+/// nothing absolute. A cut expressed against the other candidates of the same
+/// query is expressible from this; a fixed threshold is not.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ranked {
+    /// Index into the slice handed to [`Reranker::rank`].
+    pub position: usize,
+    /// The model's own score, larger being more relevant.
+    pub score: f32,
+}
+
+/// A loaded reranker, and what it has already scored.
+pub struct Reranker {
+    cache_dir: PathBuf,
+    /// What it was loaded with, and what a reload after a failure uses.
+    settings: crate::InferenceSettings,
+    model: Encoder,
+    device: Device,
+    scores: Scores,
+    lengths: Lengths,
+    work: Work,
+}
+
+#[derive(Default)]
+struct Work {
+    pairs: u64,
+    tokens: u64,
+    padded_tokens: u64,
+    batches: u64,
+    encode_us: u64,
+    forward_us: u64,
+}
+
+impl Work {
+    fn add(&mut self, completed: Self) {
+        self.pairs += completed.pairs;
+        self.tokens += completed.tokens;
+        self.padded_tokens += completed.padded_tokens;
+        self.batches += completed.batches;
+        self.encode_us += completed.encode_us;
+        self.forward_us += completed.forward_us;
+    }
+}
+
+/// How long the candidates that reached the model were.
+///
+/// Counted in characters rather than bytes, because UTF-8 is three bytes a
+/// character for the Chinese and Thai in these corpora against one for the
+/// Latin, and in characters rather than tokens so that these totals stay
+/// comparable with the ones recorded before the batching counted tokens.
+///
+/// Here because the cost of a cross-encoder rises with sequence length and
+/// nothing in this project had ever recorded the lengths it sees. `MAX_TOKENS`
+/// says the limit binds on passage-shaped corpora and not on sentence-shaped
+/// ones; that was an inference from what the corpora are, and this is what
+/// turns it into a measurement.
+#[derive(Default)]
+struct Lengths {
+    total: u64,
+    longest: usize,
+}
+
+/// What a reranker has been asked to do since it was loaded.
+///
+/// Per process, like the reranker itself, and never reset -- so
+/// on a resident server these are lifetime totals and in a harness they are
+/// the run.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Reranked {
+    /// Actual truncation limit of this loaded model, before batch padding.
+    pub maximum_tokens: usize,
+    /// Scores held in the cache.
+    pub remembered: usize,
+    /// Candidates in successfully completed [`Reranker::rank`] calls, cached or not.
+    pub offered: u64,
+    /// Candidates whose uncached model score completed successfully.
+    pub scored: u64,
+    /// Characters across every candidate that reached the model.
+    pub characters: u64,
+    /// The longest single candidate that reached the model, in characters.
+    pub longest: usize,
+    /// Tokens in scored pairs before batch padding.
+    pub tokens: u64,
+    /// Tokens actually passed to the model, including padding.
+    pub padded_tokens: u64,
+    /// Model batches run for uncached pairs.
+    pub batches: u64,
+    /// Time spent encoding all offered pairs in successful calls, in microseconds.
+    /// Changed inputs need tokenization; an identical complete cached plan does not.
+    pub encode_us: u64,
+    /// Time spent padding and running those batches, in microseconds: wall
+    /// time, so on the CPU, where a call's batches run at once, less than the
+    /// sum of its passes.
+    pub forward_us: u64,
+}
+
+impl Reranker {
+    /// Loads the model, downloading it on first use.
+    ///
+    /// Through the same cache as the embedding model, so a workspace holds one
+    /// directory of weights rather than two.
+    pub fn load(cache_dir: &Path, settings: &crate::InferenceSettings) -> Result<Self> {
+        let (mut model, device) = load_model(cache_dir, settings)?;
+        // The session its passes run on side by side, loaded with it rather
+        // than by the first search: every search scores its candidates in
+        // several passes, so the first would load it anyway, after the
+        // embedder and in front of its own reranking. Loaded here, it loads
+        // while the embedder -- the longer of the two loads -- is still
+        // loading (q103). One that will not load leaves the passes to the
+        // model's own session, as it would have at the first search.
+        model.ready(usize::MAX)?;
+
+        Ok(Self {
+            cache_dir: cache_dir.to_path_buf(),
+            settings: settings.clone(),
+            model,
+            device,
+            scores: Scores::default(),
+            lengths: Lengths::default(),
+            work: Work::default(),
+        })
+    }
+
+    /// Whether the weights for the CPU are on disk already, so that loading
+    /// reads a file rather than fetching half a gigabyte: the download, or
+    /// the mapped copy that replaced it (see `crate::prepared`).
+    ///
+    /// For a caller loading the reranker before anybody has asked for it -- a
+    /// resident server warming a project -- which should not be what
+    /// downloads it.
+    pub fn is_downloaded(cache_dir: &Path, settings: &crate::InferenceSettings) -> bool {
+        Repository::open_at(cache_dir, REPOSITORY, REVISION).is_ok_and(|repository| {
+            pamin_runtime::prepared::is_ready(
+                &repository.file(cache_dir, onnx(Device::Cpu)),
+                cache_dir,
+                &settings.copies(),
+            )
+        })
+    }
+
+    /// Where this reranker's passes run. See [`Device`].
+    pub fn device(&self) -> Device {
+        self.device
+    }
+
+    /// The execution target its passes run on, as its execution plans are
+    /// keyed: `npu:<provider>:<id>` for an NPU, the device's name otherwise.
+    pub fn target(&self) -> String {
+        pamin_runtime::plan::target_key(&self.model, self.device)
+    }
+
+    /// Every execution plan this reranker has run on in this process,
+    /// oldest first, the current one last. See [`crate::PlanUse`].
+    pub fn plans(&self) -> Vec<crate::PlanUse> {
+        pamin_runtime::plan::plans_of(&self.model, self.device)
+    }
+
+    /// Each (query, document) pair's encoded length in tokens, as
+    /// [`rank`](Self::rank) encodes it before planning its passes; see
+    /// [`plan`](Self::plan).
+    pub fn lengths(&self, query: &str, documents: &[&str]) -> Result<Vec<usize>> {
+        let encodings = self.model.encode(
+            documents
+                .iter()
+                .map(|document| (query, *document))
+                .collect::<Vec<_>>(),
+        )?;
+        Ok(encodings.iter().map(Encoding::len).collect())
+    }
+
+    /// The passes [`rank`](Self::rank) makes of pairs whose encodings are
+    /// `lengths` tokens long (see [`lengths`](Self::lengths)), as positions
+    /// into `lengths`, in the order it runs them: this model's limits under
+    /// the batch settings it was loaded with ([`crate::RerankSettings`]), and
+    /// the planner `rank` runs. For an evaluation replaying its passes; the
+    /// pairs already in the score cache are still planned, as `rank` plans
+    /// them before it looks them up. On the CPU, where the passes of a call
+    /// run side by side, they start longest first and overlap, so no order of
+    /// one after another is the one they ran in.
+    pub fn plan(&self, lengths: &[usize]) -> Vec<Vec<usize>> {
+        let (budget, most) = self.model.batch_limits(
+            self.settings.rerank.batch_tokens.get(),
+            batch(&self.model, &self.settings),
+        );
+        plan_positions(lengths, budget, most, |length| {
+            self.model.batching_length(length)
+        })
+    }
+
+    /// Orders `documents` best first, returning their original positions.
+    ///
+    /// Batched by length rather than in the order given, because a batch is
+    /// padded to its longest member and the caller's order is by relevance,
+    /// which says nothing about length. The permutation is undone before the
+    /// result is returned, so a caller sees positions into what it passed.
+    pub fn rank(&mut self, query: &str, documents: &[&str]) -> Result<Vec<Ranked>> {
+        if documents.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let keys: Vec<_> = documents
+            .iter()
+            .map(|document| pair_key(query, document))
+            .collect();
+        let scores = loop {
+            if pamin_runtime::plan::needs_revalidation(&self.model) {
+                self.scores.invalidate();
+            }
+            let limits = self.model.batch_limits(
+                self.settings.rerank.batch_tokens.get(),
+                batch(&self.model, &self.settings),
+            );
+            let list = ListKey::of(&keys, limits);
+            if let Some(attempt) = self.scores.replay(list, documents.len()) {
+                break attempt.commit(&mut self.scores, &mut self.work, &mut self.lengths, 0);
+            }
+            let reranking = |error: IndexError| IndexError::Engine(format!("reranking: {error}"));
+            let cache_dir = &self.cache_dir;
+            let settings = &self.settings;
+            let cached = &self.scores;
+            let ((attempt, encode_us), replaced) = pamin_runtime::plan::retry_model(
+                &mut self.model,
+                &mut self.device,
+                cache_dir,
+                |model, _| {
+                    // Plan every offered pair with this attempt's active backend.
+                    let start = Instant::now();
+                    let encodings = model.encode(
+                        documents
+                            .iter()
+                            .map(|document| (query, *document))
+                            .collect::<Vec<_>>(),
+                    )?;
+                    let encode_us = start.elapsed().as_micros() as u64;
+                    let limits = model
+                        .batch_limits(settings.rerank.batch_tokens.get(), batch(model, settings));
+                    let list = ListKey::of(&keys, limits);
+                    let planned = model_batches_at(model, encodings, limits);
+                    let attempt = cached.score(
+                        planned,
+                        &keys,
+                        |at| documents[at].chars().count(),
+                        |batches| forward(model, batches),
+                        Some(list),
+                    )?;
+                    Ok((attempt, encode_us))
+                },
+                || load_model(cache_dir, settings),
+            )
+            .map_err(reranking)?;
+            if replaced && self.scores.replaced(attempt.hits) {
+                // Discard staged old-backend hits and rescore the complete list.
+                // Staged counters/cache/work have not been committed.
+                continue;
+            }
+            break attempt.commit(
+                &mut self.scores,
+                &mut self.work,
+                &mut self.lengths,
+                encode_us,
+            );
+        };
+
+        let mut ordered: Vec<usize> = (0..documents.len()).collect();
+        ordered.sort_by(|left, right| {
+            scores[*right]
+                .total_cmp(&scores[*left])
+                .then_with(|| left.cmp(right))
+        });
+        Ok(ordered
+            .into_iter()
+            .map(|position| Ranked {
+                position,
+                score: scores[position],
+            })
+            .collect())
+    }
+
+    /// What this reranker has been asked to do, and what it did.
+    ///
+    /// `offered - scored` counts logical pairs reused in complete cached
+    /// batch contexts. It does not measure a document hot set: changing batch
+    /// neighbours can require scoring recurring documents again. Document
+    /// precomputation needs a separate recurrence metric and storage/cost
+    /// measurements. `scored` records actual model work, while token lengths
+    /// show whether `MAX_TOKENS` binds on the offered corpus.
+    ///
+    /// An accessor reporting occupancy alone came before this and answered
+    /// none of them: it says how much has been stored and nothing about how
+    /// often it is read.
+    pub fn counted(&self) -> Reranked {
+        assert!(
+            self.work.tokens <= self.work.padded_tokens,
+            "reranker work counters disagree"
+        );
+        Reranked {
+            maximum_tokens: self.model.maximum_tokens(),
+            remembered: self.scores.remembered,
+            offered: self.scores.hits + self.scores.misses,
+            scored: self.work.pairs,
+            characters: self.lengths.total,
+            longest: self.lengths.longest,
+            tokens: self.work.tokens,
+            padded_tokens: self.work.padded_tokens,
+            batches: self.work.batches,
+            encode_us: self.work.encode_us,
+            forward_us: self.work.forward_us,
+        }
+    }
+}
+
+/// The reranker on the CPU.
+///
+/// The file the hub serves is copied onto the heap whole; the prepared copy
+/// is mapped instead -- see `crate::prepared` for what that saves -- and the
+/// download removed once the copy has loaded. Over the copy, loaded side by
+/// side, so that the batches of one call run at once (see [`forward`]). Over
+/// the download `prepared::load_path` falls back to, each single-threaded
+/// session would hold the weights on the heap again, so that loads the one
+/// session it did before side-by-side batches.
+fn cpu_model(
+    repository: &Repository,
+    cache_dir: &Path,
+    settings: &crate::InferenceSettings,
+    providers: impl Into<pamin_runtime::device::Target>,
+) -> Result<Encoder> {
+    let threads = settings.budget()?;
+    let max_tokens = settings.rerank.max_tokens.get();
+    let weights = repository.file(cache_dir, onnx(Device::Cpu));
+    let path = pamin_runtime::prepared::load_path(
+        &weights,
+        cache_dir,
+        &settings.copies(),
+        cpu_passes(settings),
+    )?;
+    let encoder = if pamin_runtime::prepared::is_copy(&path, cache_dir) {
+        let tokenizer = crate::tokenizer::load(repository, max_tokens)?;
+        Encoder::side_by_side(path, threads, tokenizer, repository.revision())
+    } else {
+        Encoder::load(threads, || Ok(path), repository, max_tokens, providers)
+    }
+    .map_err(|error| error.context("loading the reranker"))?;
+    pamin_runtime::prepared::release(&weights, cache_dir, &settings.copies());
+    Ok(encoder)
+}
+
+/// Keep the ordering proof first. Accurate also times long candidates, so
+/// maximum-length execution affects selection rather than only compatibility.
+fn load_model(cache_dir: &Path, settings: &crate::InferenceSettings) -> Result<(Encoder, Device)> {
+    std::fs::create_dir_all(cache_dir)?;
+    let threads = settings.budget()?;
+    let max_tokens = settings.rerank.max_tokens.get();
+    let batch_tokens = settings.rerank.batch_tokens.get();
+
+    let repository = Repository::open_at(cache_dir, REPOSITORY, REVISION)?;
+
+    let session = |device: Device, providers, _validated: bool| -> Result<Encoder> {
+        if device == Device::Cpu {
+            return cpu_model(&repository, cache_dir, settings, providers);
+        }
+        let model = || match device {
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            Device::CoreMl => {
+                let source = repository.get(onnx(device))?;
+                Ok(pamin_runtime::prepared::native::prepare(
+                    &source, cache_dir,
+                )?)
+            }
+            _ => repository.get(onnx(device)),
+        };
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let loaded = if device == Device::CoreMl {
+            Encoder::load_fixed_coreml(threads, model, &repository, max_tokens)
+        } else {
+            Encoder::load(threads, model, &repository, max_tokens, providers)
+        };
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let loaded = Encoder::load(threads, model, &repository, max_tokens, providers);
+        let encoder = loaded.map_err(|error| error.context("loading the reranker"))?;
+        // The shared calibration compares actual candidate scores with
+        // the already resident product CPU reference. Do not allocate a
+        // third FP16 CPU session while both plans are live.
+        encoder.require_accelerator(device)?;
+        Ok(encoder)
+    };
+
+    let (model, device) = {
+        let references = std::cell::RefCell::new(pamin_runtime::plan::References::default());
+        crate::inference::measured(
+            settings,
+            &plan_key(&repository.identity(cache_dir), settings),
+            cache_dir,
+            &references,
+            pamin_runtime::plan::ReferenceShape {
+                scores: Some(calibration_pairs("").len()),
+                ..Default::default()
+            },
+            session,
+            |model, _device| {
+                let mut reference = references.borrow_mut();
+                let long = "harbour migration rollback policy ".repeat(max_tokens);
+                let encoded = model.encode(vec![(ORDER_PAIRS[0].0, long.as_str())])?;
+                let longest = encoded.iter().map(|row| row.len()).max().unwrap_or(0);
+                if longest != max_tokens {
+                    return Err(IndexError::Engine(
+                        "maximum-token fixture did not reach the configured limit".into(),
+                    ));
+                }
+                let values = score(model, encoded, batch_tokens, batch(model, settings))?.0;
+                if values.len() != 1 || !values[0].is_finite() {
+                    return Err(IndexError::Numerical(
+                        "maximum-token reranker fixture returned invalid output".into(),
+                    ));
+                }
+                pamin_runtime::plan::time_calls(|| {
+                    let pairs = calibration_pairs(&long);
+                    let count = pairs.len();
+                    let encoded = model.encode(pairs)?;
+                    let values = score(model, encoded, batch_tokens, batch(model, settings))?.0;
+                    if values.len() != count || !values.iter().all(|v| v.is_finite()) {
+                        return Err(IndexError::Numerical(
+                            "reranker calibration returned invalid scores".into(),
+                        ));
+                    }
+                    match &reference.scores {
+                        None => reference.scores = Some(values),
+                        Some(reference) => {
+                            check_accelerator_ordering(&reference[..4], &values[..4])?
+                        }
+                    }
+                    Ok(())
+                })
+            },
+        )?
+    };
+    tracing::info!(
+        tier = TIER,
+        device = device.name(),
+        maximum_tokens = model.maximum_tokens(),
+        "reranker loaded"
+    );
+
+    Ok((model, device))
+}
+
+fn calibration_pairs(long: &str) -> Vec<(&str, &str)> {
+    let mut pairs = ORDER_PAIRS.to_vec();
+    pairs.extend(ORDER_PAIRS.repeat(3));
+    pairs.extend(std::iter::repeat_n((ORDER_PAIRS[0].0, long), 16));
+    pairs
+}
+
+const ORDER_PAIRS: [(&str, &str); 4] = [
+    (
+        "Where does the harbour pilot board ships?",
+        "The harbour pilot boards ships at the outer buoy.",
+    ),
+    (
+        "Where does the harbour pilot board ships?",
+        "Chocolate cake is baked with flour and cocoa.",
+    ),
+    (
+        "部署流水线在哪里运行？",
+        "部署流水线运行在持续集成服务器上。",
+    ),
+    ("部署流水线在哪里运行？", "巧克力蛋糕使用面粉和可可粉烘焙。"),
+];
+
+/// Compare the startup fixture's semantic ordering, allowing ordinary score
+/// drift between a candidate export and the product's optimized CPU export.
+fn check_accelerator_ordering(expected: &[f32], observed: &[f32]) -> Result<()> {
+    let failed =
+        || IndexError::Numerical("accelerator failed the startup reranker ordering fixture".into());
+    if expected.len() != 4
+        || observed.len() != 4
+        || expected
+            .iter()
+            .chain(observed)
+            .any(|score| !score.is_finite())
+    {
+        return Err(failed());
+    }
+    for (expected, observed) in expected
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(observed.as_chunks::<2>().0)
+    {
+        let order = expected[0].total_cmp(&expected[1]);
+        if order.is_eq() || order != observed[0].total_cmp(&observed[1]) {
+            return Err(failed());
+        }
+    }
+    Ok(())
+}
+
+/// The model's score for each of `encodings` -- (query, document) pairs from
+/// [`Encoder::encode`] -- in their order.
+///
+/// Shortest first, in the batches [`batches`] makes of their lengths, each
+/// batch one forward pass and a pair's score the first column of its row of
+/// `logits`. Unsorted, since [`Reranker::rank`] orders by score itself.
+fn score(
+    model: &mut Encoder,
+    encodings: Vec<Encoding>,
+    budget: usize,
+    most: usize,
+) -> Result<(Vec<f32>, Work)> {
+    let count = encodings.len();
+    let planned = model_batches(model, encodings, budget, most);
+    let mut values = vec![f32::MIN; count];
+    let mut work = Work::default();
+    let mut positions = Vec::with_capacity(planned.len());
+    let mut batches = Vec::with_capacity(planned.len());
+    for batch in planned {
+        work.batches += 1;
+        work.padded_tokens += (batch.shape.0 * batch.shape.1) as u64;
+        positions.push(batch.positions);
+        batches.push(batch.encodings);
+    }
+    let (scores, forward_us) = forward(model, batches)?;
+    work.forward_us = forward_us;
+    for (positions, scores) in positions.iter().zip(scores) {
+        for (position, score) in positions.iter().zip(scores) {
+            values[*position] = score;
+        }
+    }
+    Ok((values, work))
+}
+
+/// Ephemeral plan: encodings are moved into batches and dropped after this
+/// call. Cache entries retain only complete identities and logits.
+struct Batch {
+    positions: Vec<usize>,
+    encodings: Vec<Encoding>,
+    shape: (usize, usize),
+}
+
+impl Batch {
+    fn longest(&self) -> usize {
+        self.encodings.last().expect("nonempty batch").len()
+    }
+}
+
+fn model_batches(
+    model: &Encoder,
+    encodings: Vec<Encoding>,
+    budget: usize,
+    most: usize,
+) -> Vec<Batch> {
+    model_batches_at(model, encodings, model.batch_limits(budget, most))
+}
+
+fn model_batches_at(
+    model: &Encoder,
+    encodings: Vec<Encoding>,
+    limits: (usize, usize),
+) -> Vec<Batch> {
+    let (budget, most) = limits;
+    plan_batches(
+        encodings,
+        budget,
+        most,
+        |length| model.batching_length(length),
+        |rows, length| model.execution_shape(rows, length),
+    )
+}
+
+/// The shared fresh/cached planner. Sort by real length then original
+/// position; group under effective padded-token and pair caps before lookup.
+fn plan_batches(
+    encodings: Vec<Encoding>,
+    budget: usize,
+    most: usize,
+    batching_length: impl Fn(usize) -> usize,
+    execution_shape: impl Fn(usize, usize) -> (usize, usize),
+) -> Vec<Batch> {
+    let lengths: Vec<usize> = encodings.iter().map(Encoding::len).collect();
+    let mut pending: Vec<Option<Encoding>> = encodings.into_iter().map(Some).collect();
+    plan_positions(&lengths, budget, most, batching_length)
+        .into_iter()
+        .map(|positions| {
+            let encodings: Vec<Encoding> = positions
+                .iter()
+                .map(|at| pending[*at].take().expect("each pair planned once"))
+                .collect();
+            let shape = execution_shape(
+                positions.len(),
+                encodings.last().expect("nonempty batch").len(),
+            );
+            Batch {
+                positions,
+                encodings,
+                shape,
+            }
+        })
+        .collect()
+}
+
+/// The passes [`plan_batches`] makes of pairs of these encoded `lengths`, as
+/// positions into `lengths`, in execution order: sorted by real length then
+/// position, and grouped by [`batches`] over each pair's `batching_length`.
+fn plan_positions(
+    lengths: &[usize],
+    budget: usize,
+    most: usize,
+    batching_length: impl Fn(usize) -> usize,
+) -> Vec<Vec<usize>> {
+    let mut order: Vec<usize> = (0..lengths.len()).collect();
+    order.sort_by_key(|at| (lengths[*at], *at));
+    let sized: Vec<usize> = order
+        .iter()
+        .map(|at| batching_length(lengths[*at]))
+        .collect();
+    let mut pending = order.into_iter();
+    batches(&sized, budget, most)
+        .into_iter()
+        .map(|size| pending.by_ref().take(size).collect())
+        .collect()
+}
+
+/// Each batch's scores, in order, and the time their passes took together.
+type Scored = Result<(Vec<Vec<f32>>, u64)>;
+
+/// Actual Encoder kernel and unchanged first-column logit extraction,
+/// shared by fresh startup checks and production cached inference: each of
+/// `batches`' scores, in order, and the time their passes took together.
+///
+/// Through [`Encoder::run_each`], so on the CPU the batches of one call run
+/// side by side, one thread a pass, longest first (`run_each` orders them).
+/// Run one after another -- on an accelerator, or at one thread -- they keep
+/// the plan's order, the order [`Reranker::plan`] reports. The time
+/// is of the passes alone: the sessions they run on are loaded before it
+/// starts. Measured through `Reranker::rank` on four cores (ONNX Runtime
+/// 1.28, Xeon with AMX), 100 calls of 30 uncached pairs, two runs each:
+/// `accurate` from a median of 2,105 and 2,163 ms a call to 1,212 and 1,269,
+/// every score bit-identical (and the since-retired `fast` tier from 491 and
+/// 496 ms to 222 and 250). That run gave each pass a session of its own, and
+/// its cost was their working memory, about 260 MB more for `accurate` in
+/// proportional set size. The passes now share one session per model, which
+/// took a server's peak resident memory over 120 searches from 5,657 to
+/// 3,021 MB at `pamin search`; `docs/measured.md` has the run.
+fn forward(model: &mut Encoder, batches: Vec<Vec<Encoding>>) -> Scored {
+    let counts: Vec<usize> = batches.iter().map(Vec::len).collect();
+    // Loaded before the clock starts, so the time is of the passes alone.
+    model.ready(batches.len())?;
+    let start = Instant::now();
+    let scores = model.run_each(batches, first_column)?;
+    let forward_us = start.elapsed().as_micros() as u64;
+    for (scores, count) in scores.iter().zip(counts) {
+        if scores.len() != count {
+            return Err(IndexError::Engine(format!(
+                "logits for {} pairs, {count} sent",
+                scores.len()
+            )));
+        }
+    }
+    Ok((scores, forward_us))
+}
+
+/// The first column of a pass's `logits`, one score a pair.
+fn first_column(outputs: pamin_runtime::session::Outputs) -> Result<Vec<f32>> {
+    let logits = outputs
+        .iter()
+        .find_map(|(name, value)| (name == "logits").then_some(value))
+        .ok_or_else(|| IndexError::Engine("the reranker returned no logits".into()))?;
+    let (shape, values) = logits
+        .try_extract_tensor::<f32>()
+        .map_err(|error| IndexError::Engine(format!("reading the logits: {error}")))?;
+    let labels = match **shape {
+        [_, labels] if labels > 0 => labels as usize,
+        _ => {
+            return Err(IndexError::Engine(format!("logits of shape {shape:?}")));
+        }
+    };
+    Ok(values.chunks(labels).map(|row| row[0]).collect())
+}
+
+/// How many pairs go in each batch, in order, for pairs of these `lengths`
+/// in tokens, shortest first.
+///
+/// A batch is padded to its longest member, which in ascending order is the
+/// last one it took, so a batch of `n` costs `n` times that length. Each takes
+/// the next pair while that stays within `budget` padded tokens and under
+/// `most` pairs. A pair longer than the budget on its own goes alone rather
+/// than not at all.
+fn batches(lengths: &[usize], budget: usize, most: usize) -> Vec<usize> {
+    let mut sizes = Vec::new();
+    let mut size = 0;
+    for length in lengths {
+        if size > 0 && (size == most || (size + 1) * length > budget) {
+            sizes.push(size);
+            size = 0;
+        }
+        size += 1;
+    }
+    if size > 0 {
+        sizes.push(size);
+    }
+    sizes
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn complete_replacement_results_are_reused_but_partial_results_rescore() {
+        let mut scores = Scores::default();
+        let key = BatchKey::of(&[pair_key("query", "old")], (1, 2), (1, 2));
+        scores.put(key, vec![0.5]);
+        assert!(
+            !scores.replaced(0),
+            "complete uncached replacement runs once"
+        );
+        assert!(scores.known.is_empty() && scores.remembered == 0);
+        scores.put(key, vec![0.5]);
+        assert!(
+            scores.replaced(1),
+            "cached old logits require complete rescore"
+        );
+        assert!(scores.known.is_empty() && scores.remembered == 0);
+    }
+
+    #[test]
+    fn partial_backend_replay_counts_each_offered_candidate_once() {
+        let old = [(1, 2), (2, 2)];
+        let rows = [(1, 2), (2, 2), (3, 2), (4, 2)];
+        let mut scores = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        scores
+            .score(
+                planned(&old, 4, 2),
+                &identities(&old),
+                |_| 2,
+                each(context),
+                None,
+            )
+            .unwrap()
+            .commit(&mut scores, &mut work, &mut lengths, 0);
+        let replacement = |batch| {
+            context(batch)
+                .map(|(values, us)| (values.into_iter().map(|value| value + 1000.0).collect(), us))
+        };
+        let provisional = scores
+            .score(
+                planned(&rows, 4, 2),
+                &identities(&rows),
+                |_| 2,
+                each(replacement),
+                None,
+            )
+            .unwrap();
+        assert_eq!((provisional.hits, provisional.misses), (2, 2));
+        assert_eq!((scores.hits, scores.misses, work.pairs), (0, 2, 2));
+        assert!(scores.replaced(provisional.hits));
+        let complete = scores
+            .score(
+                planned(&rows, 4, 2),
+                &identities(&rows),
+                |_| 2,
+                each(replacement),
+                None,
+            )
+            .unwrap();
+        assert_eq!((complete.hits, complete.misses), (0, 4));
+        let values = complete.commit(&mut scores, &mut work, &mut lengths, 0);
+        assert!(values.iter().all(|value| *value > 1000.0));
+        assert_eq!((scores.hits, scores.misses, work.pairs), (0, 6, 6));
+        assert_eq!(scores.remembered, 4);
+    }
+
+    #[test]
+    fn invalidating_backend_scores_preserves_lifetime_counts() {
+        let rows = [(1, 2), (2, 2)];
+        let keys = identities(&rows);
+        let list = ListKey::of(&keys, (4, 2));
+        let mut scores = Scores {
+            hits: 7,
+            misses: 9,
+            ..Default::default()
+        };
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        scores
+            .score(
+                planned(&rows, 4, 2),
+                &keys,
+                |_| 2,
+                each(context),
+                Some(list),
+            )
+            .unwrap()
+            .commit(&mut scores, &mut work, &mut lengths, 0);
+        assert!(scores.replay(list, rows.len()).is_some());
+        scores.invalidate();
+        assert!(scores.known.is_empty() && scores.order.is_empty());
+        assert_eq!(scores.remembered, 0);
+        assert!(scores.last.is_none() && scores.replay(list, rows.len()).is_none());
+        assert_eq!((scores.hits, scores.misses), (7, 11));
+        assert_eq!(work.pairs, 2);
+    }
+
+    #[test]
+    fn complete_uncached_replacement_forwards_once_and_installs_only_its_plan() {
+        let old = [(1, 2), (2, 2)];
+        let old_keys = identities(&old);
+        let old_list = ListKey::of(&old_keys, (4, 2));
+        let mut scores = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        scores
+            .score(
+                planned(&old, 4, 2),
+                &old_keys,
+                |_| 2,
+                each(context),
+                Some(old_list),
+            )
+            .unwrap()
+            .commit(&mut scores, &mut work, &mut lengths, 0);
+        assert!(scores.replay(old_list, old.len()).is_some());
+        let rows = [(1, 2), (2, 2), (3, 2), (4, 2)];
+        let keys: Vec<_> = rows
+            .iter()
+            .map(|(id, _)| pair_key("replacement", &id.to_string()))
+            .collect();
+        let list = ListKey::of(&keys, (4, 2));
+        let mut forwards = 0;
+        let completed = scores
+            .score(
+                planned(&rows, 4, 2),
+                &keys,
+                |_| 2,
+                each(|batch| {
+                    forwards += 1;
+                    context(batch).map(|(values, us)| {
+                        (values.into_iter().map(|value| value + 1000.0).collect(), us)
+                    })
+                }),
+                Some(list),
+            )
+            .unwrap();
+        assert_eq!((completed.hits, completed.misses, forwards), (0, 4, 2));
+        assert!(!scores.replaced(completed.hits));
+        assert!(scores.last.is_none() && scores.replay(old_list, old.len()).is_none());
+        let values = completed.commit(&mut scores, &mut work, &mut lengths, 0);
+        assert!(values.iter().all(|value| *value > 1000.0));
+        assert_eq!(scores.replay(list, rows.len()).unwrap().values, values);
+        assert_eq!(
+            (scores.hits, scores.misses, work.pairs, forwards),
+            (0, 6, 6, 2)
+        );
+    }
+
+    #[test]
+    fn failed_replacement_attempt_keeps_committed_cache_plan_and_counters() {
+        let old = [(1, 2), (2, 2)];
+        let old_keys = identities(&old);
+        let old_list = ListKey::of(&old_keys, (4, 2));
+        let mut scores = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        scores
+            .score(
+                planned(&old, 4, 2),
+                &old_keys,
+                |_| 2,
+                each(context),
+                Some(old_list),
+            )
+            .unwrap()
+            .commit(&mut scores, &mut work, &mut lengths, 0);
+        let before = scores.replay(old_list, old.len()).unwrap().values;
+        let rows = [(1, 2), (2, 2), (3, 2), (4, 2)];
+        let keys: Vec<_> = rows
+            .iter()
+            .map(|(id, _)| pair_key("replacement", &id.to_string()))
+            .collect();
+        let mut forwards = 0;
+        let failed = scores.score(
+            planned(&rows, 4, 2),
+            &keys,
+            |_| 2,
+            each(|batch| {
+                forwards += 1;
+                if forwards == 2 {
+                    return Err(IndexError::Engine("replacement second batch failed".into()));
+                }
+                context(batch)
+            }),
+            Some(ListKey::of(&keys, (4, 2))),
+        );
+        assert!(failed.is_err());
+        assert_eq!(forwards, 2);
+        assert_eq!(scores.replay(old_list, old.len()).unwrap().values, before);
+        assert_eq!(
+            (
+                scores.hits,
+                scores.misses,
+                scores.remembered,
+                work.pairs,
+                lengths.total
+            ),
+            (0, 2, 2, 2, 4)
+        );
+    }
+
+    #[test]
+    fn calibration_uses_a_mixed_workload() {
+        let long = "long document ".repeat(512);
+        let accurate = super::calibration_pairs(&long);
+        assert_eq!(accurate.len(), 32);
+        assert_eq!(&accurate[..4], &super::ORDER_PAIRS);
+        assert_eq!(
+            accurate
+                .iter()
+                .filter(|(_, text)| *text == long.as_str())
+                .count(),
+            16
+        );
+    }
+
+    #[test]
+    fn accelerator_startup_checks_ordering_without_rejecting_score_drift() {
+        let reference = [3.0, -2.0, 4.0, -1.0];
+        assert!(super::check_accelerator_ordering(&reference, &[3.1, -1.9, 4.2, -0.8]).is_ok());
+        assert!(super::check_accelerator_ordering(&reference, &[-2.0, 3.0, 4.0, -1.0]).is_err());
+        assert!(
+            super::check_accelerator_ordering(&reference, &[f32::NAN, -2.0, 4.0, -1.0]).is_err()
+        );
+        assert!(super::check_accelerator_ordering(&reference, &[3.0]).is_err());
+        assert!(super::check_accelerator_ordering(&[0.0; 4], &[0.0; 4]).is_err());
+    }
+    use super::*;
+
+    fn encoding(id: u32, tokens: usize) -> Encoding {
+        Encoding::from_tokens(
+            (0..tokens)
+                .map(|_| tokenizers::Token {
+                    id,
+                    value: id.to_string(),
+                    offsets: (0, 1),
+                })
+                .collect(),
+            0,
+        )
+    }
+
+    fn planned(rows: &[(u32, usize)], budget: usize, most: usize) -> Vec<Batch> {
+        plan_batches(
+            rows.iter().map(|(id, len)| encoding(*id, *len)).collect(),
+            budget,
+            most,
+            |len| len,
+            |rows, len| (rows, len),
+        )
+    }
+
+    fn identities(rows: &[(u32, usize)]) -> Vec<PairKey> {
+        rows.iter()
+            .map(|(id, _)| pair_key("query", &id.to_string()))
+            .collect()
+    }
+
+    /// `forward` run on each batch in turn, as [`Scores::score`] takes it.
+    fn each(
+        mut forward: impl FnMut(Vec<Encoding>) -> Result<(Vec<f32>, u64)>,
+    ) -> impl FnOnce(Vec<Vec<Encoding>>) -> Scored {
+        move |batches| {
+            let mut took = 0;
+            let mut scores = Vec::with_capacity(batches.len());
+            for batch in batches {
+                let (values, us) = forward(batch)?;
+                took += us;
+                scores.push(values);
+            }
+            Ok((scores, took))
+        }
+    }
+
+    // Deliberately context-sensitive: neighbours, order and longest row
+    // affect every logit. A pair-only cache fails these history assertions.
+    fn context(rows: Vec<Encoding>) -> Result<(Vec<f32>, u64)> {
+        let offset: u32 = rows
+            .iter()
+            .enumerate()
+            .map(|(at, e)| e.get_ids()[0] * (at as u32 + 1))
+            .sum();
+        let width = rows.iter().map(Encoding::len).max().unwrap();
+        Ok((
+            rows.iter()
+                .map(|e| e.get_ids()[0] as f32 + offset as f32 * 10.0 + width as f32)
+                .collect(),
+            7,
+        ))
+    }
+
+    fn cached(
+        cache: &mut Scores,
+        work: &mut Work,
+        lengths: &mut Lengths,
+        rows: &[(u32, usize)],
+        budget: usize,
+        most: usize,
+    ) -> Vec<f32> {
+        let attempt = cache
+            .score(
+                planned(rows, budget, most),
+                &identities(rows),
+                |at| at + 3,
+                each(context),
+                None,
+            )
+            .unwrap();
+        attempt.commit(cache, work, lengths, 7)
+    }
+
+    fn bits(scores: &[f32]) -> Vec<u32> {
+        scores.iter().map(|v| v.to_bits()).collect()
+    }
+
+    #[test]
+    fn changed_neighbours_match_the_same_fresh_list_in_both_cache_histories() {
+        let a = [(1, 3), (2, 3), (3, 3), (4, 3), (5, 12), (6, 12)];
+        let b = [(1, 3), (2, 3), (3, 3), (9, 3), (5, 12), (6, 12)];
+        let fresh = |rows: &[(u32, usize)]| {
+            cached(
+                &mut Scores::default(),
+                &mut Work::default(),
+                &mut Lengths::default(),
+                rows,
+                48,
+                4,
+            )
+        };
+        let fa = fresh(&a);
+        let fb = fresh(&b);
+        assert_ne!(
+            fa[0].to_bits(),
+            fb[0].to_bits(),
+            "fixture must expose neighbour-sensitive logits"
+        );
+        for (first, second, expected) in [(&a, &b, &fb), (&b, &a, &fa)] {
+            let mut cache = Scores::default();
+            let mut work = Work::default();
+            let mut lengths = Lengths::default();
+            cached(&mut cache, &mut work, &mut lengths, first, 48, 4);
+            let before = (work.pairs, work.tokens, work.padded_tokens, work.batches);
+            let observed = cached(&mut cache, &mut work, &mut lengths, second, 48, 4);
+            assert_eq!(bits(&observed), bits(expected));
+            assert_eq!(
+                work.pairs - before.0,
+                4,
+                "entire changed four-pair group must be rescored"
+            );
+            assert_eq!(cache.hits, 2, "unchanged two-pair group can hit");
+            assert_eq!(cache.misses, 10);
+            assert_eq!(
+                (
+                    work.tokens - before.1,
+                    work.padded_tokens - before.2,
+                    work.batches - before.3
+                ),
+                (12, 12, 1)
+            );
+        }
+    }
+
+    #[test]
+    fn full_planner_records_encoding_even_when_all_batches_hit() {
+        let rows = [(3, 6), (1, 2), (2, 2), (4, 6)];
+        let mut cache = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        let cold = cached(&mut cache, &mut work, &mut lengths, &rows, 16, 2);
+        let before = (
+            work.pairs,
+            work.tokens,
+            work.padded_tokens,
+            work.batches,
+            work.forward_us,
+            lengths.total,
+            lengths.longest,
+        );
+        let hot = cache
+            .score(
+                planned(&rows, 16, 2),
+                &identities(&rows),
+                |_| panic!("hit counted as model character work"),
+                each(|_| panic!("hot batch went through the model")),
+                None,
+            )
+            .unwrap()
+            .commit(&mut cache, &mut work, &mut lengths, 11);
+        assert_eq!(bits(&cold), bits(&hot));
+        assert_eq!(cache.hits, 4);
+        assert_eq!(cache.misses, 4);
+        assert_eq!(cache.remembered, 4);
+        assert_eq!(
+            (
+                work.pairs,
+                work.tokens,
+                work.padded_tokens,
+                work.batches,
+                work.forward_us,
+                lengths.total,
+                lengths.longest
+            ),
+            before
+        );
+        assert_eq!(
+            work.encode_us, 18,
+            "all-pair tokenization is recorded even on cache hits"
+        );
+    }
+
+    fn memo_cached(
+        cache: &mut Scores,
+        work: &mut Work,
+        lengths: &mut Lengths,
+        rows: &[(u32, usize)],
+        limits: (usize, usize),
+        encodes: &mut usize,
+    ) -> Vec<f32> {
+        if rows.is_empty() {
+            return Vec::new();
+        }
+        let keys = identities(rows);
+        let key = ListKey::of(&keys, limits);
+        if let Some(attempt) = cache.replay(key, rows.len()) {
+            return attempt.commit(cache, work, lengths, 0);
+        }
+        *encodes += 1;
+        cache
+            .score(
+                planned(rows, limits.0, limits.1),
+                &keys,
+                |at| at + 3,
+                each(context),
+                Some(key),
+            )
+            .unwrap()
+            .commit(cache, work, lengths, 7)
+    }
+
+    #[test]
+    fn exact_list_replays_before_encoding_and_preserves_duplicate_positions() {
+        let rows = [(1, 3), (1, 3), (1, 3), (1, 3)];
+        let mut cache = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        let mut encodes = 0;
+        let cold = memo_cached(
+            &mut cache,
+            &mut work,
+            &mut lengths,
+            &rows,
+            (64, 2),
+            &mut encodes,
+        );
+        assert_eq!(
+            cache.remembered, 2,
+            "identical complete groups share the sole score buffer"
+        );
+        assert_eq!(cache.last.as_ref().unwrap().groups.len(), 2);
+        let before = (work.pairs, work.encode_us, work.forward_us, lengths.total);
+        for _ in 0..3 {
+            let hot = memo_cached(
+                &mut cache,
+                &mut work,
+                &mut lengths,
+                &rows,
+                (64, 2),
+                &mut encodes,
+            );
+            assert_eq!(bits(&cold), bits(&hot));
+        }
+        assert_eq!(encodes, 1, "hot input never reaches tokenization/planning");
+        assert_eq!(
+            before,
+            (work.pairs, work.encode_us, work.forward_us, lengths.total)
+        );
+        assert_eq!((cache.hits, cache.misses), (12, 4));
+        let last = cache.last.as_ref().unwrap().key;
+        assert!(
+            memo_cached(
+                &mut cache,
+                &mut work,
+                &mut lengths,
+                &[],
+                (64, 2),
+                &mut encodes
+            )
+            .is_empty()
+        );
+        assert_eq!(cache.last.as_ref().unwrap().key, last);
+    }
+
+    #[test]
+    fn list_identity_preserves_fields_order_duplicates_count_and_effective_caps() {
+        let a = pair_key("", "a");
+        let b = pair_key("a", "");
+        let key = ListKey::of(&[a, b], (64, 2));
+        for other in [
+            ListKey::of(&[b, a], (64, 2)),
+            ListKey::of(&[a, a], (64, 2)),
+            ListKey::of(&[a], (64, 2)),
+            ListKey::of(&[a, b], (32, 2)),
+            ListKey::of(&[a, b], (64, 4)),
+            ListKey::of(&[pair_key("q", "a"), b], (64, 2)),
+        ] {
+            assert_ne!(key, other);
+        }
+        let mut cache = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        let mut encodes = 0;
+        let a = [(1, 3), (2, 3), (3, 8)];
+        for (rows, caps) in [(&a[..], (64, 2)), (&a[..], (32, 2)), (&a[..2], (32, 2))] {
+            memo_cached(
+                &mut cache,
+                &mut work,
+                &mut lengths,
+                rows,
+                caps,
+                &mut encodes,
+            );
+        }
+        assert_eq!(
+            encodes, 3,
+            "different inputs/caps must pass through full planner"
+        );
+        assert_eq!(cache.last.as_ref().unwrap().rows, 2);
+        assert!(
+            Scores::default()
+                .replay(ListKey::of(&identities(&a), (64, 2)), 3)
+                .is_none(),
+            "plans cannot cross model owners"
+        );
+    }
+
+    #[test]
+    fn malformed_plan_or_score_cardinality_falls_back_without_mutation() {
+        let rows = [(1, 3), (2, 3)];
+        for mode in 0..5 {
+            let mut cache = Scores::default();
+            let mut work = Work::default();
+            let mut lengths = Lengths::default();
+            memo_cached(&mut cache, &mut work, &mut lengths, &rows, (64, 2), &mut 0);
+            let key = cache.last.as_ref().unwrap().key;
+            let group_key = cache.last.as_ref().unwrap().groups[0].key;
+            match mode {
+                0 => cache.last.as_mut().unwrap().groups[0].positions[1] = 0,
+                1 => cache.last.as_mut().unwrap().groups[0].positions[1] = 2,
+                2 => {
+                    cache.last.as_mut().unwrap().groups[0].positions.pop();
+                }
+                3 => {
+                    cache.known.get_mut(&group_key).unwrap().pop();
+                }
+                _ => cache.last.as_mut().unwrap().rows = REMEMBERED_SCORES + 1,
+            }
+            let before = (cache.hits, cache.misses, cache.remembered);
+            assert!(cache.replay(key, 2).is_none());
+            assert_eq!((cache.hits, cache.misses, cache.remembered), before);
+            assert_eq!(
+                cache.last.as_ref().unwrap().key,
+                key,
+                "lookup must not clear malformed last plan"
+            );
+            if mode == 3 {
+                let failed = cache.score(
+                    planned(&rows, 64, 2),
+                    &identities(&rows),
+                    |_| 3,
+                    each(context),
+                    Some(key),
+                );
+                assert!(
+                    failed.is_err(),
+                    "full planner must reject malformed internal score buffers without panic or partial scores"
+                );
+                assert_eq!((cache.hits, cache.misses, cache.remembered), before);
+            } else {
+                let mut encodes = 0;
+                let repaired = memo_cached(
+                    &mut cache,
+                    &mut work,
+                    &mut lengths,
+                    &rows,
+                    (64, 2),
+                    &mut encodes,
+                );
+                assert_eq!(encodes, 1, "invalid memo falls through full planner");
+                assert_eq!(repaired.len(), rows.len());
+                assert!(cache.replay(key, rows.len()).is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn fifo_eviction_of_an_earlier_hit_prevents_installing_incomplete_plan() {
+        let a = [(1, 3), (2, 3)];
+        let b = [(1, 3), (2, 3), (3, 8), (4, 8)];
+        let mut cache = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        let mut encodes = 0;
+        memo_cached(
+            &mut cache,
+            &mut work,
+            &mut lengths,
+            &a,
+            (64, 2),
+            &mut encodes,
+        );
+        cache.put(BatchKey([42; 32]), vec![0.0; REMEMBERED_SCORES - 2]);
+        let expected = memo_cached(
+            &mut cache,
+            &mut work,
+            &mut lengths,
+            &b,
+            (64, 2),
+            &mut encodes,
+        );
+        assert!(
+            cache.last.is_none(),
+            "new miss evicted the earlier hit in this same call"
+        );
+        assert_eq!(cache.remembered, REMEMBERED_SCORES);
+        let retried = memo_cached(
+            &mut cache,
+            &mut work,
+            &mut lengths,
+            &b,
+            (64, 2),
+            &mut encodes,
+        );
+        assert_eq!(bits(&expected), bits(&retried));
+        assert!(cache.last.is_some());
+        assert_eq!(encodes, 3);
+        memo_cached(
+            &mut cache,
+            &mut work,
+            &mut lengths,
+            &b,
+            (64, 2),
+            &mut encodes,
+        );
+        assert_eq!(
+            encodes, 3,
+            "only complete surviving refs can bypass encoding"
+        );
+    }
+
+    #[test]
+    fn failed_shortcut_then_late_forward_failure_keeps_last_successful_plan() {
+        let a = [(1, 3), (2, 3), (3, 4), (4, 4), (5, 5), (6, 5)];
+        let mut cache = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        memo_cached(&mut cache, &mut work, &mut lengths, &a, (64, 2), &mut 0);
+        cache.put(BatchKey([43; 32]), vec![0.0; REMEMBERED_SCORES - 3]);
+        let key = cache.last.as_ref().unwrap().key;
+        assert!(
+            cache.replay(key, a.len()).is_none(),
+            "first two groups were evicted"
+        );
+        let before = (
+            cache.known.clone(),
+            cache.order.clone(),
+            cache.remembered,
+            cache.hits,
+            cache.misses,
+            work.pairs,
+            work.encode_us,
+        );
+        let old_plan: Vec<_> = cache
+            .last
+            .as_ref()
+            .unwrap()
+            .groups
+            .iter()
+            .map(|g| (g.key, g.positions.clone()))
+            .collect();
+        let mut forwards = 0;
+        let failed = cache.score(
+            planned(&a, 64, 2),
+            &identities(&a),
+            |_| 3,
+            each(|rows| {
+                forwards += 1;
+                if forwards == 2 {
+                    Err(IndexError::Engine(
+                        "transient second forward failure".into(),
+                    ))
+                } else {
+                    context(rows)
+                }
+            }),
+            Some(key),
+        );
+        assert!(failed.is_err());
+        assert_eq!(forwards, 2);
+        assert_eq!(
+            (
+                cache.known.clone(),
+                cache.order.clone(),
+                cache.remembered,
+                cache.hits,
+                cache.misses,
+                work.pairs,
+                work.encode_us
+            ),
+            before
+        );
+        assert_eq!(cache.last.as_ref().unwrap().key, key);
+        assert_eq!(
+            cache
+                .last
+                .as_ref()
+                .unwrap()
+                .groups
+                .iter()
+                .map(|g| (g.key, g.positions.clone()))
+                .collect::<Vec<_>>(),
+            old_plan
+        );
+        let retry = memo_cached(&mut cache, &mut work, &mut lengths, &a, (64, 2), &mut 0);
+        let fresh = memo_cached(
+            &mut Scores::default(),
+            &mut Work::default(),
+            &mut Lengths::default(),
+            &a,
+            (64, 2),
+            &mut 0,
+        );
+        assert_eq!(bits(&retry), bits(&fresh));
+    }
+
+    #[test]
+    fn oversized_list_adds_no_retained_plan_or_duplicate_score_budget() {
+        let mut cache = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        memo_cached(
+            &mut cache,
+            &mut work,
+            &mut lengths,
+            &[(1, 3), (2, 3)],
+            (64, 2),
+            &mut 0,
+        );
+        let remembered = cache.remembered;
+        let rows = vec![(1, 1); REMEMBERED_SCORES + 1];
+        let attempt = cache
+            .score(
+                planned(&rows, rows.len(), rows.len()),
+                &identities(&rows),
+                |_| 1,
+                each(|rows| Ok((vec![1.0; rows.len()], 7))),
+                Some(ListKey::of(&identities(&rows), (rows.len(), rows.len()))),
+            )
+            .unwrap();
+        assert!(
+            attempt.next_plan.is_none(),
+            "oversized input must not allocate retained references"
+        );
+        attempt.commit(&mut cache, &mut work, &mut lengths, 7);
+        assert_eq!(
+            cache.remembered, remembered,
+            "oversized group neither caches nor purges existing scores"
+        );
+        assert!(cache.last.is_none());
+    }
+
+    #[test]
+    fn query_fields_duplicates_order_and_both_shapes_are_cache_identity() {
+        assert_ne!(pair_key("ab", "c"), pair_key("a", "bc"));
+        assert_ne!(pair_key("", "a"), pair_key("a", ""));
+        assert_ne!(pair_key("", ""), pair_key("", "a"));
+        assert_eq!(pair_key("", ""), pair_key("", ""));
+        assert_ne!(pair_key("q", "a"), pair_key("r", "a"));
+        let a = pair_key("q", "a");
+        let b = pair_key("q", "b");
+        let key = BatchKey::of(&[a, b], (2, 5), (4, 64));
+        for other in [
+            BatchKey::of(&[b, a], (2, 5), (4, 64)),
+            BatchKey::of(&[a, a], (2, 5), (4, 64)),
+            BatchKey::of(&[a], (1, 5), (4, 64)),
+            BatchKey::of(&[a, b], (2, 6), (4, 64)),
+            BatchKey::of(&[a, b], (2, 5), (4, 128)),
+            BatchKey::of(&[a, b], (2, 5), (2, 64)),
+        ] {
+            assert_ne!(key, other);
+        }
+        let rows = [(1, 4), (1, 4), (2, 4)];
+        let mut cache = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        let cold = cached(&mut cache, &mut work, &mut lengths, &rows, 64, 4);
+        let hot = cached(&mut cache, &mut work, &mut lengths, &rows, 64, 4);
+        assert_eq!(bits(&cold), bits(&hot));
+        assert_eq!(cache.remembered, 3);
+        assert_eq!(cache.hits, 3);
+        assert_eq!(work.pairs, 3);
+    }
+
+    #[test]
+    fn changed_order_and_caps_recompute_complete_groups_not_just_new_pairs() {
+        let a = [(1, 4), (2, 4), (3, 4), (4, 4)];
+        let b = [(2, 4), (1, 4), (3, 4), (4, 4)];
+        let mut cache = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        cached(&mut cache, &mut work, &mut lengths, &a, 64, 4);
+        let warmed = cached(&mut cache, &mut work, &mut lengths, &b, 64, 4);
+        let fresh = cached(
+            &mut Scores::default(),
+            &mut Work::default(),
+            &mut Lengths::default(),
+            &b,
+            64,
+            4,
+        );
+        assert_eq!(bits(&warmed), bits(&fresh));
+        assert_eq!(work.pairs, 8);
+        assert_eq!(cache.hits, 0);
+        cached(&mut cache, &mut work, &mut lengths, &a, 64, 2);
+        assert_eq!(work.pairs, 12);
+        assert_eq!(work.batches, 4, "new cap creates two new complete batches");
+    }
+
+    #[test]
+    fn widening_reuses_only_complete_unchanged_groups() {
+        let a = [(1, 4), (2, 4), (3, 4)];
+        let b = [(1, 4), (2, 4), (3, 4), (4, 4)];
+        let mut cache = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        cached(&mut cache, &mut work, &mut lengths, &a, 64, 2);
+        let result = cached(&mut cache, &mut work, &mut lengths, &b, 64, 2);
+        let fresh = cached(
+            &mut Scores::default(),
+            &mut Work::default(),
+            &mut Lengths::default(),
+            &b,
+            64,
+            2,
+        );
+        assert_eq!(bits(&result), bits(&fresh));
+        assert_eq!(cache.hits, 2);
+        assert_eq!(work.pairs, 5);
+    }
+
+    #[test]
+    fn a_late_failure_commits_no_partial_cache_or_counters() {
+        let a = [(1, 3), (2, 3)];
+        let b = [(1, 3), (2, 3), (3, 4), (4, 4), (5, 5), (6, 5)];
+        let mut cache = Scores::default();
+        let mut work = Work::default();
+        let mut lengths = Lengths::default();
+        cached(&mut cache, &mut work, &mut lengths, &a, 64, 2);
+        let before = (
+            (
+                cache.hits,
+                cache.misses,
+                cache.remembered,
+                cache.order.clone(),
+                cache.known.clone(),
+            ),
+            (
+                work.pairs,
+                work.tokens,
+                work.padded_tokens,
+                work.batches,
+                work.encode_us,
+                work.forward_us,
+            ),
+            (lengths.total, lengths.longest),
+        );
+        let mut calls = 0;
+        let failed = cache.score(
+            planned(&b, 64, 2),
+            &identities(&b),
+            |_| 10,
+            each(|rows| {
+                calls += 1;
+                if calls == 2 {
+                    Err(IndexError::Engine("late batch failure".into()))
+                } else {
+                    context(rows)
+                }
+            }),
+            None,
+        );
+        assert!(failed.is_err());
+        assert_eq!(calls, 2, "must fail after a hit and one successful miss");
+        assert_eq!(
+            (
+                (
+                    cache.hits,
+                    cache.misses,
+                    cache.remembered,
+                    cache.order.clone(),
+                    cache.known.clone()
+                ),
+                (
+                    work.pairs,
+                    work.tokens,
+                    work.padded_tokens,
+                    work.batches,
+                    work.encode_us,
+                    work.forward_us
+                ),
+                (lengths.total, lengths.longest)
+            ),
+            before
+        );
+        let retry = cached(&mut cache, &mut work, &mut lengths, &b, 64, 2);
+        let fresh = cached(
+            &mut Scores::default(),
+            &mut Work::default(),
+            &mut Lengths::default(),
+            &b,
+            64,
+            2,
+        );
+        assert_eq!(bits(&retry), bits(&fresh));
+        assert_eq!(work.pairs, 6, "failed partial misses must execute again");
+    }
+
+    /// `plan_positions`, which [`Reranker::plan`] exposes, is the planner
+    /// `rank` runs: `plan_batches` gives the same passes in the same order,
+    /// each carrying the encodings at its positions, and both match the
+    /// planner as it was written before the positions were factored out.
+    #[test]
+    fn the_public_plan_is_the_planner_rank_runs() {
+        let lengths = [9, 3, 40, 3, 200, 17, 120, 64, 5, 300, 33, 3];
+        let rows: Vec<(u32, usize)> = lengths
+            .into_iter()
+            .enumerate()
+            .map(|(id, len)| (id as u32, len))
+            .collect();
+        let bucket = |len: usize| len.div_ceil(64) * 64;
+        for (budget, most) in [(512, 4), (128, 8), (64, 2), (4096, 32)] {
+            for padded in [false, true] {
+                let sized = |len: usize| if padded { bucket(len) } else { len };
+                // The planner before the refactor, over the same pairs.
+                let mut sorted: Vec<(usize, usize)> = lengths.into_iter().enumerate().collect();
+                sorted.sort_by_key(|(position, len)| (*len, *position));
+                let sizes: Vec<usize> = sorted.iter().map(|(_, len)| sized(*len)).collect();
+                let mut pending = sorted.into_iter().map(|(position, _)| position);
+                let before: Vec<Vec<usize>> = batches(&sizes, budget, most)
+                    .into_iter()
+                    .map(|size| pending.by_ref().take(size).collect())
+                    .collect();
+
+                let planned = plan_batches(
+                    rows.iter().map(|(id, len)| encoding(*id, *len)).collect(),
+                    budget,
+                    most,
+                    sized,
+                    |rows, len| (rows, len),
+                );
+                for batch in &planned {
+                    let ids: Vec<usize> = batch
+                        .encodings
+                        .iter()
+                        .map(|encoding| encoding.get_ids()[0] as usize)
+                        .collect();
+                    assert_eq!(ids, batch.positions, "each pass carries its own pairs");
+                }
+                let positions: Vec<Vec<usize>> =
+                    planned.into_iter().map(|batch| batch.positions).collect();
+                assert_eq!(positions, before);
+                assert_eq!(plan_positions(&lengths, budget, most, sized), before);
+            }
+        }
+    }
+
+    #[test]
+    fn planner_keeps_ties_caps_and_native_physical_padding() {
+        let rows = vec![
+            encoding(1, 65),
+            encoding(2, 4),
+            encoding(3, 4),
+            encoding(4, 256),
+        ];
+        let plans = plan_batches(
+            rows,
+            512,
+            4,
+            |len| {
+                if len <= 64 {
+                    64
+                } else if len <= 128 {
+                    128
+                } else {
+                    256
+                }
+            },
+            |_, len| {
+                if len <= 64 {
+                    (4, 64)
+                } else if len <= 128 {
+                    (4, 128)
+                } else {
+                    (2, 256)
+                }
+            },
+        );
+        assert_eq!(
+            plans
+                .iter()
+                .map(|b| b.positions.clone())
+                .collect::<Vec<_>>(),
+            vec![vec![1, 2, 0], vec![3]]
+        );
+        assert_eq!(
+            plans.iter().map(|b| b.shape).collect::<Vec<_>>(),
+            vec![(4, 128), (2, 256)]
+        );
+        let ordinary = planned(&[(1, 9), (2, 9), (3, 600)], 512, 4);
+        assert_eq!(
+            ordinary
+                .iter()
+                .map(|b| b.positions.clone())
+                .collect::<Vec<_>>(),
+            vec![vec![0, 1], vec![2]],
+            "overbudget long pair remains a singleton"
+        );
+        assert!(planned(&[], 512, 4).is_empty());
+    }
+
+    #[test]
+    fn weighted_fifo_evicts_whole_batches_without_duplicate_queue_entries() {
+        let mut cache = Scores::default();
+        let key = |n: u32, size: usize| {
+            BatchKey::of(
+                &vec![pair_key("q", &n.to_string()); size],
+                (size, 4),
+                (size, 4),
+            )
+        };
+        let first = key(0, 2048);
+        let second = key(1, 2048);
+        let third = key(2, 3);
+        cache.put(first, vec![0.0; 2048]);
+        cache.put(second, vec![1.0; 2048]);
+        assert_eq!(cache.remembered, 4096);
+        for _ in 0..10 {
+            cache.put(first, vec![2.0; 2048]);
+        }
+        assert_eq!(cache.order.len(), 2);
+        cache.put(third, vec![3.0; 3]);
+        assert!(cache.get(first).is_none());
+        assert!(cache.get(second).is_some());
+        assert!(cache.get(third).is_some());
+        assert_eq!(cache.remembered, 2051);
+        assert_eq!(cache.order.len(), 2);
+        cache.put(
+            key(3, REMEMBERED_SCORES + 1),
+            vec![4.0; REMEMBERED_SCORES + 1],
+        );
+        assert_eq!(cache.remembered, 2051);
+        assert_eq!(
+            cache.order.len(),
+            2,
+            "oversized batch must not purge the cache"
+        );
+    }
+
+    #[test]
+    fn malformed_batch_output_does_not_enter_the_cache() {
+        let cache = Scores::default();
+        let rows = [(1, 3), (2, 3)];
+        let failed = cache.score(
+            planned(&rows, 64, 4),
+            &identities(&rows),
+            |_| 3,
+            each(|_| Ok((vec![1.0], 7))),
+            None,
+        );
+        assert!(failed.is_err());
+        assert_eq!(cache.remembered, 0);
+        assert_eq!((cache.hits, cache.misses), (0, 0));
+    }
+
+    #[test]
+    fn the_shared_planner_preserves_sorted_rows_and_original_positions() {
+        let groups = planned(&[(3, 20), (1, 4), (4, 6), (2, 4), (5, 512)], 16, 2);
+        assert_eq!(
+            groups
+                .iter()
+                .map(|b| b.positions.clone())
+                .collect::<Vec<_>>(),
+            vec![vec![1, 3], vec![2], vec![0], vec![4]]
+        );
+        let mut restored = vec![0; 5];
+        for batch in groups {
+            for (at, e) in batch.positions.iter().zip(batch.encodings) {
+                restored[*at] = e.get_ids()[0];
+            }
+        }
+        assert_eq!(restored, vec![3, 1, 4, 2, 5]);
+    }
+
+    /// The batches of one call, scored side by side, are the logits each gets
+    /// in a pass of its own on the model's session, bit for bit and in order.
+    ///
+    /// Alone is the product's sequential path, one pass of every core at a
+    /// time; side by side is as many one-threaded passes at once as there are
+    /// cores, all on one shared session, longest first. A fixed list of pairs from a few tokens to the
+    /// truncation limit, in more batches than cores. The models are read
+    /// from, or downloaded into, `PAMIN_EVAL_MODEL_CACHE`.
+    #[test]
+    #[ignore = "downloads reranker model weights; set PAMIN_EVAL_MODEL_CACHE"]
+    fn side_by_side_batches_are_each_batch_alone() {
+        let cache = PathBuf::from(
+            std::env::var_os("PAMIN_EVAL_MODEL_CACHE").expect("set PAMIN_EVAL_MODEL_CACHE"),
+        );
+        let settings = crate::InferenceSettings::default();
+        let long = "harbour migration rollback policy ".repeat(settings.rerank.max_tokens.get());
+        let documents: Vec<String> = (0..64)
+            .map(|at| match at % 4 {
+                0 => format!("The harbour pilot boards ship {at} at the outer buoy."),
+                1 => format!("部署流水线 {at} 运行在持续集成服务器上。"),
+                2 => format!(
+                    "{at} {}",
+                    "Chocolate cake is baked with flour and cocoa. ".repeat(at)
+                ),
+                _ => long.clone(),
+            })
+            .collect();
+        // On the CPU directly: `load_model` may calibrate onto an
+        // accelerator, which runs no batches side by side.
+        std::fs::create_dir_all(&cache).expect("create the model cache");
+        let repository =
+            Repository::open_at(&cache, REPOSITORY, REVISION).expect("open the repository");
+        let mut model = cpu_model(
+            &repository,
+            &cache,
+            &settings,
+            vec![pamin_runtime::device::cpu()],
+        )
+        .expect("load the reranker");
+        let encodings = model
+            .encode(
+                documents
+                    .iter()
+                    .map(|document| {
+                        (
+                            "Where does the harbour pilot board ships?",
+                            document.as_str(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        let batches: Vec<Vec<Encoding>> = model_batches(
+            &model,
+            encodings,
+            settings.rerank.batch_tokens.get(),
+            batch(&model, &settings),
+        )
+        .into_iter()
+        .map(|batch| batch.encodings)
+        .collect();
+        assert!(batches.len() > 4, "{} batches", batches.len());
+        let alone: Vec<Vec<u32>> = batches
+            .iter()
+            .map(|batch| bits(&forward(&mut model, vec![batch.clone()]).unwrap().0[0]))
+            .collect();
+        let together: Vec<Vec<u32>> = forward(&mut model, batches)
+            .unwrap()
+            .0
+            .iter()
+            .map(|scores| bits(scores))
+            .collect();
+        let (sessions, at_once) = model.side_by_side_passes();
+        assert_eq!(sessions, 1, "the passes did not run on one shared session");
+        assert!(
+            at_once > 1,
+            "no two passes ran on it at once; this needs more than one core"
+        );
+        assert!(alone == together, "logits changed side by side");
+    }
+
+    /// A CPU of one pair a pass loads its copy's trimmed, unmasked graph, and
+    /// one whose passes take more than one pair the masked graph it was
+    /// written from. The model is read from, or downloaded into,
+    /// `PAMIN_EVAL_MODEL_CACHE`; the trimmed graph is written into its copy.
+    #[test]
+    #[ignore = "downloads reranker model weights; set PAMIN_EVAL_MODEL_CACHE"]
+    fn a_cpu_of_one_pair_a_pass_loads_the_trimmed_graph() {
+        let cache = PathBuf::from(
+            std::env::var_os("PAMIN_EVAL_MODEL_CACHE").expect("set PAMIN_EVAL_MODEL_CACHE"),
+        );
+        std::fs::create_dir_all(&cache).expect("create the model cache");
+        let repository =
+            Repository::open_at(&cache, REPOSITORY, REVISION).expect("open the repository");
+        let weights = repository.file(&cache, onnx(Device::Cpu));
+        let loaded = |threads: usize, batch: Option<usize>| {
+            let settings = crate::InferenceSettings {
+                threads: NonZeroUsize::new(threads),
+                rerank: crate::RerankSettings {
+                    batch: batch.and_then(NonZeroUsize::new),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let path = pamin_runtime::prepared::load_path(
+                &weights,
+                &cache,
+                &settings.copies(),
+                cpu_passes(&settings),
+            )
+            .expect("load the reranker's copy");
+            assert!(
+                pamin_runtime::prepared::is_copy(&path, &cache),
+                "{}",
+                path.display()
+            );
+            path.file_name().unwrap().to_string_lossy().into_owned()
+        };
+        for padded in [loaded(1, None), loaded(4, Some(4))] {
+            assert!(
+                padded.starts_with("attention.") && !padded.contains("cls1"),
+                "padded passes loaded {padded}"
+            );
+        }
+        let one_row = loaded(4, None);
+        assert!(
+            one_row.starts_with("attention.cls1."),
+            "passes of one pair loaded {one_row}"
+        );
+    }
+
+    /// The plan key names both batch caps.
+    ///
+    /// Execution plans are measured once and cached under this key, so a new
+    /// spelling throws every host's measured plan away and measures again.
+    /// v4 did so on purpose: the CPU plan v3 measured ran four pairs a pass,
+    /// and a plan measured with one cap is not a measurement of the other.
+    /// v5 too: a CPU of one pair a pass loads the trimmed, unmasked graph
+    /// (`pamin_runtime::prepared::Passes`), and a plan timed on the graph before it
+    /// is not a timing of it.
+    #[test]
+    fn the_plan_key_names_both_batch_caps() {
+        let settings = crate::InferenceSettings::default();
+        assert_eq!(
+            plan_key("onnx-community/bge-reranker-v2-m3-ONNX@abc", &settings),
+            format!(
+                "reranker-v5:accurate:onnx-community/bge-reranker-v2-m3-ONNX@abc:256:{}/{}:512",
+                batch_on(true, side_by_side_budget(&settings), None),
+                batch_on(false, side_by_side_budget(&settings), None)
+            )
+        );
+        assert_ne!(
+            plan_key("r@abc", &settings),
+            "reranker-v3:accurate:r@abc:256:4:512"
+        );
+    }
+
+    /// One pair a pass only where passes can overlap: side by side with a
+    /// budget above one thread. A one-thread CPU budget and an accelerator
+    /// keep [`BATCH`].
+    #[test]
+    fn one_pair_a_pass_only_when_passes_can_overlap() {
+        assert_eq!(batch_on(true, 4, None), CPU_BATCH);
+        assert_eq!(batch_on(true, 2, None), CPU_BATCH);
+        assert_eq!(batch_on(true, 1, None), BATCH);
+        assert_eq!(batch_on(false, 4, None), BATCH);
+        assert_eq!(batch_on(false, 1, None), BATCH);
+        // An explicit batch is the answer at every budget.
+        let two = NonZeroUsize::new(2);
+        assert_eq!(batch_on(true, 4, two), 2);
+        assert_eq!(batch_on(false, 1, two), 2);
+    }
+
+    /// A mapped copy loads its unmasked graph only where no pass can pad: one
+    /// pair a pass, on a CPU whose passes overlap. A budget of one thread, or
+    /// an explicit batch of more than one pair, keeps the masked graph.
+    #[test]
+    fn only_passes_of_one_pair_load_the_unmasked_graph() {
+        use pamin_runtime::prepared::Passes;
+        let passes = |threads: usize, batch: Option<usize>| {
+            cpu_passes(&crate::InferenceSettings {
+                threads: NonZeroUsize::new(threads),
+                rerank: crate::RerankSettings {
+                    batch: batch.and_then(NonZeroUsize::new),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+        };
+        assert_eq!(passes(4, None), Passes::OneRow);
+        assert_eq!(passes(2, None), Passes::OneRow);
+        assert_eq!(passes(1, None), Passes::Padded);
+        assert_eq!(passes(4, Some(2)), Passes::Padded);
+        assert_eq!(passes(4, Some(4)), Passes::Padded);
+        assert_eq!(passes(1, Some(1)), Passes::OneRow);
+    }
+
+    /// Every pair lands in exactly one batch, in order, and no batch pads
+    /// past the budget unless it is one pair that is longer on its own.
+    #[test]
+    fn a_batch_stays_within_its_budget_and_every_pair_is_in_one() {
+        let lengths = [9, 20, 20, 31, 60, 64, 64, 64, 200, 300, 301];
+        for budget in [64, 128, 256, 512, 1024] {
+            for most in [1, 2, 4, 8, usize::MAX] {
+                let sizes = batches(&lengths, budget, most);
+                assert_eq!(sizes.iter().sum::<usize>(), lengths.len());
+                let mut start = 0;
+                for size in sizes {
+                    assert!(size > 0, "an empty batch");
+                    assert!(size <= most, "{size} pairs against a cap of {most}");
+                    let longest = lengths[start + size - 1];
+                    assert!(
+                        size * longest <= budget || size == 1,
+                        "{size} pairs padded to {longest} against a budget of {budget}"
+                    );
+                    start += size;
+                }
+            }
+        }
+    }
+
+    /// Greedy, not merely within budget: a batch closes only when the next
+    /// pair would not fit, so short pairs share a pass and a long one does not
+    /// drag them up to its length.
+    #[test]
+    fn short_pairs_share_a_pass_and_a_long_one_does_not_pad_them() {
+        assert_eq!(batches(&[30, 30, 30, 30, 250], 256, usize::MAX), vec![4, 1]);
+        assert_eq!(
+            batches(&[30, 30, 30, 30, 250], 1024, usize::MAX),
+            vec![4, 1]
+        );
+        assert_eq!(batches(&[30, 30, 30, 30, 250], 1024, 2), vec![2, 2, 1]);
+        assert_eq!(batches(&[100, 100, 100], 300, usize::MAX), vec![3]);
+        assert_eq!(batches(&[], 300, usize::MAX), Vec::<usize>::new());
+    }
+}

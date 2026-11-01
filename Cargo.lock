@@ -1852,6 +1852,145 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "memory-cli"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures",
+ "ignore",
+ "memory-client",
+ "memory-contract",
+ "memory-core",
+ "memory-engine",
+ "memory-index",
+ "memory-store",
+ "notify",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "time",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "zvec-rust-sys",
+]
+
+[[package]]
+name = "memory-client"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures",
+ "memory-contract",
+ "memory-core",
+ "pamin-kit",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "time",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "memory-contract"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "insta",
+ "memory-core",
+ "schemars",
+ "serde",
+ "serde_json",
+ "time",
+]
+
+[[package]]
+name = "memory-core"
+version = "0.0.1"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "time",
+ "uuid",
+]
+
+[[package]]
+name = "memory-engine"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "futures",
+ "hf-hub",
+ "memory-core",
+ "memory-index",
+ "memory-store",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "time",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "memory-index"
+version = "0.0.1"
+dependencies = [
+ "fastembed",
+ "hf-hub",
+ "icu_provider",
+ "icu_segmenter",
+ "libc",
+ "memory-core",
+ "ort",
+ "pamin-runtime",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "tokenizers",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "whatlang",
+ "yada",
+ "zvec-rust",
+]
+
+[[package]]
+name = "memory-store"
+version = "0.0.1"
+dependencies = [
+ "memory-core",
+ "postgresql_embedded",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "micromap"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2237,128 +2376,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
 
 [[package]]
-name = "pamin-cli"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "clap",
- "futures",
- "ignore",
- "notify",
- "pamin-client",
- "pamin-contract",
- "pamin-core",
- "pamin-engine",
- "pamin-index",
- "pamin-store",
- "serde",
- "serde_json",
- "tempfile",
- "time",
- "tokio",
- "tokio-util",
- "toml",
- "tracing",
- "tracing-subscriber",
- "zvec-rust-sys",
-]
-
-[[package]]
-name = "pamin-client"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "clap",
- "futures",
- "pamin-contract",
- "pamin-core",
- "pamin-kit",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "time",
- "tokio",
- "tokio-util",
- "toml",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "pamin-contract"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "clap",
- "insta",
- "pamin-core",
- "schemars",
- "serde",
- "serde_json",
- "time",
-]
-
-[[package]]
-name = "pamin-core"
-version = "0.0.1"
-dependencies = [
- "schemars",
- "serde",
- "serde_json",
- "time",
- "uuid",
-]
-
-[[package]]
-name = "pamin-engine"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "futures",
- "hf-hub",
- "pamin-core",
- "pamin-index",
- "pamin-store",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "tempfile",
- "time",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "pamin-index"
-version = "0.0.1"
-dependencies = [
- "fastembed",
- "hf-hub",
- "icu_provider",
- "icu_segmenter",
- "libc",
- "ort",
- "pamin-core",
- "pamin-runtime",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
- "tokenizers",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "whatlang",
- "yada",
- "zvec-rust",
-]
-
-[[package]]
 name = "pamin-kit"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2396,23 +2413,6 @@ dependencies = [
  "tracing",
  "uuid",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "pamin-store"
-version = "0.0.1"
-dependencies = [
- "pamin-core",
- "postgresql_embedded",
- "serde",
- "serde_json",
- "sqlx",
- "tempfile",
- "thiserror",
- "time",
- "tokio",
- "tracing",
- "uuid",
 ]
 
 [[package]]

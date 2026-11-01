@@ -302,7 +302,7 @@ the reranker with static buckets on this machine. (It lost to optimized CPU for
 the since-removed `fast` reranker: [conditions and rows](../benchmarks/results/inference/fast-apple-backend-2026-09-30.md).)
 CUDA and DirectML still require their own device-specific timing and precision
 checks. The `every_device_orders_like_the_cpu` test in
-`crates/pamin-index/tests/reranking.rs` checks clearly separated pairs; it is
+`crates/index/tests/reranking.rs` checks clearly separated pairs; it is
 not a replacement for a corpus-level accuracy result.
 
 A few measured values have no flag and no `config.toml` key: the reranker's
@@ -1203,7 +1203,7 @@ turns out to cost 0.2794 nDCG@10 on a cross-lingual group at 1.0, against the
 0.1673 it earns on queries whose answers are only reachable across an edge.
 1.0 and 0.5 are significantly worse on the cross-lingual group once the whole
 sweep is priced as one family, and 0.15 and 0.30 cannot be told apart; 0.30 is
-kept because nothing supports moving it. `pamin_core::fusion` carries the sweep.
+kept because nothing supports moving it. `memory_core::fusion` carries the sweep.
 
 Its scores are also the only ones fusion does *not* rescale, and for the reason
 this table's own note gives about comparability. A path strength is
@@ -1802,7 +1802,7 @@ A tool takes the command's arguments as JSON, with the same names (flags in
 `snake_case`, and `--valid-from` and `--valid-to` inside a `validity` object)
 and the same defaults, and returns the command's `--json` result.
 Both come from one definition, so they cannot drift: the tool schemas are what
-`pamin-contract` derives, and its tests snapshot them. A tool has no project
+`memory-contract` derives, and its tests snapshot them. A tool has no project
 argument: every call works on the project `pamin mcp` was started with,
 `--project` or `PAMIN_PROJECT`, and a host that needs two projects starts two.
 

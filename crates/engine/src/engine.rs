@@ -1,0 +1,4857 @@
+//! Composing the store, the index, and the embedder.
+//!
+//! The authority and the projection are kept apart everywhere else in the
+//! codebase; this is the one place that holds both, so it is also the only
+//! place where the two can drift out of step.
+
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+use std::time::{Duration, Instant};
+
+use anyhow::Result;
+use memory_core::{
+    Channel, ChannelResults, EdgeKind, FilterDecision, FusedResult, Fusion, JobKind, ProjectId,
+    Scored, SourceKind, TopicId, TopicState, TopicStateId, Validity, Why,
+};
+use memory_index::spans::TokenCount;
+use memory_index::{
+    Access, Embedder, Previous, Projection, ProjectionIndex, Reranker, SpanDocument, SpanSource,
+    SpanTokens, VectorIndex,
+};
+use memory_store::graph::{EdgeClaim, Expansion, Neighbor};
+use memory_store::{Connections, Database, PgConnection, Workspace, graph, jobs, repository};
+use time::OffsetDateTime;
+
+use crate::Settings;
+use crate::cuts::Cuts;
+
+pub use memory_core::Depths;
+
+/// Settings the graph channel shares with the fusion that will rank it.
+#[derive(Clone, Copy)]
+struct GraphRecallOptions {
+    depths: Depths,
+    k: f32,
+}
+
+/// How much weight a derived mention carries against an asserted edge.
+///
+/// A rule matching a name is weaker evidence than somebody saying two things
+/// are related, and the gap has to be expressed somewhere or the two become
+/// interchangeable. Provisional, like every other retrieval constant here.
+const MENTION_CONFIDENCE: f32 = 0.5;
+
+/// Every kind of edge the engine derives: what a memory names, and the section
+/// a section of a file sits under. A topic that resolves to nothing derives
+/// none of them.
+pub(crate) const DERIVED: [EdgeKind; 2] = [EdgeKind::Mentions, EdgeKind::PartOf];
+
+/// How much weight a section's `part_of` carries: a mention's. Provisional, as
+/// that is; the edge was measured at this weight.
+const PARENT_CONFIDENCE: f32 = MENTION_CONFIDENCE;
+
+/// How many topics the graph channel is willing to walk out from.
+///
+/// Not a query count -- the walk asks one question per hop for the whole
+/// frontier, however many seeds it started from. What a seed costs is a place
+/// in that frontier: walks are tracked per (topic, seed) pair, so one neighbour
+/// reached from sixty-four seeds takes sixty-four of the frontier's places and
+/// still produces one result. Without a bound here, how far the walk reaches is
+/// decided by how many topics the other channels happened to surface.
+const MAX_SEEDS: usize = 64;
+
+/// What one more hop does to how strongly the graph vouches for a topic.
+///
+/// The graph channel is the one channel with no score against the query -- it
+/// reaches a topic across edges rather than matching it -- but it is not
+/// without a measure of quality. Every edge carries the confidence whoever or
+/// whatever asserted it, and every arrival carries how far the walk went. A
+/// topic one asserted edge away from something the query found is a stronger
+/// claim than one three derived edges away, and until now fusion could not tell
+/// those apart: both arrived as a position in a list and were scored `weight /
+/// (k + rank)` on that alone. The edge strength never entered fusion at all.
+///
+/// A half per hop, and it is a stated choice rather than a measured one. The
+/// walk stops at two hops by default, so the only comparison this constant
+/// decides is a one-hop arrival against a two-hop one at the same confidence,
+/// and halving is the plainest way to say that the second is worth less.
+const HOP_DECAY: f32 = 0.5;
+
+/// How many states a rebuild embeds and writes at a time.
+///
+/// Bounded so the peak memory of a rebuild follows the batch rather than the
+/// project: at a thousand states the embeddings alone are already megabytes,
+/// and the whole point of the batch is that it does not have to be the whole
+/// project.
+const REINDEX_BATCH: usize = 256;
+
+/// How many tokens of a memory cut into spans a hit shows: its best span and
+/// what fits around it. Three spans at the default cap of 200, as a hit showed
+/// before its width followed a budget rather than the cap.
+const VIEW_TOKENS: usize = 600;
+
+/// How many candidates the index proposes when a new topic is backfilled.
+///
+/// Every one costs a row read and an exact comparison, and the probe is a
+/// conjunction of the name's own words, so a real match that does not make this
+/// list is a memory outranked by hundreds of others carrying the same full
+/// name. Generous rather than tuned: this runs once in a topic's life.
+const BACKFILL_CANDIDATES: u32 = 500;
+
+/// Runs synchronous index and embedder work off the async path.
+///
+/// The projection engine and ONNX Runtime are both synchronous C libraries. A
+/// call into either can take tens of milliseconds -- a forward pass, a lexical
+/// scan, taking the index's file lock -- and calling one directly from an
+/// async function runs it on a runtime thread, where it stalls every other task
+/// that thread was driving. Today that is one command's own work. Once a server
+/// holds the runtime it is every caller's.
+///
+/// `block_in_place` rather than `spawn_blocking` because the work borrows the
+/// index and the embedder, and neither is `'static`. It requires the
+/// multi-threaded runtime, which is what `pamin` runs on.
+pub(crate) fn off_the_runtime<T>(work: impl FnOnce() -> T) -> T {
+    tokio::task::block_in_place(work)
+}
+
+/// Which of these topics the index does not already hold with exactly these
+/// spans, embedded under `encoding`, and so still has to be embedded and
+/// written.
+///
+/// `encoding` is what the model would embed them under now
+/// ([`memory_index::Embedder::reusable_encoding`]), so a vector another
+/// execution provider or plan produced is embedded again, as it was before
+/// this check existed, rather than kept beside queries this plan embeds. With
+/// no encoding to compare -- including a fallback whose retry deadline has
+/// passed, which the next pass revalidates -- nothing is held.
+///
+/// Compares each span's text and the header its vector is embedded under
+/// with it ([`SpanSource`]), so a topic renamed, or a span whose header
+/// changed while its text did not, is embedded again -- except in an index
+/// that did not record headers, where the text is all there is to compare.
+///
+/// An index that cannot answer -- a document missing a vector it should have,
+/// or a failed read -- is treated as holding nothing, so every state is written
+/// as it was before this check existed, which also repairs that document.
+fn unheld(
+    index: &dyn Projection,
+    wanted: &[(TopicId, &[SpanSource<'_>])],
+    encoding: Option<&str>,
+) -> Vec<bool> {
+    let Some(encoding) = encoding else {
+        return vec![true; wanted.len()];
+    };
+    match index.holds(wanted, encoding) {
+        Ok(held) => held.into_iter().map(|held| !held).collect(),
+        Err(error) => {
+            tracing::warn!(%error, "could not read the index back; writing every state");
+            vec![true; wanted.len()]
+        }
+    }
+}
+
+/// What a sync needs of the model: the plan a stored vector has to have been
+/// embedded under to stand in for a pass, and the pass.
+///
+/// A trait only so the order [`write_unheld`] asks these in can be tested
+/// against a model whose plan moves; [`Embedder`] is the one implementation the
+/// product runs.
+trait PassageEncoder {
+    /// [`Embedder::reusable_encoding`].
+    fn reusable_encoding(&self) -> Option<String>;
+    /// [`Embedder::encode_passages`]: the vectors, and the plan that produced
+    /// every one of them.
+    fn encode_passages(
+        &mut self,
+        texts: &[&str],
+    ) -> memory_index::Result<(Vec<Vec<f32>>, Option<String>)>;
+}
+
+impl PassageEncoder for Embedder {
+    fn reusable_encoding(&self) -> Option<String> {
+        Embedder::reusable_encoding(self)
+    }
+
+    fn encode_passages(
+        &mut self,
+        texts: &[&str],
+    ) -> memory_index::Result<(Vec<Vec<f32>>, Option<String>)> {
+        Embedder::encode_passages(self, texts)
+    }
+}
+
+/// Embeds and writes each topic of `wanted` -- its spans' texts -- the index
+/// does not already hold under the plan the model would embed it with
+/// ([`unheld`]); `passages` is what each span's vector is embedded from.
+///
+/// Which states are held is decided against one plan, and the model can move
+/// off it before their vectors are worth keeping: a fallback whose retry
+/// deadline passes while the index is read, a pass that revalidates it onto
+/// the accelerator, an accelerator that fails during the pass. A state skipped
+/// as held would then keep a vector of the plan the model left, beside new
+/// vectors and queries of the plan it moved to. So the plan is asked again
+/// after the read, and if it changed nothing is held; and the plan the pass
+/// ran under is compared with the one the check matched, and if they differ
+/// the whole batch is embedded again in one pass. Embedding only the skipped
+/// states would not do: the model can move again during that pass, leaving
+/// the two halves of the batch under two plans with no job left to reconcile
+/// them, while one pass names only a plan that produced all of it.
+///
+/// `index` takes the index lock per call, so the pass runs without it and a
+/// search is not held up behind a forward pass.
+fn write_unheld<G>(
+    index: impl Fn() -> G,
+    encoder: &mut impl PassageEncoder,
+    wanted: &[(TopicId, &[SpanSource<'_>])],
+    passages: &[&[&str]],
+) -> memory_index::Result<()>
+where
+    G: std::ops::Deref<Target = Arc<dyn Projection + Send + Sync>>,
+{
+    let reusable = encoder.reusable_encoding();
+    let mut unheld = unheld(&**index(), wanted, reusable.as_deref());
+    if encoder.reusable_encoding() != reusable {
+        unheld.fill(true);
+    }
+    let (fresh, held): (Vec<usize>, Vec<usize>) = (0..wanted.len()).partition(|&at| unheld[at]);
+    if fresh.is_empty() {
+        return Ok(());
+    }
+    let encoding = write_encoded(&index, encoder, wanted, passages, &fresh)?;
+    if !held.is_empty() && encoding != reusable {
+        let every: Vec<usize> = (0..wanted.len()).collect();
+        write_encoded(&index, encoder, wanted, passages, &every)?;
+    }
+    Ok(())
+}
+
+/// Embeds every span of the topics of `wanted` at these positions in one
+/// pass, writes them in place of whatever the index held for those topics,
+/// recording the plan that produced them, and returns that plan.
+fn write_encoded<G>(
+    index: &impl Fn() -> G,
+    encoder: &mut impl PassageEncoder,
+    wanted: &[(TopicId, &[SpanSource<'_>])],
+    passages: &[&[&str]],
+    at: &[usize],
+) -> memory_index::Result<Option<String>>
+where
+    G: std::ops::Deref<Target = Arc<dyn Projection + Send + Sync>>,
+{
+    let texts: Vec<&str> = at
+        .iter()
+        .flat_map(|&at| passages[at].iter().copied())
+        .collect();
+    let (embeddings, encoding) = encoder.encode_passages(&texts)?;
+    let documents: Vec<SpanDocument<'_>> = at
+        .iter()
+        .flat_map(|&at| {
+            let (topic, spans) = wanted[at];
+            spans
+                .iter()
+                .enumerate()
+                .map(move |(ordinal, span)| (topic, ordinal as u32, span))
+        })
+        .zip(&embeddings)
+        .map(|((topic, ordinal, span), embedding)| {
+            (
+                topic,
+                ordinal,
+                span.text,
+                Some(span.header),
+                embedding.as_slice(),
+            )
+        })
+        .collect();
+    index().replace(&documents, encoding.as_deref())?;
+    Ok(encoding)
+}
+
+/// One span of a memory as it is indexed.
+struct Indexed {
+    /// What the lexical channels match.
+    text: String,
+    /// What it lost by being cut out: the memory's name, and the heading and
+    /// turn it continues. The memory's name alone for a memory indexed whole.
+    header: String,
+    /// What its vector is embedded from: its header and text, or its text
+    /// alone, as the index's [`memory_index::Passage`] says.
+    passage: String,
+}
+
+impl Indexed {
+    /// What decides whether the index already holds these spans.
+    fn sources(spans: &[Self]) -> Vec<SpanSource<'_>> {
+        spans
+            .iter()
+            .map(|span| SpanSource {
+                text: &span.text,
+                header: &span.header,
+            })
+            .collect()
+    }
+}
+
+/// The store, the index, and the embedder, wired together.
+///
+/// Cheap to clone, and every method takes `&self`, so one engine serves many
+/// requests at once rather than one at a time. That is what a resident server
+/// needs and what a short-lived command never did: before, each of these was
+/// opened, used once, and dropped.
+#[derive(Clone)]
+pub struct Engine {
+    pub database: Database,
+    /// Who this process is when it claims cascade work. Distinct per process so
+    /// a claim identifies its holder, which is what completion checks against.
+    pub(crate) worker: String,
+    /// Behind the trait rather than the concrete type, so the composition layer
+    /// names what it needs from a projection and not which engine provides it.
+    ///
+    /// `Send + Sync` on the object as well as on the concrete type: erasing the
+    /// type erases the auto traits with it, and a resident server serves one
+    /// engine from whichever runtime thread takes the request.
+    ///
+    /// Behind a lock even though every method on the trait takes `&self`. The
+    /// engine declares `Sync` and does not honour it: a reader takes an
+    /// unsynchronized snapshot of the segments a writer is in the middle of
+    /// changing, reported upstream as alibaba/zvec#714. One caller at a time,
+    /// not readers sharing -- see [`Engine::index`] for what decided that.
+    ///
+    /// Not a precaution. Taking this lock out makes searches fail inside a
+    /// minute under the concurrency `readers_and_writers_share_one_index_
+    /// without_bringing_it_down` puts through it, and that is the mild form --
+    /// upstream reports the same race faulting. On macOS it is latent, so it
+    /// looks like a precaution there.
+    ///
+    /// **Merged upstream and not released.** #714 closed with alibaba/zvec#715,
+    /// merged as `515c11a`, which gives the segment locks shared readers; the
+    /// sibling report #724 closed with #731 as `31d88ea`. The newest published
+    /// version is 0.7.0, which predates both, so what this depends on is still
+    /// the code that needs the lock. Neither touched a public header, so
+    /// picking them up is a version bump rather than a binding change -- see
+    /// the deferred entry in `docs/adr/0001-tech-selection.md` for the trigger
+    /// and for what has to be measured before the lock comes off.
+    ///
+    /// A reshape takes the same lock a batch at a time and, for the length of
+    /// one, replaces what it holds -- see [`reshape`](Self::reshape).
+    ///
+    /// [`Engine::index`]: Self::index
+    pub(crate) index: Arc<memory_index::Held>,
+    /// Where this project's index lives, which a reshape builds beside and
+    /// swaps into.
+    pub(crate) dir: std::path::PathBuf,
+    /// How the index was opened. Only a writer may reshape it: a reshape moves
+    /// the directory, and a reader shares it with another process.
+    pub(crate) access: Access,
+    /// What a rebuild holds until [`reindex`](Self::reindex) has finished.
+    rebuilding: Arc<Mutex<Option<Rebuilding>>>,
+    /// Index writes that are applied but not yet on disk, with their claims.
+    ///
+    /// The projection buffers a write in memory and a query reads that buffer,
+    /// so a memory is findable the moment it is upserted -- verified against
+    /// every channel, and against a reopen. What the buffer is not is durable:
+    /// `upsert` reaches the engine's log with no `fsync` behind it, and only
+    /// `flush` calls one. So a write survives this process being killed and
+    /// would not survive the machine losing power.
+    ///
+    /// That is the whole of what a flush buys, and paying for it per write is
+    /// the most expensive thing in the write path: 39 ms, against 0.15 ms a
+    /// document when the engine is left to materialize on its own schedule.
+    /// Worse than the latency, it interrupts that schedule -- two thousand
+    /// memories flushed one at a time leave 10,031 index files and 2.2 GB
+    /// resident, and left alone leave 25 files and 4 MB.
+    ///
+    /// So the flush is amortized, and a job stays claimed until one covers it.
+    /// That is what keeps the outbox's promise without relying on the engine's:
+    /// power lost here leaves these jobs owed and the ledger replays them. The
+    /// same is true of this process going away with the list non-empty, or of
+    /// the project being evicted from the registry -- the claims lapse and the
+    /// work comes round again.
+    unflushed: Arc<Mutex<Vec<jobs::Job>>>,
+    /// Held by an index sync from reading the states it owes until the index
+    /// has them, so two syncs of one topic cannot cross.
+    ///
+    /// They can be running at once: re-queueing a topic clears the claim of a
+    /// sync already reading it (`jobs::enqueue`), and another drain on this
+    /// engine claims the row again. Each reads the ledger when it starts, so
+    /// the one that read the older state could write last. Skipping a
+    /// document the index already holds made that easy to reach -- the newer
+    /// sync found the old text still there, completed without waiting on the
+    /// model, and the older one then wrote over it with the row gone -- but a
+    /// sync that wrote every state was exposed too, whenever the older one
+    /// reached the index after the newer one's pass. Read and write under one
+    /// lock and the last sync to run read the ledger last.
+    ///
+    /// Not the model's lock or the index's: a sync that removes a document
+    /// needs neither the model nor its load, and the index's is held by every
+    /// search and must not wait out a forward pass. Taken before both, and
+    /// only by the cascade's index syncs, which already run one pass at a
+    /// time on the model's lock.
+    pub(crate) syncing: Arc<tokio::sync::Mutex<()>>,
+    /// The longest topic name in this project, in tokens, as far as this
+    /// process has seen.
+    ///
+    /// A search asks for it before anything else it does, to know how wide a
+    /// window of the query could be a name. The answer changes only when a
+    /// topic is created whose name is wider than any before it -- names are
+    /// immutable and nothing deletes them -- so it only ever grows, and a
+    /// remembered value is either right or too low.
+    ///
+    /// Too low is not symmetrical with too high, which is why this is only
+    /// consulted by the search path. Too high costs windows that match
+    /// nothing, because a run is compared against stored names by equality.
+    /// Too low means a name is never looked for -- and on the write path that
+    /// is not a missed edge but a **retracted** one, because deriving mentions
+    /// asserts what it found and then closes everything it did not. A search
+    /// that misses a graph seed is right again on the next query; an edge
+    /// retracted against a name nobody looked for stays gone.
+    widest_name: Arc<std::sync::atomic::AtomicUsize>,
+    /// How this splits text, held here rather than reached through the index.
+    ///
+    /// It is the index's segmenter -- taken from it at open, so the two cannot
+    /// drift -- but splitting text touches nothing the index owns, and the lock
+    /// above is there for an engine defect that has no bearing on it. Reaching
+    /// it through the index meant five callers took that lock for work the
+    /// index was not doing, and two of them held it a long time: segmenting up
+    /// to [`BACKFILL_CANDIDATES`] documents, and segmenting every topic name in
+    /// the project. Every search on the project queued behind them.
+    segmenter: Arc<memory_index::segmentation::Segmenter>,
+    /// One model, and one caller into it at a time -- once anything wants one.
+    ///
+    /// Inference wants `&mut`, which is the only reason anything here ever
+    /// needed `&mut self`. Putting it behind its own lock rather than the
+    /// index's is what lets several searches read the index at once while one
+    /// of them is embedding.
+    ///
+    /// **Empty until something embeds, which is why `pamin link` can go
+    /// through this crate at all.** Loading was part of opening an engine, so
+    /// opening one cost 1,625 MB of resident memory and about four and a half
+    /// seconds -- and `read`, `grep`, `topics`, `link`, `unlink` and
+    /// `neighbors` reached around the engine into the store rather than pay it,
+    /// which is how `memory-cli` came to hold both layers that
+    /// `docs/architecture.md` says only this crate holds. A command that never
+    /// embeds now never loads: a server serving those alone stays at 29 MB.
+    ///
+    /// Shared with every other engine, which is why it comes from [`Models`]
+    /// rather than being built here -- two projects are two indexes and one
+    /// model, and the registry is where two callers arriving at a cold model
+    /// queue rather than both loading it. This cell
+    /// is a per-engine cache of that lookup, so a search does not take the
+    /// registry's lock to find what it already has.
+    embedder: std::sync::OnceLock<Arc<Mutex<Embedder>>>,
+    /// Which vector index this engine's index was built with, which is also
+    /// the one it was asked for: opening under another is refused.
+    pub(crate) vector_index: VectorIndex,
+    /// Where a reranker comes from, if a search asks for one.
+    ///
+    /// The registry rather than a loaded model: most searches do not rerank,
+    /// most workspaces never will, and half a gigabyte should not be read off
+    /// disk by opening a project.
+    pub(crate) models: Models,
+    /// The model loads a search started ahead of its need and did not wait
+    /// for. See [`settle_loads`](Self::settle_loads).
+    preloads: Preloads,
+    pub project: ProjectId,
+}
+
+/// Loads started ahead of their need, which nothing in the product waits for.
+///
+/// A search that starts loading its reranker and then returns early -- no
+/// candidates, or an error -- leaves the load running past the search. That
+/// costs a server nothing. A measurement that reads, when its run is over,
+/// what the loads fetched and which plans they ran on would read a load still
+/// running, so it waits for them first (see [`Engine::settle_loads`]).
+#[derive(Clone, Default)]
+struct Preloads(Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>);
+
+impl Preloads {
+    /// Starts `load` on the blocking pool and returns without waiting.
+    ///
+    /// Loads that have already finished are forgotten here, so a resident
+    /// server that never settles holds at most the loads still running.
+    fn start(&self, load: impl FnOnce() + Send + 'static) {
+        let load = tokio::task::spawn_blocking(load);
+        let mut loads = self.0.lock().expect("the preload list lock is poisoned");
+        loads.retain(|load| !load.is_finished());
+        loads.push(load);
+    }
+
+    /// Waits for every load started so far, including any a load started.
+    async fn settle(&self) {
+        loop {
+            let loads =
+                std::mem::take(&mut *self.0.lock().expect("the preload list lock is poisoned"));
+            if loads.is_empty() {
+                return;
+            }
+            for load in loads {
+                // A load that failed or panicked has failed for the search
+                // that needed it, which reports it; settling only waits.
+                let _ = load.await;
+            }
+        }
+    }
+}
+
+/// What a rebuild holds from opening its index until
+/// [`reindex`](Engine::reindex) has finished with it.
+struct Rebuilding {
+    /// The index it replaced, to lend its vectors. See [`Previous`].
+    previous: Option<Previous>,
+    /// This project's index directory, held against a reshape.
+    _exclusive: tokio::sync::OwnedMutexGuard<()>,
+}
+
+/// The models this process has loaded.
+///
+/// Shared between projects rather than held by each. The weights are the same
+/// hundreds of megabytes whichever project asks for an embedding, so a process
+/// serving a hundred projects holds one model, not a hundred: the project
+/// decides nothing about them.
+#[derive(Clone)]
+pub struct Models {
+    dir: std::path::PathBuf,
+    /// What this process was started with: how the models load, how long
+    /// they are held, and what every engine opened on them is given.
+    settings: Arc<Settings>,
+    loaded: Arc<Mutex<Option<Held<Embedder>>>>,
+    /// The same arrangement for the one reranker, while it is loaded.
+    ///
+    /// It carries when it was last handed out, because unlike an embedder a
+    /// reranker can stop being wanted: every write needs an embedding, and
+    /// only a search reranks.
+    reranker: Arc<Mutex<Option<Held<Reranker>>>>,
+    /// The embedder's tokenizer alone, counting what a span holds, once an
+    /// index cut into spans has asked for it. See [`Models::span_tokens`].
+    span_tokens: Arc<Mutex<Option<Arc<SpanTokens>>>>,
+    /// What that tokenizer cut memories into, so a search does not cut them
+    /// again. See [`Cuts`].
+    cuts: Arc<Cuts>,
+}
+
+/// A loaded model and when it was last handed out.
+type Held<T> = (Instant, Arc<Mutex<T>>);
+
+impl Models {
+    /// What this process was started with.
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+
+    /// Reads and writes the weights a workspace caches, loading and holding
+    /// them as `settings` says.
+    pub fn new(workspace: &Workspace, settings: Settings) -> Self {
+        Self {
+            dir: workspace.models_dir(),
+            settings: Arc::new(settings),
+            loaded: Arc::default(),
+            reranker: Arc::default(),
+            span_tokens: Arc::default(),
+            cuts: Arc::default(),
+        }
+    }
+
+    /// What a memory is cut into spans by: the embedder's own tokenizer,
+    /// counting tokens as the embedder will read them, without its weights.
+    ///
+    /// Loaded the first time an index cut into spans writes, or an ingest cuts
+    /// a file into sections, and kept: it is the vocabulary the embedder
+    /// shares (see `memory_index::tokenizer`), not a second copy of it, and an
+    /// index of whole memories never loads it. Blocking on the first call.
+    pub fn span_tokens(&self) -> Result<Arc<SpanTokens>, memory_index::IndexError> {
+        let mut held = self
+            .span_tokens
+            .lock()
+            .expect("the span tokenizer lock is poisoned");
+        if let Some(tokens) = held.as_ref() {
+            return Ok(Arc::clone(tokens));
+        }
+        let tokens = Arc::new(SpanTokens::load(&self.dir)?);
+        *held = Some(Arc::clone(&tokens));
+        Ok(tokens)
+    }
+
+    /// The embedding model, loading it the first time it is asked for.
+    ///
+    /// Blocking, and the registry lock is held across the load. That makes a
+    /// second caller wait out the first one's download instead of starting
+    /// its own, which is the whole point; the wait it pays is the wait it
+    /// would have paid loading its own copy.
+    fn embedder(&self) -> Result<Arc<Mutex<Embedder>>, memory_index::IndexError> {
+        let mut loaded = self
+            .loaded
+            .lock()
+            .expect("the model registry lock is poisoned");
+
+        if let Some((last_used, embedder)) = loaded.as_mut() {
+            *last_used = Instant::now();
+            return Ok(Arc::clone(embedder));
+        }
+
+        let embedder = Arc::new(Mutex::new(Embedder::load(
+            &self.dir,
+            &self.settings.inference,
+        )?));
+        *loaded = Some((Instant::now(), Arc::clone(&embedder)));
+        Ok(embedder)
+    }
+
+    /// The reranker, loading it the first time it is asked for.
+    ///
+    /// Lazily rather than with the project: a workspace that only writes
+    /// never downloads one.
+    fn reranker(&self) -> Result<Arc<Mutex<Reranker>>, memory_index::IndexError> {
+        let mut held = self
+            .reranker
+            .lock()
+            .expect("the reranker registry lock is poisoned");
+
+        if let Some((last_used, reranker)) = held.as_mut() {
+            *last_used = Instant::now();
+            return Ok(Arc::clone(reranker));
+        }
+
+        let reranker = Arc::new(Mutex::new(Reranker::load(
+            &self.dir,
+            &self.settings.inference,
+        )?));
+        *held = Some((Instant::now(), Arc::clone(&reranker)));
+        Ok(reranker)
+    }
+
+    /// Loads the embedder and the reranker, at once, before anything has
+    /// asked for either.
+    ///
+    /// For a resident server that has just been asked something about a
+    /// project it holds nothing for: most of the first search after an idle
+    /// release is these two loads (see the `COLD` arm of
+    /// `tests/retrieval.rs`), and started when the project is first touched
+    /// they run while that request is answered and while the agent reads the
+    /// answer, instead of in front of the search that needs them. What is
+    /// loaded is handed out and released like anything else here -- it is
+    /// stamped as used now, and given back after [`Settings::model_idle`] if nothing
+    /// asks for it -- so warming a model nobody then uses costs it for one
+    /// idle window and no longer.
+    ///
+    /// The reranker only if its weights are on disk already. A workspace that
+    /// has never searched may be one that only writes, and a warm-up that
+    /// fetched half a gigabyte for it would be the opposite of the point. The
+    /// embedder is loaded either way: every write and every search needs it.
+    ///
+    /// Blocking, and both loads hold their registry's lock, so a search that
+    /// arrives meanwhile waits for the load in flight instead of starting a
+    /// second. Two threads because the two loads are independent: the `COLD`
+    /// arm measured them at 1,300 ms together, against 1,089 and 977 alone.
+    pub fn warm(&self) -> Result<(), memory_index::IndexError> {
+        std::thread::scope(|scope| {
+            let reranker = Reranker::is_downloaded(&self.dir, &self.settings.inference)
+                .then(|| scope.spawn(|| self.reranker()));
+            let embedder = self.embedder();
+            let reranker =
+                reranker.map(|loading| loading.join().expect("a reranker load panicked"));
+            embedder?;
+            reranker.transpose()?;
+            Ok(())
+        })
+    }
+
+    /// What the reranker has been asked to do, or `None` if it is not
+    /// loaded.
+    ///
+    /// The handle is cloned out from under the registry lock before the
+    /// reranker's own lock is taken, so asking this while a search is in the
+    /// middle of a forward pass waits for that pass and not for a load.
+    fn counted(&self) -> Option<memory_index::Reranked> {
+        let held = {
+            let held = self
+                .reranker
+                .lock()
+                .expect("the reranker registry lock is poisoned");
+            let (_, reranker) = held.as_ref()?;
+            Arc::clone(reranker)
+        };
+        Some(
+            held.lock()
+                .expect("the reranker lock is poisoned")
+                .counted(),
+        )
+    }
+
+    /// The passes the reranker makes over `documents` for `query` (see
+    /// [`Reranker::plan`]), or `None` if this process has not loaded it.
+    /// Never loads it. The handle is cloned out from under the registry lock
+    /// first, as in [`counted`](Self::counted).
+    fn passes(
+        &self,
+        query: &str,
+        documents: &[&str],
+    ) -> Option<Result<Vec<Vec<usize>>, memory_index::IndexError>> {
+        let held = {
+            let held = self
+                .reranker
+                .lock()
+                .expect("the reranker registry lock is poisoned");
+            let (_, reranker) = held.as_ref()?;
+            Arc::clone(reranker)
+        };
+        let reranker = held.lock().expect("the reranker lock is poisoned");
+        Some(
+            reranker
+                .lengths(query, documents)
+                .map(|lengths| reranker.plan(&lengths)),
+        )
+    }
+
+    /// What the reranker scores each of `documents` for `query`, in their
+    /// order, or `None` if this process has not loaded it. Never loads it.
+    /// The handle is cloned out from under the registry lock first, as in
+    /// [`counted`](Self::counted).
+    fn scores(
+        &self,
+        query: &str,
+        documents: &[&str],
+    ) -> Option<Result<Vec<f32>, memory_index::IndexError>> {
+        let held = {
+            let held = self
+                .reranker
+                .lock()
+                .expect("the reranker registry lock is poisoned");
+            let (_, reranker) = held.as_ref()?;
+            Arc::clone(reranker)
+        };
+        let mut reranker = held.lock().expect("the reranker lock is poisoned");
+        Some(reranker.rank(query, documents).map(|ranked| {
+            let mut scores = vec![0.0; documents.len()];
+            for one in ranked {
+                scores[one.position] = one.score;
+            }
+            scores
+        }))
+    }
+
+    /// The execution plans of the reranker if this process has loaded it,
+    /// as [`reranker_role`]. The handle is cloned out from under the registry
+    /// lock first, as in [`counted`](Self::counted).
+    fn reranker_plans(&self) -> Vec<(String, memory_index::PlanUse)> {
+        let reranker = held_now(self.reranker.as_ref())
+            .and_then(|held| held.as_ref().map(|(_, reranker)| Arc::clone(reranker)));
+        let plans = reranker
+            .and_then(|reranker| held_now(reranker.as_ref()).map(|reranker| reranker.plans()))
+            .unwrap_or_default();
+        plans
+            .into_iter()
+            .map(|plan| (reranker_role(), plan))
+            .collect()
+    }
+
+    /// Gives back the embedder if no open engine is holding it any more.
+    ///
+    /// **Costs 1.6 GB to hold and 29 MB not to.** Measured on a server over
+    /// the 13,014-document project, four cores: it is 29 MB resident having
+    /// answered a command that touches no model, 1,625 MB after the first
+    /// embedding, and 1,628 MB after five more -- so the whole of it is paid
+    /// when the weights load and inference adds nothing. A server that served
+    /// a burst this morning holds all of it for as long as it lives.
+    ///
+    /// Releasing it is only half the saving, and the half that does not show
+    /// up in `smaps` without the other. Dropping the model returns its pages
+    /// to the C heap rather than to the kernel: resident falls from 2,263 MB
+    /// to 1,000, and the gigabyte that stays is free heap the allocator is
+    /// holding. `server.rs` asks for that back with `malloc_trim`, after which
+    /// it is 88 to 101 MB over three runs -- 96% of it returned.
+    ///
+    /// The timestamp here is only a lower bound on idleness, and the strong
+    /// count is what makes this correct. An embedder is handed out when an
+    /// *engine* opens rather than per search, so a busy server can have a
+    /// last-used of hours ago -- but every engine holding one keeps the count
+    /// above one, so the release cannot take a model anything is using. What
+    /// actually decides this is therefore the engine registry closing its idle
+    /// entries first; this is the second half of that, and on its own it
+    /// releases nothing.
+    /// A model still loading is not idle; skip this tick rather than block
+    /// the server's upkeep on its registry lock.
+    pub fn release_idle_embedder(&self) -> bool {
+        let mut loaded = match self.loaded.try_lock() {
+            Ok(loaded) => loaded,
+            Err(TryLockError::WouldBlock) => return false,
+            Err(TryLockError::Poisoned(_)) => panic!("the model registry lock is poisoned"),
+        };
+
+        let idle = loaded.as_ref().is_some_and(|(last_used, embedder)| {
+            is_idle(*last_used, Instant::now(), self.settings.idle())
+                && Arc::strong_count(embedder) == 1
+        });
+        if idle {
+            *loaded = None;
+        }
+        idle
+    }
+
+    /// Gives back the reranker if nothing has asked for it lately.
+    ///
+    /// For a resident process to call on a schedule; a command that exits
+    /// after one search has nothing to give back. Returns whether it released
+    /// it, so the caller can say so in a log rather than guess.
+    ///
+    /// A reranker a search is *using* is never released, even if the last hand-out
+    /// was long enough ago -- a long rerank over a large shortlist is exactly
+    /// that case. Dropping the registry's handle while a search holds its own
+    /// would not free anything, it would only make the next search load a
+    /// second copy alongside the first, which is the opposite of the point.
+    /// A model still loading is not idle; the next upkeep tick can retry.
+    pub fn release_idle_reranker(&self) -> bool {
+        let mut held = match self.reranker.try_lock() {
+            Ok(held) => held,
+            Err(TryLockError::WouldBlock) => return false,
+            Err(TryLockError::Poisoned(_)) => panic!("the reranker registry lock is poisoned"),
+        };
+
+        let idle = held.as_ref().is_some_and(|(last_used, reranker)| {
+            is_idle(*last_used, Instant::now(), self.settings.idle())
+                && Arc::strong_count(reranker) == 1
+        });
+        if idle {
+            *held = None;
+        }
+        idle
+    }
+}
+
+/// The provider label the reranker's plans are reported under:
+/// `reranking accurate`, the name it had as a tier, so evaluation records
+/// written before and after it was the only one compare.
+fn reranker_role() -> String {
+    format!("reranking {}", memory_index::reranking::TIER)
+}
+
+/// `lock` if it is free now, read through a poison: for a caller that must
+/// neither wait nor panic, such as a report written while a run fails.
+fn held_now<T>(lock: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
+    match lock.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    }
+}
+
+/// Whether something last wanted at `last_used` has been unwanted long enough.
+///
+/// Its own function because it is the whole of the policy, and a policy inside
+/// a closure inside a lock is a policy with no test.
+fn is_idle(last_used: Instant, now: Instant, idle: Duration) -> bool {
+    now.saturating_duration_since(last_used) >= idle
+}
+
+/// A memory's content hash, as the ledger stores it.
+///
+/// Part of what recording a memory means rather than a detail of the caller:
+/// the ledger uses it to recognise the same content arriving twice, so two
+/// callers computing it two ways would be two callers disagreeing about what
+/// the same memory is. A file's record hashes the file's text the same way.
+pub fn content_hash(content: &str) -> String {
+    use sha2::Digest as _;
+    format!("{:x}", sha2::Sha256::digest(content.as_bytes()))
+}
+
+/// Where a section of a file named `topic` has its evidence filed, for a
+/// caller that addresses its source directly.
+pub fn file_locator(topic: &str) -> String {
+    locator(SourceKind::File, topic)
+}
+
+/// Where a topic's evidence of `kind` is filed: `manual:{topic}` for what was
+/// written by hand, `file:{topic}` for a section of a file, whose name is the
+/// file's path and the headings it sits under.
+fn locator(kind: SourceKind, topic: &str) -> String {
+    match kind {
+        SourceKind::Manual => format!("manual:{topic}"),
+        SourceKind::File => format!("file:{topic}"),
+    }
+}
+
+impl Engine {
+    /// Opens everything a search or a write needs.
+    ///
+    /// The access mode is the caller's to state. A read-write handle excludes
+    /// every other one, readers included, so a command that only queries and
+    /// asks for one turns two simultaneous searches into one search and one
+    /// wait.
+    pub async fn open(
+        workspace: &Workspace,
+        project: &str,
+        vector_index: VectorIndex,
+        access: Access,
+        settings: &Settings,
+    ) -> Result<Self> {
+        let database = Database::open(workspace, Connections::PerCommand, &settings.store).await?;
+        let models = Models::new(workspace, settings.clone());
+        Self::assemble(
+            database,
+            &models,
+            workspace,
+            project,
+            vector_index,
+            access,
+            false,
+        )
+        .await
+    }
+
+    /// Opens against a database that is already up.
+    ///
+    /// `Database::open` probes the cluster and runs the migrations, which is
+    /// right once per process and wasteful once per request. A caller holding
+    /// a database -- which is what a resident server is -- passes it in.
+    pub async fn attached(
+        database: Database,
+        models: &Models,
+        workspace: &Workspace,
+        project: &str,
+        vector_index: VectorIndex,
+        access: Access,
+    ) -> Result<Self> {
+        Self::assemble(
+            database,
+            models,
+            workspace,
+            project,
+            vector_index,
+            access,
+            false,
+        )
+        .await
+    }
+
+    /// Rebuilding, against a database that is already up.
+    ///
+    /// Discarding before opening rather than overwriting in place is what
+    /// makes a rebuild a rebuild: an overwrite leaves behind anything the
+    /// ledger no longer has, which is the drift the rebuild exists to remove.
+    pub async fn rebuilding_attached(
+        database: Database,
+        models: &Models,
+        workspace: &Workspace,
+        project: &str,
+        vector_index: VectorIndex,
+    ) -> Result<Self> {
+        Self::assemble(
+            database,
+            models,
+            workspace,
+            project,
+            vector_index,
+            Access::ReadWrite,
+            true,
+        )
+        .await
+    }
+
+    async fn assemble(
+        database: Database,
+        models: &Models,
+        workspace: &Workspace,
+        project: &str,
+        vector_index: VectorIndex,
+        access: Access,
+        discard: bool,
+    ) -> Result<Self> {
+        let project = repository::ensure_project(database.pool(), project).await?;
+
+        // The index is per project, so the identity has to be resolved before
+        // the index can be located at all.
+        let dir = workspace.index_dir(project.id);
+        let legacy = workspace.legacy_index_dir();
+
+        // How large a segment should be follows how much there is to hold, and
+        // a collection records the answer when it is created, so the count has
+        // to be in hand before the index is opened.
+        let documents = repository::topic_count(database.pool(), project.id).await?;
+
+        // A rebuild waits out a reshape of this index, and holds it off until
+        // `reindex` finishes: both move the directory. Every open first puts
+        // back what a reshape that died mid-swap left aside, so a rebuild can
+        // lend its vectors and anything else finds the index rather than
+        // creating an empty one -- but not while a reshape is running here,
+        // when the directory is that reshape's to move.
+        let exclusion = crate::reshape::exclusive(&dir);
+        let exclusive = if discard {
+            Some(exclusion.lock_owned().await)
+        } else {
+            exclusion.try_lock_owned().ok()
+        };
+        if exclusive.is_some() {
+            off_the_runtime(|| memory_index::Reshape::recover(&dir))?;
+        }
+        // Only a rebuild keeps it past the open.
+        let exclusive = exclusive.filter(|_| discard);
+
+        let (index, previous) = off_the_runtime(|| {
+            // Set aside rather than deleted, so the rebuild can take the
+            // vectors it still holds instead of embedding every memory again.
+            let previous = if discard {
+                let previous = Previous::set_aside(&dir)?;
+                // A rebuild is also the migration off the shared layout, which
+                // is what the error about it tells the caller to run.
+                ProjectionIndex::discard(&legacy)?;
+                previous
+            } else {
+                None
+            };
+
+            let index = ProjectionIndex::open_as(
+                &dir,
+                &legacy,
+                vector_index,
+                access,
+                documents,
+                models.settings().grain,
+            )?;
+            // The model is not loaded here. It was, and that made opening an
+            // engine cost the weights -- see the `embedder` field. What is lost
+            // is that a cold model's download used to surface at open rather
+            // than at the first embedding; what is gained is every command
+            // that does not embed.
+            Ok::<_, memory_index::IndexError>((
+                Arc::new(index) as Arc<dyn Projection + Send + Sync>,
+                previous,
+            ))
+        })?;
+
+        Ok(Self {
+            database,
+            worker: format!("{}:{}", hostname(), std::process::id()),
+            // Taken from the index rather than built here, so what this
+            // tokenizes with is what the index tokenized with. Two segmenters
+            // would be the same code today and a divergence the first time
+            // either side changed.
+            segmenter: index.segmenter(),
+            widest_name: Arc::default(),
+            unflushed: Arc::default(),
+            syncing: Arc::default(),
+            index: Arc::new(Mutex::new(index)),
+            dir,
+            access,
+            rebuilding: Arc::new(Mutex::new(exclusive.map(|exclusive| Rebuilding {
+                previous,
+                _exclusive: exclusive,
+            }))),
+            embedder: std::sync::OnceLock::new(),
+            vector_index,
+            models: models.clone(),
+            preloads: Preloads::default(),
+            project: project.id,
+        })
+    }
+
+    /// The projection. One caller at a time.
+    ///
+    /// This was a read-write lock, on the reading that queries are read-only
+    /// and may as well run together. The engine does not agree. Twenty writers
+    /// and twenty readers against one index wedged it inside the engine's own
+    /// code -- forty-six of its threads asleep on futexes with no caller of
+    /// ours above them, four of ours stopped inside a query, and no processor
+    /// time being used by any of them for thirty-five minutes. The same run
+    /// with writers alone passes, and the same run with this lock made
+    /// exclusive passes for the full five minutes. So concurrent queries are
+    /// the thing it cannot do, and an exclusive lock is what it costs to say
+    /// so.
+    ///
+    /// It costs less than it sounds. A search spends about half its time in a
+    /// forward pass, and the model is behind a mutex already, so two searches
+    /// were never going to overlap by much; what is given up is a few
+    /// milliseconds of index work per query, and only between callers sharing
+    /// one project.
+    ///
+    /// # Lock order
+    ///
+    /// Anything taking both the model and the index takes the **model first**.
+    /// Reversing it is what deadlocks: a rebuild holding the index and waiting
+    /// for the model, against a search holding the model and waiting for the
+    /// index. Neither is doing anything wrong on its own, which is why the
+    /// order is written here rather than left to be noticed.
+    ///
+    /// A poisoned lock means a previous request panicked while holding the
+    /// index, so what it holds is whatever that panic left. Failing here is
+    /// the honest outcome: the alternative is serving from state nobody
+    /// finished writing.
+    pub(crate) fn index(&self) -> MutexGuard<'_, Arc<dyn Projection + Send + Sync>> {
+        self.index.lock().expect("the index lock is poisoned")
+    }
+
+    /// Which vector index this project's index was built with.
+    pub fn vector_index(&self) -> VectorIndex {
+        self.vector_index
+    }
+
+    /// What text this project's vectors are embedded from. Public because a
+    /// measurement comparing two encodings has to be able to assert which one
+    /// each side holds.
+    pub fn passage(&self) -> memory_index::Passage {
+        self.index().passage()
+    }
+
+    /// What share of this project's documents the vector graph covers.
+    ///
+    /// Public because it is the premise of every retrieval measurement taken
+    /// through this engine, and an unasserted premise is how a vector channel
+    /// came to answer from an exhaustive scan for a whole release while the
+    /// HNSW parameters it was configured with described a structure nothing
+    /// had built. A latency or recall figure taken below 1.0 here is a figure
+    /// for a different object, so a harness that cannot read this cannot say
+    /// what it measured.
+    pub fn vector_index_completeness(&self) -> Result<f32> {
+        Ok(off_the_runtime(|| {
+            self.index().vector_index_completeness()
+        })?)
+    }
+
+    /// How many documents this project's projection holds.
+    ///
+    /// Public for the same reason as
+    /// [`vector_index_completeness`](Self::vector_index_completeness), and it
+    /// is the half that stops the other one passing vacuously: an *empty*
+    /// projection reports a completeness of 1.0, because everything it holds
+    /// is indexed and it holds nothing. So "the graph covers everything" is
+    /// only a claim about a graph once something is in there.
+    /// How this project's index is segmented, against what the policy wants.
+    ///
+    /// Resegmenting means recreating the collection --
+    /// `set_max_doc_count_per_segment` on an open one returns `Ok` and changes
+    /// nothing, which ADR 0001 records. [`reshape`](Self::reshape) does that
+    /// by copying the index while it is served, and a server runs it on its
+    /// own; `pamin reindex` fixes it at once.
+    pub fn segmentation(&self) -> Result<memory_index::Segmentation> {
+        Ok(self.index().segmentation()?)
+    }
+
+    pub fn indexed_documents(&self) -> Result<u64> {
+        Ok(off_the_runtime(|| self.index().document_count())?)
+    }
+
+    /// How wide the widest topic name in this project is, in tokens.
+    ///
+    /// Read once and remembered. It is asked at the top of every search -- to
+    /// decide how long a run of the query could be a name -- and it answers a
+    /// `MAX` over a column that only grows: names cannot be renamed and nothing
+    /// deletes them, so a value this process has seen can only become stale by
+    /// being too low, and only when some other writer creates a wider name.
+    ///
+    /// Too low costs a search one graph seed, which the next search gets right
+    /// once this process sees the wider name itself. That is the whole reason
+    /// this is on the search path and not on the write path, where the same
+    /// staleness would retract edges rather than miss them.
+    async fn widest_name(&self) -> Result<usize> {
+        use std::sync::atomic::Ordering;
+
+        let known = self.widest_name.load(Ordering::Relaxed);
+        if known > 0 {
+            return Ok(known);
+        }
+
+        let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
+        self.remember_widest_name(widest);
+        Ok(widest)
+    }
+
+    /// Raises what this process believes the widest name to be.
+    ///
+    /// Never lowers it. Two writers racing here both win: the larger stands,
+    /// which is the direction that cannot lose a lookup.
+    pub(crate) fn remember_widest_name(&self, tokens: usize) {
+        self.widest_name
+            .fetch_max(tokens, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The claims held open by writes the index has and the disk does not.
+    pub(crate) fn unflushed(
+        &self,
+    ) -> std::sync::LockResult<MutexGuard<'_, Vec<memory_store::jobs::Job>>> {
+        self.unflushed.lock()
+    }
+
+    /// The projection, for the one thing that may run while others use it.
+    ///
+    /// Compaction and graph building are the long operation in this system --
+    /// a third of a second for a few hundred files, minutes for a graph over a
+    /// sealed segment -- and they make nothing more correct, only faster. That
+    /// is what makes them safe to run alongside a query, and the engine agrees:
+    /// alibaba/zvec#614 turned Optimize into a brief exclusive seal, a long
+    /// phase holding no schema lock, and a brief exclusive commit, so reads and
+    /// writes proceed through the middle of it. Unlike the concurrency fix this
+    /// index is still waiting on, **that one shipped**, in the 0.7.0 this
+    /// depends on.
+    ///
+    /// So holding [`index`] across it was our own exclusion, not the engine's,
+    /// and it was the whole reason moving upkeep off the writer bought nothing:
+    /// a write waited out a compaction whether or not it was the one running
+    /// it. Taking a handle instead lets the upkeep worker compact while the
+    /// searches it is speeding up are still being answered.
+    ///
+    /// Only this operation gets it. Every other call goes through [`index`],
+    /// because #714 is what that lock is for and it is still unfixed here.
+    ///
+    /// [`index`]: Self::index
+    pub(crate) fn index_for_upkeep(&self) -> Arc<dyn Projection + Send + Sync> {
+        Arc::clone(&self.index())
+    }
+
+    /// The model, loading it the first time anything asks.
+    ///
+    /// One caller at a time, because inference wants `&mut`. Fallible now that
+    /// the load is deferred, and every caller is already inside
+    /// [`off_the_runtime`] -- which it has to be, since loading hundreds of
+    /// megabytes of weights is not something to do on the async runtime.
+    pub(crate) fn embedding(
+        &self,
+    ) -> std::result::Result<std::sync::MutexGuard<'_, Embedder>, memory_index::IndexError> {
+        let held = match self.embedder.get() {
+            Some(held) => held,
+            None => {
+                // Loaded outside the cell's initializer because that cannot
+                // fail. Two callers racing here both ask the registry, which
+                // hands out the same model to both -- so the loser discards an
+                // `Arc` clone rather than a second copy of the weights.
+                let loaded = self.models.embedder()?;
+                self.embedder.get_or_init(|| loaded)
+            }
+        };
+        Ok(held.lock().expect("the embedder lock is poisoned"))
+    }
+
+    /// Adds one topic state to the projection index, without flushing.
+    ///
+    /// The flush belongs to whoever is running a group of these, not here.
+    /// Every buffered write costs one flush and one set of files, and an index
+    /// built a document at a time is measurably a different object than the
+    /// same documents written in batches: 384 sentences cost 1,161 files and
+    /// 1,893 MB flushed one at a time, and 35 files and 61 MB flushed every
+    /// thirty-two. Rate went with it, 13.6 documents a second against 328.
+    ///
+    /// So this leaves the writes buffered and [`drain_cascade`] flushes the
+    /// round. `pub(crate)` because that contract cannot be honoured by a caller
+    /// outside this crate, which would get an index that never became visible.
+    ///
+    /// [`drain_cascade`]: Self::drain_cascade
+    pub(crate) async fn index_state(&self, state: &TopicState) -> Result<()> {
+        let spans = self
+            .spans(std::slice::from_ref(state))
+            .await?
+            .pop()
+            .expect("the spans of one state");
+        off_the_runtime(|| {
+            let mut embedder = self.embedding()?;
+            let passages: Vec<&str> = spans.iter().map(|span| span.passage.as_str()).collect();
+            // The plan that produced every vector of the pass, even one the
+            // pass itself moved the model to.
+            let (embeddings, encoding) = embedder.encode_passages(&passages)?;
+            let documents: Vec<SpanDocument<'_>> = spans
+                .iter()
+                .zip(&embeddings)
+                .enumerate()
+                .map(|(ordinal, (span, embedding))| {
+                    (
+                        state.topic_id,
+                        ordinal as u32,
+                        span.text.as_str(),
+                        Some(span.header.as_str()),
+                        embedding.as_slice(),
+                    )
+                })
+                .collect();
+            self.index().replace(&documents, encoding.as_deref())
+        })?;
+        Ok(())
+    }
+
+    /// What each state is indexed as: the spans it is cut into, as this
+    /// project's index cuts memories ([`memory_index::Grain`]), each with the
+    /// text the lexical channels match and the passage its vector is embedded
+    /// from, in the encoding the index was built with
+    /// ([`memory_index::Passage`]). A memory indexed whole is one span, its
+    /// content, embedded as it always was.
+    ///
+    /// Asks for the names only when the encoding or the cut uses them, and
+    /// for a whole batch at once.
+    async fn spans(&self, states: &[TopicState]) -> Result<Vec<Vec<Indexed>>> {
+        let (passage, grain) = {
+            let index = self.index();
+            (index.passage(), index.grain())
+        };
+        let names: std::collections::HashMap<TopicId, String> =
+            if passage == memory_index::Passage::Content && grain.cap().is_none() {
+                std::collections::HashMap::new()
+            } else {
+                let ids: Vec<TopicId> = states.iter().map(|state| state.topic_id).collect();
+                repository::topics_by_id(self.database.pool(), self.project, &ids)
+                    .await?
+                    .into_iter()
+                    .map(|(topic, name, _)| (topic, name))
+                    .collect()
+            };
+        // What a memory is cut into here is what a search shows a window of,
+        // so the cut is kept for the searches that follow (see `Cuts`).
+        let cut = |state: &TopicState, name: &str, counter: Option<&SpanTokens>| {
+            let content = state.content.as_str();
+            match (grain.cap(), counter) {
+                (Some(cap), Some(counter)) => {
+                    let spans = memory_index::spans::pack(name, content, counter, cap);
+                    let indexed = spans
+                        .iter()
+                        .map(|span| Indexed {
+                            passage: passage.render(&span.header, &span.text),
+                            text: span.text.clone(),
+                            header: span.header.clone(),
+                        })
+                        .collect();
+                    self.models.cuts.put(state.id, cap, name, spans);
+                    indexed
+                }
+                _ => vec![Indexed {
+                    text: content.to_string(),
+                    header: name.to_string(),
+                    passage: passage.render(name, content),
+                }],
+            }
+        };
+        Ok(off_the_runtime(|| {
+            let counter = match grain.cap() {
+                Some(_) => Some(self.models.span_tokens()?),
+                None => None,
+            };
+            Ok::<_, memory_index::IndexError>(
+                states
+                    .iter()
+                    .map(|state| {
+                        let name = names.get(&state.topic_id).map_or("", String::as_str);
+                        cut(state, name, counter.as_deref())
+                    })
+                    .collect(),
+            )
+        })?)
+    }
+
+    /// The same for many states, in one forward pass.
+    ///
+    /// A cascade round claims up to sixty-four jobs and used to index them one
+    /// at a time, which is sixty-four forward passes where the model can do one
+    /// -- and `Embedder::embed_passages` has been there the whole time, used
+    /// only by the rebuild. The flush in the same round was already batched,
+    /// with a comment explaining why batching it mattered, so the pass was the
+    /// half that got left.
+    ///
+    /// **Score-neutral, and that is asserted rather than assumed.**
+    /// `memory-index`'s `a_batch_changes_nothing_on` compares `embed_passages`
+    /// against `embed_passage` position by position across profiles and
+    /// requires the vectors to be identical, so an index built in batches holds
+    /// what an index built one at a time would have held. (The reranker's
+    /// length-sorted batching is *not* score-neutral and says so where it
+    /// lives; that is a different model and a different code path.)
+    ///
+    /// One model lock and one index lock for the whole batch rather than one
+    /// each per state, which is the other saving and the reason this is one
+    /// closure rather than a loop over the single-state form.
+    ///
+    /// A state whose document the index already holds with exactly this text,
+    /// embedded under the plan the model runs on now, is skipped before
+    /// anything is encoded (see [`unheld`]). A topic that went from A to B and
+    /// back to A before its coalesced sync drained, or a sync re-run for a
+    /// topic the index is already current on, would otherwise pay a forward
+    /// pass to write the vector that is there. Every document written records
+    /// the plan that embedded it, which is what the next sync compares.
+    ///
+    /// The caller holds [`Engine::syncing`] from reading `states` until this
+    /// returns. Skipping a held state is writing it at the moment of the
+    /// check rather than after a pass, so nothing else may write the same
+    /// topic in between -- and a sync of the same topic that read an older
+    /// state is exactly such a write.
+    pub(crate) async fn index_states(&self, states: &[TopicState]) -> Result<()> {
+        if states.is_empty() {
+            return Ok(());
+        }
+        let spans = self.spans(states).await?;
+        off_the_runtime(|| {
+            // The model before the index, as everywhere. Loaded even when
+            // every state turns out held: which plan it runs on is the
+            // question the check asks.
+            let mut embedder = self.embedding()?;
+            let sources: Vec<Vec<SpanSource<'_>>> =
+                spans.iter().map(|spans| Indexed::sources(spans)).collect();
+            let passages: Vec<Vec<&str>> = spans
+                .iter()
+                .map(|spans| spans.iter().map(|span| span.passage.as_str()).collect())
+                .collect();
+            let wanted: Vec<(TopicId, &[SpanSource<'_>])> = states
+                .iter()
+                .zip(&sources)
+                .map(|(state, sources)| (state.topic_id, sources.as_slice()))
+                .collect();
+            let passages: Vec<&[&str]> = passages.iter().map(Vec::as_slice).collect();
+            write_unheld(|| self.index(), &mut *embedder, &wanted, &passages)
+        })?;
+        Ok(())
+    }
+
+    /// Records one memory: the filter's verdict, its language, and one
+    /// transaction.
+    ///
+    /// Everything a memory costs except the index, which the outbox catches up
+    /// on afterwards. This is the write API, and it is here rather than in the
+    /// CLI because it *was* in the CLI:
+    /// `memory-cli::command::write::record` was what `import` called too, so a
+    /// module of the command layer had become the only way to record a memory
+    /// correctly. The interfaces `README.md` lists as unbuilt would each have
+    /// had to call it or copy it, and copying it is how two callers start
+    /// recording memories by different rules.
+    ///
+    /// [`write`](Self::write) stays what it was and is what this calls: the
+    /// transaction, given a verdict somebody else reached. The difference
+    /// between the two is the whole of what this adds -- looking up what the
+    /// topic says now, judging the content against it, and detecting the
+    /// language.
+    pub async fn remember(
+        &self,
+        topic: &str,
+        content: &str,
+        validity: memory_core::Validity,
+    ) -> Result<(memory_core::Verdict, Recorded)> {
+        // Looked up rather than created: a write the filter holds should leave
+        // no trace on the retrieval surface, and an empty topic is a trace.
+        // Promotion is what creates one, inside the write transaction.
+        let current =
+            repository::current_content(self.database.pool(), self.project, topic).await?;
+        let verdict = memory_core::SensoryFilter::default().judge(content, current.as_deref());
+        let recorded = self
+            .record(topic, content, validity, verdict, SourceKind::Manual, None)
+            .await?;
+        Ok((verdict, recorded))
+    }
+
+    /// [`remember`](Self::remember), for a section `pamin ingest` cut out of a
+    /// file -- which returns `None` and writes nothing when the section says
+    /// what its topic already does, or, for one the filter holds, what it said
+    /// when it was last held.
+    ///
+    /// Re-ingesting a file is the ordinary case, not the exception, and most of
+    /// a re-ingested file has not changed. `remember` would record each
+    /// unchanged section as evidence the filter holds: a full copy of it in
+    /// `source_versions` on every ingest, for a version nothing reads. Asked of
+    /// the filter's own verdict rather than compared here, so "unchanged" means
+    /// exactly what a restatement means everywhere else.
+    ///
+    /// `root` is the directory the file was ingested from, filed with the
+    /// section's source so that an ingest of another tree that names its
+    /// files alike can tell the two apart. A section that writes nothing does
+    /// not file it: [`repository::set_roots_at`] does that for a whole ingest's
+    /// unchanged sections in one statement.
+    pub async fn remember_section(
+        &self,
+        topic: &str,
+        content: &str,
+        validity: memory_core::Validity,
+        root: &str,
+    ) -> Result<Option<(memory_core::Verdict, Recorded)>> {
+        let current =
+            repository::current_content(self.database.pool(), self.project, topic).await?;
+        let verdict = memory_core::SensoryFilter::default().judge(content, current.as_deref());
+        if verdict.rejection == Some(memory_core::Rejection::Restatement) {
+            return Ok(None);
+        }
+        // A section the filter holds never gets a topic, so the read above
+        // finds no content to restate, and it would be held again -- and its
+        // evidence copied again -- on every ingest. Its own last evidence is
+        // what it is compared with instead. Not for a topic that has content:
+        // a section cut down below the filter's minimum is held over it, and
+        // the ingest retires it, after which it has none and this applies.
+        if !verdict.is_promoted() && current.is_none() {
+            let last = repository::latest_hash_at(
+                self.database.pool(),
+                self.project,
+                &locator(SourceKind::File, topic),
+            )
+            .await?;
+            if last.as_deref() == Some(content_hash(content).as_str()) {
+                return Ok(None);
+            }
+        }
+        let recorded = self
+            .record(
+                topic,
+                content,
+                validity,
+                verdict,
+                SourceKind::File,
+                Some(root),
+            )
+            .await?;
+        Ok(Some((verdict, recorded)))
+    }
+
+    /// Takes a section of a file off the retrieval surface, because the file
+    /// no longer has it: every version of its topic soft deleted, its document
+    /// and the edges its content derived owed removal. History, evidence and
+    /// the topic's name stay, and ingesting the section again brings it back.
+    ///
+    /// Only a topic whose every source is a file's. One somebody also wrote
+    /// by hand is theirs as well as the file's, and is left alone, as is a
+    /// name with no topic or nothing surviving under it.
+    ///
+    /// And only while the topic still says what `seen` -- the state the
+    /// ingest found it at -- says: another write since, a concurrent ingest
+    /// that found the section back in its file among them, is newer than the
+    /// question this answers.
+    pub async fn retire_section(&self, topic: &str, seen: TopicStateId) -> Result<Retired> {
+        let mut transaction = self.database.pool().begin().await?;
+
+        let Some(locked) = repository::lock_topic(&mut transaction, self.project, topic).await?
+        else {
+            return Ok(Retired::Absent);
+        };
+        match locked.current {
+            None => return Ok(Retired::Absent),
+            Some(current) if current != seen => return Ok(Retired::Changed),
+            Some(_) => {}
+        }
+        if repository::source_at(
+            &mut *transaction,
+            self.project,
+            &locator(SourceKind::Manual, topic),
+        )
+        .await?
+        {
+            return Ok(Retired::Kept);
+        }
+        let retired =
+            repository::retire_topic(&mut transaction, self.project, locked.topic.id).await?;
+        transaction.commit().await?;
+
+        Ok(if retired {
+            Retired::Retired
+        } else {
+            Retired::Absent
+        })
+    }
+
+    /// Gives a section of a file the name it now goes by -- its file moved, or
+    /// a heading above it renamed -- keeping its topic: its history, its edges
+    /// and its evidence. The old name stays as an alias `pamin read` and
+    /// `pamin link` resolve, and the projection is owed the topic again, since
+    /// its name is read into every span's header.
+    ///
+    /// As [`retire_section`](Self::retire_section) is: only a topic whose every
+    /// source is a file's, and only while it still says what `seen` says.
+    /// Returns whether it renamed; when it did not -- one of those, or a topic
+    /// already under the new name -- nothing changed, and the section is
+    /// recorded under its new name as a new one would be.
+    pub async fn rename_section(&self, from: &str, to: &str, seen: TopicStateId) -> Result<bool> {
+        let mut transaction = self.database.pool().begin().await?;
+        let Some(locked) = repository::lock_topic(&mut transaction, self.project, from).await?
+        else {
+            return Ok(false);
+        };
+        if locked.current != Some(seen)
+            || repository::source_at(
+                &mut *transaction,
+                self.project,
+                &locator(SourceKind::Manual, from),
+            )
+            .await?
+        {
+            return Ok(false);
+        }
+        let renamed = repository::rename_topic(
+            &mut transaction,
+            self.project,
+            locked.topic.id,
+            (from, to),
+            (
+                &locator(SourceKind::File, from),
+                &locator(SourceKind::File, to),
+            ),
+        )
+        .await?;
+        if renamed {
+            transaction.commit().await?;
+        }
+        Ok(renamed)
+    }
+
+    /// The rest of a memory once the filter has judged it: its language, and
+    /// the transaction.
+    async fn record(
+        &self,
+        topic: &str,
+        content: &str,
+        validity: memory_core::Validity,
+        verdict: memory_core::Verdict,
+        kind: SourceKind,
+        root: Option<&str>,
+    ) -> Result<Recorded> {
+        let (language, confidence) = match memory_index::detect_language(content) {
+            Some((language, confidence)) => (Some(language), Some(confidence)),
+            None => (None, None),
+        };
+
+        self.write_from(
+            &Write {
+                topic,
+                content,
+                content_hash: &content_hash(content),
+                verdict: verdict.decision,
+                reason: verdict.reason(),
+                promoted: verdict.is_promoted(),
+                language: language.as_deref(),
+                language_confidence: confidence,
+                observed_at: OffsetDateTime::now_utc(),
+                validity,
+            },
+            kind,
+            root,
+        )
+        .await
+    }
+
+    /// Records a memory: evidence, the span over it, and -- when the filter
+    /// promotes it -- a topic state and the work the projection owes it.
+    ///
+    /// All of it in one transaction, and that transaction touches nothing
+    /// outside PostgreSQL. Deriving the embedding and writing the projection
+    /// used to happen here, inline, which meant a write depended on the index
+    /// being reachable and on a model being loaded; now the write commits a row
+    /// in the outbox saying what is owed, and the cascade pays it. That is the
+    /// first thing an outbox buys, before any question of throughput: the write
+    /// succeeds or fails on the ledger alone.
+    ///
+    /// The topic is created only when something is promoted under it, and only
+    /// inside this transaction, so a held write leaves no name behind.
+    pub async fn write(&self, request: &Write<'_>) -> Result<Recorded> {
+        self.write_from(request, SourceKind::Manual, None).await
+    }
+
+    /// [`write`](Self::write), for evidence of `kind`.
+    ///
+    /// A section of a file differs from a manual write in two things only: its
+    /// evidence is filed as the file's, and its topic is kept out of the name
+    /// index (see [`repository::create_topic_unnamed`]) -- so it owes no
+    /// backfill either, since a backfill looks for memories naming a topic
+    /// that cannot be named.
+    ///
+    /// `root`, for a section of a file, is the directory it was ingested from.
+    async fn write_from(
+        &self,
+        request: &Write<'_>,
+        kind: SourceKind,
+        root: Option<&str>,
+    ) -> Result<Recorded> {
+        let mut transaction = self.database.pool().begin().await?;
+
+        // Writes to one topic share a source, so their evidence forms a single
+        // chain rather than a new source per write. Per topic for a file's
+        // sections too, rather than one source per file: the source row is
+        // locked for the whole transaction, and one row for a file would
+        // record its sections one at a time.
+        let (source, first) = repository::ensure_source_created(
+            &mut transaction,
+            self.project,
+            kind,
+            &locator(kind, request.topic),
+        )
+        .await?;
+        if let Some(root) = root {
+            repository::set_source_root(&mut *transaction, source, root).await?;
+        }
+        // Whether this write creates the topic, and files its name with it.
+        let mut created = false;
+
+        // Evidence always, whatever the verdict. That is what makes a rejection
+        // recoverable instead of a loss.
+        let evidence = repository::Evidence {
+            content: request.content,
+            content_hash: request.content_hash,
+            decision: request.verdict,
+            reason: request.reason,
+            language: request.language,
+            language_confidence: request.language_confidence,
+        };
+
+        let (version, state) = if request.promoted {
+            let (topic, found) = match repository::lock_topic(
+                &mut transaction,
+                self.project,
+                request.topic,
+            )
+            .await?
+            {
+                Some(topic) => (topic, true),
+                None if kind == SourceKind::File => (
+                    repository::create_topic_unnamed(&mut transaction, self.project, request.topic)
+                        .await?,
+                    false,
+                ),
+                None => {
+                    created = true;
+                    (
+                        self.create_topic(&mut transaction, request.topic).await?,
+                        false,
+                    )
+                }
+            };
+
+            // Committed with the state rather than after it. A crash between
+            // the two would otherwise leave a memory the ledger knows about and
+            // the projection never hears of -- which is the failure an outbox
+            // exists to make impossible, and the one a `tokio::spawn` here
+            // would leave wide open.
+            //
+            // The third is for a topic that did not exist a moment ago, which
+            // may already be named by memories written before it. Finding them
+            // is a scan, so it is scheduled rather than paid for by whoever
+            // created the topic -- and it is skipped entirely for a rewrite,
+            // which is why the three cannot simply be one kind.
+            let mut owed = vec![JobKind::SyncTopicIndex, JobKind::DeriveMentions];
+            if !found && kind != SourceKind::File {
+                owed.push(JobKind::BackfillMentions);
+            }
+
+            // The evidence, its span, the state, the pointer and the jobs in
+            // one statement, now that both locks are held.
+            let (version, _, state) = repository::append_promoted(
+                &mut transaction,
+                self.project,
+                source,
+                &evidence,
+                &repository::Promotion {
+                    topic: &topic,
+                    observed_at: request.observed_at,
+                    validity: request.validity,
+                    owed: &owed,
+                },
+            )
+            .await?;
+            // A section of a file written by hand no longer says what its file
+            // does, so the file's record, which says it does, goes with the
+            // write: the next ingest reads the file rather than trusting it.
+            if kind == SourceKind::Manual && found {
+                repository::forget_file_record_of(&mut *transaction, self.project, request.topic)
+                    .await?;
+            }
+            (version, Some(state))
+        } else {
+            let (version, _) =
+                repository::append_evidence(&mut transaction, self.project, source, &evidence)
+                    .await?;
+            (version, None)
+        };
+
+        // The first time somebody writes a topic by hand that `pamin ingest`
+        // created, the name ingest left out of the index goes in, with the
+        // backfill a new name owes: the topic is theirs too now, and a name
+        // somebody wrote is one a memory may name. Only on that first write --
+        // the one that creates its manual source -- so every later write runs
+        // the statements it ran before.
+        if kind == SourceKind::Manual && first && !created {
+            let tokens = off_the_runtime(|| self.segmenter.name_sequence(request.topic));
+            if let Some(topic) = repository::name_topic(
+                &mut *transaction,
+                self.project,
+                request.topic,
+                &tokens.join(" "),
+                tokens.len(),
+            )
+            .await?
+            {
+                memory_store::jobs::enqueue(
+                    &mut *transaction,
+                    self.project,
+                    JobKind::BackfillMentions,
+                    Some(topic.0),
+                )
+                .await?;
+                self.remember_widest_name(tokens.len());
+            }
+        }
+
+        transaction.commit().await?;
+
+        Ok(Recorded {
+            source_version: version.version,
+            state,
+        })
+    }
+
+    /// Creates a topic and files its name in the index that answers "who is
+    /// named here", returning it locked.
+    ///
+    /// Tokenized here rather than in the store because the segmenter is what
+    /// decides where a name begins and ends, and both sides of the eventual
+    /// comparison have to have gone through it. In the same statement as the
+    /// topic, because a topic that exists and is missing from the name index
+    /// is a topic no memory will ever derive an edge to, and nothing would
+    /// report it.
+    async fn create_topic(
+        &self,
+        connection: &mut PgConnection,
+        name: &str,
+    ) -> Result<repository::LockedTopic> {
+        let tokens = off_the_runtime(|| self.segmenter.name_sequence(name));
+        let topic = repository::create_topic_named(
+            connection,
+            self.project,
+            name,
+            &tokens.join(" "),
+            tokens.len(),
+        )
+        .await?;
+        // This process now knows of a name at least this wide, whether or not
+        // it had asked. Raising it here is what keeps the search path's
+        // remembered value from going stale against writes made through it.
+        self.remember_widest_name(tokens.len());
+        Ok(topic)
+    }
+
+    /// Restates the edges a topic's current content implies.
+    ///
+    /// In a topic-centred graph the topics are the entities, so a memory naming
+    /// another topic is entity linking with no model in the path. Returns how
+    /// many edges this call actually added, which is zero when the content is
+    /// unchanged: asserting an edge is idempotent, so rewriting a memory does
+    /// not grow the ledger.
+    ///
+    /// Restates rather than adds: what the content no longer names is closed.
+    /// The two are separate statements, and a crash between them leaves edges
+    /// this content does not claim -- which the next run of the job removes,
+    /// because the job asks what the topic says now rather than what changed.
+    /// Asserting first is what keeps it cheap: a name still present is found
+    /// unchanged and written nowhere, and only then is the rest closed, so
+    /// re-deriving an unaltered memory still touches no row.
+    pub async fn derive_mentions(&self, state: &TopicState) -> Result<usize> {
+        let mut connection = self.database.pool().acquire().await?;
+        self.restate_mentions(&mut connection, std::slice::from_ref(state))
+            .await
+    }
+
+    /// Restates which section each of `sections` sits under, as `parents`
+    /// names them: its `part_of` edge, which a search follows to the context a
+    /// section cut out of its file lost.
+    ///
+    /// As [`derive_mentions`](Self::derive_mentions) restates what a memory
+    /// names: asserted first, so an outline that has not changed writes
+    /// nothing, then every derived `part_of` out of `sections` that `parents`
+    /// no longer claims is closed -- a section moved, or its parent gone. Each
+    /// edge is caused by its section's current state. Returns how many edges
+    /// this call added.
+    pub async fn restate_parents(
+        &self,
+        sections: &[String],
+        parents: &[(String, String)],
+    ) -> Result<usize> {
+        let mut names: Vec<String> = sections.to_vec();
+        names.extend(parents.iter().map(|(_, parent)| parent.clone()));
+        names.sort_unstable();
+        names.dedup();
+        let found: std::collections::HashMap<String, repository::Named> =
+            repository::current_named(self.database.pool(), self.project, &names)
+                .await?
+                .into_iter()
+                .map(|named| (named.name.clone(), named))
+                .collect();
+
+        let mut kept: std::collections::BTreeMap<TopicId, Vec<TopicId>> = sections
+            .iter()
+            .filter_map(|section| Some((found.get(section)?.topic, Vec::new())))
+            .collect();
+        let mut claims = Vec::new();
+        for (section, parent) in parents {
+            let (Some(from), Some(to)) = (found.get(section), found.get(parent)) else {
+                continue;
+            };
+            claims.push((
+                from.topic,
+                to.topic,
+                EdgeClaim::derived(EdgeKind::PartOf, from.current, PARENT_CONFIDENCE),
+            ));
+            kept.entry(from.topic).or_default().push(to.topic);
+        }
+
+        let asserted = graph::assert_edges(self.database.pool(), self.project, &claims).await?;
+        let keep: Vec<(TopicId, Vec<TopicId>)> = kept.into_iter().collect();
+        graph::retract_derived_all(self.database.pool(), self.project, EdgeKind::PartOf, &keep)
+            .await?;
+        Ok(asserted
+            .iter()
+            .filter(|assertion| assertion.is_new())
+            .count())
+    }
+
+    /// [`derive_mentions`](Self::derive_mentions) for many states, asking each
+    /// of its questions once for all of them.
+    ///
+    /// A cascade round restates up to sixty-four memories, and one at a time
+    /// that was five statements each -- the widest name, the names in the
+    /// memory, the edges already there, and the retraction -- where each
+    /// question is the same for every memory in the round apart from its
+    /// arguments. So the runs of every memory go into one lookup, the edges
+    /// into one assertion and the retractions into one statement, and the run
+    /// each name matched is what says which memory it belongs to.
+    pub(crate) async fn restate_mentions(
+        &self,
+        connection: &mut PgConnection,
+        states: &[TopicState],
+    ) -> Result<usize> {
+        if states.is_empty() {
+            return Ok(0);
+        }
+
+        // Every run of tokens each memory contains that is short enough to be
+        // somebody's name. A name matches only as a contiguous run, so this is
+        // the complete set of things it could be naming -- and asking the index
+        // for these is the same question the old loop asked of every topic in
+        // the project one at a time, with the cost following the length of the
+        // memory rather than the size of the project.
+        // Asked fresh, never from what this process remembers. A remembered
+        // value can only be too low, and too low here does not mean a missed
+        // edge -- what is not found below is closed as no longer named. See
+        // [`Engine::widest_name`].
+        let widest = repository::widest_topic_name(&mut *connection, self.project).await?;
+        let runs: Vec<Vec<String>> = off_the_runtime(|| {
+            states
+                .iter()
+                .map(|state| runs_of_tokens(&self.segmenter.name_sequence(&state.content), widest))
+                .collect()
+        });
+        let mut asked: Vec<String> = runs.iter().flatten().cloned().collect();
+        asked.sort_unstable();
+        asked.dedup();
+        let mut naming: std::collections::HashMap<String, Vec<TopicId>> =
+            std::collections::HashMap::new();
+        for (run, topic) in
+            repository::names_matching(&mut *connection, self.project, &asked).await?
+        {
+            naming.entry(run).or_default().push(topic);
+        }
+
+        let mut edges = Vec::new();
+        let mut named_now = Vec::with_capacity(states.len());
+        for (state, runs) in states.iter().zip(&runs) {
+            let mut named: Vec<TopicId> = runs
+                .iter()
+                .filter_map(|run| naming.get(run))
+                .flatten()
+                .copied()
+                // A topic naming itself is not a relationship, and the schema
+                // rejects the edge anyway.
+                .filter(|topic| *topic != state.topic_id)
+                .collect();
+            named.sort_unstable();
+            named.dedup();
+            edges.extend(named.iter().map(|target| {
+                (
+                    state.topic_id,
+                    *target,
+                    EdgeClaim::derived(EdgeKind::Mentions, state.id, MENTION_CONFIDENCE),
+                )
+            }));
+            named_now.push((state.topic_id, named));
+        }
+
+        // One transaction: the edges a memory derives are one statement about
+        // what it says, and asserting them separately both cost a commit each
+        // and let a crash tell half of it.
+        let asserted = graph::assert_edges(self.database.pool(), self.project, &edges).await?;
+
+        graph::retract_derived_all(
+            &mut *connection,
+            self.project,
+            EdgeKind::Mentions,
+            &named_now,
+        )
+        .await?;
+
+        Ok(asserted
+            .iter()
+            .filter(|assertion| assertion.is_new())
+            .count())
+    }
+
+    /// Topics whose own name appears in this text.
+    ///
+    /// The other half of "which topic should this go under". `search` answers
+    /// it by content, so it finds a topic only when something written under it
+    /// matches; this asks the name index, so a topic nobody has written much
+    /// about is still findable by what it is called.
+    ///
+    /// Exact on the segmenter's tokens, not a prefix and not a stem: every run
+    /// of words in the text is looked up whole, so `deployment pipeline` finds
+    /// `deployment_pipeline` and `deploy pipeline` does not. That is the same
+    /// question `derive_mentions` asks of a memory, answered against the same
+    /// index, and it is deliberately the strict half of this pair -- the
+    /// forgiving half is the content search beside it.
+    pub async fn topics_named_like(&self, text: &str, limit: u32) -> Result<Vec<String>> {
+        let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
+        let runs = off_the_runtime(|| runs_of_tokens(&self.segmenter.name_sequence(text), widest));
+        let candidates =
+            repository::topics_named_by(self.database.pool(), self.project, &runs).await?;
+        let mut named: Vec<String> =
+            repository::topics_by_id(self.database.pool(), self.project, &candidates)
+                .await?
+                .into_iter()
+                .map(|(_, name, _)| name)
+                .take(limit as usize)
+                .collect();
+        named.sort_unstable();
+        named.dedup();
+        Ok(named)
+    }
+
+    /// Links a newly created topic to memories that already named it.
+    ///
+    /// Without it an edge would appear only when one of those older memories
+    /// happened to be rewritten, so a topic would know less about the past the
+    /// longer that past was.
+    ///
+    /// The name is asked of the index rather than compared against every memory
+    /// in the project. A scan is exact, and at the size this store is built for
+    /// it is also the one operation whose cost is the whole project -- creating
+    /// a topic would segment millions of states to find the handful that name
+    /// it. So the index proposes candidates and [`segmentation::names`]
+    /// disposes: the answer is still the exact one for everything the probe
+    /// returns, and what it can miss is a memory ranked below
+    /// [`BACKFILL_CANDIDATES`] on a conjunction of the name's own words.
+    ///
+    /// Only current states are considered. A mentions edge says what a topic
+    /// says now -- that is what `derive_mentions` restates and what makes the
+    /// edge retractable -- and an edge derived from a superseded version would
+    /// be a claim nothing later revisits.
+    pub(crate) async fn backfill_mentions(&self, topic: TopicId, name: &str) -> Result<usize> {
+        let mut connection = self.database.pool().acquire().await?;
+        self.backfill_all(&mut connection, &[(topic, name.to_string())])
+            .await
+    }
+
+    /// [`backfill_mentions`](Self::backfill_mentions) for many new topics,
+    /// with one lookup of the states every probe returned and one assertion.
+    ///
+    /// The states are read through the pointer on `topics`, so every one of
+    /// them is the state its topic stands for now -- which the per-topic form
+    /// then asked the ledger a second time, in a second statement, and got
+    /// the same answer bar a write landing in between. That write queues its
+    /// own restatement, which is what decides the edges of the content it
+    /// wrote.
+    pub(crate) async fn backfill_all(
+        &self,
+        connection: &mut PgConnection,
+        topics: &[(TopicId, String)],
+    ) -> Result<usize> {
+        if topics.is_empty() {
+            return Ok(0);
+        }
+
+        let candidates: Vec<Vec<TopicId>> = off_the_runtime(|| {
+            topics
+                .iter()
+                .map(|(_, name)| self.index().recall_naming(name, BACKFILL_CANDIDATES))
+                .collect::<std::result::Result<Vec<_>, _>>()
+        })?;
+        let mut wanted: Vec<TopicId> = candidates.iter().flatten().copied().collect();
+        wanted.sort_unstable();
+        wanted.dedup();
+
+        // Only current states are considered: the probe returns topics, and
+        // only the state a topic stands for now can support an edge.
+        let states = repository::current_states_of(&mut *connection, self.project, &wanted).await?;
+        let found: std::collections::HashMap<TopicId, &TopicState> =
+            states.iter().map(|state| (state.topic_id, state)).collect();
+
+        // Off the runtime because this segments every candidate the probes
+        // returned -- up to `BACKFILL_CANDIDATES` documents a topic -- and that
+        // is tens of milliseconds of ICU work that would otherwise run on a
+        // runtime thread and stall every task sharing it. Each candidate once,
+        // however many of the names it is a candidate for.
+        let naming: Vec<(TopicId, memory_core::TopicStateId, TopicId)> = off_the_runtime(|| {
+            let segmenter = &self.segmenter;
+            let sequences: std::collections::HashMap<TopicId, Vec<String>> = states
+                .iter()
+                .map(|state| (state.topic_id, segmenter.name_sequence(&state.content)))
+                .collect();
+            let mut naming = Vec::new();
+            for ((topic, name), candidates) in topics.iter().zip(&candidates) {
+                // The fixed side here is the name, so that is the side prepared.
+                let name = segmenter.name_sequence(name);
+                let mut seen = std::collections::HashSet::new();
+                for candidate in candidates {
+                    let Some(state) = found.get(candidate) else {
+                        continue;
+                    };
+                    if state.topic_id == *topic || !seen.insert(state.topic_id) {
+                        continue;
+                    }
+                    if memory_index::segmentation::names(&sequences[&state.topic_id], &name) {
+                        naming.push((state.topic_id, state.id, *topic));
+                    }
+                }
+            }
+            naming
+        });
+
+        let edges: Vec<_> = naming
+            .into_iter()
+            .map(|(from, caused_by, topic)| {
+                (
+                    from,
+                    topic,
+                    EdgeClaim::derived(EdgeKind::Mentions, caused_by, MENTION_CONFIDENCE),
+                )
+            })
+            .collect();
+
+        let asserted = graph::assert_edges(self.database.pool(), self.project, &edges).await?;
+
+        Ok(asserted
+            .iter()
+            .filter(|assertion| assertion.is_new())
+            .count())
+    }
+
+    /// What the reranker has done in this process, or `None` if it is not
+    /// loaded.
+    ///
+    /// Reports offered pairs, actual model work and complete identical-batch
+    /// reuse -- see [`memory_index::Reranked`]. Reuse does not measure document
+    /// recurrence or establish hot-set/precomputation viability; those need
+    /// separate recurrence and storage/cost measurements. These are lifetime
+    /// totals for the loaded model and are lost when an idle reranker is
+    /// released.
+    pub fn reranked(&self) -> Option<memory_index::Reranked> {
+        self.models.counted()
+    }
+
+    /// The passes this engine's reranker would make over `documents` for
+    /// `query`, in the order it runs them -- its own planner, at the
+    /// execution target it is on now -- or `None` if this process has not
+    /// loaded it. Never loads it.
+    ///
+    /// Nothing in the product calls it. An evaluation replaying the passes a
+    /// search ran asks the engine's reranker rather than loading a second
+    /// copy of the model for its tokenizer and limits.
+    #[doc(hidden)]
+    pub fn rerank_passes(
+        &self,
+        query: &str,
+        documents: &[&str],
+    ) -> Option<std::result::Result<Vec<Vec<usize>>, memory_index::IndexError>> {
+        self.models.passes(query, documents)
+    }
+
+    /// What a search for `query` showed the reranker of `hit`: the window
+    /// around its best span in an index cut into spans, with the span of its
+    /// seed that names it, or the whole memory and seed otherwise.
+    ///
+    /// Nothing in the product calls it. An evaluation that rescores or
+    /// rerenders what a search showed takes the text from here, so it scores
+    /// the pair the search scored rather than a rendering of its own.
+    #[doc(hidden)]
+    pub fn shown_to_reranker(&self, query: &str, hit: &SearchHit) -> Result<String> {
+        let window = self.window(query)?;
+        let content = hit.state.content.as_str();
+        Ok(match window {
+            None => shown(&hit.topic, content, hit.seed.as_deref()),
+            Some(window) => {
+                let seed = hit.seed.as_deref().map(|seed| {
+                    let spans = memory_index::spans::pack("", seed, &*window.counter, window.cap);
+                    window.naming_in(seed, &spans, &hit.topic)
+                });
+                window.shown(&hit.state, &hit.topic, hit.result.span, seed)
+            }
+        })
+    }
+
+    /// What this engine's reranker scores each of `documents` for `query`,
+    /// in their order -- the model, settings and execution target its
+    /// searches use -- or `None` if this process has not loaded it. Never
+    /// loads it. Counted in [`reranked`](Self::reranked) like a search's
+    /// pass.
+    ///
+    /// Nothing in the product calls it. An evaluation recording what the
+    /// model would have said of candidates a search did not show it asks the
+    /// engine's reranker, as [`rerank_passes`](Self::rerank_passes) does,
+    /// rather than loading a second copy of the model.
+    #[doc(hidden)]
+    pub fn rerank_scores(
+        &self,
+        query: &str,
+        documents: &[&str],
+    ) -> Option<std::result::Result<Vec<f32>, memory_index::IndexError>> {
+        self.models.scores(query, documents)
+    }
+
+    /// Loads the embedding model now, if it is not loaded yet, rather than at
+    /// the first write or search that needs it -- so a caller can ask
+    /// [`providers`](Self::providers) which plan will embed what it is about
+    /// to write. Blocking: call it off the async runtime.
+    pub fn load_embedder(&self) -> std::result::Result<(), memory_index::IndexError> {
+        self.embedding().map(drop)
+    }
+
+    /// Waits for every model load a search started ahead of its need and
+    /// returned before needing -- a reranked search that found nothing
+    /// leaves its reranker loading. Nothing in the product calls it; a
+    /// search never waits on such a load. A measurement does, before it
+    /// reads what the loads fetched or which plans they ran on (see
+    /// [`providers`](Self::providers)), so a load still running is not read
+    /// as one that never happened, or charged to the run after it.
+    pub async fn settle_loads(&self) {
+        self.preloads.settle().await;
+    }
+
+    /// Every execution plan each model this engine has used ran on, by role:
+    /// `embedding`, and `reranking accurate` if this process has loaded the reranker --
+    /// oldest first, so a model that fell back to the CPU during a run lists
+    /// the plan it left and then the CPU's. Each plan is its target as plans
+    /// are keyed, the hash of its full plan key, and whether it is stable
+    /// across processes ([`memory_index::PlanUse`]). A model not loaded is not
+    /// listed.
+    ///
+    /// For an evaluation to say which execution path produced it: on the
+    /// `auto` device the same build runs on whatever the machine has.
+    ///
+    /// Never panics or waits, so a run that is already failing can still ask:
+    /// a poisoned lock is read through, since the device it guards is set at
+    /// load, and a model another thread holds right now is left out.
+    pub fn providers(&self) -> Vec<(String, memory_index::PlanUse)> {
+        let mut providers = Vec::new();
+        if let Some(embedder) = self.embedder.get().and_then(|held| held_now(held.as_ref())) {
+            for plan in embedder.plans() {
+                providers.push(("embedding".to_string(), plan));
+            }
+        }
+        providers.extend(self.models.reranker_plans());
+        providers
+    }
+
+    /// Search, then reorder the head of the result with a cross-encoder.
+    ///
+    /// Fused deeper than it returns, because a reranker that only sees what the
+    /// caller asked for has nothing to work with: the reranker's depth was measured
+    /// over a list of fifty and the default `--limit` is five, so cutting first
+    /// left it reordering five candidates and usually declining to reorder at
+    /// all.
+    ///
+    /// The reranker scores the whole head and blends the model's score with
+    /// fusion's, so graph and channel agreement still contribute.
+    ///
+    /// This was a language comparison first, since "written in another
+    /// language" is what the case really is. The two pick the same candidates
+    /// -- they agree on 93% of a shortlist and score within 0.002 of each
+    /// other -- and the language test needed the query's language, which for a
+    /// short query is exactly what a detector will not commit to:
+    /// `detect_language` returns nothing for "how does deployment work". A
+    /// rule that quietly does nothing on the commonest shape of query is worse
+    /// than a slightly different rule, and this one asks only what the search
+    /// already recorded.
+    pub async fn search_reranked(
+        &self,
+        query: &str,
+        limit: u32,
+        depths: Depths,
+    ) -> Result<Vec<SearchHit>> {
+        self.search_reranked_with(query, limit, depths, Fusion::default())
+            .await
+    }
+
+    /// [`search_reranked`](Self::search_reranked) over a fusion other than
+    /// the shipped one, for a measurement that has to hold everything else
+    /// the product does fixed -- the reranker above all -- while one channel
+    /// is taken out or reweighted.
+    pub async fn search_reranked_with(
+        &self,
+        query: &str,
+        limit: u32,
+        depths: Depths,
+        fusion: Fusion,
+    ) -> Result<Vec<SearchHit>> {
+        let hits = self.ranked(query, limit, depths, fusion).await?;
+        self.with_parents(hits).await
+    }
+
+    /// Each hit with the name of the section it sits under, if it is a
+    /// section of a file with one: one read of the hits' `part_of` edges and
+    /// one of their targets' names, and the second not at all when no hit has
+    /// one.
+    async fn with_parents(&self, mut hits: Vec<SearchHit>) -> Result<Vec<SearchHit>> {
+        let topics: Vec<TopicId> = hits.iter().map(|hit| hit.state.topic_id).collect();
+        let edges = graph::targets(
+            self.database.pool(),
+            self.project,
+            &topics,
+            EdgeKind::PartOf,
+        )
+        .await?;
+        if edges.is_empty() {
+            return Ok(hits);
+        }
+        let mut parents: Vec<TopicId> = edges.iter().map(|(_, parent)| *parent).collect();
+        parents.sort_unstable();
+        parents.dedup();
+        let names: std::collections::HashMap<TopicId, String> =
+            repository::topics_by_id(self.database.pool(), self.project, &parents)
+                .await?
+                .into_iter()
+                .map(|(topic, name, _)| (topic, name))
+                .collect();
+        let parent_of: std::collections::HashMap<TopicId, TopicId> = edges.into_iter().collect();
+        for hit in &mut hits {
+            hit.parent = parent_of
+                .get(&hit.state.topic_id)
+                .and_then(|parent| names.get(parent))
+                .cloned();
+        }
+        Ok(hits)
+    }
+
+    /// [`search_reranked_with`](Self::search_reranked_with) without the
+    /// hits' parents.
+    async fn ranked(
+        &self,
+        query: &str,
+        limit: u32,
+        depths: Depths,
+        fusion: Fusion,
+    ) -> Result<Vec<SearchHit>> {
+        // The reranker is needed after retrieval and was loaded only then, so
+        // a search that found no model resident paid the embedder's load and
+        // then the reranker's, one after the other -- the first search after
+        // an idle release was measured at 4,528 ms against 116, at the `fast`
+        // tier, and most of that is the two loads. Started here, it loads
+        // while the query is embedded and the channels run. What that saves
+        // is the `COLD` arm of `tests/retrieval.rs`: 262 ms at the median of
+        // seven paired runs, -67 to 545, against an open and first search of
+        // 2,386 ms at the `accurate` tier, on four cores other work was
+        // sharing. That is less than the reranker's load because the two
+        // models share one vocabulary (see `memory_index::tokenizer`), so the
+        // second to load finds it built, and because the two loads contend
+        // for the same cores.
+        //
+        // The registry holds its lock across a load, so the call below either
+        // finds the model resident or waits for this one to finish -- it is
+        // never loaded twice. Nothing about the ranking changes; a failure
+        // here is the same failure the call below reports, so it is left to
+        // that one.
+        //
+        // The search never waits for the load itself, only for the model when
+        // it reranks; a search that returns before then leaves the load
+        // running, which [`settle_loads`](Self::settle_loads) waits for.
+        let models = self.models.clone();
+        self.preloads.start(move || drop(models.reranker()));
+
+        // The whole fused list rather than the caller's limit or the
+        // reranker's head: the reranker is also shown the strongest candidates only the
+        // graph found, wherever fusion put them (see [`GRAPH_SHOWN_FROM`]).
+        // Every one of them is already resolved against the ledger. What is
+        // not made for all of them is the hit -- the state, the topic's name
+        // and the seed's content, copied -- which is made only for what the
+        // caller is given; the reranker reads the few it is shown in place.
+        let mut fused = self.fused(query, depths, fusion).await?;
+        let window = self.window(query)?;
+        if fused.results.is_empty() {
+            return Ok(fused.hits(limit, window.as_ref()));
+        }
+
+        let traces: Vec<&[Why]> = fused
+            .results
+            .iter()
+            .map(|result| result.why.as_slice())
+            .collect();
+        let unlexical = rerankable(&traces, depths.rerank.get());
+        if !can_be_seen(&unlexical, limit) {
+            return Ok(fused.hits(limit, window.as_ref()));
+        }
+
+        // Off the runtime because a memory cut into spans that no write or
+        // search has cut in this process is cut here, by its tokens.
+        let shown: Vec<String> = off_the_runtime(|| {
+            unlexical
+                .iter()
+                .map(|position| fused.shown(&fused.results[*position], window.as_ref()))
+                .collect()
+        });
+        let documents: Vec<&str> = shown.iter().map(String::as_str).collect();
+        // Finding the reranker is inside this too, not just using it. The
+        // first search downloads the weights, holding the registry
+        // lock so that twenty concurrent searches fetch one model rather than
+        // twenty -- and a lock held across a download is a lock held for a long
+        // time. Taken on a runtime thread, that blocks the thread rather than
+        // yielding it, and the callers waiting behind it block their threads
+        // too, until the runtime has no thread left to finish the download with
+        // and the server stops answering anything at all. Measured: twenty
+        // readers against a cold cache wedged it indefinitely.
+        let ordered = off_the_runtime(|| {
+            self.models
+                .reranker()?
+                .lock()
+                .expect("the reranker lock is poisoned")
+                .rank(query, &documents)
+        })?;
+
+        // Recorded on the candidate rather than returned beside the list,
+        // because it is an answer to "why is this here" and belongs with the
+        // channel entries that answer the same question. A candidate the
+        // reranker never saw carries no entry, which is how a reader -- and
+        // the threshold sweep this unblocks -- tells the two cases apart.
+        for ranked in &ordered {
+            fused.results[unlexical[ranked.position]]
+                .why
+                .push(Why::Reranked {
+                    score: ranked.score,
+                });
+        }
+        let fused_scores: Vec<f64> = unlexical
+            .iter()
+            .map(|at| f64::from(fused.results[*at].score))
+            .collect();
+        let mut model_scores = vec![0.0; ordered.len()];
+        for ranked in &ordered {
+            model_scores[ranked.position] = f64::from(ranked.score);
+        }
+        let best_first = score_blend_order(&fused_scores, &model_scores, RERANK_FUSION);
+        fused.results = place(
+            std::mem::take(&mut fused.results),
+            &unlexical,
+            depths.rerank.get(),
+            &best_first,
+        );
+        Ok(fused.hits(limit, window.as_ref()))
+    }
+
+    /// The same search, with the fusion settings supplied.
+    ///
+    /// Exists for the same reason [`Depths`] is a parameter: the constants
+    /// fusion runs on were settled by measurement and are re-settled the same
+    /// way, so the harness that measures them has to be able to vary them.
+    /// Callers that are not measuring want
+    /// [`search_reranked`](Self::search_reranked), which is what `pamin
+    /// search` calls. This used to name a third entry point, one stage
+    /// shorter than the shipped one, and both evaluation harnesses took it:
+    /// every retrieval figure this project published described a pipeline
+    /// that does not ship, and the reranker gains were about half again too
+    /// high. That method had no other caller and is gone.
+    pub async fn search_fused(
+        &self,
+        query: &str,
+        limit: u32,
+        depths: Depths,
+        fusion: Fusion,
+    ) -> Result<Vec<SearchHit>> {
+        let fused = self.fused(query, depths, fusion).await?;
+        let window = self.window(query)?;
+        Ok(fused.hits(limit, window.as_ref()))
+    }
+
+    /// How a search for `query` shows a memory cut into spans, if this
+    /// project's index cuts them. The first in a process loads the tokenizer.
+    fn window(&self, query: &str) -> Result<Option<Window>> {
+        let Some(cap) = self.index().grain().cap() else {
+            return Ok(None);
+        };
+        let counter = off_the_runtime(|| self.models.span_tokens())?;
+        Ok(Some(Window::new(
+            cap,
+            counter,
+            Arc::clone(&self.models.cuts),
+            Arc::clone(&self.segmenter),
+            query,
+        )))
+    }
+
+    /// The spans this project's index cuts a memory named `name` into: one,
+    /// the whole of it, when the index does not cut memories at all.
+    pub fn cut(&self, name: &str, content: &str) -> Result<Vec<memory_index::spans::Span>> {
+        let cap = self.index().grain().cap().unwrap_or(usize::MAX);
+        Ok(off_the_runtime(|| {
+            let counter = self.models.span_tokens()?;
+            Ok::<_, memory_index::IndexError>(memory_index::spans::pack(
+                name, content, &*counter, cap,
+            ))
+        })?)
+    }
+
+    /// Every fused result, ranked and explained, with what it takes to make
+    /// any of them a [`SearchHit`].
+    async fn fused(&self, query: &str, depths: Depths, fusion: Fusion) -> Result<Fused> {
+        let lists = off_the_runtime(|| {
+            // Embedded before the index is read, and the model lock released
+            // before the read lock is taken: holding both is what would turn
+            // one slow inference into a queue for every reader.
+            let embedding = self.embedding()?.embed_query(query)?;
+            let index = self.index();
+            let lists = vec![
+                ChannelResults::new(
+                    Channel::LexicalSegmented,
+                    index.recall_segmented(query, depths.channel.get())?,
+                ),
+                ChannelResults::new(
+                    Channel::LexicalNgram,
+                    index.recall_ngram(query, depths.channel.get())?,
+                ),
+                ChannelResults::new(
+                    Channel::Vector,
+                    index.recall_vector_at(
+                        &embedding,
+                        depths.channel.get(),
+                        depths.effort.get(),
+                    )?,
+                ),
+            ];
+            Ok::<_, memory_index::IndexError>(lists)
+        })?;
+
+        // Only the ledger knows what a topic stands for now, what it is worth,
+        // and whether it still stands for anything -- so what the index
+        // returned is resolved rather than trusted. A topic whose every state
+        // has been soft deleted resolves to nothing and drops out here, before
+        // fusion, so a deleted memory stops occupying a place in a channel's
+        // candidate budget.
+        // Interleaved by rank rather than concatenated, because this order is
+        // what the graph channel seeds from and concatenating would offer it
+        // one channel's whole list before another's first result. Fusion
+        // cannot do the ordering: the graph is one of the lists it fuses.
+        let candidates = best_first(&lists);
+        // Every statement below on one connection, taken once the index has
+        // answered rather than held through the embedding: each statement run
+        // on the pool returns its connection afterwards, and sqlx checks a
+        // returned connection with a round trip of its own.
+        let mut connection = self.database.pool().acquire().await?;
+        let mut working = WorkingSet::default();
+        working.add(
+            repository::current_states_named(&mut *connection, self.project, &candidates).await?,
+        );
+
+        // The graph is the one channel the index cannot see, which is the
+        // entire reason fusion happens here rather than inside the engine.
+        let (graph_list, paths) = self
+            .recall_graph(
+                &mut connection,
+                query,
+                &candidates,
+                &lists,
+                &mut working,
+                GraphRecallOptions {
+                    depths,
+                    k: fusion.k(),
+                },
+            )
+            .await?;
+
+        // A path explains itself by the topics at both ends of its last edge,
+        // and at two hops the near end is the topic in the middle -- which the
+        // search need not have resolved: it can have been cut from the graph's
+        // list, or stand for nothing now. Named here, and only when a path
+        // needs it, so a one-hop walk still pays nothing.
+        let unnamed: Vec<TopicId> = paths
+            .values()
+            .map(|reached| reached.via)
+            .filter(|via| !working.names.contains_key(via))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if !unnamed.is_empty() {
+            working.name(repository::topics_by_id(&mut *connection, self.project, &unnamed).await?);
+        }
+        let mut lists = lists;
+        lists.push(graph_list);
+        let live = working;
+
+        let mut fused = fusion.fuse(&lists);
+
+        // A topic the index still knows about but the ledger no longer
+        // resolves never reached the working set, so it is not ranked.
+        fused.retain(|result| live.state(result.topic).is_some());
+
+        for result in &mut fused {
+            if let Some(reached) = paths.get(&result.topic) {
+                let (asserted_from, asserted_to) = if reached.outbound {
+                    (reached.via, reached.topic)
+                } else {
+                    (reached.topic, reached.via)
+                };
+                result.why.push(Why::Path {
+                    from: live.topic_name(reached.origin),
+                    via: live.topic_name(reached.via),
+                    hops: reached.hops,
+                    asserted_from: live.topic_name(asserted_from),
+                    asserted_to: live.topic_name(asserted_to),
+                    edge: reached.kind,
+                    derivation: reached.derivation,
+                });
+            }
+        }
+
+        // No re-sort. `fuse` ordered these and nothing above changes a score --
+        // the path entry is an explanation of a position, not a reason to move
+        // one. Anything added here that does touch `score` has to sort again.
+        Ok(Fused {
+            results: fused,
+            live,
+            paths,
+        })
+    }
+
+    /// Expands the graph around what the other channels found.
+    ///
+    /// Seeds come from the lexical and vector lists, so a seed handed back as a
+    /// graph result would be one piece of evidence counted twice under two
+    /// names — the exact double weighting that owning fusion is supposed to
+    /// prevent. The expansion therefore returns only topics reached across at
+    /// least one edge, and a seed appears among them only when something else
+    /// in the graph reaches it.
+    ///
+    /// Returns the ranked list and the path evidence for each result, keyed by
+    /// state, so the trace can say why the graph could see it.
+    async fn recall_graph(
+        &self,
+        connection: &mut PgConnection,
+        query: &str,
+        ranked: &[TopicId],
+        lists: &[ChannelResults],
+        working: &mut WorkingSet,
+        options: GraphRecallOptions,
+    ) -> Result<(ChannelResults, std::collections::HashMap<TopicId, Neighbor>)> {
+        // Topics the query names directly. Without these, a question about a
+        // topic whose own content happens not to match lexically never walks
+        // out from it, and "what depends on X" cannot be answered by naming X.
+        // Resolving query entities against known topics is the retrieval half
+        // of entity linking; the write path does the other, and both ask the
+        // same index the same way.
+        let widest = self.widest_name().await?;
+        let runs = off_the_runtime(|| runs_of_tokens(&self.segmenter.name_sequence(query), widest));
+        let named = repository::topics_named_by(&mut *connection, self.project, &runs).await?;
+        let relevance = seed_relevance(&named, lists, options.k);
+
+        // A named topic no channel returned is not in the working set, and the
+        // filter below keeps only topics that are -- which is what it is for
+        // with the ranked candidates, where it drops one that no longer stands
+        // for anything, and exactly wrong for a name, whose point is to seed
+        // the walk when the content did not match. So resolve those here, in
+        // one lookup, and let the same filter judge them on the same terms.
+        let unresolved: Vec<TopicId> = named
+            .iter()
+            .copied()
+            .filter(|topic| working.state(*topic).is_none())
+            .collect();
+        if !unresolved.is_empty() {
+            working.add(
+                repository::current_states_named(&mut *connection, self.project, &unresolved)
+                    .await?,
+            );
+        }
+
+        let seeds: Vec<TopicId> = {
+            let mut seen = std::collections::HashSet::new();
+
+            // Topics the query named come first, so a walk that has to give
+            // something up gives up the weakest lexical and vector candidates
+            // rather than the seed the caller asked about. The rest follow in
+            // the order the channels ranked them, which is what makes "the
+            // weakest" mean anything: taken from the working set instead, they
+            // arrive in whatever order a hash map yields, and the bound below
+            // keeps an arbitrary sixty-four rather than the best sixty-four.
+            named
+                .into_iter()
+                .chain(ranked.iter().copied())
+                .filter(|topic| working.state(*topic).is_some())
+                .filter(|topic| seen.insert(*topic))
+                .take(MAX_SEEDS)
+                .collect()
+        };
+
+        // Ordered by what each arrival is worth to *this query* before the cut,
+        // not by the order the walk returned them in. The walk's order is
+        // fewest hops, then most confident edge, then topic identifier -- and
+        // with every derived edge at the same confidence and the walk stopping
+        // at one hop, that is identifier order. Cutting it to the channel's
+        // depth kept an arbitrary fifty and could drop every neighbour of the
+        // seed that matched the query best.
+        let worth = |confidence: f32, hops: u8, origin: TopicId| {
+            path_strength(confidence, hops) * relevance.get(&origin).copied().unwrap_or(0.0)
+        };
+        let strength =
+            |neighbor: &Neighbor| worth(neighbor.confidence, neighbor.hops, neighbor.origin);
+
+        // Cut to the channel's depth before anything is resolved. Cutting after
+        // meant every neighbour the walk found was looked up and given a path,
+        // and the paths were not cut with the results -- so the list was bounded
+        // and the work behind it was not.
+        //
+        // Bounded by what this channel keeps, twice over: the walk stops once
+        // it has that many, so a hub-shaped project does not make it the whole
+        // cost of a search, and it reads only that many of each topic's edges
+        // each way, strongest first, so a hub's degree does not either. The
+        // second bound is checked rather than trusted -- the walk says what it
+        // left unread, `strongest` says whether any of that could have ranked
+        // here, and when it could the walk is made again reading everything.
+        let keep = options.depths.channel.get() as usize;
+        let expansion = Expansion::to_depth(options.depths.graph).keeping(keep);
+        let neighbors = match graph::expand_reading(
+            &mut *connection,
+            self.project,
+            &seeds,
+            &expansion,
+            keep,
+        )
+        .await?
+        .strongest(keep, worth)
+        {
+            Some(neighbors) => neighbors,
+            None => {
+                tracing::debug!(
+                    seeds = seeds.len(),
+                    "an edge the bounded walk left unread could have ranked; walking again in full"
+                );
+                graph::strongest(
+                    graph::expand(&mut *connection, self.project, &seeds, &expansion).await?,
+                    keep,
+                    worth,
+                )
+            }
+        };
+
+        // Resolved here rather than at the end, because a topic that stands
+        // for nothing is not a result and should not take a place in this
+        // channel's budget. One lookup for all of them, through the pointer on
+        // `topics`.
+        let reached: Vec<TopicId> = neighbors.iter().map(|neighbor| neighbor.topic).collect();
+        let states =
+            repository::current_states_named(&mut *connection, self.project, &reached).await?;
+        let resolves: std::collections::HashSet<TopicId> =
+            states.iter().map(|(_, state)| state.topic_id).collect();
+        working.add(states);
+
+        let mut candidates = Vec::new();
+        let mut paths = std::collections::HashMap::new();
+        for neighbor in neighbors {
+            // A topic whose every state has been soft deleted resolves to
+            // nothing and drops out here.
+            if !resolves.contains(&neighbor.topic) {
+                continue;
+            }
+            candidates.push(Scored::new(neighbor.topic, strength(&neighbor)));
+            paths.insert(neighbor.topic, neighbor);
+        }
+
+        Ok((ChannelResults::new(Channel::Graph, candidates), paths))
+    }
+
+    /// Rebuilds the projection index from the authority store.
+    ///
+    /// Returns how many topics were indexed. The caller discards the index
+    /// directory first, which is what makes this a genuine rebuild rather than
+    /// an overwrite that could leave orphans behind.
+    pub async fn reindex(&self) -> Result<Rebuilt> {
+        // Before the states are read: the pointer decides which state a topic
+        // resolves to, so a rebuild that trusted a stale one would index the
+        // wrong content and look like it had worked.
+        let repaired_pointers =
+            repository::repair_current_state_pointers(self.database.pool(), self.project).await?;
+
+        // Rebuilt with the projection because it is the same kind of thing: a
+        // derived index of what the ledger already says, which the ledger can
+        // restate at any time. It is also how a project that predates the
+        // table gets one -- and every project does, because nothing else
+        // backfills it and a topic missing from it is a topic no memory will
+        // derive an edge to.
+        let names = self.rebuild_name_index().await?;
+
+        // Current states, one per topic: the projection holds one document per
+        // topic, so every live state would write a topic's whole history onto
+        // one key and leave whichever row the scan reached last.
+        let states =
+            repository::all_current_topic_states(self.database.pool(), self.project).await?;
+        let spans = self.spans(&states).await?;
+
+        // Held to the end of this function, so a reshape cannot start on the
+        // index while it is being rebuilt.
+        let (previous, _exclusive) = match self
+            .rebuilding
+            .lock()
+            .expect("the set-aside index lock is poisoned")
+            .take()
+        {
+            Some(Rebuilding {
+                previous,
+                _exclusive,
+            }) => (previous, Some(_exclusive)),
+            None => (None, None),
+        };
+
+        let reused = off_the_runtime(|| {
+            let wanted: std::collections::HashMap<TopicId, Vec<SpanSource<'_>>> = states
+                .iter()
+                .zip(&spans)
+                .map(|(state, spans)| (state.topic_id, Indexed::sources(spans)))
+                .collect();
+            // Counted before any lock is taken, so a rebuild that can reuse
+            // every vector never loads the model at all.
+            let lendable = match &previous {
+                Some(previous) => previous.lends(&wanted)?,
+                None => 0,
+            };
+
+            // Both locks, in the order every other caller takes them, and held
+            // for the whole rebuild. Taking the index first here would invert
+            // the order against `search` and deadlock: a rebuild holding the
+            // index and wanting the model, against a search holding the model
+            // and wanting the index. Holding both throughout also matches what
+            // a rebuild has always done -- it opens the collection for writing,
+            // which excluded every reader in every other process already.
+            let mut embedder = if lendable < states.len() {
+                Some(self.embedding()?)
+            } else {
+                None
+            };
+            let index = self.index();
+
+            // What the old index holds first, in one pass over it, then
+            // whatever it could not supply.
+            let lent = match &previous {
+                Some(previous) => {
+                    previous.lend(&wanted, REINDEX_BATCH, |documents, encoding| {
+                        index.write_spans(documents, encoding)
+                    })?
+                }
+                None => std::collections::HashSet::new(),
+            };
+            // Every span of every topic not lent, a batch of spans at a time:
+            // a topic's spans can straddle two batches, and each is written
+            // without cutting the topic short, into an index that starts
+            // empty.
+            let missing: Vec<(TopicId, u32, &Indexed)> = states
+                .iter()
+                .zip(&spans)
+                .filter(|(state, _)| !lent.contains(&state.topic_id))
+                .flat_map(|(state, spans)| {
+                    spans
+                        .iter()
+                        .enumerate()
+                        .map(|(ordinal, span)| (state.topic_id, ordinal as u32, span))
+                })
+                .collect();
+
+            // One forward pass per batch rather than one per state. Measured
+            // on the smallest profile, thirty-two texts together take 190 ms
+            // against 409 ms one at a time -- the model is the same work
+            // either way, and what the batch saves is everything around it.
+            for batch in missing.chunks(REINDEX_BATCH) {
+                let texts: Vec<&str> = batch
+                    .iter()
+                    .map(|(_, _, span)| span.passage.as_str())
+                    .collect();
+                let model = embedder
+                    .as_mut()
+                    .expect("the model is loaded whenever a vector is missing");
+                let (embeddings, encoding) = model.encode_passages(&texts)?;
+                let documents: Vec<SpanDocument<'_>> = batch
+                    .iter()
+                    .zip(&embeddings)
+                    .map(|((topic, ordinal, span), embedding)| {
+                        (
+                            *topic,
+                            *ordinal,
+                            span.text.as_str(),
+                            Some(span.header.as_str()),
+                            embedding.as_slice(),
+                        )
+                    })
+                    .collect();
+                index.write_spans(&documents, encoding.as_deref())?;
+            }
+            index.flush()?;
+            // A rebuild is the one point where building the vector graph is
+            // clearly worth its cost: everything has just been written, and
+            // without this the graph the index was configured for does not
+            // exist and every vector query scans the buffer instead.
+            index.optimize()?;
+            if let Some(previous) = previous {
+                previous.discard()?;
+            }
+            Ok::<_, memory_index::IndexError>(lent.len())
+        })?;
+
+        Ok(Rebuilt {
+            indexed: states.len(),
+            reused,
+            repaired_pointers,
+            names,
+        })
+    }
+
+    /// Restates every topic's name in the name index -- every topic but the
+    /// sections of files, which are never filed there.
+    ///
+    /// Reads the topics rather than the table, so a name that is missing is
+    /// added and one that is wrong is corrected. This is the one path that
+    /// still walks every topic in a project, and it is the right one to: a
+    /// rebuild is by definition proportional to what it rebuilds.
+    async fn rebuild_name_index(&self) -> Result<usize> {
+        let topics = repository::topics_to_name(self.database.pool(), self.project).await?;
+
+        let keys: Vec<(TopicId, String, usize)> = off_the_runtime(|| {
+            let segmenter = &self.segmenter;
+            topics
+                .iter()
+                .map(|topic| {
+                    let tokens = segmenter.name_sequence(&topic.name);
+                    (topic.id, tokens.join(" "), tokens.len())
+                })
+                .collect()
+        });
+
+        // One statement rather than one per topic. A rebuild records every
+        // topic in the project, so the row-at-a-time form was a round trip per
+        // topic -- thirteen thousand of them on the corpora this project
+        // measures, for a table with no more rows than that.
+        repository::record_topic_names(self.database.pool(), self.project, &keys).await?;
+
+        Ok(keys.len())
+    }
+}
+
+/// This machine's name, for identifying who holds a cascade claim.
+///
+/// Best effort: the name only has to distinguish one worker from another, and
+/// the process id already does that within a machine.
+fn hostname() -> String {
+    std::env::var("HOSTNAME").unwrap_or_else(|_| "local".to_string())
+}
+
+/// One memory, with the filter's verdict already reached.
+///
+/// Grouped rather than passed positionally: most of it is text and optional
+/// text, and a caller swapping two of those would compile.
+pub struct Write<'a> {
+    pub topic: &'a str,
+    pub content: &'a str,
+    pub content_hash: &'a str,
+    /// What the sensory filter decided, and why.
+    pub verdict: FilterDecision,
+    pub reason: &'a str,
+    pub promoted: bool,
+    /// Detected per span rather than per deployment: one workspace holds many
+    /// languages, and this is what the note-language rule reads later.
+    pub language: Option<&'a str>,
+    pub language_confidence: Option<f32>,
+    pub observed_at: OffsetDateTime,
+    pub validity: Validity,
+}
+
+/// What [`Engine::retire_section`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Retired {
+    /// Taken off the retrieval surface.
+    Retired,
+    /// Left on it, because somebody also wrote it by hand.
+    Kept,
+    /// Left on it, because it changed after the ingest looked.
+    Changed,
+    /// Nothing under that name was on it.
+    Absent,
+}
+
+/// What a write left in the ledger.
+pub struct Recorded {
+    /// Always set: evidence is recorded whatever the filter decides.
+    pub source_version: u32,
+    /// Absent when the filter held the content in the evidence layer.
+    pub state: Option<TopicState>,
+}
+
+/// What a rebuild did.
+#[derive(Clone, Copy, Debug)]
+pub struct Rebuilt {
+    /// Topics written to the projection, which is one document each.
+    pub indexed: usize,
+    /// Of those, how many kept the vector the replaced index already held
+    /// rather than being embedded again. See [`Previous`].
+    pub reused: usize,
+    /// Topics whose current-state pointer disagreed with the ledger.
+    ///
+    /// Expected to be zero: both writers move it under the topic's lock in the
+    /// transaction that changed the ledger. Reported rather than swallowed
+    /// because a number that is not zero is the only outward sign that some
+    /// write path stopped maintaining it.
+    pub repaired_pointers: u64,
+    /// Topic names restated in the name index.
+    ///
+    /// The index that answers "which topics does this text name". A rebuild is
+    /// the only thing that restates all of them, and for a project that
+    /// predates the index it is the only thing that fills it at all.
+    pub names: usize,
+}
+
+/// The states one search actually touched, and what the ledger says about them.
+///
+/// This used to be every live state in the project, loaded on every query into
+/// four maps. That was workable while a workspace held thousands of states and
+/// is the single thing that stopped being workable first: the cost of a search
+/// was set by how much had ever been written rather than by how much the
+/// channels returned.
+///
+/// It is filled in two steps because the search path finds its results in two
+/// steps: the index and then the graph, each naming topics. Both go in here,
+/// each state with its topic's name, which the lookup that resolves the state
+/// returns beside it.
+#[derive(Default)]
+struct WorkingSet {
+    /// What each topic stands for now. Only current states are ranked, so
+    /// there is one per topic and no question of which.
+    current: std::collections::HashMap<TopicId, TopicState>,
+    /// Topic names, so a path can explain itself in the terms a caller uses.
+    names: std::collections::HashMap<TopicId, String>,
+}
+
+impl WorkingSet {
+    /// Records states and what the ledger calls their topics, which arrive
+    /// together.
+    fn add(&mut self, states: Vec<(String, TopicState)>) {
+        for (name, state) in states {
+            self.names.insert(state.topic_id, name);
+            self.current.insert(state.topic_id, state);
+        }
+    }
+
+    /// Records names for topics the search reached without resolving.
+    fn name(&mut self, topics: Vec<(TopicId, String, Option<TopicStateId>)>) {
+        for (topic, name, _) in topics {
+            self.names.insert(topic, name);
+        }
+    }
+
+    fn state(&self, topic: TopicId) -> Option<&TopicState> {
+        self.current.get(&topic)
+    }
+
+    fn topic_name(&self, topic: TopicId) -> String {
+        self.names
+            .get(&topic)
+            .cloned()
+            .unwrap_or_else(|| topic.to_string())
+    }
+}
+
+/// One search result: the topic's current state, its position, and why.
+pub struct SearchHit {
+    /// The topic, by the name a caller addresses it with.
+    pub topic: String,
+    /// What that topic stands for now. Search ranks topics and never their
+    /// history; `pamin read --version-offset` is what reaches an earlier one.
+    pub state: TopicState,
+    pub result: FusedResult,
+    /// For a hit the graph reached, the content of the memory the walk started
+    /// from -- the sentence that makes this one relevant, which is why the
+    /// reranker is shown it. Taken from every state the search resolved rather
+    /// than from the results, so it does not depend on how many were asked for.
+    pub seed: Option<String>,
+    /// For a memory the index cut into more than one span, the window of it
+    /// this hit is about: its best span and what fits the view's token budget
+    /// around it. `None` for a memory of one span, which is the whole of it.
+    pub span: Option<SpanView>,
+    /// For a section of a file, the name of the section it sits under: the
+    /// context a section cut out of its file lost, for a caller to read when
+    /// the hit needs it. A name and not its text, which on ConditionalQA put
+    /// the context nearer the top only by returning more to read, and read to
+    /// the same budget found no more. `None` for a memory with no `part_of`.
+    pub parent: Option<String>,
+}
+
+/// Where in a memory a span, or a run of them, lies.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpanView {
+    /// The span asked about, from 0.
+    pub ordinal: u32,
+    /// How many spans the memory is cut into.
+    pub of: u32,
+    /// What the run lost by being cut out: the memory's name, and the heading
+    /// and turn its first span continues.
+    pub header: String,
+    /// The run's bytes in the memory's content, from the first span's start
+    /// to the last's end.
+    pub range: std::ops::Range<usize>,
+}
+
+impl SpanView {
+    /// Span `ordinal` of `spans` and up to `around` either side, or `None`
+    /// when there is no such span.
+    pub fn around(spans: &[memory_index::spans::Span], ordinal: u32, around: u32) -> Option<Self> {
+        let at = ordinal as usize;
+        spans.get(at)?;
+        let first = &spans[at.saturating_sub(around as usize)];
+        let last = &spans[(at + around as usize).min(spans.len() - 1)];
+        Some(Self {
+            ordinal,
+            of: spans.len() as u32,
+            header: first.header.clone(),
+            range: first.range.start..last.range.end,
+        })
+    }
+
+    /// Span `ordinal` of `spans` and as many either side as fit with it in
+    /// `tokens`, grown one span at a time from the nearer side, or `None` when
+    /// there is no such span. The best span is always shown, however long.
+    ///
+    /// A budget rather than a count of spans, so what a hit shows does not
+    /// shrink with the cap an index is cut to: smaller spans make the
+    /// reranker's pairs cheaper, and the caller is shown as much around the
+    /// best one as before.
+    pub fn within(
+        spans: &[memory_index::spans::Span],
+        ordinal: u32,
+        tokens: usize,
+    ) -> Option<Self> {
+        let at = ordinal as usize;
+        spans.get(at)?;
+        let (first, last) = grow(at, spans.len(), |first, last| {
+            spans[first..=last]
+                .iter()
+                .map(|span| span.tokens)
+                .sum::<usize>()
+                <= tokens
+        });
+        Some(Self {
+            ordinal,
+            of: spans.len() as u32,
+            header: spans[first].header.clone(),
+            range: spans[first].range.start..spans[last].range.end,
+        })
+    }
+}
+
+/// A search's fused results, best first, and what it resolved on the way.
+///
+/// Kept apart from [`SearchHit`] because a hit copies its state, its topic's
+/// name and its seed's content, and the rerank path fuses every candidate
+/// while reading only a few of them: the head's and the graph's that the
+/// reranker is shown, and the ones the caller is given.
+struct Fused {
+    results: Vec<FusedResult>,
+    live: WorkingSet,
+    paths: std::collections::HashMap<TopicId, Neighbor>,
+}
+
+/// The run of spans `first..=last` of `len` grown from span `at`, one span at
+/// a time and the nearer side first, while `fits` holds for the run it would
+/// become. Span `at` is always in it, whether or not it fits on its own.
+///
+/// The one rule for how much around a best span is shown, to the reranker
+/// against the room its pair leaves and to a caller against
+/// [`VIEW_TOKENS`], so that the two differ only in their budget. A neighbour
+/// that does not fit is skipped for the one on the other side, which may.
+fn grow(at: usize, len: usize, fits: impl Fn(usize, usize) -> bool) -> (usize, usize) {
+    let (mut first, mut last) = (at, at);
+    loop {
+        let before = first.checked_sub(1).map(|first| (first, last));
+        let after = (last + 1 < len).then_some((first, last + 1));
+        let order = if at - first <= last - at {
+            [before, after]
+        } else {
+            [after, before]
+        };
+        match order
+            .into_iter()
+            .flatten()
+            .find(|&(first, last)| fits(first, last))
+        {
+            Some(run) => (first, last) = run,
+            None => return (first, last),
+        }
+    }
+}
+
+impl Fused {
+    /// The first `limit` results as hits.
+    fn hits(self, limit: u32, window: Option<&Window>) -> Vec<SearchHit> {
+        let Self {
+            results,
+            live,
+            paths,
+        } = self;
+        results
+            .into_iter()
+            .take(limit as usize)
+            .map(|result| {
+                let state = live.state(result.topic).expect("retained by `fused`");
+                let seed = seed(&live, &paths, result.topic).map(|seed| seed.content.clone());
+                let topic = live.topic_name(result.topic);
+                let span = window.and_then(|window| window.view(state, &topic, result.span));
+                SearchHit {
+                    topic,
+                    state: state.clone(),
+                    result,
+                    seed,
+                    span,
+                    parent: None,
+                }
+            })
+            .collect()
+    }
+
+    /// What the reranker is shown of `result`: all of it, or -- in an index
+    /// cut into spans -- the window around its best span.
+    fn shown(&self, result: &FusedResult, window: Option<&Window>) -> String {
+        let state = self.live.state(result.topic).expect("retained by `fused`");
+        let name = self.live.topic_name(result.topic);
+        let seed = seed(&self.live, &self.paths, result.topic);
+        match window {
+            None => shown(
+                &name,
+                &state.content,
+                seed.map(|seed| seed.content.as_str()),
+            ),
+            Some(window) => {
+                let seed = seed.map(|seed| window.naming(seed, &name));
+                window.shown(state, &name, result.span, seed)
+            }
+        }
+    }
+}
+
+/// How a memory cut into spans is shown to the reranker: its best span under
+/// its header, and as much of the spans either side as the pair has room for.
+///
+/// **The reranker reads 256 tokens of a pair, and a memory cut into spans is
+/// longer than that by construction.** Shown whole, as a memory of one span is,
+/// it would be judged by its opening whatever span the channels found it by --
+/// the failure cutting it was meant to remove. The best span is the one fusion
+/// weighed most ([`FusedResult::span`]); its neighbours, nearer first, are
+/// added only while the whole pair still fits ([`grow`]), so a neighbour is
+/// context the reranker reads rather than a tail it truncates.
+///
+/// A memory of one span is shown exactly as it was before spans. So is one
+/// whose best span the ledger no longer has -- the index can lag a write -- and
+/// one too short to cut since: there is nothing to choose a window from.
+struct Window {
+    cap: usize,
+    counter: Arc<dyn TokenCount + Send + Sync>,
+    /// What memories were cut into before, which is what a window is chosen
+    /// from; cutting them here again is the cost of a span search that grows
+    /// with a memory's length.
+    cuts: Arc<Cuts>,
+    /// How a seed's span is found to name the topic the walk reached: as
+    /// mentions are derived, so the span shown is one an edge could have been
+    /// read from.
+    segmenter: Arc<memory_index::segmentation::Segmenter>,
+    /// The passage's share of the pair: what the query and the pair's four
+    /// special tokens leave of the reranker's 256.
+    room: usize,
+}
+
+impl Window {
+    fn new(
+        cap: usize,
+        counter: Arc<dyn TokenCount + Send + Sync>,
+        cuts: Arc<Cuts>,
+        segmenter: Arc<memory_index::segmentation::Segmenter>,
+        query: &str,
+    ) -> Self {
+        let room = memory_index::reranking::MAX_TOKENS.saturating_sub(4 + counter.count(query));
+        Self {
+            cap,
+            counter,
+            cuts,
+            segmenter,
+            room,
+        }
+    }
+
+    /// The spans `state` is cut into under `name`, as the index cut it.
+    fn cut(&self, state: &TopicState, name: &str) -> Arc<[memory_index::spans::Span]> {
+        self.cuts.get_or_cut(state.id, self.cap, name, || {
+            memory_index::spans::pack(name, &state.content, &*self.counter, self.cap)
+        })
+    }
+
+    fn shown(&self, state: &TopicState, name: &str, best: u32, seed: Option<&str>) -> String {
+        let content = state.content.as_str();
+        let spans = self.cut(state, name);
+        let best = best as usize;
+        if spans.len() == 1 || best >= spans.len() {
+            return shown(name, content, seed);
+        }
+        let render = |first: usize, last: usize| {
+            let texts: Vec<&str> = spans[first..=last]
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect();
+            shown(&spans[first].header, &texts.join("\n"), seed)
+        };
+        let (first, last) = grow(best, spans.len(), |first, last| {
+            self.counter.count(&render(first, last)) <= self.room
+        });
+        render(first, last)
+    }
+
+    /// The window a caller is shown of a memory cut into more than one span:
+    /// span `best` and what fits [`VIEW_TOKENS`] around it. `None` for a
+    /// memory of one span, and for one whose best span the ledger no longer
+    /// has.
+    fn view(&self, state: &TopicState, name: &str, best: u32) -> Option<SpanView> {
+        let spans = self.cut(state, name);
+        if spans.len() == 1 {
+            return None;
+        }
+        SpanView::within(&spans, best, VIEW_TOKENS)
+    }
+
+    /// Of a seed's memory, the span that names the topic the walk reached --
+    /// the sentence the edge was read from -- or all of it when no one span
+    /// does, as a seed of one span always is. Named as a mention is: by token
+    /// sequence, so `cat` is not found inside `education` and
+    /// `deployment_pipeline` is found in "deployment pipeline".
+    fn naming<'a>(&self, seed: &'a TopicState, reached: &str) -> &'a str {
+        self.naming_in(&seed.content, &self.cut(seed, ""), reached)
+    }
+
+    /// [`naming`](Self::naming) among `spans`, what `content` was cut into.
+    fn naming_in<'a>(
+        &self,
+        content: &'a str,
+        spans: &[memory_index::spans::Span],
+        reached: &str,
+    ) -> &'a str {
+        let wanted = self.segmenter.name_sequence(reached);
+        if spans.len() == 1 {
+            return content;
+        }
+        spans
+            .iter()
+            .find(|span| {
+                memory_index::segmentation::names(
+                    &self.segmenter.name_sequence(&span.text),
+                    &wanted,
+                )
+            })
+            .map_or(content, |span| &content[span.range.clone()])
+    }
+}
+
+/// For a topic the graph reached, the content of the memory the walk started
+/// from. Taken from every state the search resolved rather than from the
+/// results, so it does not depend on how many were asked for.
+fn seed<'a>(
+    live: &'a WorkingSet,
+    paths: &std::collections::HashMap<TopicId, Neighbor>,
+    topic: TopicId,
+) -> Option<&'a TopicState> {
+    paths
+        .get(&topic)
+        .and_then(|reached| live.state(reached.origin))
+}
+
+/// The channels' candidates in one order, best first, without duplicates.
+///
+/// Round-robin by rank rather than one list after another: the lists are three
+/// independent rankings of the same corpus and nothing has fused them yet, so
+/// the only defensible reading of "best" across them is that each channel's
+/// first pick outranks every channel's second. Concatenating would give one
+/// channel's fiftieth candidate a better place than another channel's first.
+fn best_first(lists: &[ChannelResults]) -> Vec<TopicId> {
+    let deepest = lists
+        .iter()
+        .map(|list| list.candidates.len())
+        .max()
+        .unwrap_or(0);
+    let mut seen = std::collections::HashSet::new();
+    let mut ranked = Vec::new();
+
+    for rank in 0..deepest {
+        for list in lists {
+            if let Some(candidate) = list.candidates.get(rank)
+                && seen.insert(candidate.topic)
+            {
+                ranked.push(candidate.topic);
+            }
+        }
+    }
+    ranked
+}
+
+/// How relevant each seed is to the query, on `(0, 1]`.
+///
+/// **What a graph arrival is worth depends on where it was reached from, and
+/// the channel's score used to ignore that.** A neighbour of the memory that
+/// matched the query best and a neighbour of the sixty-fourth seed both scored
+/// one derived mention's 0.5, so the channel could not tell an answer reached
+/// from the right place from noise reached from a weak one -- and its weight
+/// had to be cut for every query to protect the queries it was hurting. That
+/// is the whole reason it ships at three tenths.
+///
+/// Personalised PageRank, as HippoRAG and its successors use it for graph
+/// retrieval, starts the walk from a personalisation vector weighted by each
+/// seed's relevance to the query, so what an expanded node scores is
+/// proportional to how relevant its seed was. This is the one-step version of
+/// that: an arrival's strength is its seed's relevance times the path's.
+///
+/// A seed the query names outright is fully relevant. Any other seed is worth
+/// its best rank in any of the three index channels, discounted the way rank
+/// fusion discounts it -- `(k + 1) / (k + rank)` with the same `k` fusion uses,
+/// so this adds no constant of its own to tune.
+fn seed_relevance(
+    named: &[TopicId],
+    lists: &[ChannelResults],
+    k: f32,
+) -> std::collections::HashMap<TopicId, f32> {
+    let mut relevance = std::collections::HashMap::new();
+    for list in lists {
+        for (index, candidate) in list.candidates.iter().enumerate() {
+            let rank = index as f32 + 1.0;
+            let worth = (k + 1.0) / (k + rank);
+            relevance
+                .entry(candidate.topic)
+                .and_modify(|held: &mut f32| *held = held.max(worth))
+                .or_insert(worth);
+        }
+    }
+    for topic in named {
+        relevance.insert(*topic, 1.0);
+    }
+    relevance
+}
+
+/// How strongly the graph vouches for one arrival: edge confidence, per hop.
+///
+/// **This is the one channel whose score is not its sort key, and the
+/// disagreement is real rather than an oversight.** `graph::expand` orders its
+/// neighbours lexicographically -- fewest hops first, then most confident, then
+/// by identifier -- and no single number reproduces a lexicographic order:
+/// a two-hop arrival at confidence 0.9 scores above a one-hop arrival at
+/// confidence 0.3 here, while the walk ranks the one-hop first. Reordering the
+/// channel by this number instead would be a ranking change nothing can measure
+/// -- the graph channel contributes exactly 0.0000 to every group of all three
+/// evaluation corpora -- so the order stays as the walk made it, and this
+/// number answers the separate question fusion needs: how far this channel's
+/// best arrival stands above its own field.
+fn path_strength(confidence: f32, hops: u8) -> f32 {
+    confidence * HOP_DECAY.powi(i32::from(hops.saturating_sub(1)))
+}
+
+/// Every contiguous run of up to `widest` tokens, as the name index stores them.
+///
+/// The bound is what keeps this proportional to the text: without it the runs
+/// are quadratic in the length of a memory, and a run longer than the longest
+/// name in the project cannot be a name.
+fn runs_of_tokens(tokens: &[String], widest: usize) -> Vec<String> {
+    let mut runs = Vec::new();
+    for width in 1..=widest.min(tokens.len()) {
+        for window in tokens.windows(width) {
+            runs.push(window.join(" "));
+        }
+    }
+    runs.sort_unstable();
+    runs.dedup();
+    runs
+}
+
+/// What the reranker is shown for one candidate: its topic's name, its
+/// content, and -- for a candidate the graph reached -- the memory the walk
+/// started from ([`SearchHit::seed`]).
+///
+/// **Content alone is not enough to judge a memory by.** A memory's text
+/// leaves implicit what its topic's name says -- `platform rota` is "it pages
+/// ines on weekends" -- and a candidate the graph reached is relevant because
+/// of an edge whose sentence is in *another* memory: "a sev one escalates to
+/// the platform rota". Shown only its own text, a cross-encoder has nothing to
+/// connect "who gets paged when a sev one escalates" to it and demotes it.
+/// Titles before bodies is how the standard retrieval benchmarks present a
+/// document to a reranker; the seed is the same argument for the one kind of
+/// evidence this engine has that a benchmark does not.
+///
+/// Measured on the own corpus through the `CONTEXT` arm, against content
+/// alone at the `accurate` tier: relational 0.6230 to 0.6739, 4 queries better
+/// and none worse, and cross-lingual +0.0235, 16 better and 1 worse (family
+/// p = 0.035). Chosen in every fold of a five-fold cross-validation, +0.0129
+/// on the queries it did not choose on (p = 0.0005).
+fn shown(topic: &str, content: &str, seed: Option<&str>) -> String {
+    let mut text = format!("{topic}: {content}");
+    if let Some(seed) = seed {
+        text.push_str(". ");
+        text.push_str(seed);
+    }
+    text
+}
+
+/// The graph score from which a candidate only the graph found is shown to the
+/// reranker beside the head: the edge's confidence, decayed per hop (see
+/// [`path_strength`]).
+///
+/// The graph finds what the other channels cannot -- the memory a question
+/// needs because another memory names it -- and fusion, weighing it at 0.30,
+/// ranks those finds far below the head: on MuSiQue's 1,000 two-hop questions,
+/// 153 supporting titles were found by the graph alone and not one reached the
+/// reranker's twenty, at a median fused rank of 99. That rank was taken while
+/// fusion also floored every candidate only the graph found; removing the
+/// floor can only raise them, and it left all 1,000 questions' nDCG@10 where
+/// it was. The reranker is the one stage that is shown the memory that
+/// reached them, so it is the one that can judge them. Handing it the
+/// strongest ten lifted nDCG@10 from 0.6573 to 0.6834 (108 questions better,
+/// 47 worse, p = 0.0001) and recall@50 from 0.7940 to 0.8435. A project with
+/// no edges has no graph candidates and pays nothing.
+///
+/// **Chosen by score rather than a fixed ten, because a weak find costs a pair
+/// and was not measured buying anything.** On the own corpus ten showed about
+/// four finds a query; at this threshold it shows almost none, and on MuSiQue
+/// 8.4 on average instead of ten, anywhere from none to the cap. Under a rule written before the runs, on 600 MuSiQue questions
+/// held out from where the threshold was noticed, through `search_reranked` at
+/// the `accuracy` profile with the caches bypassed: nDCG@10 +0.0017 against
+/// the fixed ten (16 questions better, 5 worse, p = 0.057), search time 0.87
+/// of ten's (p = 0.0001); on the own corpus 0.81 of ten's (p = 0.0001), one
+/// query of 157 worse by 0.0078 and the rest unchanged. `docs/measured.md` has
+/// the runs.
+const GRAPH_SHOWN_FROM: f32 = 0.5;
+
+/// At most this many of the finds at [`GRAPH_SHOWN_FROM`] are shown, strongest
+/// first. A cap is what keeps a densely linked question from handing the
+/// reranker every neighbour. With the finds ranked by strength shared across
+/// their hub (see [`rerankable`]), four kept every answer key of a replay on
+/// recorded MuSiQue and LoCoMo searches within noise of thirty while showing
+/// LoCoMo's reranker 34 pairs a search instead of 57.6.
+const GRAPH_SHOWN_AT_MOST: usize = 4;
+
+/// The positions of a fused list the reranker is shown: the whole head, and
+/// those below the head that only the graph found with a graph score of at least [`GRAPH_SHOWN_FROM`], strongest
+/// first and at most [`GRAPH_SHOWN_AT_MOST`] of them. Ascending.
+///
+/// "Strongest" divides each find's graph score by the square root of how many
+/// of the eligible finds came through the same `via` topic. A hub one hop
+/// from a seed hands the graph channel dozens of neighbours with similar
+/// scores, and ranked by score alone they fill the cap with one topic's
+/// surroundings. Replayed on recorded searches with the cap at four, MuSiQue's
+/// nDCG@10 went from -0.0053 against the uncapped rule (p_fw = 0.009) to
+/// -0.0005 (p_fw = 1.0, Holm over that replay's eight arms), and no LoCoMo
+/// key moved significantly.
+///
+/// One rule, public so the harnesses that replay a search from its trace use
+/// this rather than a copy that could drift from it. `traces` is each fused
+/// result's `why`, in fused order.
+pub fn rerankable(traces: &[&[Why]], depth: usize) -> Vec<usize> {
+    let head = depth.min(traces.len());
+    // A graph-only find's score and the topic its walk last came through.
+    fn graph_only(why: &[Why]) -> Option<(f32, Option<&str>)> {
+        let mut graph = None;
+        let mut via = None;
+        for entry in why {
+            match entry {
+                Why::Channel { channel, score, .. } => {
+                    if *channel != Channel::Graph {
+                        return None;
+                    }
+                    graph = Some(score.unwrap_or(0.0));
+                }
+                Why::Path { via: through, .. } => via = Some(through.as_str()),
+                _ => {}
+            }
+        }
+        graph.map(|score| (score, via))
+    }
+
+    let mut positions: Vec<usize> = (0..head).collect();
+    let eligible: Vec<(usize, f32, Option<&str>)> = (head..traces.len())
+        .filter_map(|at| graph_only(traces[at]).map(|(score, via)| (at, score, via)))
+        .filter(|(_, score, _)| *score >= GRAPH_SHOWN_FROM)
+        .collect();
+    let mut sharing: std::collections::HashMap<Option<&str>, u32> =
+        std::collections::HashMap::new();
+    for (_, _, via) in &eligible {
+        *sharing.entry(*via).or_default() += 1;
+    }
+    let mut graph: Vec<(usize, f64)> = eligible
+        .iter()
+        .map(|(at, score, via)| (*at, f64::from(*score) / f64::from(sharing[via]).sqrt()))
+        .collect();
+    graph.sort_by(|left, right| right.1.total_cmp(&left.1).then(left.0.cmp(&right.0)));
+    positions.extend(
+        graph
+            .into_iter()
+            .take(GRAPH_SHOWN_AT_MOST)
+            .map(|(at, _)| at),
+    );
+    positions.sort_unstable();
+    positions
+}
+
+/// Fusion's share of the accurate reranker's final score.
+///
+/// Chosen on XQuAD-R before checking MuSiQue: the latter's held-out arm also
+/// improves over both unblended full-head reranking and the old partial pass.
+pub const RERANK_FUSION: f64 = 0.2;
+
+/// Best-first positions after min-max scaling both scores within one shortlist.
+/// Shared with the evaluation replay so the measured rule is the shipped rule.
+pub fn score_blend_order(fused: &[f64], model: &[f64], fusion: f64) -> Vec<usize> {
+    assert_eq!(fused.len(), model.len());
+    let scaled = |values: &[f64]| {
+        let low = values.iter().copied().fold(f64::INFINITY, f64::min);
+        let high = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        values
+            .iter()
+            .map(|value| {
+                if high > low {
+                    (value - low) / (high - low)
+                } else {
+                    0.0
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    let (fused, model) = (scaled(fused), scaled(model));
+    let mut positions: Vec<usize> = (0..fused.len()).collect();
+    positions.sort_by(|left, right| {
+        let score = |at: usize| fusion * fused[at] + (1.0 - fusion) * model[at];
+        score(*right)
+            .total_cmp(&score(*left))
+            .then_with(|| left.cmp(right))
+    });
+    positions
+}
+
+/// Puts the candidates the reranker scored back into the list, best first.
+///
+/// `shown` is what [`rerankable`] chose, ascending, and `best_first` indexes
+/// into it in the model's order. A head candidate's slot is refilled in place,
+/// so nothing else in the head moves. A graph candidate from below the head
+/// has no slot there, so it is *inserted*: the list gains one slot at the end
+/// of the head for each, the graph candidates leave their old positions, and
+/// the whole shown set fills the head's slots and the new ones in the model's
+/// order. So a graph find the model rates rises into the head, and a head
+/// candidate it rates below one falls to just after the head -- not to rank
+/// ninety-nine, where the find came from and where it would drop out of every
+/// list a caller reads. With no graph candidates this is the in-place refill
+/// it always was.
+///
+/// Generic because the harnesses replay a search by names through the same
+/// function the engine places hits with.
+pub fn place<T>(list: Vec<T>, shown: &[usize], head: usize, best_first: &[usize]) -> Vec<T> {
+    let head = head.min(list.len());
+    let mut slots: Vec<Option<T>> = list.into_iter().map(Some).collect();
+    let mut taken: Vec<Option<T>> = shown.iter().map(|at| slots[*at].take()).collect();
+
+    let below = shown.iter().filter(|at| **at >= head).count();
+    let mut rest = slots.split_off(head);
+    rest.retain(Option::is_some);
+    slots.extend(std::iter::repeat_with(|| None).take(below));
+    slots.extend(rest);
+
+    let targets = shown
+        .iter()
+        .copied()
+        .filter(|at| *at < head)
+        .chain(head..head + below);
+    for (slot, pick) in targets.zip(best_first) {
+        slots[slot] = taken[*pick].take();
+    }
+    slots
+        .into_iter()
+        .map(|slot| slot.expect("every slot refilled"))
+        .collect()
+}
+
+/// Whether reranking these positions can change what the caller is given.
+///
+/// The pass reorders the candidates at `unlexical` *into the positions they
+/// already hold* and the caller is then given the first `limit` of the list.
+/// Two things follow, and one of them was being paid for.
+///
+/// Fewer than two positions cannot be reordered at all, which this always
+/// checked.
+///
+/// And if every one of those positions sits at or past `limit`, the pass can
+/// only permute candidates the caller never sees. That is not a heuristic
+/// about when reranking is unlikely to help: the returned results are
+/// identical either way, because the only thing the pass produces is a
+/// permutation of those positions -- it attaches no score to a hit and writes
+/// nothing into the trace. So the work is not merely unlikely to pay, it is
+/// provably invisible.
+///
+/// This is worth nothing to the evaluation harnesses and something to every
+/// user. The harnesses ask for 51 results so they can measure recall@50, and
+/// the reranker's head is 20, so every position it touches is inside what they
+/// read and this returns `true` on every query they run -- the accuracy
+/// figures cannot move, by construction rather than by measurement. `pamin
+/// search` defaults to five. On a query whose first five results all carry a
+/// lexical hit, which is the ordinary shape of a same-language query, every
+/// unlexical candidate is at rank five or beyond and the 226 ms was buying a
+/// reordering of results nobody was going to be shown.
+///
+/// **What it is worth is 7%, and the first figure recorded for it was a
+/// third.** Both arms below are `accuracy` / `fast` over XQuAD-R's 1,190
+/// queries, taken in the same session on an idle machine, one thing apart:
+///
+/// | | reranking | candidates a query |
+/// | --- | --- | --- |
+/// | `--limit 51`, the harness | 252 ms | 15.3 |
+/// | `--limit 5`, the default | 235 ms | 14.5 |
+///
+/// The third came from subtracting two arms taken in *different* runs, which
+/// is the mistake this project has already withdrawn one figure for: the
+/// module notes on `reranking` warn that this harness's latency column moves
+/// by as much as a fifth between runs, and a fifth is three times the effect
+/// being measured.
+///
+/// Seven per cent for nothing is still worth keeping, and the reason it is
+/// small here is the reason it should be larger elsewhere: half of XQuAD-R's
+/// queries are answered in another language, so an unlexical candidate is
+/// almost always inside the first five and there is nothing to skip. A
+/// workspace in one language is the case this gate is for, and that is
+/// MIRACL's shape rather than this corpus's. Not measured there yet.
+fn can_be_seen(unlexical: &[usize], limit: u32) -> bool {
+    if unlexical.len() < 2 {
+        return false;
+    }
+    // Ascending, because it was built by filtering a range. So the first entry
+    // is the highest-ranked candidate the pass could move.
+    unlexical
+        .first()
+        .is_some_and(|highest| *highest < limit as usize)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::{
+        GRAPH_SHOWN_AT_MOST, GRAPH_SHOWN_FROM, SpanView, Window, best_first, can_be_seen, is_idle,
+        path_strength, place, rerankable, runs_of_tokens, score_blend_order, seed_relevance, shown,
+    };
+    use memory_core::settings::MODEL_IDLE;
+    use memory_core::{
+        Channel, ChannelResults, ProjectId, TopicId, TopicState, TopicStateId, Validity,
+    };
+    use memory_index::SpanSource;
+    use memory_index::spans::TokenCount;
+    use std::sync::Arc;
+    use time::OffsetDateTime;
+
+    /// One token a whitespace-separated word.
+    struct Words;
+
+    impl TokenCount for Words {
+        fn offsets(&self, text: &str) -> Vec<std::ops::Range<usize>> {
+            text.split_whitespace()
+                .map(|word| {
+                    let start = word.as_ptr() as usize - text.as_ptr() as usize;
+                    start..start + word.len()
+                })
+                .collect()
+        }
+    }
+
+    /// Five paragraphs of five words, which a cap of five cuts one to a span.
+    fn five_spans() -> String {
+        (0..5)
+            .map(|span| format!("p{span}a p{span}b p{span}c p{span}d p{span}e"))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    /// A state of `content`, which is all a window reads of one.
+    fn state(content: &str) -> TopicState {
+        let now = OffsetDateTime::UNIX_EPOCH;
+        TopicState {
+            id: TopicStateId::new(),
+            project_id: ProjectId::new(),
+            topic_id: TopicId::new(),
+            version: 1,
+            content: content.to_string(),
+            source_span_id: memory_core::SourceSpanId::new(),
+            language: None,
+            observed_at: now,
+            recorded_at: now,
+            validity: Validity::ALWAYS,
+            supersedes: None,
+            deleted_at: None,
+        }
+    }
+
+    fn window(room: usize) -> Window {
+        Window {
+            cap: 5,
+            counter: Arc::new(Words),
+            cuts: Arc::default(),
+            segmenter: Arc::default(),
+            room,
+        }
+    }
+
+    #[test]
+    fn a_memory_of_one_span_is_shown_as_before_spans() {
+        let window = Window::new(5, Arc::new(Words), Arc::default(), Arc::default(), "q");
+        assert_eq!(
+            window.shown(&state("a b c"), "topic", 3, Some("seed")),
+            shown("topic", "a b c", Some("seed"))
+        );
+    }
+
+    #[test]
+    fn a_window_is_the_best_span_and_what_fits_either_side() {
+        let memory = state(&five_spans());
+        // "topic:" is one word, and each span five more.
+        assert_eq!(
+            window(6).shown(&memory, "topic", 2, None),
+            "topic: p2a p2b p2c p2d p2e"
+        );
+        assert_eq!(
+            window(11).shown(&memory, "topic", 2, None),
+            "topic: p1a p1b p1c p1d p1e\np2a p2b p2c p2d p2e",
+            "the previous span first"
+        );
+        assert_eq!(
+            window(16).shown(&memory, "topic", 2, None),
+            "topic: p1a p1b p1c p1d p1e\np2a p2b p2c p2d p2e\np3a p3b p3c p3d p3e"
+        );
+        assert_eq!(
+            window(21).shown(&memory, "topic", 2, None),
+            "topic: p0a p0b p0c p0d p0e\np1a p1b p1c p1d p1e\np2a p2b p2c p2d p2e\np3a p3b p3c p3d p3e",
+            "more than one either side when the room holds it"
+        );
+        assert_eq!(
+            window(11).shown(&memory, "topic", 0, None),
+            "topic: p0a p0b p0c p0d p0e\np1a p1b p1c p1d p1e",
+            "the next when there is no previous"
+        );
+        assert_eq!(
+            window(6).shown(&memory, "topic", 9, None),
+            shown("topic", &memory.content, None),
+            "a span the content no longer has"
+        );
+    }
+
+    #[test]
+    fn a_window_reads_the_cut_it_was_given_rather_than_cutting_again() {
+        let memory = state(&five_spans());
+        let window = window(6);
+        let held = window.cuts.get_or_cut(memory.id, 5, "topic", || {
+            memory_index::spans::pack("topic", "q0 q1 q2 q3 q4\n\nq5 q6", &Words, 5)
+        });
+        assert_eq!(held.len(), 2);
+        assert_eq!(
+            window.shown(&memory, "topic", 1, None),
+            "topic: q5 q6",
+            "the held cut, not the content cut again"
+        );
+    }
+
+    #[test]
+    fn a_hit_on_a_memory_of_several_spans_carries_its_window() {
+        let window = Window::new(5, Arc::new(Words), Arc::default(), Arc::default(), "q");
+        let memory = state(&five_spans());
+        let content = &memory.content;
+        let view = window.view(&memory, "topic", 4).unwrap();
+        assert_eq!((view.ordinal, view.of), (4, 5));
+        assert_eq!(&content[view.range], content.as_str(), "all fit the budget");
+        assert_eq!(window.view(&memory, "topic", 5), None, "a stale span");
+        assert_eq!(
+            window.view(&state("a b c"), "topic", 0),
+            None,
+            "one span is the whole"
+        );
+    }
+
+    #[test]
+    fn a_view_grows_from_the_nearer_side_while_it_fits() {
+        let memory = state(&five_spans());
+        let spans = memory_index::spans::pack("topic", &memory.content, &Words, 5);
+        let per = spans[0].tokens;
+        let shown = |at, tokens| {
+            let view = SpanView::within(&spans, at, tokens).unwrap();
+            memory.content[view.range].to_string()
+        };
+        assert_eq!(shown(2, per), "p2a p2b p2c p2d p2e", "the best span alone");
+        assert_eq!(shown(2, 1), "p2a p2b p2c p2d p2e", "however long it is");
+        assert_eq!(
+            shown(2, 3 * per),
+            "p1a p1b p1c p1d p1e\n\np2a p2b p2c p2d p2e\n\np3a p3b p3c p3d p3e"
+        );
+        assert_eq!(
+            shown(0, 3 * per),
+            "p0a p0b p0c p0d p0e\n\np1a p1b p1c p1d p1e\n\np2a p2b p2c p2d p2e",
+            "what one side lacks, the other gives"
+        );
+        assert_eq!(SpanView::within(&spans, 5, per), None, "a stale span");
+    }
+
+    #[test]
+    fn a_seed_is_shown_by_the_span_that_names_the_find() {
+        let window = Window::new(5, Arc::new(Words), Arc::default(), Arc::default(), "q");
+        let seed = state(&five_spans());
+        assert_eq!(window.naming(&seed, "P3C"), "p3a p3b p3c p3d p3e");
+        assert_eq!(window.naming(&seed, "absent"), five_spans());
+        assert_eq!(window.naming(&state("a b"), "absent"), "a b");
+        let education = state("p0a p0b education p0d p0e\n\np1a p1b cat p1d p1e");
+        assert_eq!(
+            window.naming(&education, "cat"),
+            "p1a p1b cat p1d p1e",
+            "a name inside a longer word is not a mention"
+        );
+        let pipeline = state("p0a p0b p0c p0d p0e\n\np1a deployment pipeline p1d p1e");
+        assert_eq!(
+            window.naming(&pipeline, "deployment_pipeline"),
+            "p1a deployment pipeline p1d p1e"
+        );
+    }
+
+    /// A load started ahead of its need returns at once, is waited for by
+    /// settling, and once finished is not held by a server that never settles.
+    #[tokio::test]
+    async fn settling_waits_for_a_load_nothing_else_waited_for() {
+        use std::sync::mpsc;
+
+        let preloads = super::Preloads::default();
+        let (release, released) = mpsc::channel::<()>();
+        let started = Instant::now();
+        preloads.start(move || {
+            released.recv().unwrap();
+        });
+        assert!(started.elapsed() < Duration::from_secs(1), "start waited");
+
+        let settling = tokio::spawn({
+            let preloads = preloads.clone();
+            async move { preloads.settle().await }
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!settling.is_finished(), "settled before the load finished");
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), settling)
+            .await
+            .expect("settling waits only for the load")
+            .unwrap();
+        assert!(preloads.0.lock().unwrap().is_empty());
+
+        // A finished load is forgotten as the next one starts.
+        preloads.start(|| {});
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !preloads.0.lock().unwrap()[0].is_finished() {
+            assert!(Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        preloads.start(|| {});
+        assert_eq!(preloads.0.lock().unwrap().len(), 1);
+        preloads.settle().await;
+    }
+
+    /// Planning a replay's passes asks only a reranker already loaded: with
+    /// none, it answers `None` and loads nothing, so an evaluation that
+    /// plans through it holds one reranker model, the one the engine loaded.
+    #[test]
+    fn planning_passes_never_loads_a_reranker() {
+        let models = super::Models {
+            dir: std::path::PathBuf::from("/nonexistent/pamin-models"),
+            settings: std::sync::Arc::default(),
+            loaded: std::sync::Arc::default(),
+            reranker: std::sync::Arc::default(),
+            span_tokens: std::sync::Arc::default(),
+            cuts: std::sync::Arc::default(),
+        };
+        assert!(models.passes("query", &["one", "two"]).is_none());
+        assert!(models.reranker.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn idle_sweep_skips_registries_while_a_model_load_holds_them() {
+        use std::sync::mpsc;
+
+        let models = super::Models {
+            dir: std::path::PathBuf::new(),
+            settings: std::sync::Arc::default(),
+            loaded: std::sync::Arc::default(),
+            reranker: std::sync::Arc::default(),
+            span_tokens: std::sync::Arc::default(),
+            cuts: std::sync::Arc::default(),
+        };
+
+        let embedder_load = models.loaded.lock().unwrap();
+        let (sent, received) = mpsc::channel();
+        let sweeping = models.clone();
+        let worker = std::thread::spawn(move || sent.send(sweeping.release_idle_embedder()));
+        let embedder_result = received.recv_timeout(Duration::from_secs(1));
+        drop(embedder_load);
+        worker.join().unwrap().unwrap();
+        assert!(!embedder_result.unwrap());
+
+        let reranker_load = models.reranker.lock().unwrap();
+        let (sent, received) = mpsc::channel();
+        let sweeping = models.clone();
+        let worker = std::thread::spawn(move || sent.send(sweeping.release_idle_reranker()));
+        let reranker_result = received.recv_timeout(Duration::from_secs(1));
+        drop(reranker_load);
+        worker.join().unwrap().unwrap();
+        assert!(!reranker_result.unwrap());
+    }
+
+    /// The reranker's plans are reported under the label they had as the
+    /// `accurate` tier, which evaluation records are matched on.
+    #[test]
+    fn the_reranker_is_reported_as_reranking_accurate() {
+        assert_eq!(super::reranker_role(), "reranking accurate");
+    }
+
+    /// The reranker reads a candidate under its name, and a graph arrival with
+    /// the memory it was reached from -- the sentence that makes it relevant.
+    #[test]
+    fn a_candidate_is_shown_with_its_name_and_the_memory_that_reached_it() {
+        assert_eq!(
+            shown(
+                "platform rota",
+                "it pages ines on weekends",
+                Some("a sev one escalates to the platform rota")
+            ),
+            "platform rota: it pages ines on weekends. a sev one escalates to the platform rota"
+        );
+        // Not reached by the graph: the name and nothing else added.
+        assert_eq!(
+            shown("platform rota", "it pages ines on weekends", None),
+            "platform rota: it pages ines on weekends"
+        );
+    }
+
+    /// A seed is as relevant as its best rank anywhere, and a named seed is
+    /// fully relevant.
+    ///
+    /// What makes a graph arrival from the top of the lexical list worth more
+    /// than one from the bottom of it. The first place in any channel is
+    /// `(k + 1) / (k + 1) = 1`, the eleventh is `11 / 21`, a topic ranked well
+    /// by one channel and badly by another keeps the better, and a topic the
+    /// query names outright is worth one whatever the channels thought.
+    #[test]
+    fn a_seed_is_as_relevant_as_its_best_rank() {
+        let id = |byte: u8| TopicId::from(uuid::Uuid::from_bytes([byte; 16]));
+        let list = |channel, topics: &[u8]| {
+            ChannelResults::unscored(channel, topics.iter().map(|byte| id(*byte)).collect())
+        };
+        let lists = [
+            list(
+                Channel::LexicalSegmented,
+                &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+            ),
+            list(Channel::Vector, &[11, 1]),
+        ];
+
+        let relevance = seed_relevance(&[id(99)], &lists, memory_core::DEFAULT_K);
+        assert_eq!(relevance[&id(1)], 1.0, "first in a channel");
+        let eleventh = (memory_core::DEFAULT_K + 1.0) / (memory_core::DEFAULT_K + 11.0);
+        assert!((relevance[&id(2)] - 11.0 / 12.0).abs() < 1e-6, "second");
+        assert_eq!(
+            relevance[&id(11)],
+            1.0,
+            "eleventh lexically but first by vector"
+        );
+        assert!(
+            relevance[&id(10)] > eleventh,
+            "tenth is worth more than eleventh would be"
+        );
+        assert_eq!(relevance[&id(99)], 1.0, "named by the query");
+        assert!(!relevance.contains_key(&id(50)), "not a seed at all");
+
+        let sharper = seed_relevance(&[id(99)], &lists, 5.0);
+        assert!((sharper[&id(2)] - 6.0 / 7.0).abs() < 1e-6);
+        assert!(sharper[&id(2)] < relevance[&id(2)]);
+    }
+
+    /// A model in use is not idle, however long ago it was handed out.
+    ///
+    /// The pair that matters: the window has to be reached, and reaching it is
+    /// not enough on its own -- the caller checks that nothing holds the model
+    /// as well, because dropping the registry's handle while a search holds
+    /// its own frees nothing and makes the next search load a second copy.
+    #[test]
+    fn a_pass_over_candidates_below_the_limit_cannot_be_seen() {
+        // Five results asked for, and the only candidates the pass may move
+        // are at ranks 5 through 8. Whatever order it puts them in, the caller
+        // is given ranks 0 through 4.
+        assert!(!can_be_seen(&[5, 6, 7, 8], 5));
+        // The same list when the caller asks for more of it.
+        assert!(can_be_seen(&[5, 6, 7, 8], 6));
+    }
+
+    #[test]
+    fn a_pass_reaching_the_limit_can_be_seen() {
+        // One candidate inside what the caller reads is enough: reordering
+        // can carry any of the others into that slot.
+        assert!(can_be_seen(&[4, 11, 19], 5));
+        assert!(can_be_seen(&[0, 1], 5));
+    }
+
+    #[test]
+    fn one_candidate_is_not_a_reordering() {
+        // Nothing to permute, wherever it sits.
+        assert!(!can_be_seen(&[0], 5));
+        assert!(!can_be_seen(&[], 5));
+    }
+
+    #[test]
+    fn the_evaluation_harnesses_never_skip_the_pass() {
+        // Both harnesses ask for `RECALL_AT + 1` results so they can measure
+        // recall@50, and the reranker's head is 20. So every position it could
+        // touch is inside what they read, and the published accuracy figures
+        // cannot move because of this gate. Asserted rather than argued,
+        // because the argument is the whole reason the gate is allowed to be
+        // exact rather than swept.
+        let whole_head: Vec<usize> = (0..20).collect();
+        assert!(can_be_seen(&whole_head, 51));
+        // Even the worst case for the harness -- only the last two positions
+        // of the head are unlexical -- is still inside 51.
+        assert!(can_be_seen(&[18, 19], 51));
+    }
+
+    #[test]
+    fn a_model_is_idle_only_once_the_window_has_passed() {
+        let window = Duration::from_secs(300);
+        let now = Instant::now();
+        let handed_out = now - Duration::from_secs(299);
+
+        assert!(
+            !is_idle(handed_out, now, window),
+            "a reranker wanted a second ago was called idle"
+        );
+        assert!(
+            is_idle(handed_out - Duration::from_secs(2), now, window),
+            "a reranker nobody has wanted for five minutes was not called idle"
+        );
+    }
+
+    /// The clock going backwards releases nothing rather than everything.
+    ///
+    /// `Instant` is monotonic, so this is not a real clock but a real
+    /// arithmetic case: subtracting a later instant from an earlier one panics
+    /// on a plain subtraction, and saturating it to zero is what keeps a
+    /// reordering inside one tick from looking like five idle minutes.
+    #[test]
+    fn a_hand_out_in_the_future_is_not_idle() {
+        let now = Instant::now();
+        assert!(!is_idle(now + Duration::from_secs(600), now, MODEL_IDLE));
+    }
+
+    fn topic(byte: u8) -> TopicId {
+        TopicId(uuid::Uuid::from_bytes([byte; 16]))
+    }
+
+    /// Every channel's first pick outranks every channel's second.
+    ///
+    /// The graph channel seeds from this order and keeps only the first
+    /// sixty-four, so what the order means decides which topics get walked.
+    /// Concatenating the lists would hand one channel's fiftieth candidate a
+    /// better place than another channel's first.
+    #[test]
+    fn the_channels_merge_by_rank_and_not_by_channel() {
+        let lists = vec![
+            ChannelResults::unscored(
+                Channel::LexicalSegmented,
+                vec![topic(1), topic(2), topic(3)],
+            ),
+            ChannelResults::unscored(Channel::Vector, vec![topic(9), topic(8)]),
+        ];
+
+        assert_eq!(
+            best_first(&lists),
+            vec![topic(1), topic(9), topic(2), topic(8), topic(3)],
+            "the lists were concatenated rather than interleaved by rank"
+        );
+    }
+
+    /// A topic several channels agree on takes its best place, once.
+    #[test]
+    fn a_topic_two_channels_found_appears_at_its_best_rank() {
+        let shared = topic(5);
+        let lists = vec![
+            ChannelResults::unscored(Channel::LexicalSegmented, vec![topic(1), shared]),
+            ChannelResults::unscored(Channel::Vector, vec![shared, topic(2)]),
+        ];
+
+        assert_eq!(
+            best_first(&lists),
+            vec![topic(1), shared, topic(2)],
+            "agreement should promote a candidate, not duplicate it"
+        );
+    }
+
+    /// Channels of different depths do not lose their tail.
+    #[test]
+    fn a_deeper_channel_keeps_the_rest_of_its_list() {
+        let lists = vec![
+            ChannelResults::unscored(Channel::LexicalSegmented, vec![topic(1)]),
+            ChannelResults::unscored(Channel::Vector, vec![topic(7), topic(8), topic(9)]),
+        ];
+
+        assert_eq!(
+            best_first(&lists),
+            vec![topic(1), topic(7), topic(8), topic(9)]
+        );
+    }
+
+    use memory_index::Segmenter;
+    use memory_index::segmentation::names;
+
+    /// The reranker sees the whole head, and strong graph-only candidates
+    /// below it.
+    #[test]
+    fn the_accurate_reranker_sees_the_whole_head_and_strong_graph_finds() {
+        use memory_core::Why;
+
+        let channel = |channel, score| Why::Channel {
+            channel,
+            rank: 1,
+            score: Some(score),
+            weight: 1.0,
+            contribution: 0.0,
+        };
+        let head = memory_index::reranking::DEPTH;
+        let mut traces: Vec<Vec<Why>> = Vec::new();
+        for at in 0..head {
+            // Every other head position has lexical evidence.
+            traces.push(if at % 2 == 0 {
+                vec![channel(Channel::LexicalSegmented, 1.0)]
+            } else {
+                vec![channel(Channel::Vector, 0.5)]
+            });
+        }
+        // Below the head: a vector candidate, a corroborated graph one, graph
+        // finds just under the threshold, and more at or above it than the
+        // cap, with increasing strength.
+        traces.push(vec![channel(Channel::Vector, 0.4)]);
+        traces.push(vec![
+            channel(Channel::Vector, 0.4),
+            channel(Channel::Graph, 0.9),
+        ]);
+        for weak in [0.1, 0.3, 0.49] {
+            traces.push(vec![channel(Channel::Graph, weak)]);
+        }
+        let first_strong = traces.len();
+        for strength in 0..GRAPH_SHOWN_AT_MOST + 3 {
+            traces.push(vec![channel(
+                Channel::Graph,
+                GRAPH_SHOWN_FROM + strength as f32 / 1000.0,
+            )]);
+        }
+        let borrowed: Vec<&[Why]> = traces.iter().map(Vec::as_slice).collect();
+
+        let shown = rerankable(&borrowed, head);
+        let head_shown: Vec<usize> = shown.iter().copied().filter(|at| *at < head).collect();
+        assert_eq!(head_shown, (0..head).collect::<Vec<_>>());
+        let below: Vec<usize> = shown.iter().copied().filter(|at| *at >= head).collect();
+        // The strongest GRAPH_SHOWN_AT_MOST, which are the last ones pushed;
+        // the weakest three that reach the threshold lose to the cap.
+        let strongest =
+            (first_strong + 3..first_strong + GRAPH_SHOWN_AT_MOST + 3).collect::<Vec<_>>();
+        assert_eq!(below, strongest);
+
+        // With fewer finds at the threshold than the cap, every one of them is
+        // shown, the one exactly at it included, and none under it.
+        let few: Vec<&[Why]> = borrowed[..first_strong + 2].to_vec();
+        let shown = rerankable(&few, head);
+        let below: Vec<usize> = shown.iter().copied().filter(|at| *at >= head).collect();
+        assert_eq!(below, vec![first_strong, first_strong + 1]);
+    }
+
+    /// A hub's neighbours share its strength: more finds through one topic at
+    /// 0.9 than the cap, and a lone find at 0.6 last in the list. By score
+    /// alone the cap would fill with the hub; divided by sqrt(count) the hub's
+    /// finds rank below the lone one, which is shown.
+    #[test]
+    fn finds_through_one_hub_share_their_strength() {
+        use memory_core::{Derivation, EdgeKind, Why};
+
+        let find = |score: f32, via: &str| {
+            vec![
+                Why::Channel {
+                    channel: Channel::Graph,
+                    rank: 1,
+                    score: Some(score),
+                    weight: 1.0,
+                    contribution: 0.0,
+                },
+                Why::Path {
+                    from: "seed".into(),
+                    via: via.into(),
+                    hops: 1,
+                    asserted_from: "seed".into(),
+                    asserted_to: via.into(),
+                    edge: EdgeKind::Mentions,
+                    derivation: Derivation::Explicit,
+                },
+            ]
+        };
+        let head = 1;
+        let mut traces: Vec<Vec<Why>> = vec![find(1.0, "head")];
+        for _ in 0..GRAPH_SHOWN_AT_MOST + 5 {
+            traces.push(find(0.9, "hub"));
+        }
+        traces.push(find(0.6, "lone"));
+        let borrowed: Vec<&[Why]> = traces.iter().map(Vec::as_slice).collect();
+        let shown = rerankable(&borrowed, head);
+        assert_eq!(shown.len(), head + GRAPH_SHOWN_AT_MOST);
+        assert!(shown.contains(&(traces.len() - 1)), "{shown:?}");
+    }
+
+    /// A head candidate is refilled in place; a graph find from below the head
+    /// is inserted at the end of it, and what it beats falls to just after the
+    /// head rather than to where the find came from.
+    #[test]
+    fn a_graph_find_is_inserted_and_what_it_beats_falls_only_past_the_head() {
+        // Head of three: a, b (shown), c (lexical, not shown). Below: d, e,
+        // and the graph find g at the bottom.
+        let list = vec!["a", "b", "c", "d", "e", "g"];
+        let shown = [0, 1, 5];
+        // The model: g best, then a, then b.
+        let placed = place(list.clone(), &shown, 3, &[2, 0, 1]);
+        assert_eq!(placed, vec!["g", "a", "c", "b", "d", "e"]);
+
+        // Without a graph find it is the in-place refill it always was.
+        assert_eq!(
+            place(list, &[0, 1], 3, &[1, 0]),
+            vec!["b", "a", "c", "d", "e", "g"]
+        );
+    }
+
+    #[test]
+    fn a_whole_head_can_move_a_lexical_candidate() {
+        assert_eq!(
+            place(
+                vec!["lexical", "vector", "graph"],
+                &[0, 1, 2],
+                3,
+                &[1, 2, 0]
+            ),
+            vec!["vector", "graph", "lexical"]
+        );
+    }
+
+    #[test]
+    fn blended_scores_keep_the_models_gain_and_break_ties_by_fused_rank() {
+        let fused = [0.9, 0.5, 0.1];
+        let model = [0.0, 1.0, 2.0];
+        assert_eq!(score_blend_order(&fused, &model, 0.2), vec![2, 1, 0]);
+        assert_eq!(score_blend_order(&fused, &model, 0.5), vec![0, 1, 2]);
+    }
+
+    /// What this process remembers about the widest name only ever grows.
+    ///
+    /// The direction matters more than the caching does. Remembering a value
+    /// that is too high costs a search some query windows that match nothing;
+    /// too low means a whole class of name is never looked for. So a second
+    /// writer reporting a narrower name must not be able to lower it.
+    #[test]
+    fn the_widest_name_is_raised_and_never_lowered() {
+        let widest = std::sync::atomic::AtomicUsize::new(0);
+        let raise = |tokens: usize| {
+            widest.fetch_max(tokens, std::sync::atomic::Ordering::Relaxed);
+            widest.load(std::sync::atomic::Ordering::Relaxed)
+        };
+
+        assert_eq!(raise(3), 3);
+        assert_eq!(raise(5), 5, "a wider name did not raise it");
+        assert_eq!(raise(2), 5, "a narrower name lowered it");
+    }
+
+    /// Every case the segmenter's own naming tests pin, and one that is not a
+    /// name in either scheme.
+    const CASES: &[(&str, &str)] = &[
+        ("the deployment pipeline runs on ci", "deployment_pipeline"),
+        ("we moved off Argo CD last week", "argo_cd"),
+        ("the technical debt is mounting", "db"),
+        ("the db is mounting", "db"),
+        ("the pipeline handles deployment", "deployment_pipeline"),
+        ("部署流水线运行在持续集成上面", "流水线"),
+        ("デプロイパイプラインは東京で動いています", "東京"),
+        ("call deploy_service now", "deploy_service"),
+        ("call the deploy service now", "deploy_service"),
+        ("see crates/store/src/database.rs for it", "database.rs"),
+        ("any content at all", "   "),
+        ("any content at all", "!!!"),
+    ];
+
+    /// The lookup finds a name exactly when comparing the sequences would.
+    ///
+    /// Deriving edges used to load every topic in a project and run the
+    /// sequence comparison against each one. It now asks a table keyed by the
+    /// name, which is only the same question if the runs offered to that table
+    /// are exactly the sequences that would have matched. Nothing else checks
+    /// that: a run scheme that missed a case would derive fewer edges, and
+    /// fewer edges is not an error anything reports -- the graph channel would
+    /// simply stop reaching things, on the queries nobody thought to try.
+    #[test]
+    fn a_run_lookup_finds_what_a_sequence_comparison_would() {
+        let segmenter = Segmenter::new();
+
+        for (text, name) in CASES {
+            let content = segmenter.name_sequence(text);
+            let needle = segmenter.name_sequence(name);
+
+            let by_comparison = names(&content, &needle);
+            let by_lookup = !needle.is_empty()
+                && runs_of_tokens(&content, needle.len()).contains(&needle.join(" "));
+
+            assert_eq!(
+                by_comparison, by_lookup,
+                "{text:?} naming {name:?}: comparison said {by_comparison}, lookup said {by_lookup}"
+            );
+        }
+    }
+
+    /// The bound is what keeps the runs proportional to the text.
+    #[test]
+    fn runs_stop_at_the_widest_name_there_is() {
+        let tokens: Vec<String> = ["a", "b", "c", "d"].iter().map(|t| t.to_string()).collect();
+
+        // Widths one and two only: 4 + 3 runs.
+        assert_eq!(runs_of_tokens(&tokens, 2).len(), 7);
+        // A project with no topics asks about nothing at all.
+        assert!(runs_of_tokens(&tokens, 0).is_empty());
+        // Asking for more width than there is text is not an error.
+        assert_eq!(runs_of_tokens(&tokens, 99).len(), 4 + 3 + 2 + 1);
+    }
+
+    /// A hop costs half, and an uncertain edge costs whatever it is uncertain by.
+    ///
+    /// The point is that these are now different numbers at all. Before, every
+    /// graph arrival reached fusion as a position in a list and nothing else,
+    /// so a topic one asserted edge from the query's own answer and a topic two
+    /// derived edges away were scored identically apart from which came first.
+    #[test]
+    fn the_graph_vouches_less_for_each_hop_it_took() {
+        assert_eq!(path_strength(1.0, 1), 1.0, "a certain first hop");
+        assert_eq!(path_strength(1.0, 2), 0.5, "one hop further");
+        assert_eq!(path_strength(1.0, 3), 0.25, "and one further");
+        assert_eq!(
+            path_strength(0.5, 1),
+            path_strength(1.0, 2),
+            "half the confidence at one hop is one certain hop further away"
+        );
+    }
+
+    /// A topic that went A -> B -> A before its sync drained is not embedded
+    /// again, and the index ends up holding what writing it again would have.
+    ///
+    /// Drives [`super::unheld`] the way `index_states` does, over a scripted
+    /// write sequence whose syncs coalesce per topic as the outbox's do, against
+    /// two indexes: one written the way it always was, every drained state
+    /// encoded, and one that skips what [`super::unheld`] says is held. The
+    /// stand-in encoder is a function of the text, as the model is, so a state
+    /// written twice gets the same vector twice -- which is the premise the
+    /// skip rests on, and why the two indexes must end up identical.
+    #[test]
+    fn a_topic_back_where_the_index_left_it_is_not_embedded_again() {
+        use memory_index::{Access, Projection, ProjectionIndex, VectorIndex};
+
+        /// One plan throughout, so the skip is the only thing that differs.
+        const PLAN: &str = "cpu:plan";
+
+        let open = |dir: &std::path::Path| {
+            ProjectionIndex::open(
+                dir,
+                &dir.join("legacy"),
+                VectorIndex::default(),
+                Access::ReadWrite,
+                0,
+            )
+            .expect("open index")
+        };
+        let encode = |text: &str, dimensions: u32| -> Vec<f32> {
+            let seed = text.bytes().fold(7u32, |hash, byte| {
+                hash.wrapping_mul(31).wrapping_add(u32::from(byte))
+            });
+            (0..dimensions)
+                .map(|at| {
+                    ((seed.wrapping_add(at.wrapping_mul(2_654_435_761)) >> 8) % 1000) as f32
+                        / 1000.0
+                        - 0.5
+                })
+                .collect()
+        };
+        let every_dir = tempfile::tempdir().expect("temp dir");
+        let skipping_dir = tempfile::tempdir().expect("temp dir");
+        let every = open(every_dir.path());
+        let skipping = open(skipping_dir.path());
+
+        let (one, two) = (TopicId::new(), TopicId::new());
+        // Each round is the writes committed before a drain, in order; a
+        // topic written twice in a round owes one sync, of its last text.
+        // `None` removes the topic's document, as a sync of a topic with no
+        // current state does.
+        let rounds: Vec<Vec<(TopicId, Option<&str>)>> = vec![
+            vec![(one, Some("alpha")), (two, Some("xi"))],
+            vec![(one, Some("beta")), (one, Some("alpha"))],
+            vec![(two, Some("ypsilon"))],
+            vec![(one, Some("alpha")), (two, Some("ypsilon"))],
+            vec![(one, Some("alpha ")), (two, None)],
+            vec![(two, Some("ypsilon"))],
+        ];
+        // Encoded per round by the path that writes every drained state,
+        // and by the path that skips what is held.
+        let mut encoded = (Vec::new(), Vec::new());
+        for round in &rounds {
+            let mut owed: Vec<(TopicId, Option<&str>)> = Vec::new();
+            for (topic, text) in round {
+                owed.retain(|(owing, _)| owing != topic);
+                owed.push((*topic, *text));
+            }
+            let (present, absent): (Vec<_>, Vec<_>) =
+                owed.iter().partition(|(_, text)| text.is_some());
+            let wanted: Vec<(TopicId, &str)> = present
+                .iter()
+                .map(|(topic, text)| (*topic, text.expect("present")))
+                .collect();
+            let absent: Vec<TopicId> = absent.iter().map(|(topic, _)| *topic).collect();
+
+            let sources: Vec<(TopicId, SpanSource<'_>)> = wanted
+                .iter()
+                .map(|(topic, text)| (*topic, source(text)))
+                .collect();
+            let unheld = super::unheld(&skipping, &whole(&sources), Some(PLAN));
+            let needed: Vec<(TopicId, &str)> = wanted
+                .iter()
+                .zip(&unheld)
+                .filter(|(_, unheld)| **unheld)
+                .map(|(wanted, _)| *wanted)
+                .collect();
+            for (index, writes) in [(&every, &wanted), (&skipping, &needed)] {
+                let vectors: Vec<Vec<f32>> = writes
+                    .iter()
+                    .map(|(_, text)| encode(text, memory_index::DIMENSIONS))
+                    .collect();
+                let documents: Vec<memory_index::VectorDocument<'_>> = writes
+                    .iter()
+                    .zip(&vectors)
+                    .map(|((topic, text), vector)| (*topic, *text, vector.as_slice()))
+                    .collect();
+                index.upsert_encoded(&documents, Some(PLAN)).expect("write");
+                index.delete(&absent).expect("delete");
+                index.flush().expect("flush");
+            }
+            encoded.0.push(wanted.len());
+            encoded.1.push(needed.len());
+        }
+
+        // Round two is the A -> B -> A topic, round four a sync of two
+        // topics already current, round six a removed topic restored to
+        // the text it had: that one has no document to keep, so it is
+        // embedded again. A trailing space is a different text.
+        assert_eq!(encoded.0, [2, 1, 1, 2, 1, 1]);
+        assert_eq!(encoded.1, [2, 0, 1, 0, 1, 1]);
+
+        let topics = [one, two];
+        assert_eq!(
+            every.stored(&topics).expect("read back"),
+            skipping.stored(&topics).expect("read back"),
+        );
+        for text in ["alpha", "alpha ", "ypsilon"] {
+            let query = encode(text, memory_index::DIMENSIONS);
+            assert_eq!(
+                every.recall_vector(&query, 2).expect("recall"),
+                skipping.recall_vector(&query, 2).expect("recall"),
+            );
+        }
+    }
+
+    /// A vector another plan embedded is embedded again, whatever its text.
+    ///
+    /// The premise the skip rests on is that writing the state again would
+    /// write the vector that is there, and that holds only for the plan that
+    /// produced it: the CPU's int8 export and an accelerator's do not agree to
+    /// the bit. So the same text under another plan, under no plan, or stored
+    /// with nothing recorded -- written before this was, or by an unstable
+    /// plan -- is not held. Comparing the text alone passes the first and the last.
+    #[test]
+    fn a_vector_from_another_plan_is_embedded_again() {
+        use memory_index::{Access, Projection, ProjectionIndex, VectorIndex};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let index = ProjectionIndex::open(
+            dir.path(),
+            &dir.path().join("legacy"),
+            VectorIndex::default(),
+            Access::ReadWrite,
+            0,
+        )
+        .expect("open index");
+        let (cpu, unrecorded) = (TopicId::new(), TopicId::new());
+        let vector = vec![0.1; memory_index::DIMENSIONS as usize];
+        index
+            .upsert_encoded(&[(cpu, "alpha", vector.as_slice())], Some("cpu:one"))
+            .expect("write");
+        index
+            .upsert_batch(&[(unrecorded, "alpha", vector.as_slice())])
+            .expect("write");
+        index.flush().expect("flush");
+
+        let pairs = [(cpu, source("alpha")), (unrecorded, source("alpha"))];
+        let wanted = whole(&pairs);
+        assert_eq!(
+            super::unheld(&index, &wanted, Some("cpu:one")),
+            [false, true]
+        );
+        assert_eq!(
+            super::unheld(&index, &wanted, Some("cuda:two")),
+            [true, true]
+        );
+        assert_eq!(
+            super::unheld(&index, &wanted, Some("cpu:two")),
+            [true, true]
+        );
+        assert_eq!(super::unheld(&index, &wanted, None), [true, true]);
+    }
+
+    /// A model whose plan moves when asked, for [`super::write_unheld`].
+    struct Moving {
+        /// What `reusable_encoding` answers, call by call; the last repeats.
+        reusable: std::cell::RefCell<Vec<Option<String>>>,
+        /// The plan a pass runs under, and the plans the next passes move to,
+        /// one per pass.
+        plan: String,
+        moves: Vec<String>,
+        passes: Vec<Vec<String>>,
+    }
+
+    impl Moving {
+        fn on(plan: &str) -> Self {
+            Self {
+                reusable: std::cell::RefCell::new(vec![Some(plan.to_string())]),
+                plan: plan.to_string(),
+                moves: Vec::new(),
+                passes: Vec::new(),
+            }
+        }
+    }
+
+    impl super::PassageEncoder for Moving {
+        fn reusable_encoding(&self) -> Option<String> {
+            let mut answers = self.reusable.borrow_mut();
+            if answers.len() > 1 {
+                answers.remove(0)
+            } else {
+                answers[0].clone()
+            }
+        }
+
+        fn encode_passages(
+            &mut self,
+            texts: &[&str],
+        ) -> memory_index::Result<(Vec<Vec<f32>>, Option<String>)> {
+            if !self.moves.is_empty() {
+                self.plan = self.moves.remove(0);
+            }
+            self.passes
+                .push(texts.iter().map(|text| text.to_string()).collect());
+            let width = memory_index::DIMENSIONS as usize;
+            let encoded = texts.iter().map(|_| vec![0.1; width]).collect();
+            Ok((encoded, Some(self.plan.clone())))
+        }
+    }
+
+    /// A state is skipped as held only if the plan its vector was matched
+    /// against is the one the model is still on once the batch is written.
+    ///
+    /// The pass can move the model -- revalidating an expired fallback onto
+    /// the accelerator, or falling back from one that failed -- and the plan
+    /// can expire while the index is read. Either way a state skipped on the
+    /// old plan would keep that plan's vector beside the new plan's vectors
+    /// and queries, so it is embedded after all.
+    #[test]
+    fn a_held_state_is_embedded_when_the_plan_moves_under_it() {
+        use memory_index::{Access, Projection, ProjectionIndex, VectorIndex};
+        use std::sync::Arc;
+
+        let setup = || {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let index: Arc<dyn Projection + Send + Sync> = Arc::new(
+                ProjectionIndex::open(
+                    dir.path(),
+                    &dir.path().join("legacy"),
+                    VectorIndex::default(),
+                    Access::ReadWrite,
+                    0,
+                )
+                .expect("open index"),
+            );
+            let held = TopicId::new();
+            let vector = vec![0.1; memory_index::DIMENSIONS as usize];
+            index
+                .upsert_encoded(&[(held, "alpha", vector.as_slice())], Some("cpu:fallback"))
+                .expect("write");
+            (dir, index, held, TopicId::new())
+        };
+        let encodings = |index: &Arc<dyn Projection + Send + Sync>, topics: &[TopicId]| {
+            index
+                .stored(topics)
+                .expect("read back")
+                .into_iter()
+                .map(|stored| stored.into_iter().next().expect("stored").encoding)
+                .collect::<Vec<_>>()
+        };
+
+        // The plan stays: the held state is skipped.
+        let (_dir, index, held, new) = setup();
+        let pairs = [(held, source("alpha")), (new, source("beta"))];
+        let wanted = whole(&pairs);
+        let mut model = Moving::on("cpu:fallback");
+        super::write_unheld(|| &index, &mut model, &wanted, &each(&["alpha", "beta"]))
+            .expect("sync");
+        assert_eq!(model.passes, [vec!["beta".to_string()]]);
+        assert_eq!(
+            encodings(&index, &[held, new]),
+            [Some("cpu:fallback".into()), Some("cpu:fallback".into())]
+        );
+
+        // The pass moves the model: the whole batch is embedded again, and
+        // both documents name the plan that produced them.
+        let (_dir, index, held, new) = setup();
+        let pairs = [(held, source("alpha")), (new, source("beta"))];
+        let wanted = whole(&pairs);
+        let mut model = Moving::on("cpu:fallback");
+        model.moves = vec!["npu:restored".into()];
+        super::write_unheld(|| &index, &mut model, &wanted, &each(&["alpha", "beta"]))
+            .expect("sync");
+        let again = vec!["alpha".to_string(), "beta".to_string()];
+        assert_eq!(model.passes, [vec!["beta".to_string()], again.clone()]);
+        assert_eq!(
+            encodings(&index, &[held, new]),
+            [Some("npu:restored".into()), Some("npu:restored".into())]
+        );
+
+        // The model moves again during that second pass: both halves still
+        // name one plan, the one the second pass ran under, rather than the
+        // fresh half keeping the plan of a pass the batch moved off.
+        let (_dir, index, held, new) = setup();
+        let pairs = [(held, source("alpha")), (new, source("beta"))];
+        let wanted = whole(&pairs);
+        let mut model = Moving::on("cpu:fallback");
+        model.moves = vec!["npu:restored".into(), "cpu:fallback-again".into()];
+        super::write_unheld(|| &index, &mut model, &wanted, &each(&["alpha", "beta"]))
+            .expect("sync");
+        assert_eq!(model.passes, [vec!["beta".to_string()], again]);
+        assert_eq!(
+            encodings(&index, &[held, new]),
+            [
+                Some("cpu:fallback-again".into()),
+                Some("cpu:fallback-again".into())
+            ]
+        );
+
+        // The plan expires while the index is read: nothing is held, even in
+        // a batch where everything matched, so the pass runs and revalidates.
+        let (_dir, index, held, _) = setup();
+        let mut model = Moving::on("cpu:fallback");
+        model.reusable = std::cell::RefCell::new(vec![Some("cpu:fallback".into()), None]);
+        model.moves = vec!["npu:restored".into()];
+        super::write_unheld(
+            || &index,
+            &mut model,
+            &whole(&[(held, source("alpha"))]),
+            &each(&["alpha"]),
+        )
+        .expect("sync");
+        assert_eq!(model.passes, [vec!["alpha".to_string()]]);
+        assert_eq!(encodings(&index, &[held]), [Some("npu:restored".into())]);
+    }
+
+    /// A write the index has buffered and not yet flushed is already held.
+    /// A span whose text stayed while its header changed is embedded again.
+    ///
+    /// Its vector is embedded from the header as well, and the header changes
+    /// without the text when a topic is renamed, or when an edit changes how a
+    /// line is read: a heading indented four spaces is a paragraph, and the
+    /// trimmed spans after it keep their text under a different header.
+    #[test]
+    fn a_span_under_a_new_header_is_embedded_again() {
+        use memory_index::{Access, Projection, ProjectionIndex, VectorIndex};
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let index: Arc<dyn Projection + Send + Sync> = Arc::new(
+            ProjectionIndex::open(
+                dir.path(),
+                &dir.path().join("legacy"),
+                VectorIndex::default(),
+                Access::ReadWrite,
+                0,
+            )
+            .expect("open index"),
+        );
+        let topic = TopicId::new();
+        let under = |header| {
+            [SpanSource {
+                text: "the rollback took an hour",
+                header,
+            }]
+        };
+        let mut model = Moving::on("cpu:plan");
+        let sync = |model: &mut Moving, spans: &[SpanSource<'_>]| {
+            super::write_unheld(
+                || &index,
+                model,
+                &[(topic, spans)],
+                &each(&["the rollback took an hour"]),
+            )
+            .expect("sync");
+        };
+        sync(&mut model, &under("incident > Timeline"));
+        sync(&mut model, &under("incident > Timeline"));
+        assert_eq!(model.passes.len(), 1, "the same header is held");
+        sync(&mut model, &under("incident"));
+        assert_eq!(model.passes.len(), 2, "a new header is not");
+        assert_eq!(
+            index.stored(&[topic]).expect("read back")[0][0]
+                .header
+                .as_deref(),
+            Some("incident"),
+            "and the header the vector now stands for is recorded"
+        );
+    }
+
+    #[test]
+    fn a_buffered_write_is_already_held() {
+        use memory_index::{Access, Projection, ProjectionIndex, VectorIndex};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let index = ProjectionIndex::open(
+            dir.path(),
+            &dir.path().join("legacy"),
+            VectorIndex::default(),
+            Access::ReadWrite,
+            0,
+        )
+        .expect("open index");
+        let topic = TopicId::new();
+        let vector = vec![0.1; memory_index::DIMENSIONS as usize];
+        let plan = Some("cpu:plan");
+        index
+            .upsert_encoded(&[(topic, "alpha", vector.as_slice())], plan)
+            .expect("write");
+        assert_eq!(
+            super::unheld(&index, &whole(&[(topic, source("alpha"))]), plan),
+            [false]
+        );
+        assert_eq!(
+            super::unheld(&index, &whole(&[(topic, source("Alpha"))]), plan),
+            [true]
+        );
+        index.delete(&[topic]).expect("delete");
+        assert_eq!(
+            super::unheld(&index, &whole(&[(topic, source("alpha"))]), plan),
+            [true]
+        );
+    }
+
+    /// Each memory as the one span it is when indexed whole.
+    fn whole<'a>(wanted: &'a [(TopicId, SpanSource<'a>)]) -> Vec<(TopicId, &'a [SpanSource<'a>])> {
+        wanted
+            .iter()
+            .map(|(topic, span)| (*topic, std::slice::from_ref(span)))
+            .collect()
+    }
+
+    /// `text` as a memory of one span named `topic`.
+    fn source(text: &str) -> SpanSource<'_> {
+        SpanSource {
+            text,
+            header: "topic",
+        }
+    }
+
+    /// Each passage as a memory's only span.
+    fn each<'a>(passages: &'a [&'a str]) -> Vec<&'a [&'a str]> {
+        passages.iter().map(std::slice::from_ref).collect()
+    }
+}

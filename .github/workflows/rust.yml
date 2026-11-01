@@ -62,7 +62,7 @@ jobs:
       # Compiles DirectML session flags and startup guards on their real target.
       # A hosted runner is not GPU/NPU hardware performance certification.
       - name: Check inference and its tests
-        run: cargo check -p pamin-index --all-targets --all-features
+        run: cargo check -p memory-index --all-targets --all-features
 
   simd-kernels:
     name: SIMD kernels on ${{ matrix.os }}
@@ -82,7 +82,7 @@ jobs:
       - name: Cache dependency builds
         uses: Swatinem/rust-cache@v2
       - name: Test the vector kernels
-        run: cargo test -p pamin-index --lib -- vector_math "half::tests"
+        run: cargo test -p memory-index --lib -- vector_math "half::tests"
 
   licences:
     name: dependency licences
@@ -127,4 +127,4 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install and run
-        run: cargo test -p pamin-cli --test install -- --ignored
+        run: cargo test -p memory-cli --test install -- --ignored

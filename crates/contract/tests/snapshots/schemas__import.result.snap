@@ -1,0 +1,44 @@
+---
+source: crates/contract/tests/schemas.rs
+expression: "schema_for! (import::Imported)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Imported",
+  "type": "object",
+  "properties": {
+    "cascade": {
+      "description": "Whether the projection caught up before this returned.",
+      "type": "string"
+    },
+    "cascade_lagging": {
+      "description": "Set when the projection was behind at any point during the import.",
+      "type": "boolean"
+    },
+    "held": {
+      "description": "The rest: recorded as evidence, not indexed. Re-importing the same file\nis how this fills up, and it is the right answer rather than an error.",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "memories": {
+      "description": "Memories read from the file.",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "promoted": {
+      "description": "Of those, the ones the filter put on the retrieval surface.",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "memories",
+    "promoted",
+    "held",
+    "cascade",
+    "cascade_lagging"
+  ]
+}
