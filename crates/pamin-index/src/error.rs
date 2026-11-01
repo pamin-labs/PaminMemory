@@ -45,7 +45,7 @@ pub enum IndexError {
     Unavailable(String),
 
     /// A plugin execution-provider library that cannot be told apart from
-    /// one already registered; see `inference::claim`.
+    /// one already registered; see `pamin_runtime::device::accelerators`.
     #[error("{0}")]
     PluginConflict(String),
 
@@ -59,6 +59,19 @@ impl IndexError {
             Self::Incompatible(message) => Self::Incompatible(format!("{context}: {message}")),
             Self::Numerical(message) => Self::Numerical(format!("{context}: {message}")),
             other => Self::Engine(format!("{context}: {other}")),
+        }
+    }
+}
+
+/// The runtime's failures keep their class: a provider that will not register
+/// is still incompatible, so a plan is not revalidated against it.
+impl From<pamin_runtime::Error> for IndexError {
+    fn from(error: pamin_runtime::Error) -> Self {
+        match error {
+            pamin_runtime::Error::Incompatible(message) => Self::Incompatible(message),
+            pamin_runtime::Error::Runtime(message) => Self::Engine(message),
+            pamin_runtime::Error::PluginConflict(message) => Self::PluginConflict(message),
+            pamin_runtime::Error::Io(error) => Self::Io(error),
         }
     }
 }

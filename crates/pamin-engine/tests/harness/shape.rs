@@ -3866,8 +3866,9 @@ mod tests {
         ] {
             environment_reads(&crates.join(name).join("src"), &mut found);
         }
+        environment_reads(&runtime_source(), &mut found);
         assert!(
-            found.contains("HF_ENDPOINT") && found.contains("CUDA_VISIBLE_DEVICES"),
+            found.contains("HF_ENDPOINT") && found.contains("LOCALAPPDATA"),
             "this test is not reading the source: {found:?}"
         );
         let unclassified: Vec<&String> = found
@@ -4028,6 +4029,33 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `pamin-runtime`'s sources, wherever Cargo resolved them -- the registry,
+    /// or a local override -- since what it reads the product reads. The
+    /// variables that choose a CUDA device are read by `pamin-index` through
+    /// [`pamin_index::CUDA_SELECTION`], so they are classified by that list
+    /// rather than found here.
+    fn runtime_source() -> PathBuf {
+        let output = std::process::Command::new(env!("CARGO"))
+            .args(["metadata", "--format-version", "1", "--offline"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .expect("run cargo metadata");
+        assert!(output.status.success(), "cargo metadata failed");
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("cargo metadata's JSON");
+        let manifest = metadata["packages"]
+            .as_array()
+            .expect("packages")
+            .iter()
+            .find(|package| package["name"] == "pamin-runtime")
+            .and_then(|package| package["manifest_path"].as_str())
+            .expect("pamin-runtime is a dependency");
+        Path::new(manifest)
+            .parent()
+            .expect("a manifest's directory")
+            .join("src")
     }
 
     /// A published run that never says what it ran on fails, and leaves its
