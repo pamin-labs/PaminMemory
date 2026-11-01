@@ -3,9 +3,11 @@ source: crates/pamin-client/tests/mcp.rs
 expression: tools
 ---
 {
+  "prompts": [],
   "resources": [],
   "tools": [
     {
+      "app_only": false,
       "description": "Search memories by meaning and wording. Returns each matching topic at its\ncurrent state, with a `why` trace of the channels and graph paths that found\nit. Ranked, so use grep, read or neighbors when you need certainty.",
       "feature": "core",
       "hints": null,
@@ -36,6 +38,15 @@ expression: tools
           "query"
         ],
         "type": "object"
+      },
+      "looks": {
+        "about": null,
+        "audience": [],
+        "icons": [],
+        "mime": null,
+        "priority": null,
+        "title": null,
+        "website": null
       },
       "name": "memory_search",
       "output": {
@@ -331,6 +342,7 @@ expression: tools
       "ui": null
     },
     {
+      "app_only": false,
       "description": "Read one topic: its current state, an earlier version, or some of the spans\nof a long memory around a search hit.",
       "feature": "core",
       "hints": null,
@@ -370,6 +382,15 @@ expression: tools
           "topic"
         ],
         "type": "object"
+      },
+      "looks": {
+        "about": null,
+        "audience": [],
+        "icons": [],
+        "mime": null,
+        "priority": null,
+        "title": null,
+        "website": null
       },
       "name": "memory_read",
       "output": {
@@ -509,6 +530,7 @@ expression: tools
       "ui": null
     },
     {
+      "app_only": false,
       "description": "Find an exact string in everything ever written, including writes the\nfilter held back from memory. No ranking and no model.",
       "feature": "core",
       "hints": null,
@@ -536,6 +558,15 @@ expression: tools
           "literal"
         ],
         "type": "object"
+      },
+      "looks": {
+        "about": null,
+        "audience": [],
+        "icons": [],
+        "mime": null,
+        "priority": null,
+        "title": null,
+        "website": null
       },
       "name": "memory_grep",
       "output": {
@@ -600,6 +631,7 @@ expression: tools
       "ui": null
     },
     {
+      "app_only": false,
       "description": "List the topics connected to one through the relationship graph, without\nranking them.",
       "feature": "core",
       "hints": null,
@@ -638,6 +670,15 @@ expression: tools
           "topic"
         ],
         "type": "object"
+      },
+      "looks": {
+        "about": null,
+        "audience": [],
+        "icons": [],
+        "mime": null,
+        "priority": null,
+        "title": null,
+        "website": null
       },
       "name": "memory_neighbors",
       "output": {
@@ -718,6 +759,7 @@ expression: tools
       "ui": null
     },
     {
+      "app_only": false,
       "description": "Find the topics that already exist, by name and by content, before writing\nto a new one. With no query, lists the most recent.",
       "feature": "core",
       "hints": null,
@@ -740,6 +782,15 @@ expression: tools
           }
         },
         "type": "object"
+      },
+      "looks": {
+        "about": null,
+        "audience": [],
+        "icons": [],
+        "mime": null,
+        "priority": null,
+        "title": null,
+        "website": null
       },
       "name": "memory_topics",
       "output": {
@@ -793,6 +844,7 @@ expression: tools
       "ui": null
     },
     {
+      "app_only": false,
       "description": "Record a memory under a topic. Writing to an existing topic adds a version;\ncontent too short to carry a durable claim is kept as evidence only.",
       "feature": "core",
       "hints": null,
@@ -846,6 +898,15 @@ expression: tools
           "content"
         ],
         "type": "object"
+      },
+      "looks": {
+        "about": null,
+        "audience": [],
+        "icons": [],
+        "mime": null,
+        "priority": null,
+        "title": null,
+        "website": null
       },
       "name": "memory_write",
       "output": {
@@ -912,6 +973,7 @@ expression: tools
       "ui": null
     },
     {
+      "app_only": false,
       "description": "Assert a relationship between two existing topics that their text does not\nstate.",
       "feature": "core",
       "hints": null,
@@ -966,6 +1028,15 @@ expression: tools
         ],
         "type": "object"
       },
+      "looks": {
+        "about": null,
+        "audience": [],
+        "icons": [],
+        "mime": null,
+        "priority": null,
+        "title": null,
+        "website": null
+      },
       "name": "memory_link",
       "output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1014,6 +1085,7 @@ expression: tools
       "ui": null
     },
     {
+      "app_only": false,
       "description": "Retract a relationship, keeping the record that it was claimed.",
       "feature": "core",
       "hints": null,
@@ -1044,6 +1116,15 @@ expression: tools
           "to"
         ],
         "type": "object"
+      },
+      "looks": {
+        "about": null,
+        "audience": [],
+        "icons": [],
+        "mime": null,
+        "priority": null,
+        "title": null,
+        "website": null
       },
       "name": "memory_unlink",
       "output": {

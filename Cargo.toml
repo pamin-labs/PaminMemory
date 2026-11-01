@@ -28,9 +28,8 @@ pamin-store = { path = "crates/pamin-store" }
 # model keys, shared by every Pamin module that runs models locally.
 pamin-runtime = "0.1.1"
 # The module framework: serves the operation contract as MCP, and is the only
-# crate that names the MCP SDK. Until it is published, a local
-# `.cargo/config.toml` patches it to a clone (see `.gitignore`).
-pamin-kit = "=0.1.0"
+# crate that names the MCP SDK.
+pamin-kit = "0.1.0"
 
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }

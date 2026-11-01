@@ -2361,6 +2361,8 @@ dependencies = [
 [[package]]
 name = "pamin-kit"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91ce18233353623ef459bb1827954b63dbbe64d7ae0ff340e815dff331539912"
 dependencies = [
  "base64 0.23.1",
  "chrono",
