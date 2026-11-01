@@ -15,6 +15,9 @@ repository.workspace = true
 [dependencies]
 pamin-core = { workspace = true }
 pamin-contract = { workspace = true }
+# `pamin mcp`: the contract served as MCP over stdio. Without its `http`
+# feature it builds no HTTP server.
+pamin-kit = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
@@ -32,4 +35,5 @@ tracing-subscriber = { workspace = true }
 sha2 = { workspace = true }
 
 [dev-dependencies]
+pamin-kit = { workspace = true, features = ["conformance"] }
 tempfile = { workspace = true }

@@ -1777,6 +1777,45 @@ The socket is a file, so it inherits the workspace's permissions and cannot be
 reached from another machine. There is no authentication, for the same reason:
 anyone who can open the socket can already read the workspace.
 
+## `pamin mcp`
+
+Serves one project's memory as MCP tools over standard input and output, for an
+agent host that loads tools rather than running commands. The host starts it;
+for Claude Code:
+
+```bash
+claude mcp add pamin -- pamin mcp --project my_project
+```
+
+| Tool | Command |
+| --- | --- |
+| `memory_search` | [`pamin search`](#pamin-search) |
+| `memory_read` | [`pamin read`](#pamin-read) |
+| `memory_grep` | [`pamin grep`](#pamin-grep) |
+| `memory_neighbors` | [`pamin neighbors`](#pamin-neighbors) |
+| `memory_topics` | [`pamin topics`](#pamin-topics) |
+| `memory_write` | [`pamin write`](#pamin-write) |
+| `memory_link` | [`pamin link`](#asserted-explicitly) |
+| `memory_unlink` | [`pamin unlink`](#pamin-unlink) |
+
+A tool takes the command's arguments as JSON, with the same names (flags in
+`snake_case`, and `--valid-from` and `--valid-to` inside a `validity` object)
+and the same defaults, and returns the command's `--json` result.
+Both come from one definition, so they cannot drift: the tool schemas are what
+`pamin-contract` derives, and its tests snapshot them. A tool has no project
+argument: every call works on the project `pamin mcp` was started with,
+`--project` or `PAMIN_PROJECT`, and a host that needs two projects starts two.
+
+Each tool call goes through the workspace's server exactly as the command does,
+starting one on the first call, so the [server settings](#server-settings) given
+to `pamin mcp` are the ones a server it starts runs with. A failed call comes
+back as a tool result marked as an error, with the same message the command
+prints. `memory_write` needs `content`: there is no standard input to read it
+from, since that carries the protocol.
+
+The skill at `.agents/skills/pamin-memory-mcp/SKILL.md` tells an agent when to
+use which tool.
+
 ## `pamin stop`
 
 ```console

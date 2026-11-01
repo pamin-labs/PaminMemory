@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::validity;
 
+/// Assert a relationship between two existing topics that their text does not
+/// state.
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     /// The topic the relationship starts from.
