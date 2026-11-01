@@ -121,6 +121,10 @@ pub enum Command {
     /// Show the server settings a command would run with, and where each
     /// came from: a flag, `PAMIN_DEVICE`, `config.toml`, or the default.
     Config,
+
+    /// Serve this project's memory as MCP tools over standard input and
+    /// output, for an agent host to start.
+    Mcp,
 }
 
 /// What a command leaves to the binary running it, because doing it takes
@@ -212,8 +216,21 @@ pub async fn run(cli: Cli, matches: clap::ArgMatches) -> Result<Option<Unserved>
     // Taken before the command is moved into the call below.
     let project = cli.project.clone();
 
+    if let Command::Mcp = cli.command {
+        let memory = crate::mcp::Memory::new(
+            workspace,
+            cli.vector_index,
+            server.asked(),
+            settings::forwarded(&cli.server),
+        );
+        crate::mcp::serve(memory, project).await?;
+        return Ok(None);
+    }
+
     let call = match cli.command {
-        Command::Serve | Command::Config | Command::Stop => unreachable!("handled above"),
+        Command::Serve | Command::Config | Command::Stop | Command::Mcp => {
+            unreachable!("handled above")
+        }
         Command::Init => protocol::Call::Init,
         Command::Write(args) => protocol::Call::Write(args),
         Command::Import(args) => protocol::Call::Import(args),
