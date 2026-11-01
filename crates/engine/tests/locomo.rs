@@ -81,13 +81,13 @@
 //! | `RERANK_RULES` | the shipped searches, with the graph, priced under every rule for using the reranker's scores |
 //! | `REPLAY_OUT` | a path: run `RERANK_RULES` and write each search down, fused list, labels and the model's scores past the shipped shortlist, for pricing other shortlists offline |
 //!
-//! Any other `PAMIN_` variable fails the run before it starts: one no test
+//! Any other `PAMIN_MEMORY_` variable fails the run before it starts: one no test
 //! reads (`support::eval::check`), or one of the search's tuning knobs
 //! ([`TUNING`]), which would make this a sweep rather than `pamin-memory search`.
 //!
 //! Projects are named after a digest of the records and links they hold, and
 //! of the execution plan and model revision that embedded them, so a reused
-//! `PAMIN_EVAL_HOME` never scores a corpus built by older code or data, or
+//! `PAMIN_MEMORY_EVAL_HOME` never scores a corpus built by older code or data, or
 //! embedded on another provider, plan or by other weights. Each conversation's
 //! index is also claimed through `harness::index` before it is written, so a
 //! reused index built under other settings is reported rather than trusted.
@@ -173,9 +173,9 @@ const DEPTHS: Depths = Depths::DEFAULT;
 /// one set is a sweep, not the shipped search path, which this run searches
 /// with ([`DEPTHS`] and the default reranker settings).
 const TUNING: [&str; 3] = [
-    "PAMIN_EVAL_RERANK_DEPTH",
-    "PAMIN_EVAL_RERANK_MAX_TOKENS",
-    "PAMIN_EVAL_SEARCH_EFFORT",
+    "PAMIN_MEMORY_EVAL_RERANK_DEPTH",
+    "PAMIN_MEMORY_EVAL_RERANK_MAX_TOKENS",
+    "PAMIN_MEMORY_EVAL_SEARCH_EFFORT",
 ];
 
 /// LOCOMO's adversarial category, whose evidence is the trap.
@@ -570,9 +570,9 @@ fn fetch(path: &Path, url: &str) {
 /// execution plan as the shape records it (`harness::shape::provider`) and
 /// its model revision (`repository@commit`).
 ///
-/// A reused `PAMIN_EVAL_HOME` keeps the vectors an earlier run wrote, and
+/// A reused `PAMIN_MEMORY_EVAL_HOME` keeps the vectors an earlier run wrote, and
 /// `write_absent` skips every topic it finds. Without this, a run on another
-/// provider -- `PAMIN_DEVICE=auto` on another machine -- or after the hub's
+/// provider -- `PAMIN_MEMORY_DEVICE=auto` on another machine -- or after the hub's
 /// `main` moved would search old document vectors with new query vectors.
 /// The models load lazily, so an empty project is searched once to load the
 /// embedder before any project is named.
@@ -689,7 +689,7 @@ async fn locomo_evidence_with_and_without_links() {
     // warm one.
     shape.observe_models();
     let conversations = &loaded.conversations;
-    let home = std::env::var("PAMIN_EVAL_HOME").ok();
+    let home = std::env::var("PAMIN_MEMORY_EVAL_HOME").ok();
     let scratch = home
         .is_none()
         .then(|| tempfile::tempdir().expect("temp workspace"));

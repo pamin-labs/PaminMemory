@@ -37,7 +37,7 @@
 //! Run it with a workspace that already has PostgreSQL provisioned:
 //!
 //! ```bash
-//! PAMIN_EVAL_HOME=/somewhere \
+//! PAMIN_MEMORY_EVAL_HOME=/somewhere \
 //!   cargo test -p memory-engine --test writecost -- --ignored --nocapture
 //! ```
 
@@ -184,33 +184,33 @@ fn request<'a>(topic: &'a str, content: &'a str, hash: &'a str) -> Write<'a> {
     }
 }
 
-/// The product's settings, as the `PAMIN_EVAL_*` knobs change them.
+/// The product's settings, as the `PAMIN_MEMORY_EVAL_*` knobs change them.
 fn settings() -> memory_engine::Settings {
     memory_engine::Settings {
         inference: support::inference(),
         store: store(),
         unindexed_budget: support::eval::parsed::<std::num::NonZeroU64>(
-            "PAMIN_EVAL_UNINDEXED_BUDGET",
+            "PAMIN_MEMORY_EVAL_UNINDEXED_BUDGET",
         )
         .unwrap_or(memory_engine::Settings::default().unindexed_budget),
         ..memory_engine::Settings::default()
     }
 }
 
-/// The store settings: the defaults, and `PAMIN_EVAL_JIT` and
-/// `PAMIN_EVAL_POSTGRES_DIR`.
+/// The store settings: the defaults, and `PAMIN_MEMORY_EVAL_JIT` and
+/// `PAMIN_MEMORY_EVAL_POSTGRES_DIR`.
 fn store() -> memory_store::StoreSettings {
     support::eval::check();
     memory_store::StoreSettings {
-        jit: support::eval::switch("PAMIN_EVAL_JIT").unwrap_or_default(),
-        postgres_dir: support::eval::path("PAMIN_EVAL_POSTGRES_DIR"),
+        jit: support::eval::switch("PAMIN_MEMORY_EVAL_JIT").unwrap_or_default(),
+        postgres_dir: support::eval::path("PAMIN_MEMORY_EVAL_POSTGRES_DIR"),
     }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "provisions postgres and downloads model weights"]
 async fn one_write_does_not_pay_for_the_whole_project() {
-    let home = std::env::var("PAMIN_EVAL_HOME").ok();
+    let home = std::env::var("PAMIN_MEMORY_EVAL_HOME").ok();
     let scratch = home
         .is_none()
         .then(|| tempfile::tempdir().expect("temp workspace"));
@@ -368,7 +368,7 @@ async fn one_write_does_not_pay_for_the_whole_project() {
 async fn derivation_does_not_pay_for_the_widest_name_in_the_project() {
     const TOPICS: usize = 20_000;
 
-    let home = std::env::var("PAMIN_EVAL_HOME").ok();
+    let home = std::env::var("PAMIN_MEMORY_EVAL_HOME").ok();
     let scratch = home
         .is_none()
         .then(|| tempfile::tempdir().expect("temp workspace"));

@@ -9,7 +9,7 @@
 //! cargo test -p memory-index --test prepared -- --ignored --nocapture
 //! ```
 //!
-//! and with `PAMIN_EVAL_MODELS` pointing at a model directory that already
+//! and with `PAMIN_MEMORY_EVAL_MODELS` pointing at a model directory that already
 //! holds them to skip the download -- its `models--*` entries are linked into
 //! a temporary directory, so the copies are written there and removed after.
 //!
@@ -36,8 +36,8 @@ use std::process::Command;
 use memory_index::{Device, Embedder, Reranker};
 
 /// Which load a child process runs, and where its models are.
-const ARM: &str = "PAMIN_EVAL_PREPARED_ARM";
-const CACHE: &str = "PAMIN_EVAL_PREPARED_CACHE";
+const ARM: &str = "PAMIN_MEMORY_EVAL_PREPARED_ARM";
+const CACHE: &str = "PAMIN_MEMORY_EVAL_PREPARED_CACHE";
 
 /// What a child prints its result after, so it can be found in libtest's own
 /// output.
@@ -262,16 +262,16 @@ fn run(model: &str, cache: &Path, prepared: bool, split: bool) -> Arm {
         .env(CACHE, cache)
         // The copy is for the CPU; on a machine with a GPU the reranker would
         // load the fp16 export there and neither arm would test anything.
-        .env("PAMIN_EVAL_DEVICE", "cpu");
+        .env("PAMIN_MEMORY_EVAL_DEVICE", "cpu");
     if prepared {
-        command.env_remove("PAMIN_EVAL_PREPARED");
+        command.env_remove("PAMIN_MEMORY_EVAL_PREPARED");
     } else {
-        command.env("PAMIN_EVAL_PREPARED", "false");
+        command.env("PAMIN_MEMORY_EVAL_PREPARED", "false");
     }
     if split {
-        command.env_remove("PAMIN_EVAL_SPLIT_EMBEDDINGS");
+        command.env_remove("PAMIN_MEMORY_EVAL_SPLIT_EMBEDDINGS");
     } else {
-        command.env("PAMIN_EVAL_SPLIT_EMBEDDINGS", "false");
+        command.env("PAMIN_MEMORY_EVAL_SPLIT_EMBEDDINGS", "false");
     }
     let output = command.output().expect("run the child");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -426,10 +426,10 @@ fn only_copy(copies: &Path) -> PathBuf {
 /// Links the models an existing cache holds into `cache`, so nothing is
 /// downloaded and nothing is written beside them.
 fn link_models(cache: &Path) {
-    let Ok(existing) = std::env::var("PAMIN_EVAL_MODELS") else {
+    let Ok(existing) = std::env::var("PAMIN_MEMORY_EVAL_MODELS") else {
         return;
     };
-    for entry in std::fs::read_dir(&existing).expect("PAMIN_EVAL_MODELS") {
+    for entry in std::fs::read_dir(&existing).expect("PAMIN_MEMORY_EVAL_MODELS") {
         let path = entry.expect("an entry").path();
         let name = path.file_name().expect("a name").to_owned();
         if name.to_string_lossy().starts_with("models--") {

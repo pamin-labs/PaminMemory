@@ -200,13 +200,13 @@ fn open_tally() {
     });
 }
 
-/// `PAMIN_` variables that say only where something is, which project `pamin-memory`
+/// `PAMIN_MEMORY_` variables that say only where something is, which project `pamin-memory`
 /// works in, or what to log, and change no result: a harness names its own
-/// projects in code. Not `PAMIN_EVAL_POSTGRES_DIR`: it says where a
+/// projects in code. Not `PAMIN_MEMORY_EVAL_POSTGRES_DIR`: it says where a
 /// PostgreSQL installation is, but another installation can be another
 /// version or build, which changes the timings a record keeps (no ranking
-/// reads it), so it is in [`NOT_PRODUCER`]. Every other `PAMIN_` variable is
-/// taken to change what is measured: the `PAMIN_EVAL_*` knobs a harness reads
+/// reads it), so it is in [`NOT_PRODUCER`]. Every other `PAMIN_MEMORY_` variable is
+/// taken to change what is measured: the `PAMIN_MEMORY_EVAL_*` knobs a harness reads
 /// into its settings (see `support/eval.rs`), and any product variable a
 /// harness would refuse. Nor
 /// do the variables build scripts set with `cargo:rustc-env`
@@ -214,19 +214,19 @@ fn open_tally() {
 /// it runs: they describe the build, which the record names as its source and
 /// build.
 const NOT_SETTINGS: [&str; 10] = [
-    "PAMIN_EVAL_EMBEDDING_OUTPUT",
-    "PAMIN_EVAL_HOME",
-    "PAMIN_EVAL_MODEL_CACHE",
-    "PAMIN_EVAL_NATIVE_CACHE",
-    "PAMIN_EVAL_PREPARED_CACHE",
-    "PAMIN_EVAL_RERANK_OUTPUT",
-    "PAMIN_EVAL_SHARED_CACHE",
-    "PAMIN_HOME",
-    "PAMIN_LOG",
-    "PAMIN_PROJECT",
+    "PAMIN_MEMORY_EVAL_EMBEDDING_OUTPUT",
+    "PAMIN_MEMORY_EVAL_HOME",
+    "PAMIN_MEMORY_EVAL_MODEL_CACHE",
+    "PAMIN_MEMORY_EVAL_NATIVE_CACHE",
+    "PAMIN_MEMORY_EVAL_PREPARED_CACHE",
+    "PAMIN_MEMORY_EVAL_RERANK_OUTPUT",
+    "PAMIN_MEMORY_EVAL_SHARED_CACHE",
+    "PAMIN_MEMORY_HOME",
+    "PAMIN_MEMORY_LOG",
+    "PAMIN_MEMORY_PROJECT",
 ];
 
-/// Variables outside `PAMIN_` that every harness's record is named by,
+/// Variables outside `PAMIN_MEMORY_` that every harness's record is named by,
 /// whichever harness it is. `SIGNIFICANCE_GATE`, which `statistics::gate`
 /// reads, decides whether a run's significance gate was applied at all.
 /// `HF_ENDPOINT` is where the product downloads its models from. The next
@@ -277,7 +277,7 @@ const NOT_IDENTITY: [(&str, &str); 6] = [
     ("HOSTNAME", "who holds a cascade claim in a shared store"),
 ];
 
-/// Variables outside `PAMIN_` the evaluation tests read that choose what a
+/// Variables outside `PAMIN_MEMORY_` the evaluation tests read that choose what a
 /// run measures: an arm's knobs, a sample's size, a replay's input. Every one
 /// that is set names the record, whichever harness reads it, so no harness
 /// keeps a list of its own that can miss one.
@@ -368,36 +368,36 @@ const EVAL_INDIRECT: [(&str, &str); 10] = [
     ),
     (
         "engine/tests/locomo.rs: std::env::var_os(name)",
-        "PAMIN_EVAL_RERANK_DEPTH, PAMIN_EVAL_RERANK_MAX_TOKENS and PAMIN_EVAL_SEARCH_EFFORT, \
+        "PAMIN_MEMORY_EVAL_RERANK_DEPTH, PAMIN_MEMORY_EVAL_RERANK_MAX_TOKENS and PAMIN_MEMORY_EVAL_SEARCH_EFFORT, \
          asserted unset",
     ),
     (
         "index/tests/prepared.rs: std::env::var(ARM)",
-        "PAMIN_EVAL_PREPARED_ARM, a measuring child's arm",
+        "PAMIN_MEMORY_EVAL_PREPARED_ARM, a measuring child's arm",
     ),
     (
         "index/tests/prepared.rs: std::env::var(CACHE)",
-        "PAMIN_EVAL_PREPARED_CACHE, a measuring child's cache",
+        "PAMIN_MEMORY_EVAL_PREPARED_CACHE, a measuring child's cache",
     ),
     (
         "index/tests/shared_vocabulary.rs: std::env::var(ARM)",
-        "PAMIN_EVAL_SHARED_ARM, a measuring child's arm",
+        "PAMIN_MEMORY_EVAL_SHARED_ARM, a measuring child's arm",
     ),
     (
         "index/tests/shared_vocabulary.rs: std::env::var(CACHE)",
-        "PAMIN_EVAL_SHARED_CACHE, a measuring child's cache",
+        "PAMIN_MEMORY_EVAL_SHARED_CACHE, a measuring child's cache",
     ),
     (
         "index/tests/shared_vocabulary.rs: std::env::var(name)",
-        "PAMIN_EVAL_SHARED_*_COPY, the prepared copies a child loads",
+        "PAMIN_MEMORY_EVAL_SHARED_*_COPY, the prepared copies a child loads",
     ),
     (
         "index/tests/support/eval.rs: std::env::var(name)",
-        "a PAMIN_EVAL_* knob, each listed in its KNOBS",
+        "a PAMIN_MEMORY_EVAL_* knob, each listed in its KNOBS",
     ),
     (
         "index/tests/support/eval.rs: std::env::var_os(name)",
-        "a PAMIN_EVAL_* path knob, each listed in its KNOBS",
+        "a PAMIN_MEMORY_EVAL_* path knob, each listed in its KNOBS",
     ),
 ];
 
@@ -412,12 +412,12 @@ fn identity_variable(name: &str) -> bool {
 
 /// What makes this run an arm other than the shipped one, as sorted
 /// `NAME=value` lines: each set variable [`ALWAYS_SETTINGS`] or
-/// [`EVAL_SETTINGS`] covers, and every set `PAMIN_` variable but
+/// [`EVAL_SETTINGS`] covers, and every set `PAMIN_MEMORY_` variable but
 /// [`NOT_SETTINGS`].
 ///
-/// The `PAMIN_` variables are found rather than listed. A list was kept per
+/// The `PAMIN_MEMORY_` variables are found rather than listed. A list was kept per
 /// harness, and the product's runtime knobs -- the reranker's depth, the
-/// search effort, now `PAMIN_EVAL_RERANK_DEPTH` and `PAMIN_EVAL_SEARCH_EFFORT`
+/// search effort, now `PAMIN_MEMORY_EVAL_RERANK_DEPTH` and `PAMIN_MEMORY_EVAL_SEARCH_EFFORT`
 /// -- were never on it, so a run with one set was
 /// recorded as the shipped run, over the shipped run's record. The
 /// harnesses' own knobs were listed per harness as well, and MuSiQue's list
@@ -427,7 +427,7 @@ fn settings(set: impl IntoIterator<Item = (String, String)>) -> Vec<String> {
         .into_iter()
         .filter(|(name, _)| {
             identity_variable(name)
-                || (name.starts_with("PAMIN_")
+                || (name.starts_with("PAMIN_MEMORY_")
                     && !NOT_SETTINGS.contains(&name.as_str())
                     && !super::eval::BUILD.contains(&name.as_str()))
         })
@@ -453,7 +453,7 @@ fn environment() -> impl Iterator<Item = (String, String)> {
     })
 }
 
-/// The `PAMIN_EVAL_*` knobs that set what the product does on the path from
+/// The `PAMIN_MEMORY_EVAL_*` knobs that set what the product does on the path from
 /// a text to its vector and from the vectors to an index: those that change
 /// how a model executes ([`memory_index::EXECUTION_SETTINGS`], which its plan
 /// keys are named by too, each as the knob that sets it -- see [`knob`]) and
@@ -474,84 +474,96 @@ fn producer_pamin(name: &str) -> bool {
         || INDEX_SETTINGS.contains(&name)
 }
 
-/// The `PAMIN_EVAL_*` knob that sets the inference setting `setting`, as
+/// The `PAMIN_MEMORY_EVAL_*` knob that sets the inference setting `setting`, as
 /// [`memory_index::InferenceSettings::overrides`] names it: `device` is
-/// `PAMIN_EVAL_DEVICE` (see `support::inference`).
+/// `PAMIN_MEMORY_EVAL_DEVICE` (see `support::inference`).
 fn knob(setting: &str) -> String {
-    format!("PAMIN_EVAL_{}", setting.to_ascii_uppercase())
+    format!("PAMIN_MEMORY_EVAL_{}", setting.to_ascii_uppercase())
 }
 
 /// The knobs that change what an index build makes of the vectors -- when
 /// a drain builds the vector graph -- but not the vectors: they name an
 /// index's stamp, not a vector cache's producer.
-const INDEX_SETTINGS: [&str; 2] = ["PAMIN_EVAL_UNINDEXED_BUDGET", "PAMIN_EVAL_SPAN_TOKENS"];
+const INDEX_SETTINGS: [&str; 2] = [
+    "PAMIN_MEMORY_EVAL_UNINDEXED_BUDGET",
+    "PAMIN_MEMORY_EVAL_SPAN_TOKENS",
+];
 
-/// The `PAMIN_EVAL_*` knobs off that path, with why: they name a run's record
+/// The `PAMIN_MEMORY_EVAL_*` knobs off that path, with why: they name a run's record
 /// (see [`settings`]), not its vectors.
 const NOT_PRODUCER: [(&str, &str); 16] = [
     (
-        "PAMIN_EVAL_EXPECT_DEVICE",
+        "PAMIN_MEMORY_EVAL_EXPECT_DEVICE",
         "the device a memory-index child asserts it ran on",
     ),
-    ("PAMIN_EVAL_JIT", "how Postgres plans the store's queries"),
     (
-        "PAMIN_EVAL_JOINT_GRAPH",
+        "PAMIN_MEMORY_EVAL_JIT",
+        "how Postgres plans the store's queries",
+    ),
+    (
+        "PAMIN_MEMORY_EVAL_JOINT_GRAPH",
         "a graph a memory-index test compares",
     ),
     (
-        "PAMIN_EVAL_MODELS",
+        "PAMIN_MEMORY_EVAL_MODELS",
         "a model cache a memory-index test copies",
     ),
     (
-        "PAMIN_EVAL_NATIVE_MODEL_SOURCE",
+        "PAMIN_MEMORY_EVAL_NATIVE_MODEL_SOURCE",
         "a memory-index test's cached export",
     ),
     (
-        "PAMIN_EVAL_PARITY_CORPORA",
+        "PAMIN_MEMORY_EVAL_PARITY_CORPORA",
         "the corpora a memory-index tokenizer test reads",
     ),
     (
-        "PAMIN_EVAL_POSTGRES_DIR",
+        "PAMIN_MEMORY_EVAL_POSTGRES_DIR",
         "which PostgreSQL installation the store runs on",
     ),
     (
-        "PAMIN_EVAL_PREPARED_ARM",
+        "PAMIN_MEMORY_EVAL_PREPARED_ARM",
         "a memory-index measuring child's arm",
     ),
-    ("PAMIN_EVAL_RERANK_BATCH", "the reranker's batches"),
-    ("PAMIN_EVAL_RERANK_BATCH_TOKENS", "the reranker's batches"),
+    ("PAMIN_MEMORY_EVAL_RERANK_BATCH", "the reranker's batches"),
     (
-        "PAMIN_EVAL_RERANK_DEPTH",
+        "PAMIN_MEMORY_EVAL_RERANK_BATCH_TOKENS",
+        "the reranker's batches",
+    ),
+    (
+        "PAMIN_MEMORY_EVAL_RERANK_DEPTH",
         "how many candidates the reranker sees",
     ),
     (
-        "PAMIN_EVAL_RERANK_MAX_TOKENS",
+        "PAMIN_MEMORY_EVAL_RERANK_MAX_TOKENS",
         "the reranker's input length",
     ),
     (
-        "PAMIN_EVAL_SEARCH_EFFORT",
+        "PAMIN_MEMORY_EVAL_SEARCH_EFFORT",
         "how hard a query searches the vector graph",
     ),
     (
-        "PAMIN_EVAL_SHARED_ACCURATE_COPY",
+        "PAMIN_MEMORY_EVAL_SHARED_ACCURATE_COPY",
         "a prepared copy a memory-index child loads",
     ),
     (
-        "PAMIN_EVAL_SHARED_ARM",
+        "PAMIN_MEMORY_EVAL_SHARED_ARM",
         "a memory-index measuring child's arm",
     ),
     (
-        "PAMIN_EVAL_SHARED_EMBEDDER_COPY",
+        "PAMIN_MEMORY_EVAL_SHARED_EMBEDDER_COPY",
         "a prepared copy a memory-index child loads",
     ),
 ];
 
-/// The `PAMIN_` names the libraries' sources hold outside their tests: each
+/// The `PAMIN_MEMORY_` names the libraries' sources hold outside their tests: each
 /// one compiled in by `env!` from a build script, not read at run time, and
 /// named by a producer's and a record's build line.
-const COMPILED: [&str; 2] = ["PAMIN_INFERENCE_BUILD", "PAMIN_INFERENCE_CARGO"];
+const COMPILED: [&str; 2] = [
+    "PAMIN_MEMORY_INFERENCE_BUILD",
+    "PAMIN_MEMORY_INFERENCE_CARGO",
+];
 
-/// The variables outside `PAMIN_` that change what a model computes: the
+/// The variables outside `PAMIN_MEMORY_` that change what a model computes: the
 /// native libraries' families ([`ALWAYS_PREFIXES`]), the CUDA device
 /// selection, and the thread counts of the tokenizer and the kernels, as a
 /// reduction split another way can round another way.
@@ -605,21 +617,26 @@ fn producer_setting(name: &str, index: bool) -> bool {
 /// else a short hash of [`settings`], which can hold paths and run long. The
 /// settings themselves are printed and recorded in full.
 ///
-/// A `PAMIN_EVAL_*` knob is hashed under the `PAMIN_*` name it replaced, so an
-/// arm keeps the name its records were written under before the knobs moved:
-/// `PAMIN_EVAL_DEVICE=cpu` is still `arm-ed2cc2fa76ba`, the XQuAD-R CPU
-/// baseline's `PAMIN_DEVICE=cpu`. Nothing is lost: `eval::check` refuses the
-/// old names, so none is set beside the knob that replaced it, and the
-/// `PAMIN_EVAL_HOME` that would meet `PAMIN_HOME` is in neither's arm.
+/// A setting is hashed under the `PAMIN_*` spelling its records were written
+/// under, so an arm keeps its name across renames: `PAMIN_MEMORY_EVAL_DEVICE=cpu`
+/// is still `arm-ed2cc2fa76ba`, the XQuAD-R CPU baseline's `PAMIN_DEVICE=cpu`.
+/// Nothing is lost: `eval::check` refuses a knob's product twin, so none is
+/// set beside the knob, and the `PAMIN_MEMORY_EVAL_HOME` that would meet
+/// `PAMIN_MEMORY_HOME` is in neither's arm.
 fn arm(settings: &[String]) -> String {
     if settings.is_empty() {
         return "shipped".to_string();
     }
     let spelled: Vec<String> = settings
         .iter()
-        .map(|line| match line.strip_prefix("PAMIN_EVAL_") {
-            Some(rest) => format!("PAMIN_{rest}"),
-            None => line.clone(),
+        .map(|line| {
+            match line
+                .strip_prefix("PAMIN_MEMORY_EVAL_")
+                .or_else(|| line.strip_prefix("PAMIN_MEMORY_"))
+            {
+                Some(rest) => format!("PAMIN_{rest}"),
+                None => line.clone(),
+            }
         })
         .collect();
     let hash = Sha256::digest(spelled.join("\n").as_bytes());
@@ -629,7 +646,7 @@ fn arm(settings: &[String]) -> String {
 
 /// What a record can say about the code that ran.
 ///
-/// The commit is the one the binary was compiled from (`PAMIN_ENGINE_COMMIT`,
+/// The commit is the one the binary was compiled from (`PAMIN_MEMORY_ENGINE_COMMIT`,
 /// which `build.rs` sets), not whatever is checked out when it runs: a binary
 /// built at one commit and run after the checkout moved would otherwise name
 /// code it does not contain. Only a run that can vouch for that commit writes
@@ -683,7 +700,7 @@ fn source() -> Source {
         });
     // Untracked and ignored files the build compiles in, as the build script
     // counts them.
-    let args = super::compiled::status_args(env!("PAMIN_ENGINE_SOURCES"));
+    let args = super::compiled::status_args(env!("PAMIN_MEMORY_ENGINE_SOURCES"));
     let untracked = git(&args.iter().map(String::as_str).collect::<Vec<_>>())
         .map(|output| super::compiled::compiled_in(&String::from_utf8_lossy(&output.stdout)));
     let changed = match (tracked, untracked) {
@@ -693,9 +710,9 @@ fn source() -> Source {
     };
     // Anything but an explicit "false" counts as dirty, which errs towards
     // a noncanonical record.
-    let built_dirty = env!("PAMIN_ENGINE_DIRTY") != "false";
+    let built_dirty = env!("PAMIN_MEMORY_ENGINE_DIRTY") != "false";
     provenance(
-        env!("PAMIN_ENGINE_COMMIT"),
+        env!("PAMIN_MEMORY_ENGINE_COMMIT"),
         built_dirty,
         head.as_deref(),
         changed,
@@ -1190,7 +1207,7 @@ impl Build {
         Self {
             inference: memory_index::BUILD_FINGERPRINT.to_string(),
             cargo: lines(memory_index::BUILD_CARGO),
-            environment: lines(env!("PAMIN_ENGINE_BUILD_ENVIRONMENT")),
+            environment: lines(env!("PAMIN_MEMORY_ENGINE_BUILD_ENVIRONMENT")),
         }
     }
 }
@@ -1469,7 +1486,7 @@ impl Shape {
     /// How to ask, once the run is over, which execution plan each of its
     /// models ran on, as `(role, plan)` pairs: where it ran, and which
     /// revision of the model. The answer names the record and is kept in
-    /// it: two runs that differ only in what `PAMIN_DEVICE=auto` found on
+    /// it: two runs that differ only in what `PAMIN_MEMORY_DEVICE=auto` found on
     /// the machine, or in the commit a model cache's `refs/main` resolved
     /// to, are two records, not one written over the other. Asked at the end
     /// rather than now, because the models load lazily -- a published shape
@@ -3095,7 +3112,7 @@ mod tests {
     fn the_build_script_watches_every_compiled_in_file() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let root = root.canonicalize().expect("workspace root");
-        let roots: Vec<PathBuf> = env!("PAMIN_ENGINE_SOURCES")
+        let roots: Vec<PathBuf> = env!("PAMIN_MEMORY_ENGINE_SOURCES")
             .split(':')
             .map(|path| root.join(path))
             .collect();
@@ -3141,7 +3158,7 @@ mod tests {
     #[test]
     fn the_record_names_the_compiled_commit() {
         let source = source();
-        assert_eq!(source.commit, env!("PAMIN_ENGINE_COMMIT"));
+        assert_eq!(source.commit, env!("PAMIN_MEMORY_ENGINE_COMMIT"));
         if source.commit != "unknown" {
             assert!(object_id(&source.commit), "{source:?}");
             assert_eq!(short(&source.commit), &source.commit[..12]);
@@ -3709,11 +3726,11 @@ mod tests {
     #[test]
     fn reranker_and_search_knobs_name_the_record_not_the_producer() {
         for knob in [
-            "PAMIN_EVAL_RERANK_DEPTH",
-            "PAMIN_EVAL_RERANK_BATCH",
-            "PAMIN_EVAL_RERANK_BATCH_TOKENS",
-            "PAMIN_EVAL_RERANK_MAX_TOKENS",
-            "PAMIN_EVAL_SEARCH_EFFORT",
+            "PAMIN_MEMORY_EVAL_RERANK_DEPTH",
+            "PAMIN_MEMORY_EVAL_RERANK_BATCH",
+            "PAMIN_MEMORY_EVAL_RERANK_BATCH_TOKENS",
+            "PAMIN_MEMORY_EVAL_RERANK_MAX_TOKENS",
+            "PAMIN_MEMORY_EVAL_SEARCH_EFFORT",
         ] {
             let set = settings([(knob.to_string(), "7".to_string())]);
             assert_eq!(set, [format!("{knob}=7")], "{knob} names the record");
@@ -3726,24 +3743,30 @@ mod tests {
     /// cache's producer.
     #[test]
     fn an_index_setting_names_the_index_not_the_vectors() {
-        let budget = settings([("PAMIN_EVAL_UNINDEXED_BUDGET".to_string(), "64".to_string())]);
+        let budget = settings([(
+            "PAMIN_MEMORY_EVAL_UNINDEXED_BUDGET".to_string(),
+            "64".to_string(),
+        )]);
         assert!(runtime(budget.clone(), false).is_empty());
-        assert_eq!(runtime(budget, true), ["PAMIN_EVAL_UNINDEXED_BUDGET=64"]);
-        let device = settings([("PAMIN_EVAL_DEVICE".to_string(), "cpu".to_string())]);
+        assert_eq!(
+            runtime(budget, true),
+            ["PAMIN_MEMORY_EVAL_UNINDEXED_BUDGET=64"]
+        );
+        let device = settings([("PAMIN_MEMORY_EVAL_DEVICE".to_string(), "cpu".to_string())]);
         assert_eq!(runtime(device.clone(), false), runtime(device, true));
     }
 
-    /// Every `PAMIN_` setting a run can be under is placed. The libraries
-    /// read none at run time -- the only `PAMIN_` names their sources hold
+    /// Every `PAMIN_MEMORY_` setting a run can be under is placed. The libraries
+    /// read none at run time -- the only `PAMIN_MEMORY_` names their sources hold
     /// outside their tests are [`COMPILED`] in -- so a setting reaches them
-    /// only as a `PAMIN_EVAL_*` knob a harness reads into the value it passes
+    /// only as a `PAMIN_MEMORY_EVAL_*` knob a harness reads into the value it passes
     /// (`support/eval.rs`). Each knob is on the embedding and index-build
     /// path ([`producer_pamin`]), naming vector caches and index stamps, off
     /// it ([`NOT_PRODUCER`]) with why, or no setting at all
-    /// ([`NOT_SETTINGS`]). A new knob, or a library that reads a `PAMIN_`
+    /// ([`NOT_SETTINGS`]). A new knob, or a library that reads a `PAMIN_MEMORY_`
     /// variable again, fails here until it is placed, so a knob on that path
     /// cannot be left out of the producer, nor one off it put in by default.
-    /// Library names are the quoted `PAMIN_` literals of their sources,
+    /// Library names are the quoted `PAMIN_MEMORY_` literals of their sources,
     /// outside comments and test modules, which is how every read is written.
     #[test]
     fn every_pamin_setting_is_placed() {
@@ -3755,7 +3778,7 @@ mod tests {
             pamin_literals(&crates.join(name).join("src"), &mut found);
         }
         assert!(
-            found.contains("PAMIN_INFERENCE_BUILD"),
+            found.contains("PAMIN_MEMORY_INFERENCE_BUILD"),
             "this test is not reading the source: {found:?}"
         );
         let read: Vec<&String> = found
@@ -3809,7 +3832,7 @@ mod tests {
         .map_or(source, |at| &source[..at])
     }
 
-    /// The quoted `PAMIN_` literals in every `.rs` file under `dir`, outside
+    /// The quoted `PAMIN_MEMORY_` literals in every `.rs` file under `dir`, outside
     /// comment lines and the file's test module.
     fn pamin_literals(dir: &Path, into: &mut BTreeSet<String>) {
         for entry in std::fs::read_dir(dir).expect("read a source directory") {
@@ -3827,12 +3850,12 @@ mod tests {
                 if line.trim_start().starts_with("//") {
                     continue;
                 }
-                for (at, _) in line.match_indices("\"PAMIN_") {
+                for (at, _) in line.match_indices("\"PAMIN_MEMORY_") {
                     let rest = &line[at + 1..];
                     let Some(end) = rest.find('"') else { continue };
                     let literal = &rest[..end];
-                    // A bare prefix -- a `starts_with("PAMIN_")` -- names none.
-                    if literal.len() > "PAMIN_".len()
+                    // A bare prefix -- a `starts_with("PAMIN_MEMORY_")` -- names none.
+                    if literal.len() > "PAMIN_MEMORY_".len()
                         && literal
                             .chars()
                             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
@@ -3844,7 +3867,7 @@ mod tests {
         }
     }
 
-    /// Every environment variable the product reads outside `PAMIN_` either
+    /// Every environment variable the product reads outside `PAMIN_MEMORY_` either
     /// names the record or is listed in [`NOT_IDENTITY`] with why it
     /// changes nothing measured: reading a new one without deciding fails
     /// here. Names are taken from the string literals of the source files
@@ -3886,7 +3909,7 @@ mod tests {
         );
     }
 
-    /// Every environment variable the evaluation tests read outside `PAMIN_`
+    /// Every environment variable the evaluation tests read outside `PAMIN_MEMORY_`
     /// -- each `var("...")`, `var_os("...")` and `dataset_dir("...")` under a
     /// crate's `tests/` -- names the record or is excluded with a reason, and
     /// a read whose name is not a literal is listed with where its names
@@ -3916,7 +3939,7 @@ mod tests {
         };
         let unclassified: Vec<&String> = found
             .iter()
-            .filter(|name| !name.starts_with("PAMIN_"))
+            .filter(|name| !name.starts_with("PAMIN_MEMORY_"))
             .filter(|name| !identity_variable(name) && !excluded(name))
             .collect();
         assert!(
@@ -3989,7 +4012,7 @@ mod tests {
         }
     }
 
-    /// The upper-case, non-`PAMIN_` string literals of every source file
+    /// The upper-case, non-`PAMIN_MEMORY_` string literals of every source file
     /// under `dir` that reads the environment, up to its test module.
     fn environment_reads(dir: &Path, into: &mut BTreeSet<String>) {
         for entry in std::fs::read_dir(dir).expect("read a source directory") {
@@ -4018,7 +4041,7 @@ mod tests {
                     && literal
                         .chars()
                         .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
-                if variable && !literal.starts_with("PAMIN_") {
+                if variable && !literal.starts_with("PAMIN_MEMORY_") {
                     into.insert(literal.to_string());
                 }
             }
@@ -4089,42 +4112,54 @@ mod tests {
                 .map(|(name, value)| (name.to_string(), value.to_string()));
             arm(&settings(set))
         };
-        let shipped = named(&[("PAMIN_EVAL_HOME", "/data"), ("HOME", "/root")]);
+        let shipped = named(&[("PAMIN_MEMORY_EVAL_HOME", "/data"), ("HOME", "/root")]);
         assert_eq!(shipped, "shipped");
         // What `cargo test` puts in every test's environment from `build.rs`.
         let built = named(&[
-            ("PAMIN_ENGINE_COMMIT", env!("PAMIN_ENGINE_COMMIT")),
-            ("PAMIN_ENGINE_DIRTY", env!("PAMIN_ENGINE_DIRTY")),
-            ("PAMIN_ENGINE_SOURCES", env!("PAMIN_ENGINE_SOURCES")),
             (
-                "PAMIN_ENGINE_BUILD_ENVIRONMENT",
-                env!("PAMIN_ENGINE_BUILD_ENVIRONMENT"),
+                "PAMIN_MEMORY_ENGINE_COMMIT",
+                env!("PAMIN_MEMORY_ENGINE_COMMIT"),
+            ),
+            (
+                "PAMIN_MEMORY_ENGINE_DIRTY",
+                env!("PAMIN_MEMORY_ENGINE_DIRTY"),
+            ),
+            (
+                "PAMIN_MEMORY_ENGINE_SOURCES",
+                env!("PAMIN_MEMORY_ENGINE_SOURCES"),
+            ),
+            (
+                "PAMIN_MEMORY_ENGINE_BUILD_ENVIRONMENT",
+                env!("PAMIN_MEMORY_ENGINE_BUILD_ENVIRONMENT"),
             ),
         ]);
         assert_eq!(built, "shipped");
         // The XQuAD-R CPU baseline keeps the arm it was recorded under as
         // `PAMIN_DEVICE=cpu`.
-        assert_eq!(named(&[("PAMIN_EVAL_DEVICE", "cpu")]), "arm-ed2cc2fa76ba");
-        let depth = named(&[("PAMIN_EVAL_RERANK_DEPTH", "20")]);
-        let effort = named(&[("PAMIN_EVAL_SEARCH_EFFORT", "200")]);
+        assert_eq!(
+            named(&[("PAMIN_MEMORY_EVAL_DEVICE", "cpu")]),
+            "arm-ed2cc2fa76ba"
+        );
+        let depth = named(&[("PAMIN_MEMORY_EVAL_RERANK_DEPTH", "20")]);
+        let effort = named(&[("PAMIN_MEMORY_EVAL_SEARCH_EFFORT", "200")]);
         let both = named(&[
-            ("PAMIN_EVAL_SEARCH_EFFORT", "200"),
-            ("PAMIN_EVAL_RERANK_DEPTH", "20"),
+            ("PAMIN_MEMORY_EVAL_SEARCH_EFFORT", "200"),
+            ("PAMIN_MEMORY_EVAL_RERANK_DEPTH", "20"),
         ]);
-        let swept = named(&[("SWEEP", "1"), ("PAMIN_EVAL_HOME", "/data")]);
+        let swept = named(&[("SWEEP", "1"), ("PAMIN_MEMORY_EVAL_HOME", "/data")]);
         let distinct: BTreeSet<&String> = [&shipped, &depth, &effort, &both, &swept].into();
         assert_eq!(distinct.len(), 5, "{distinct:?}");
         // Found in any order, named the same.
         assert_eq!(
             both,
             named(&[
-                ("PAMIN_EVAL_RERANK_DEPTH", "20"),
-                ("PAMIN_EVAL_SEARCH_EFFORT", "200"),
+                ("PAMIN_MEMORY_EVAL_RERANK_DEPTH", "20"),
+                ("PAMIN_MEMORY_EVAL_SEARCH_EFFORT", "200"),
             ])
         );
         assert_eq!(
-            settings([("PAMIN_EVAL_DEVICE".to_string(), "cpu".to_string())]),
-            ["PAMIN_EVAL_DEVICE=cpu"]
+            settings([("PAMIN_MEMORY_EVAL_DEVICE".to_string(), "cpu".to_string())]),
+            ["PAMIN_MEMORY_EVAL_DEVICE=cpu"]
         );
         // What a model computes is named by the native libraries' settings
         // and the product's embedding path, not by the harness's own knobs,
@@ -4138,17 +4173,17 @@ mod tests {
                     set("MKL_NUM_THREADS", "2"),
                     set("OPENBLAS_NUM_THREADS", "3"),
                     set("ORT_LOGGING", "x"),
-                    set("PAMIN_EVAL_DEVICE", "cpu"),
-                    set("PAMIN_EVAL_HOME", "/data"),
+                    set("PAMIN_MEMORY_EVAL_DEVICE", "cpu"),
+                    set("PAMIN_MEMORY_EVAL_HOME", "/data"),
                     set("XQUAD_ALL_QUERIES", "1"),
                     set("MUSIQUE_SAMPLE", "60"),
                     set("SIGNIFICANCE_GATE", "off"),
-                    set("PAMIN_EVAL_RERANK_DEPTH", "20"),
-                    set("PAMIN_EVAL_RERANK_BATCH", "8"),
-                    set("PAMIN_EVAL_RERANK_BATCH_TOKENS", "4096"),
-                    set("PAMIN_EVAL_RERANK_MAX_TOKENS", "256"),
-                    set("PAMIN_EVAL_SEARCH_EFFORT", "100"),
-                    set("PAMIN_SOMETHING_NEW", "1"),
+                    set("PAMIN_MEMORY_EVAL_RERANK_DEPTH", "20"),
+                    set("PAMIN_MEMORY_EVAL_RERANK_BATCH", "8"),
+                    set("PAMIN_MEMORY_EVAL_RERANK_BATCH_TOKENS", "4096"),
+                    set("PAMIN_MEMORY_EVAL_RERANK_MAX_TOKENS", "256"),
+                    set("PAMIN_MEMORY_EVAL_SEARCH_EFFORT", "100"),
+                    set("PAMIN_MEMORY_SOMETHING_NEW", "1"),
                     set("TOKIO_WORKER_THREADS", "2"),
                 ]),
                 false
@@ -4158,7 +4193,7 @@ mod tests {
                 "OMP_NUM_THREADS=1",
                 "OPENBLAS_NUM_THREADS=3",
                 "ORT_LOGGING=x",
-                "PAMIN_EVAL_DEVICE=cpu",
+                "PAMIN_MEMORY_EVAL_DEVICE=cpu",
             ]
         );
         // Named by every harness, though no harness lists it -- the record,

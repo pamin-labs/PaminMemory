@@ -1096,7 +1096,7 @@ pub async fn compare_reranked(
         vec![BTreeMap::new(); settings.len()];
     // Each row sets its own depth: a depth the caller set would name the
     // record while no row ran under it.
-    let _depth = crate::harness::KnobSweep::claim("PAMIN_EVAL_RERANK_DEPTH");
+    let _depth = crate::harness::KnobSweep::claim("PAMIN_MEMORY_EVAL_RERANK_DEPTH");
     for (index, (text, group)) in questions.iter().enumerate() {
         for ((setting, into), table) in settings.iter().zip(&mut measured).zip(&tables) {
             // The depth is the search's own, so each pass sets it for itself

@@ -23,11 +23,16 @@ use crate::{client, output, protocol, settings};
 )]
 pub struct Cli {
     /// Where PaminMemory keeps its database, indexes, and models.
-    #[arg(long, env = "PAMIN_HOME", global = true)]
+    #[arg(long, env = "PAMIN_MEMORY_HOME", global = true)]
     pub home: Option<std::path::PathBuf>,
 
     /// The memory namespace to operate on.
-    #[arg(long, env = "PAMIN_PROJECT", global = true, default_value = "default")]
+    #[arg(
+        long,
+        env = "PAMIN_MEMORY_PROJECT",
+        global = true,
+        default_value = "default"
+    )]
     pub project: String,
 
     /// Which vector index to build: disk or memory.
@@ -38,7 +43,7 @@ pub struct Cli {
     /// built with, so changing this requires `pamin-memory reindex`.
     #[arg(
         long,
-        env = "PAMIN_VECTOR_INDEX",
+        env = "PAMIN_MEMORY_VECTOR_INDEX",
         global = true,
         default_value = "memory"
     )]
@@ -119,7 +124,7 @@ pub enum Command {
     Serve,
 
     /// Show the server settings a command would run with, and where each
-    /// came from: a flag, `PAMIN_DEVICE`, `config.toml`, or the default.
+    /// came from: a flag, `PAMIN_MEMORY_DEVICE`, `config.toml`, or the default.
     Config,
 
     /// Serve this project's memory as MCP tools over standard input and
@@ -149,7 +154,7 @@ pub enum Unserved {
 pub fn parse() -> Result<(Cli, clap::ArgMatches)> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_env("PAMIN_LOG")
+            tracing_subscriber::EnvFilter::try_from_env("PAMIN_MEMORY_LOG")
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
         )
         .with_writer(std::io::stderr)
@@ -286,10 +291,10 @@ async fn send(
 /// Refuses to run with a setting that is no longer read.
 ///
 /// Ignoring one would be silent in exactly the case it was set for. A shell
-/// that still exports `PAMIN_INFERENCE_THREADS=2` would get a server running
-/// with settings its operator believes it does not have; `PAMIN_RERANK=off`
+/// that still exports `PAMIN_MEMORY_INFERENCE_THREADS=2` would get a server running
+/// with settings its operator believes it does not have; `PAMIN_MEMORY_RERANK=off`
 /// set to buy back search time would pay for a reranker its setter believes
-/// is off; `PAMIN_NO_SERVER`, set by somebody debugging the server, would
+/// is off; `PAMIN_MEMORY_NO_SERVER`, set by somebody debugging the server, would
 /// have them reasoning about a process that is not the one they asked for. A
 /// warning would go to stderr, or to `serve.log`, where an agent never
 /// looks. So each is refused, by name, with what replaced it -- whatever it
@@ -304,92 +309,92 @@ fn refuse_removed_settings() -> Result<()> {
 }
 
 /// The settings [`refuse_removed_settings`] turns away, and what became of
-/// each. Since only `PAMIN_HOME`, `PAMIN_PROJECT`, `PAMIN_VECTOR_INDEX`,
-/// `PAMIN_DEVICE` and `PAMIN_LOG` are read, every other setting that was a
+/// each. Since only `PAMIN_MEMORY_HOME`, `PAMIN_MEMORY_PROJECT`, `PAMIN_MEMORY_VECTOR_INDEX`,
+/// `PAMIN_MEMORY_DEVICE` and `PAMIN_MEMORY_LOG` are read, every other setting that was a
 /// variable is a flag, a `config.toml` key, or gone.
 const REMOVED: &[(&str, &str)] = &[
     (
-        "PAMIN_NO_SERVER",
+        "PAMIN_MEMORY_NO_SERVER",
         "was removed: every command but `serve`, `stop` and `config` now goes through \
          the workspace's server, and none can run in the calling process.",
     ),
     (
-        "PAMIN_PROFILE",
+        "PAMIN_MEMORY_PROFILE",
         "was removed: every project uses the one embedding model, BGE-M3, so there is no \
          profile to choose.",
     ),
     (
-        "PAMIN_RERANK",
+        "PAMIN_MEMORY_RERANK",
         "was removed: `pamin-memory search` always reranks with its one reranker, so there is no \
          tier to choose.",
     ),
     (
-        "PAMIN_INFERENCE_THREADS",
+        "PAMIN_MEMORY_INFERENCE_THREADS",
         "was replaced by `--inference-threads`, or `inference_threads` in config.toml.",
     ),
     (
-        "PAMIN_EP_LIBRARIES",
+        "PAMIN_MEMORY_EP_LIBRARIES",
         "was replaced by `--ep-library` (once per library), or `ep_libraries` in \
          config.toml.",
     ),
     (
-        "PAMIN_PREPARED",
+        "PAMIN_MEMORY_PREPARED",
         "was replaced by `--prepared <true|false>`, or `prepared` in config.toml.",
     ),
     (
-        "PAMIN_FUSED_ATTENTION",
+        "PAMIN_MEMORY_FUSED_ATTENTION",
         "was replaced by `--fused-attention <true|false>`.",
     ),
     (
-        "PAMIN_MODEL_IDLE",
+        "PAMIN_MEMORY_MODEL_IDLE",
         "was replaced by `--model-idle <SECONDS>`, or `model_idle` in config.toml.",
     ),
     (
-        "PAMIN_OPEN_INDEXES",
+        "PAMIN_MEMORY_OPEN_INDEXES",
         "was replaced by `--open-indexes`, or `open_indexes` in config.toml.",
     ),
     (
-        "PAMIN_JIT",
+        "PAMIN_MEMORY_JIT",
         "was replaced by `--jit <true|false>`, or `jit` in config.toml.",
     ),
     (
-        "PAMIN_POSTGRES_DIR",
+        "PAMIN_MEMORY_POSTGRES_DIR",
         "was replaced by `--postgres-dir`, or `postgres_dir` in config.toml.",
     ),
     (
-        "PAMIN_CHANNEL_DEPTH",
+        "PAMIN_MEMORY_CHANNEL_DEPTH",
         "was replaced by `pamin-memory search --channel-depth`.",
     ),
     (
-        "PAMIN_GRAPH_DEPTH",
+        "PAMIN_MEMORY_GRAPH_DEPTH",
         "was replaced by `pamin-memory search --graph-depth`.",
     ),
     (
-        "PAMIN_RERANK_DEPTH",
+        "PAMIN_MEMORY_RERANK_DEPTH",
         "was replaced by `pamin-memory search --rerank-depth`.",
     ),
     (
-        "PAMIN_SEARCH_EFFORT",
+        "PAMIN_MEMORY_SEARCH_EFFORT",
         "was replaced by `pamin-memory search --search-effort`.",
     ),
     (
-        "PAMIN_RERANK_BATCH",
+        "PAMIN_MEMORY_RERANK_BATCH",
         "was removed: the reranker's batch is fixed at its measured value.",
     ),
     (
-        "PAMIN_RERANK_BATCH_TOKENS",
+        "PAMIN_MEMORY_RERANK_BATCH_TOKENS",
         "was removed: the reranker's batch is fixed at its measured value.",
     ),
     (
-        "PAMIN_RERANK_MAX_TOKENS",
+        "PAMIN_MEMORY_RERANK_MAX_TOKENS",
         "was removed: the reranker reads candidates to its measured length.",
     ),
     (
-        "PAMIN_UNINDEXED_BUDGET",
+        "PAMIN_MEMORY_UNINDEXED_BUDGET",
         "was removed: the vector index is built at its measured threshold.",
     ),
     (
-        "PAMIN_CATCH_UP_BATCH",
+        "PAMIN_MEMORY_CATCH_UP_BATCH",
         "was removed: the server catches up in rounds of its measured size.",
     ),
 ];
@@ -569,11 +574,11 @@ mod tests {
     /// The variables the binary still reads: where its state is, which
     /// project and vector index, which device, and what to log.
     const READ: &[&str] = &[
-        "PAMIN_HOME",
-        "PAMIN_PROJECT",
-        "PAMIN_VECTOR_INDEX",
-        "PAMIN_DEVICE",
-        "PAMIN_LOG",
+        "PAMIN_MEMORY_HOME",
+        "PAMIN_MEMORY_PROJECT",
+        "PAMIN_MEMORY_VECTOR_INDEX",
+        "PAMIN_MEMORY_DEVICE",
+        "PAMIN_MEMORY_LOG",
     ];
 
     fn documented() -> String {
@@ -607,7 +612,7 @@ mod tests {
             }
         }
         envs(&Cli::command(), &mut read);
-        read.push("PAMIN_LOG".to_string());
+        read.push("PAMIN_MEMORY_LOG".to_string());
         read.sort();
         read.dedup();
         let mut expected: Vec<String> = READ.iter().map(|name| name.to_string()).collect();
@@ -639,7 +644,7 @@ mod tests {
         }
         for path in sources {
             let source = std::fs::read_to_string(&path).expect("read a source file");
-            for (at, _) in source.match_indices("\"PAMIN_") {
+            for (at, _) in source.match_indices("\"PAMIN_MEMORY_") {
                 // A compile-time stamp from a build script, not a variable
                 // anything reads when it runs.
                 if source[..at].ends_with("env!(") {
@@ -650,7 +655,7 @@ mod tests {
                 let name = &rest[..end];
                 // A name, upper case and underscores, which rules out prose
                 // and the bare prefix this search is written with.
-                if name.len() == "PAMIN_".len()
+                if name.len() == "PAMIN_MEMORY_".len()
                     || !name
                         .bytes()
                         .all(|byte| byte.is_ascii_uppercase() || byte == b'_')
@@ -702,13 +707,13 @@ mod tests {
         }
     }
 
-    /// The libraries read no `PAMIN_*` variable: the binary turns its flags,
+    /// The libraries read no `PAMIN_MEMORY_*` variable: the binary turns its flags,
     /// its `config.toml` and the few variables it still reads into the values
     /// the libraries take, so what a server runs with is what it was started
     /// with, and a test varies a setting by building a value rather than
     /// writing the environment every other thread shares.
     ///
-    /// Any `"PAMIN_` literal in a library's product code -- outside comments,
+    /// Any `"PAMIN_MEMORY_` literal in a library's product code -- outside comments,
     /// outside its test module, and other than a compile-time `env!` stamp --
     /// fails, which also catches a name read through a constant.
     #[test]
@@ -739,7 +744,7 @@ mod tests {
                     if code.starts_with("//") {
                         continue;
                     }
-                    for (at, _) in code.match_indices("\"PAMIN_") {
+                    for (at, _) in code.match_indices("\"PAMIN_MEMORY_") {
                         if !code[..at].ends_with("env!(") {
                             found.push(format!("{}:{}: {code}", path.display(), number + 1));
                         }
@@ -753,7 +758,7 @@ mod tests {
         );
         assert!(
             found.is_empty(),
-            "a library names a PAMIN_ variable: {found:#?}"
+            "a library names a PAMIN_MEMORY_ variable: {found:#?}"
         );
     }
 
@@ -830,7 +835,7 @@ mod tests {
     #[test]
     fn the_documented_default_vector_index_is_the_library_default() {
         // Read off the declared argument rather than by parsing a command
-        // line, because parsing consults `PAMIN_VECTOR_INDEX` and would then
+        // line, because parsing consults `PAMIN_MEMORY_VECTOR_INDEX` and would then
         // be measuring whatever the environment running the test says.
         let command = <Cli as clap::CommandFactory>::command();
         let declared = command

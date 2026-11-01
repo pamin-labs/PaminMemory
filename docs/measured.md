@@ -94,20 +94,20 @@ Both corpora are fetched rather than vendored. For XQuAD-R, prepare a fresh
 persistent cache, then run only the search test:
 
 ```sh
-env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p memory-engine --test crosslingual prepare_pinned_xquad_models -- --exact --ignored
-env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_EVAL_DEVICE=cpu cargo test -p memory-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
+env -u HF_HOME PAMIN_MEMORY_EVAL_HOME=/path/to/eval-home cargo test -p memory-engine --test crosslingual prepare_pinned_xquad_models -- --exact --ignored
+env -u HF_HOME PAMIN_MEMORY_EVAL_HOME=/path/to/eval-home PAMIN_MEMORY_EVAL_DEVICE=cpu cargo test -p memory-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
 python3 benchmarks/results/retrieval/verify_xquad_models.py /path/to/eval-home/models xquad-run.log
 ```
 
-The harness reads its settings from `PAMIN_EVAL_*` variables, never the
-product's `PAMIN_*` names, and refuses a `PAMIN_*` variable it would ignore.
-The search also refuses every `PAMIN_EVAL_*` setting except
-`PAMIN_EVAL_DEVICE=cpu` and `PAMIN_EVAL_POSTGRES_DIR`, so the baseline runs the
+The harness reads its settings from `PAMIN_MEMORY_EVAL_*` variables, never the
+product's `PAMIN_MEMORY_*` names, and refuses a `PAMIN_MEMORY_*` variable it would ignore.
+The search also refuses every `PAMIN_MEMORY_EVAL_*` setting except
+`PAMIN_MEMORY_EVAL_DEVICE=cpu` and `PAMIN_MEMORY_EVAL_POSTGRES_DIR`, so the baseline runs the
 shipped settings whatever the shell exports. The PostgreSQL directory is
 allowed because a host without a downloadable PostgreSQL needs it, and no
 ranking reads it. Another installation can still move the timings, so a run
 that sets it records the path, absolute, among its settings; leave it unset to
-use the installation `pamin` downloads. That includes `PAMIN_EVAL_INFERENCE_THREADS`: the thread count
+use the installation `pamin` downloads. That includes `PAMIN_MEMORY_EVAL_INFERENCE_THREADS`: the thread count
 decides how many pairs a CPU reranker pass takes (one where passes run side by
 side, up to four at one thread), and so the rankings.
 
@@ -1526,7 +1526,7 @@ the hub unreachable, the next load failed naming the model and the network;
 with the hub back it fetched the file again, wrote the copy under the same key
 as before -- a re-download is given the removed file's modification time, so
 it keys identically -- and removed the download again. All five loads scored
-bit-identically, the load from the download (then `PAMIN_PREPARED=off`, now
+bit-identically, the load from the download (then `PAMIN_MEMORY_PREPARED=off`, now
 `--prepared false`) among them. What this gives up is
 offline use across a key change, and [cli.md](cli.md) says so where the
 setting is described. Disuse is not a key change: the collection that removes

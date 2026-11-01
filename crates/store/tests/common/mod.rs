@@ -3,17 +3,17 @@
 // Each including test uses some of it.
 #![allow(dead_code)]
 
-/// The `PAMIN_EVAL_*` knobs, shared with every crate's tests.
+/// The `PAMIN_MEMORY_EVAL_*` knobs, shared with every crate's tests.
 #[path = "../../../index/tests/support/eval.rs"]
 pub mod eval;
 
-/// The store settings a test measures: the defaults, and `PAMIN_EVAL_JIT` and
-/// `PAMIN_EVAL_POSTGRES_DIR`.
+/// The store settings a test measures: the defaults, and `PAMIN_MEMORY_EVAL_JIT` and
+/// `PAMIN_MEMORY_EVAL_POSTGRES_DIR`.
 pub fn store() -> memory_store::StoreSettings {
     eval::check();
     memory_store::StoreSettings {
-        jit: eval::switch("PAMIN_EVAL_JIT").unwrap_or_default(),
-        postgres_dir: eval::path("PAMIN_EVAL_POSTGRES_DIR"),
+        jit: eval::switch("PAMIN_MEMORY_EVAL_JIT").unwrap_or_default(),
+        postgres_dir: eval::path("PAMIN_MEMORY_EVAL_POSTGRES_DIR"),
     }
 }
 

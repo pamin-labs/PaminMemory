@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 
 /// Where PaminMemory keeps its database, indexes, and models.
 ///
-/// Defaults to `~/.pamin`. The binary takes another with `--home` (or
-/// `PAMIN_HOME`) so a test or a second checkout can run against its own state;
+/// Defaults to `~/.pamin-memory`. The binary takes another with `--home` (or
+/// `PAMIN_MEMORY_HOME`) so a test or a second checkout can run against its own state;
 /// this crate reads no environment for it.
 #[derive(Clone, Debug)]
 pub struct Workspace {
@@ -20,11 +20,11 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// Opens the default workspace, `~/.pamin`.
+    /// Opens the default workspace, `~/.pamin-memory`.
     pub fn discover() -> std::io::Result<Self> {
         let home = std::env::home_dir()
             .ok_or_else(|| std::io::Error::other("cannot locate a home directory; pass --home"))?;
-        Ok(Self::at(home.join(".pamin")))
+        Ok(Self::at(home.join(".pamin-memory")))
     }
 
     /// Opens a workspace at an explicit path.

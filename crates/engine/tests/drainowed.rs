@@ -25,8 +25,8 @@ fn settings() -> memory_engine::Settings {
     memory_engine::Settings {
         inference: support::inference(),
         store: memory_store::StoreSettings {
-            jit: support::eval::switch("PAMIN_EVAL_JIT").unwrap_or_default(),
-            postgres_dir: support::eval::path("PAMIN_EVAL_POSTGRES_DIR"),
+            jit: support::eval::switch("PAMIN_MEMORY_EVAL_JIT").unwrap_or_default(),
+            postgres_dir: support::eval::path("PAMIN_MEMORY_EVAL_POSTGRES_DIR"),
         },
         ..memory_engine::Settings::default()
     }
@@ -35,7 +35,7 @@ fn settings() -> memory_engine::Settings {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "provisions postgres and downloads model weights"]
 async fn a_drain_owing_everything_settles_what_another_round_applied() {
-    let home = std::env::var("PAMIN_EVAL_HOME").ok();
+    let home = std::env::var("PAMIN_MEMORY_EVAL_HOME").ok();
     let scratch = home
         .is_none()
         .then(|| tempfile::tempdir().expect("temp workspace"));

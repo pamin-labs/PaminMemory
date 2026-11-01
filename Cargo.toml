@@ -70,7 +70,7 @@ notify = "8"
 # Already compiled -- it is under tokio and sqlx both -- so declaring it adds
 # nothing to the tree.
 libc = "0.2"
-# `$PAMIN_HOME/config.toml`, the server's settings file. Nothing in the tree
+# `$PAMIN_MEMORY_HOME/config.toml`, the server's settings file. Nothing in the tree
 # parsed TOML before; parsing and serde only, no writer.
 toml = { version = "0.9", default-features = false, features = ["std", "parse", "serde"] }
 # Test-only: `memory-index`'s `shared_vocabulary` test compares the encoder with

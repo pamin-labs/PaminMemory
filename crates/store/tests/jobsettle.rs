@@ -34,7 +34,7 @@ async fn rows(database: &Database, project: ProjectId) -> i64 {
 #[tokio::test]
 #[ignore = "needs a real postgres cluster"]
 async fn finished_work_leaves_no_row_and_live_work_stays() {
-    let home = std::env::var("PAMIN_EVAL_HOME").ok();
+    let home = std::env::var("PAMIN_MEMORY_EVAL_HOME").ok();
     let scratch = home
         .is_none()
         .then(|| tempfile::tempdir().expect("temp workspace"));

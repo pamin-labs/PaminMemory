@@ -13,9 +13,9 @@ The examples below are real output from a workspace built by the writes in
 
 | Option | Environment | Default | Meaning |
 | --- | --- | --- | --- |
-| `--home <path>` | `PAMIN_HOME` | `~/.pamin` | Where the database, index, and downloaded models live |
-| `--project <name>` | `PAMIN_PROJECT` | `default` | The memory namespace to operate on |
-| `--vector-index <name>` | `PAMIN_VECTOR_INDEX` | `memory` | Vector index a project is built with: `disk` or `memory` |
+| `--home <path>` | `PAMIN_MEMORY_HOME` | `~/.pamin-memory` | Where the database, index, and downloaded models live |
+| `--project <name>` | `PAMIN_MEMORY_PROJECT` | `default` | The memory namespace to operate on |
+| `--vector-index <name>` | `PAMIN_MEMORY_VECTOR_INDEX` | `memory` | Vector index a project is built with: `disk` or `memory` |
 | `--json` | | off | Emit JSON instead of text, on one line |
 | `--pretty` | | off | Indent that JSON. Requires `--json` |
 
@@ -23,7 +23,7 @@ The JSON is compact because the usual caller pays for every token of it, and
 indenting a ten-hit search costs about a thousand of them. `--pretty` is for
 the person who has piped it to a terminal.
 
-`PAMIN_LOG` sets the log filter (`PAMIN_LOG=debug`). Logs go to stderr, so they
+`PAMIN_MEMORY_LOG` sets the log filter (`PAMIN_MEMORY_LOG=debug`). Logs go to stderr, so they
 never contaminate the JSON on stdout.
 
 ### Server settings
@@ -31,13 +31,13 @@ never contaminate the JSON on stdout.
 These govern the server process -- which device, how many threads, how long a
 model stays loaded -- so they are fixed when the server starts. Every command
 takes them, because any command may be the one that starts the server, and
-each can also be set in the `[serve]` table of `$PAMIN_HOME/config.toml`, by
+each can also be set in the `[serve]` table of `$PAMIN_MEMORY_HOME/config.toml`, by
 the key in the second column. A flag wins over the file, and the file over the
 default.
 
 | Flag | `config.toml` key | Default | Meaning |
 | --- | --- | --- | --- |
-| `--device <auto\|cpu>` | `device` | `auto` | `auto` measures every viable accelerator and CPU plan and picks the fastest; `cpu` forces optimized CPU. Also read from `PAMIN_DEVICE` |
+| `--device <auto\|cpu>` | `device` | `auto` | `auto` measures every viable accelerator and CPU plan and picks the fastest; `cpu` forces optimized CPU. Also read from `PAMIN_MEMORY_DEVICE` |
 | `--inference-threads <n>` | `inference_threads` | one per core | Threads one forward pass may use, or on the CPU, for the batches of a rerank and stored texts of the embedding model (BGE-M3), how many single-threaded passes run at once |
 | `--ep-library <path>` | `ep_libraries` | none | A path to an installed, ABI-compatible NPU plugin EP library; repeat the flag, or list them in the file. Only discovered NPU devices participate in automatic plugin routing. Unavailable/incompatible libraries retain ordinary GPU/CPU fallback |
 | `--prepared <true\|false>` | `prepared` | `true` | `false` loads a model from its download rather than from a mapped copy, fetching the download again if it was removed |
@@ -47,7 +47,7 @@ default.
 | `--postgres-dir <path>` | `postgres_dir` | unset | Use a PostgreSQL already on this machine instead of installing one |
 
 ```toml
-# $PAMIN_HOME/config.toml
+# $PAMIN_MEMORY_HOME/config.toml
 [serve]
 device = "cpu"
 model_idle = 600
@@ -57,12 +57,12 @@ ep_libraries = ["/opt/vendor/lib/libnpu_ep.so"]
 
 A relative path is made absolute when settings are resolved: in a flag,
 against the directory the command ran in; in the file, against the workspace
-(`$PAMIN_HOME`).
+(`$PAMIN_MEMORY_HOME`).
 
 A key the file does not know, or a value a flag would refuse, stops every
 command with the file's path and the offending line, rather than leaving the
 setting at its default. `pamin-memory config` prints what a command would run with and
-where each value came from -- `flag`, `env` (`PAMIN_DEVICE`), `config` or
+where each value came from -- `flag`, `env` (`PAMIN_MEMORY_DEVICE`), `config` or
 `default` -- without starting anything; `--json` gives the same as an object.
 
 **Settings are fixed when the server starts.** A command sends the settings it
@@ -244,17 +244,17 @@ stop every Påmin server and CLI process using this model directory, then list
 the exact v1 packages and their logical bytes:
 
 ```sh
-python3 maintenance/retire_coreml_v1.py ~/.pamin/models
+python3 maintenance/retire_coreml_v1.py ~/.pamin-memory/models
 ```
 
 After verifying the list and that those processes remain stopped, remove only
 that obsolete namespace:
 
 ```sh
-python3 maintenance/retire_coreml_v1.py ~/.pamin/models --apply --all-processes-stopped
+python3 maintenance/retire_coreml_v1.py ~/.pamin-memory/models --apply --all-processes-stopped
 ```
 
-Use your configured `PAMIN_HOME/models` in place of `~/.pamin/models` when it
+Use your configured `PAMIN_MEMORY_HOME/models` in place of `~/.pamin-memory/models` when it
 differs. The script refuses an arbitrary parent path, skips linked prepared
 entries and preserves v2 packages and mapped CPU models. Logical bytes are
 not a measure of unique APFS allocation; the actual free-space change may
@@ -308,11 +308,11 @@ not a replacement for a corpus-level accuracy result.
 A few measured values have no flag and no `config.toml` key: the reranker's
 batch and the longest candidate it reads, and how many documents may sit
 outside the vector graph before it is built. They are fixed where they were
-measured; the evaluation harnesses set them as `PAMIN_EVAL_*` variables, which
+measured; the evaluation harnesses set them as `PAMIN_MEMORY_EVAL_*` variables, which
 `pamin-memory` itself never reads. `pamin-memory search` has two hidden flags of the same
 kind; see [`pamin-memory search`](#pamin-memory-search). The only variables `pamin-memory` reads are
-`PAMIN_HOME`, `PAMIN_PROJECT`, `PAMIN_VECTOR_INDEX`, `PAMIN_DEVICE` and
-`PAMIN_LOG`; the ones that used to configure anything else are refused, as
+`PAMIN_MEMORY_HOME`, `PAMIN_MEMORY_PROJECT`, `PAMIN_MEMORY_VECTOR_INDEX`, `PAMIN_MEMORY_DEVICE` and
+`PAMIN_MEMORY_LOG`; the ones that used to configure anything else are refused, as
 [Upgrading from settings variables](#upgrading-from-settings-variables)
 lists, and a unit test checks this page against what the binary reads.
 
@@ -349,33 +349,33 @@ not intend. Unset it, and use the replacement:
 
 | Variable | Now |
 | --- | --- |
-| `PAMIN_INFERENCE_THREADS` | `--inference-threads`, `inference_threads` |
-| `PAMIN_EP_LIBRARIES` | `--ep-library`, once per library; `ep_libraries` |
-| `PAMIN_PREPARED` | `--prepared <true\|false>`, `prepared` |
-| `PAMIN_FUSED_ATTENTION` | `--fused-attention <true\|false>` (hidden) |
-| `PAMIN_MODEL_IDLE` | `--model-idle`, `model_idle` |
-| `PAMIN_OPEN_INDEXES` | `--open-indexes`, `open_indexes` |
-| `PAMIN_JIT` | `--jit <true\|false>`, `jit` |
-| `PAMIN_POSTGRES_DIR` | `--postgres-dir`, `postgres_dir` |
-| `PAMIN_CHANNEL_DEPTH`, `PAMIN_GRAPH_DEPTH` | `pamin-memory search --channel-depth`, `--graph-depth` |
-| `PAMIN_RERANK_DEPTH`, `PAMIN_SEARCH_EFFORT` | `pamin-memory search --rerank-depth`, `--search-effort` (hidden) |
-| `PAMIN_RERANK_BATCH`, `PAMIN_RERANK_BATCH_TOKENS`, `PAMIN_RERANK_MAX_TOKENS`, `PAMIN_UNINDEXED_BUDGET`, `PAMIN_CATCH_UP_BATCH` | removed: fixed at their measured values |
+| `PAMIN_MEMORY_INFERENCE_THREADS` | `--inference-threads`, `inference_threads` |
+| `PAMIN_MEMORY_EP_LIBRARIES` | `--ep-library`, once per library; `ep_libraries` |
+| `PAMIN_MEMORY_PREPARED` | `--prepared <true\|false>`, `prepared` |
+| `PAMIN_MEMORY_FUSED_ATTENTION` | `--fused-attention <true\|false>` (hidden) |
+| `PAMIN_MEMORY_MODEL_IDLE` | `--model-idle`, `model_idle` |
+| `PAMIN_MEMORY_OPEN_INDEXES` | `--open-indexes`, `open_indexes` |
+| `PAMIN_MEMORY_JIT` | `--jit <true\|false>`, `jit` |
+| `PAMIN_MEMORY_POSTGRES_DIR` | `--postgres-dir`, `postgres_dir` |
+| `PAMIN_MEMORY_CHANNEL_DEPTH`, `PAMIN_MEMORY_GRAPH_DEPTH` | `pamin-memory search --channel-depth`, `--graph-depth` |
+| `PAMIN_MEMORY_RERANK_DEPTH`, `PAMIN_MEMORY_SEARCH_EFFORT` | `pamin-memory search --rerank-depth`, `--search-effort` (hidden) |
+| `PAMIN_MEMORY_RERANK_BATCH`, `PAMIN_MEMORY_RERANK_BATCH_TOKENS`, `PAMIN_MEMORY_RERANK_MAX_TOKENS`, `PAMIN_MEMORY_UNINDEXED_BUDGET`, `PAMIN_MEMORY_CATCH_UP_BATCH` | removed: fixed at their measured values |
 
-`PAMIN_DEVICE` is still read, as the fallback for `--device`.
+`PAMIN_MEMORY_DEVICE` is still read, as the fallback for `--device`.
 
 ### Upgrading from profiles and tiers
 
-Earlier versions had embedding profiles (`--profile`, `PAMIN_PROFILE`:
+Earlier versions had embedding profiles (`--profile`, `PAMIN_MEMORY_PROFILE`:
 `speed`, `balanced`, `accuracy`, `dual_accuracy`) and reranking tiers
-(`--rerank`, `PAMIN_RERANK`: `off`, `fast`, `accurate`). What shipped as
+(`--rerank`, `PAMIN_MEMORY_RERANK`: `off`, `fast`, `accurate`). What shipped as
 `accuracy` and `accurate` is what every project now uses, so a workspace that
 kept the defaults needs nothing: its indexes open as they are, and the
 embedder's measured plans are reused. The reranker's are measured again once,
 because a CPU pass now takes one pair and its plan key changed with that.
 
-- `--profile` and `--rerank` are unknown arguments. Setting `PAMIN_PROFILE` or
-  `PAMIN_RERANK`, to any value, fails with a message naming the setting, as
-  `PAMIN_NO_SERVER` does; unset it.
+- `--profile` and `--rerank` are unknown arguments. Setting `PAMIN_MEMORY_PROFILE` or
+  `PAMIN_MEMORY_RERANK`, to any value, fails with a message naming the setting, as
+  `PAMIN_MEMORY_NO_SERVER` does; unset it.
 - A project indexed under `speed`, `balanced` or `dual_accuracy` no longer
   opens. The error names the profile it was built with and `pamin-memory reindex`,
   which rebuilds it with BGE-M3 from PostgreSQL. Until then the server does not
@@ -450,7 +450,7 @@ Error: no topic named nope
 
 ```console
 $ pamin-memory init
-Initialized project default in /home/you/.pamin
+Initialized project default in /home/you/.pamin-memory
 ```
 
 `init` provisions a local PostgreSQL and applies migrations. No Docker, no
@@ -969,7 +969,7 @@ PaminLabs' SmoothQuant re-export of `onnx-community`'s int8 file, which
 moves activation outliers into the weights before they are quantized; see
 [measured.md](measured.md) for what it changed. There is no
 setting for it. Earlier versions chose a tier with `--rerank` and
-`PAMIN_RERANK` -- `off`, `fast` (a 119 MB MiniLM cross-encoder) or `accurate`,
+`PAMIN_MEMORY_RERANK` -- `off`, `fast` (a 119 MB MiniLM cross-encoder) or `accurate`,
 which is the one kept; see
 [Upgrading from profiles and tiers](#upgrading-from-profiles-and-tiers).
 
@@ -1699,7 +1699,7 @@ nothing PostgreSQL cannot reproduce — `pamin-memory reindex` rebuilds it outri
 ## `pamin-memory serve`
 
 Holds the database, the index and the model, and answers commands over a socket
-at `$PAMIN_HOME/pamin.sock`.
+at `$PAMIN_MEMORY_HOME/pamin.sock`.
 
 You do not normally run it. Any command that needs a server starts one and
 connects, the same way `pamin-memory init` leaves PostgreSQL running so the next
@@ -1721,7 +1721,7 @@ to watch it. It takes the [server settings](#server-settings) as flags, reads
 the rest from `config.toml`, logs each setting and where it came from at the
 `info` level, and keeps them until it stops: a command asking for others is
 refused with how to restart it, never answered with these. A server started in the background writes to
-`$PAMIN_HOME/serve.log`; `PAMIN_LOG` sets its level, as everywhere else.
+`$PAMIN_MEMORY_HOME/serve.log`; `PAMIN_MEMORY_LOG` sets its level, as everywhere else.
 
 Between requests it brings indexes up to date with work a deferred write or a
 killed server left owed, as [`pamin-memory cascade`](#pamin-memory-cascade) describes, and
@@ -1730,7 +1730,7 @@ compacts an index spread over too many files, and reshapes one spread over too
 many segments, as `pamin-memory reindex` describes. A reshape logs
 `reshaping the index` when it starts and `reshaped the index` with the segment
 counts and its duration when it finishes, at the `info` level that
-`PAMIN_LOG=info` shows; a reshape that fails logs a warning, which shows by
+`PAMIN_MEMORY_LOG=info` shows; a reshape that fails logs a warning, which shows by
 default, and leaves the index it was copying in service.
 
 One server serves many projects, and it keeps the sixteen most recently used
@@ -1746,7 +1746,7 @@ Every command goes through the server except three. `serve` is the server,
 database itself rather than starting a server to do it -- and `config` only
 reads the settings a server would start with, so it starts none to show them.
 There is no way to run a command
-in the calling process instead: `PAMIN_NO_SERVER`, which used to, was removed,
+in the calling process instead: `PAMIN_MEMORY_NO_SERVER`, which used to, was removed,
 and a command run with it set fails and says so rather than quietly going
 through the server it was set to avoid.
 
@@ -1804,7 +1804,7 @@ and the same defaults, and returns the command's `--json` result.
 Both come from one definition, so they cannot drift: the tool schemas are what
 `memory-contract` derives, and its tests snapshot them. A tool has no project
 argument: every call works on the project `pamin-memory mcp` was started with,
-`--project` or `PAMIN_PROJECT`, and a host that needs two projects starts two.
+`--project` or `PAMIN_MEMORY_PROJECT`, and a host that needs two projects starts two.
 
 Each tool call goes through the workspace's server exactly as the command does,
 starting one on the first call, so the [server settings](#server-settings) given

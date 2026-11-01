@@ -62,7 +62,7 @@
 //! | `QASPER_DIR` | where cached pages are, instead of fetching them |
 //! | `QASPER_PAPERS` | how many papers to draw, default [`PAPERS`] |
 //! | `EVAL_SEED` | the seed papers are drawn with |
-//! | `SECTIONING_OUT` | where every question's scores are written, default under `PAMIN_EVAL_HOME` |
+//! | `SECTIONING_OUT` | where every question's scores are written, default under `PAMIN_MEMORY_EVAL_HOME` |
 
 mod harness;
 mod scoring;

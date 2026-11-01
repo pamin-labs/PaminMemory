@@ -341,7 +341,7 @@
   },
   {
     "topic": "env_pamin_home",
-    "content": "PAMIN_HOME points at the workspace and PAMIN_PROJECT selects the namespace inside it",
+    "content": "PAMIN_MEMORY_HOME points at the workspace and PAMIN_MEMORY_PROJECT selects the namespace inside it",
     "language": "en"
   },
   {
@@ -856,7 +856,7 @@
   },
   {
     "topic": "env_pamin_profile",
-    "content": "PAMIN_PROFILE selects speed balanced or accuracy and changing it requires a reindex",
+    "content": "PAMIN_MEMORY_PROFILE selects speed balanced or accuracy and changing it requires a reindex",
     "language": "en"
   },
   {

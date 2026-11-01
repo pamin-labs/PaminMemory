@@ -9,7 +9,7 @@
 //! cargo test --release -p memory-index --test shared_vocabulary -- --ignored --nocapture
 //! ```
 //!
-//! and with `PAMIN_EVAL_MODELS` pointing at a model directory that already
+//! and with `PAMIN_MEMORY_EVAL_MODELS` pointing at a model directory that already
 //! holds them to skip the downloads, as `tests/prepared.rs` takes it.
 //! `--release`, because the timing it prints is of tokenization as well as
 //! inference.
@@ -36,10 +36,10 @@ use fastembed::{
 use memory_index::{Device, Embedder, Reranker};
 
 /// Which arm a child runs, and where its models are.
-const ARM: &str = "PAMIN_EVAL_SHARED_ARM";
-const CACHE: &str = "PAMIN_EVAL_SHARED_CACHE";
-const EMBEDDER_COPY: &str = "PAMIN_EVAL_SHARED_EMBEDDER_COPY";
-const ACCURATE_COPY: &str = "PAMIN_EVAL_SHARED_ACCURATE_COPY";
+const ARM: &str = "PAMIN_MEMORY_EVAL_SHARED_ARM";
+const CACHE: &str = "PAMIN_MEMORY_EVAL_SHARED_CACHE";
+const EMBEDDER_COPY: &str = "PAMIN_MEMORY_EVAL_SHARED_EMBEDDER_COPY";
+const ACCURATE_COPY: &str = "PAMIN_MEMORY_EVAL_SHARED_ACCURATE_COPY";
 
 /// What a child prints before each of its results.
 const MARK: &str = "shared-vocabulary-result";
@@ -240,7 +240,7 @@ fn child(arm: &str, cache: &Path) {
     assert_eq!(
         support::inference().rerank,
         memory_index::RerankSettings::default(),
-        "a PAMIN_EVAL_RERANK_* knob is set, so the product is not batching or truncating \
+        "a PAMIN_MEMORY_EVAL_RERANK_* knob is set, so the product is not batching or truncating \
          as the old arm does"
     );
     let passages = passages();
@@ -481,8 +481,8 @@ fn run(arm: &str, cache: &Path, env: &[(&str, &str)]) -> Report {
         ])
         .env(ARM, arm)
         .env(CACHE, cache)
-        .env("PAMIN_EVAL_DEVICE", "cpu")
-        .env_remove("PAMIN_EVAL_PREPARED");
+        .env("PAMIN_MEMORY_EVAL_DEVICE", "cpu")
+        .env_remove("PAMIN_MEMORY_EVAL_PREPARED");
     for (key, value) in env {
         command.env(key, value);
     }
@@ -526,7 +526,7 @@ fn only_new(copies: &Path, known: &[PathBuf]) -> PathBuf {
 /// and one missing from a linked directory would be downloaded into the
 /// directory it links to.
 fn link_models(cache: &Path) {
-    let Ok(existing) = std::env::var("PAMIN_EVAL_MODELS") else {
+    let Ok(existing) = std::env::var("PAMIN_MEMORY_EVAL_MODELS") else {
         return;
     };
     let wanted =
