@@ -2,1054 +2,1081 @@
 source: crates/pamin-client/tests/mcp.rs
 expression: tools
 ---
-[
-  {
-    "description": "Search memories by meaning and wording. Returns each matching topic at its\ncurrent state, with a `why` trace of the channels and graph paths that found\nit. Ranked, so use grep, read or neighbors when you need certainty.",
-    "feature": "core",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "graph_depth": {
-          "default": 2,
-          "description": "How many edges the graph channel walks out from its seeds.",
-          "format": "uint8",
-          "maximum": 4,
-          "minimum": 0,
-          "type": "integer"
+{
+  "resources": [],
+  "tools": [
+    {
+      "description": "Search memories by meaning and wording. Returns each matching topic at its\ncurrent state, with a `why` trace of the channels and graph paths that found\nit. Ranked, so use grep, read or neighbors when you need certainty.",
+      "feature": "core",
+      "hints": null,
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "graph_depth": {
+            "default": 2,
+            "description": "How many edges the graph channel walks out from its seeds.",
+            "format": "uint8",
+            "maximum": 4,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "limit": {
+            "default": 5,
+            "description": "How many results to return.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "query": {
+            "description": "What to search for, in any language.",
+            "type": "string"
+          }
         },
-        "limit": {
-          "default": 5,
-          "description": "How many results to return.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "query": {
-          "description": "What to search for, in any language.",
-          "type": "string"
-        }
+        "required": [
+          "query"
+        ],
+        "type": "object"
       },
-      "required": [
-        "query"
-      ],
-      "type": "object"
+      "name": "memory_search",
+      "output": {
+        "$defs": {
+          "Channel": {
+            "description": "A source of candidates.\n\nThere are three, and the list is short on purpose. Earlier designs also\ntreated recency and explicit importance as channels while applying them\nagain as post-fusion modifiers, which counted the same signal twice. Notes\nand page nodes were channels too, although they live in the same projection\nindex as everything else, so querying them separately split one population\ninto several and left the redundancy penalty reasoning across all of them.\nBoth are now expressed as modifiers and document-type filters instead.",
+            "oneOf": [
+              {
+                "const": "lexical_segmented",
+                "description": "BM25 over segmented text. Word-level recall in any language.",
+                "type": "string"
+              },
+              {
+                "const": "lexical_ngram",
+                "description": "BM25 over character n-grams. Substrings that segmentation destroys:\npaths, error codes, identifiers.",
+                "type": "string"
+              },
+              {
+                "const": "vector",
+                "description": "Approximate nearest neighbours over dense embeddings.",
+                "type": "string"
+              },
+              {
+                "const": "graph",
+                "description": "Expansion through the relationship graph, which lives in PostgreSQL and\nis therefore invisible to the projection index.",
+                "type": "string"
+              }
+            ]
+          },
+          "Derivation": {
+            "description": "How an edge came to exist.\n\nRecorded rather than inferred, because it is the difference between a claim\na caller made and one the engine guessed at, and a result explaining itself\nshould be able to say which.",
+            "oneOf": [
+              {
+                "const": "explicit",
+                "description": "Asserted directly through the CLI or API.",
+                "type": "string"
+              },
+              {
+                "const": "deterministic",
+                "description": "Derived by a rule with no model in the path.",
+                "type": "string"
+              },
+              {
+                "const": "model",
+                "description": "Extracted by a local model.",
+                "type": "string"
+              },
+              {
+                "const": "imported",
+                "description": "Carried in from another system.",
+                "type": "string"
+              }
+            ]
+          },
+          "EdgeKind": {
+            "description": "What one topic asserts about another.\n\nA closed set rather than free strings, for the same reason the post-fusion\nmodifiers are: a typo in an edge type would otherwise become a silent\nsecond kind that nothing traverses and nothing reports.",
+            "oneOf": [
+              {
+                "enum": [
+                  "supports",
+                  "contradicts",
+                  "supersedes",
+                  "related_to",
+                  "part_of",
+                  "derived_from",
+                  "same_as",
+                  "depends_on"
+                ],
+                "type": "string"
+              },
+              {
+                "const": "mentions",
+                "description": "One topic's content names another.",
+                "type": "string"
+              }
+            ]
+          },
+          "Hit": {
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "parent": {
+                "description": "For a section of a file, the section it sits under, by name: what to\n`pamin read` when the hit depends on the heading above it. Absent for a\nmemory that sits under nothing.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "recorded_at": {
+                "description": "When this state was recorded, RFC 3339.\n\nRanking says how well a memory matches, not how current it is, and an\nagent assembling context needs both. Carried here so judging staleness\ndoes not cost a `read` per hit.",
+                "type": "string"
+              },
+              "score": {
+                "format": "float",
+                "type": "number"
+              },
+              "span": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Span"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "For a memory the index cut into spans, which of them `content` is: the\nspan the search matched best and what fits a budget of about 600 tokens\naround it, nearer neighbours first. Absent for a memory\nof one span, whose `content` is all of it. `pamin read --span` reads\nmore of the memory around it."
+              },
+              "topic": {
+                "description": "What to pass to `pamin read` to see this topic's other versions.\n\nThe name, and not the state's identifier. Search ranks topics and\nreturns the current state of each, and no command anywhere takes a\nstate id as an argument -- so one on every hit was two hundred and\neighty tokens of a context window that nothing could spend.",
+                "type": "string"
+              },
+              "valid_from": {
+                "description": "When the claim starts holding, RFC 3339, absent when open.\n\nThe other half of what `recorded_at` is here for, and the half that\nanswers the question actually asked of a memory: not when we were told\na thing, but when it was true. The two disagree whenever a source is\nbackdated, which is every import that carries `--valid-from`, and an\nagent handed only the recording time reads the import order instead of\nthe timeline.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "valid_to": {
+                "description": "When it stops holding, RFC 3339, absent when open.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "why": {
+                "description": "The rank this result held in each channel it appeared in, and every\nmodifier applied afterwards. An agent can audit its own retrieval from\nthis without trusting the ranking.",
+                "items": {
+                  "$ref": "#/$defs/Trace"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "topic",
+              "version",
+              "content",
+              "score",
+              "why",
+              "recorded_at"
+            ],
+            "type": "object"
+          },
+          "Span": {
+            "description": "Where in a memory a span, or a run of them, lies.",
+            "properties": {
+              "end": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "header": {
+                "description": "The memory's name, and the heading and turn the run continues -- what\nthe run lost by being cut out of it.",
+                "type": "string"
+              },
+              "of": {
+                "description": "How many spans the memory is cut into.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "ordinal": {
+                "description": "The span asked about, from 0.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "start": {
+                "description": "The run's bytes in the memory's content.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "ordinal",
+              "of",
+              "header",
+              "start",
+              "end"
+            ],
+            "type": "object"
+          },
+          "Trace": {
+            "description": "One entry of the trace, as a caller sees it.\n\n[`Why`] also carries `score`, `weight` and `contribution`, and `docs/cli.md`\nprints the last two as things the reader works out: weight is a constant per\nchannel, and contribution is `weight / (10 + rank)`. Ten hits of them cost\nabout seven hundred tokens of somebody's context window to restate what they\nalready know, so the command layer leaves them out.\n\n`score` is left out for a different reason. It is the channel's own quantity\nin the channel's own units, so a reader comparing a BM25 score against a\nvector similarity would be comparing nothing. Fusion reads it to judge how\nconfident a channel is *against that channel's other candidates*, and that\njudgement already reaches the caller as the rank the fused list gives.\n\nA separate type rather than `#[serde(skip)]` on the core one. Skipping\nwould make the field deserialize as zero on the far side of the socket,\nand a number that is quietly wrong is a worse price than the tokens.",
+            "oneOf": [
+              {
+                "properties": {
+                  "channel": {
+                    "$ref": "#/$defs/Channel"
+                  },
+                  "kind": {
+                    "const": "channel",
+                    "type": "string"
+                  },
+                  "rank": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "channel",
+                  "rank"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "asserted_from": {
+                    "type": "string"
+                  },
+                  "asserted_to": {
+                    "type": "string"
+                  },
+                  "derivation": {
+                    "$ref": "#/$defs/Derivation"
+                  },
+                  "edge": {
+                    "$ref": "#/$defs/EdgeKind"
+                  },
+                  "from": {
+                    "type": "string"
+                  },
+                  "hops": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "path",
+                    "type": "string"
+                  },
+                  "via": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "from",
+                  "via",
+                  "hops",
+                  "asserted_from",
+                  "asserted_to",
+                  "edge",
+                  "derivation"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "The cross-encoder scored this result, and its position blends that\nscore with fusion's.\n\nCarried without its score, for the reason the channel score is left out\nabove and one more. A cross-encoder's logit is calibrated against\nnothing, so it is comparable within one shortlist and meaningless\nbetween two -- and a number on the wire invites exactly the comparison\nit cannot support. What a reader can act on is the *fact*: a result\ncarrying this entry was scored by the model, whatever channel found\nit, and one without it holds the place fusion gave it: either fusion\nreturned fewer than two candidates, so nothing was reranked, or it sat\nbelow the reranker's head and was not among the strongest finds only\nthe graph made. That distinction costs about four tokens and is the\ndifference between auditing a ranking and guessing at it.",
+                "properties": {
+                  "kind": {
+                    "const": "reranked",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "hits": {
+            "items": {
+              "$ref": "#/$defs/Hit"
+            },
+            "type": "array"
+          },
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query",
+          "hits"
+        ],
+        "type": "object"
+      },
+      "task": false,
+      "ui": null
     },
-    "name": "memory_search",
-    "output": {
-      "$defs": {
-        "Channel": {
-          "description": "A source of candidates.\n\nThere are three, and the list is short on purpose. Earlier designs also\ntreated recency and explicit importance as channels while applying them\nagain as post-fusion modifiers, which counted the same signal twice. Notes\nand page nodes were channels too, although they live in the same projection\nindex as everything else, so querying them separately split one population\ninto several and left the redundancy penalty reasoning across all of them.\nBoth are now expressed as modifiers and document-type filters instead.",
-          "oneOf": [
-            {
-              "const": "lexical_segmented",
-              "description": "BM25 over segmented text. Word-level recall in any language.",
-              "type": "string"
-            },
-            {
-              "const": "lexical_ngram",
-              "description": "BM25 over character n-grams. Substrings that segmentation destroys:\npaths, error codes, identifiers.",
-              "type": "string"
-            },
-            {
-              "const": "vector",
-              "description": "Approximate nearest neighbours over dense embeddings.",
-              "type": "string"
-            },
-            {
-              "const": "graph",
-              "description": "Expansion through the relationship graph, which lives in PostgreSQL and\nis therefore invisible to the projection index.",
-              "type": "string"
-            }
-          ]
-        },
-        "Derivation": {
-          "description": "How an edge came to exist.\n\nRecorded rather than inferred, because it is the difference between a claim\na caller made and one the engine guessed at, and a result explaining itself\nshould be able to say which.",
-          "oneOf": [
-            {
-              "const": "explicit",
-              "description": "Asserted directly through the CLI or API.",
-              "type": "string"
-            },
-            {
-              "const": "deterministic",
-              "description": "Derived by a rule with no model in the path.",
-              "type": "string"
-            },
-            {
-              "const": "model",
-              "description": "Extracted by a local model.",
-              "type": "string"
-            },
-            {
-              "const": "imported",
-              "description": "Carried in from another system.",
-              "type": "string"
-            }
-          ]
-        },
-        "EdgeKind": {
-          "description": "What one topic asserts about another.\n\nA closed set rather than free strings, for the same reason the post-fusion\nmodifiers are: a typo in an edge type would otherwise become a silent\nsecond kind that nothing traverses and nothing reports.",
-          "oneOf": [
-            {
-              "enum": [
-                "supports",
-                "contradicts",
-                "supersedes",
-                "related_to",
-                "part_of",
-                "derived_from",
-                "same_as",
-                "depends_on"
-              ],
-              "type": "string"
-            },
-            {
-              "const": "mentions",
-              "description": "One topic's content names another.",
-              "type": "string"
-            }
-          ]
-        },
-        "Hit": {
-          "properties": {
-            "content": {
-              "type": "string"
-            },
-            "parent": {
-              "description": "For a section of a file, the section it sits under, by name: what to\n`pamin read` when the hit depends on the heading above it. Absent for a\nmemory that sits under nothing.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "recorded_at": {
-              "description": "When this state was recorded, RFC 3339.\n\nRanking says how well a memory matches, not how current it is, and an\nagent assembling context needs both. Carried here so judging staleness\ndoes not cost a `read` per hit.",
-              "type": "string"
-            },
-            "score": {
-              "format": "float",
-              "type": "number"
-            },
-            "span": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Span"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "For a memory the index cut into spans, which of them `content` is: the\nspan the search matched best and what fits a budget of about 600 tokens\naround it, nearer neighbours first. Absent for a memory\nof one span, whose `content` is all of it. `pamin read --span` reads\nmore of the memory around it."
-            },
-            "topic": {
-              "description": "What to pass to `pamin read` to see this topic's other versions.\n\nThe name, and not the state's identifier. Search ranks topics and\nreturns the current state of each, and no command anywhere takes a\nstate id as an argument -- so one on every hit was two hundred and\neighty tokens of a context window that nothing could spend.",
-              "type": "string"
-            },
-            "valid_from": {
-              "description": "When the claim starts holding, RFC 3339, absent when open.\n\nThe other half of what `recorded_at` is here for, and the half that\nanswers the question actually asked of a memory: not when we were told\na thing, but when it was true. The two disagree whenever a source is\nbackdated, which is every import that carries `--valid-from`, and an\nagent handed only the recording time reads the import order instead of\nthe timeline.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "valid_to": {
-              "description": "When it stops holding, RFC 3339, absent when open.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "version": {
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "why": {
-              "description": "The rank this result held in each channel it appeared in, and every\nmodifier applied afterwards. An agent can audit its own retrieval from\nthis without trusting the ranking.",
-              "items": {
-                "$ref": "#/$defs/Trace"
-              },
-              "type": "array"
-            }
+    {
+      "description": "Read one topic: its current state, an earlier version, or some of the spans\nof a long memory around a search hit.",
+      "feature": "core",
+      "hints": null,
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "around": {
+            "default": 0,
+            "description": "With `--span`, this many spans either side as well.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
           },
-          "required": [
-            "topic",
-            "version",
-            "content",
-            "score",
-            "why",
-            "recorded_at"
-          ],
-          "type": "object"
-        },
-        "Span": {
-          "description": "Where in a memory a span, or a run of them, lies.",
-          "properties": {
-            "end": {
-              "format": "uint",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "header": {
-              "description": "The memory's name, and the heading and turn the run continues -- what\nthe run lost by being cut out of it.",
-              "type": "string"
-            },
-            "of": {
-              "description": "How many spans the memory is cut into.",
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "ordinal": {
-              "description": "The span asked about, from 0.",
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "start": {
-              "description": "The run's bytes in the memory's content.",
-              "format": "uint",
-              "minimum": 0,
-              "type": "integer"
-            }
+          "span": {
+            "default": null,
+            "description": "Read one span of a memory the index cut into spans, from 0, rather\nthan all of it -- what `pamin search` prints as `--span` on a hit.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
-          "required": [
-            "ordinal",
-            "of",
-            "header",
-            "start",
-            "end"
-          ],
-          "type": "object"
-        },
-        "Trace": {
-          "description": "One entry of the trace, as a caller sees it.\n\n[`Why`] also carries `score`, `weight` and `contribution`, and `docs/cli.md`\nprints the last two as things the reader works out: weight is a constant per\nchannel, and contribution is `weight / (10 + rank)`. Ten hits of them cost\nabout seven hundred tokens of somebody's context window to restate what they\nalready know, so the command layer leaves them out.\n\n`score` is left out for a different reason. It is the channel's own quantity\nin the channel's own units, so a reader comparing a BM25 score against a\nvector similarity would be comparing nothing. Fusion reads it to judge how\nconfident a channel is *against that channel's other candidates*, and that\njudgement already reaches the caller as the rank the fused list gives.\n\nA separate type rather than `#[serde(skip)]` on the core one. Skipping\nwould make the field deserialize as zero on the far side of the socket,\nand a number that is quietly wrong is a worse price than the tokens.",
-          "oneOf": [
-            {
-              "properties": {
-                "channel": {
-                  "$ref": "#/$defs/Channel"
-                },
-                "kind": {
-                  "const": "channel",
-                  "type": "string"
-                },
-                "rank": {
-                  "format": "uint32",
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "kind",
-                "channel",
-                "rank"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "asserted_from": {
-                  "type": "string"
-                },
-                "asserted_to": {
-                  "type": "string"
-                },
-                "derivation": {
-                  "$ref": "#/$defs/Derivation"
-                },
-                "edge": {
-                  "$ref": "#/$defs/EdgeKind"
-                },
-                "from": {
-                  "type": "string"
-                },
-                "hops": {
-                  "format": "uint8",
-                  "maximum": 255,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "kind": {
-                  "const": "path",
-                  "type": "string"
-                },
-                "via": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "from",
-                "via",
-                "hops",
-                "asserted_from",
-                "asserted_to",
-                "edge",
-                "derivation"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "The cross-encoder scored this result, and its position blends that\nscore with fusion's.\n\nCarried without its score, for the reason the channel score is left out\nabove and one more. A cross-encoder's logit is calibrated against\nnothing, so it is comparable within one shortlist and meaningless\nbetween two -- and a number on the wire invites exactly the comparison\nit cannot support. What a reader can act on is the *fact*: a result\ncarrying this entry was scored by the model, whatever channel found\nit, and one without it holds the place fusion gave it: either fusion\nreturned fewer than two candidates, so nothing was reranked, or it sat\nbelow the reranker's head and was not among the strongest finds only\nthe graph made. That distinction costs about four tokens and is the\ndifference between auditing a ranking and guessing at it.",
-              "properties": {
-                "kind": {
-                  "const": "reranked",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind"
-              ],
-              "type": "object"
-            }
-          ]
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "hits": {
-          "items": {
-            "$ref": "#/$defs/Hit"
-          },
-          "type": "array"
-        },
-        "query": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "query",
-        "hits"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "description": "Read one topic: its current state, an earlier version, or some of the spans\nof a long memory around a search hit.",
-    "feature": "core",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "around": {
-          "default": 0,
-          "description": "With `--span`, this many spans either side as well.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "span": {
-          "default": null,
-          "description": "Read one span of a memory the index cut into spans, from 0, rather\nthan all of it -- what `pamin search` prints as `--span` on a hit.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "topic": {
-          "description": "The topic to read.",
-          "type": "string"
-        },
-        "version_offset": {
-          "default": 0,
-          "description": "How many versions back from the current one. Zero is current.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "topic"
-      ],
-      "type": "object"
-    },
-    "name": "memory_read",
-    "output": {
-      "$defs": {
-        "Span": {
-          "description": "Where in a memory a span, or a run of them, lies.",
-          "properties": {
-            "end": {
-              "format": "uint",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "header": {
-              "description": "The memory's name, and the heading and turn the run continues -- what\nthe run lost by being cut out of it.",
-              "type": "string"
-            },
-            "of": {
-              "description": "How many spans the memory is cut into.",
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "ordinal": {
-              "description": "The span asked about, from 0.",
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "start": {
-              "description": "The run's bytes in the memory's content.",
-              "format": "uint",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "ordinal",
-            "of",
-            "header",
-            "start",
-            "end"
-          ],
-          "type": "object"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "actual_version_offset": {
-          "description": "How far back the read actually reached, which differs from the request\nwhen it ran past the oldest surviving version.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "available_versions": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "content": {
-          "type": "string"
-        },
-        "is_current": {
-          "description": "Whether this is the current state.",
-          "type": "boolean"
-        },
-        "latest_version": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "observed_at": {
-          "description": "When the source claims the fact was true, RFC 3339.\n\nThe other timeline. Equal to `recorded_at` unless a writer stated\notherwise, and the pair is what keeps \"when we believed it\" separate\nfrom \"when it held\" -- see Two kinds of time in docs/cli.md.",
-          "type": "string"
-        },
-        "oldest_version": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "recorded_at": {
-          "description": "When this version was recorded, RFC 3339.\n\nComparing it across versions is the only way to answer \"when did this\nchange\", which the ledger has always known and no read surface said.",
-          "type": "string"
-        },
-        "source_span": {
-          "description": "The byte range in the source this state was derived from.\n\nMoved here from `pamin search`, which put one on every hit. Ten of them\ncost a caller two hundred and eighty tokens to carry an identifier no\ncommand accepts -- and `read` did not carry it at all, so the claim\nthat every state traces back to bytes in a source had no surface on the\ncommand line. One per read is where it is affordable and where somebody\nauditing a single claim is already looking.",
-          "type": "string"
-        },
-        "span": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Span"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "With `--span`, which spans `content` is. `content` is then those spans\nalone."
-        },
-        "topic": {
-          "type": "string"
-        },
-        "valid_from": {
-          "description": "The asserted truth interval. Both open unless a writer bounded them.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "valid_to": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "version": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "topic",
-        "version",
-        "content",
-        "is_current",
-        "actual_version_offset",
-        "oldest_version",
-        "latest_version",
-        "available_versions",
-        "recorded_at",
-        "observed_at",
-        "source_span"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "description": "Find an exact string in everything ever written, including writes the\nfilter held back from memory. No ranking and no model.",
-    "feature": "core",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "ignore_case": {
-          "default": false,
-          "description": "Ignore case.",
-          "type": "boolean"
-        },
-        "limit": {
-          "default": 20,
-          "description": "How many matches to return.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "literal": {
-          "description": "The exact string to find. Not a pattern.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "literal"
-      ],
-      "type": "object"
-    },
-    "name": "memory_grep",
-    "output": {
-      "$defs": {
-        "Match": {
-          "properties": {
-            "excerpt": {
-              "description": "The match with surrounding text, for reading rather than for parsing.",
-              "type": "string"
-            },
-            "filter_decision": {
-              "description": "`promoted` or `filtered`. Filtered evidence is reachable here and\nnowhere else.",
-              "type": "string"
-            },
-            "filter_reason": {
-              "description": "Why the filter decided as it did.",
-              "type": "string"
-            },
-            "source": {
-              "description": "Where the evidence came from.",
-              "type": "string"
-            },
-            "source_version": {
-              "type": "string"
-            },
-            "version": {
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "source",
-            "source_version",
-            "version",
-            "filter_decision",
-            "filter_reason",
-            "excerpt"
-          ],
-          "type": "object"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "literal": {
-          "type": "string"
-        },
-        "matches": {
-          "items": {
-            "$ref": "#/$defs/Match"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "literal",
-        "matches"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "description": "List the topics connected to one through the relationship graph, without\nranking them.",
-    "feature": "core",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "at": {
-          "description": "Only follow edges asserted to hold at this RFC 3339 instant.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "depth": {
-          "default": 2,
-          "description": "How many edges to traverse.",
-          "format": "uint8",
-          "maximum": 4,
-          "minimum": 0,
-          "type": "integer"
-        },
-        "kinds": {
-          "default": [],
-          "description": "Restrict traversal to one relationship kind. Repeatable.",
-          "items": {
+          "topic": {
+            "description": "The topic to read.",
             "type": "string"
           },
-          "type": "array"
-        },
-        "topic": {
-          "description": "The topic to walk out from.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "topic"
-      ],
-      "type": "object"
-    },
-    "name": "memory_neighbors",
-    "output": {
-      "$defs": {
-        "Neighbor": {
-          "properties": {
-            "asserted_from": {
-              "description": "The end the final edge was asserted from, and the end it points at.\n\nThe walk is undirected, so `via` says how this topic was reached and\nnot what was claimed. For `depends_on`, `supersedes`, `contradicts`,\n`derived_from` and `part_of` the direction is the claim, and reading it\noff `via` gives the opposite answer depending on which end the walk\nstarted from. These two say it outright.",
-              "type": "string"
-            },
-            "asserted_to": {
-              "type": "string"
-            },
-            "confidence": {
-              "format": "float",
-              "type": "number"
-            },
-            "derivation": {
-              "description": "Whether the edge was asserted by a caller or derived by the engine.",
-              "type": "string"
-            },
-            "edge": {
-              "type": "string"
-            },
-            "hops": {
-              "format": "uint8",
-              "maximum": 255,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "topic": {
-              "type": "string"
-            },
-            "via": {
-              "description": "The topic on the other end of the final edge.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "topic",
-            "hops",
-            "via",
-            "edge",
-            "asserted_from",
-            "asserted_to",
-            "derivation",
-            "confidence"
-          ],
-          "type": "object"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "depth": {
-          "format": "uint8",
-          "maximum": 255,
-          "minimum": 0,
-          "type": "integer"
-        },
-        "neighbors": {
-          "items": {
-            "$ref": "#/$defs/Neighbor"
-          },
-          "type": "array"
-        },
-        "topic": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "topic",
-        "depth",
-        "neighbors"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "description": "Find the topics that already exist, by name and by content, before writing\nto a new one. With no query, lists the most recent.",
-    "feature": "core",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "limit": {
-          "default": 20,
-          "description": "How many to return.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "query": {
-          "description": "What the topic might be about, or be called. Omit to list recent ones.\n\nAnswered twice over. The content route is forgiving and is what finds a\ntopic from a half-remembered description; the name route is exact on\nthe segmenter's tokens, so `deployment pipeline` finds\n`deployment_pipeline` and `deploy pipeline` does not, and it is there\nfor the topic nobody has written enough about for content to reach.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
-    },
-    "name": "memory_topics",
-    "output": {
-      "$defs": {
-        "Found": {
-          "properties": {
-            "how": {
-              "description": "`name` when the name index matched, `content` when a memory under it\ndid, `both` when each did. Which one it was is the difference between\n\"this topic is about that\" and \"this topic is called that\".",
-              "type": "string"
-            },
-            "topic": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "topic",
-            "how"
-          ],
-          "type": "object"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "query": {
-          "description": "Absent when nothing was asked for, so the list is simply what is here.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "topics": {
-          "items": {
-            "$ref": "#/$defs/Found"
-          },
-          "type": "array"
-        },
-        "total": {
-          "description": "How many topics the project holds, which is the context the page needs:\ntwenty of twenty-two is the whole story, twenty of nine thousand is a\nsample and the caller should narrow instead.",
-          "format": "uint64",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "total",
-        "topics"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "description": "Record a memory under a topic. Writing to an existing topic adds a version;\ncontent too short to carry a durable claim is kept as evidence only.",
-    "feature": "core",
-    "input": {
-      "$defs": {
-        "Flags": {
-          "properties": {
-            "valid_from": {
-              "description": "When the claim starts holding, as RFC 3339. Open by default.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "valid_to": {
-              "description": "When it stops holding, as RFC 3339. Open by default.",
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "type": "object"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "content": {
-          "description": "The memory content. The command line reads standard input when it is\nomitted.",
-          "type": "string"
-        },
-        "defer": {
-          "default": false,
-          "description": "Record the memory without waiting for the index to catch up.\n\nThe work is queued rather than skipped. The server runs it once no\nrequest is being answered, and `pamin cascade drain` runs it at once.",
-          "type": "boolean"
-        },
-        "topic": {
-          "description": "The topic this memory belongs to.",
-          "type": "string"
-        },
-        "validity": {
-          "$ref": "#/$defs/Flags",
-          "default": {
-            "valid_from": null,
-            "valid_to": null
+          "version_offset": {
+            "default": 0,
+            "description": "How many versions back from the current one. Zero is current.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
           }
-        }
+        },
+        "required": [
+          "topic"
+        ],
+        "type": "object"
       },
-      "required": [
-        "topic",
-        "content"
-      ],
-      "type": "object"
-    },
-    "name": "memory_write",
-    "output": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "cascade": {
-          "description": "Whether the projection caught up before this command returned, or the\nwork is still owed. Either way the memory is recorded.",
-          "type": "string"
-        },
-        "cascade_lagging": {
-          "description": "Set when the projection has fallen far enough behind to say so. The\nqueue is unbounded on purpose -- a write must not fail because the\nindex is slow -- but a backlog nobody reports looks like searches\nquietly missing the newest memories.",
-          "type": "boolean"
-        },
-        "promoted": {
-          "type": "boolean"
-        },
-        "reason": {
-          "description": "Why the filter decided as it did, promoted or not.",
-          "type": "string"
-        },
-        "source_version": {
-          "description": "Always set: evidence is recorded whatever the filter decides.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        },
-        "topic": {
-          "type": "string"
-        },
-        "valid_from": {
-          "description": "The truth interval this state was asserted for, if one was given.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "valid_to": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "version": {
-          "description": "Absent when the filter held the content in the evidence layer.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "topic",
-        "promoted",
-        "reason",
-        "source_version",
-        "cascade",
-        "cascade_lagging"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "description": "Assert a relationship between two existing topics that their text does not\nstate.",
-    "feature": "core",
-    "input": {
-      "$defs": {
-        "Flags": {
-          "properties": {
-            "valid_from": {
-              "description": "When the claim starts holding, as RFC 3339. Open by default.",
-              "type": [
-                "string",
-                "null"
-              ]
+      "name": "memory_read",
+      "output": {
+        "$defs": {
+          "Span": {
+            "description": "Where in a memory a span, or a run of them, lies.",
+            "properties": {
+              "end": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "header": {
+                "description": "The memory's name, and the heading and turn the run continues -- what\nthe run lost by being cut out of it.",
+                "type": "string"
+              },
+              "of": {
+                "description": "How many spans the memory is cut into.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "ordinal": {
+                "description": "The span asked about, from 0.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "start": {
+                "description": "The run's bytes in the memory's content.",
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
             },
-            "valid_to": {
-              "description": "When it stops holding, as RFC 3339. Open by default.",
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "type": "object"
-        }
-      },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "from": {
-          "description": "The topic the relationship starts from.",
-          "type": "string"
-        },
-        "kind": {
-          "default": "related_to",
-          "description": "What the relationship is: mentions, supports, contradicts, supersedes,\nrelated_to, part_of, derived_from, same_as, or depends_on.",
-          "type": "string"
-        },
-        "to": {
-          "description": "The topic it points at.",
-          "type": "string"
-        },
-        "validity": {
-          "$ref": "#/$defs/Flags",
-          "default": {
-            "valid_from": null,
-            "valid_to": null
+            "required": [
+              "ordinal",
+              "of",
+              "header",
+              "start",
+              "end"
+            ],
+            "type": "object"
           }
-        }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "actual_version_offset": {
+            "description": "How far back the read actually reached, which differs from the request\nwhen it ran past the oldest surviving version.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "available_versions": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "content": {
+            "type": "string"
+          },
+          "is_current": {
+            "description": "Whether this is the current state.",
+            "type": "boolean"
+          },
+          "latest_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "description": "When the source claims the fact was true, RFC 3339.\n\nThe other timeline. Equal to `recorded_at` unless a writer stated\notherwise, and the pair is what keeps \"when we believed it\" separate\nfrom \"when it held\" -- see Two kinds of time in docs/cli.md.",
+            "type": "string"
+          },
+          "oldest_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "recorded_at": {
+            "description": "When this version was recorded, RFC 3339.\n\nComparing it across versions is the only way to answer \"when did this\nchange\", which the ledger has always known and no read surface said.",
+            "type": "string"
+          },
+          "source_span": {
+            "description": "The byte range in the source this state was derived from.\n\nMoved here from `pamin search`, which put one on every hit. Ten of them\ncost a caller two hundred and eighty tokens to carry an identifier no\ncommand accepts -- and `read` did not carry it at all, so the claim\nthat every state traces back to bytes in a source had no surface on the\ncommand line. One per read is where it is affordable and where somebody\nauditing a single claim is already looking.",
+            "type": "string"
+          },
+          "span": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Span"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With `--span`, which spans `content` is. `content` is then those spans\nalone."
+          },
+          "topic": {
+            "type": "string"
+          },
+          "valid_from": {
+            "description": "The asserted truth interval. Both open unless a writer bounded them.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "topic",
+          "version",
+          "content",
+          "is_current",
+          "actual_version_offset",
+          "oldest_version",
+          "latest_version",
+          "available_versions",
+          "recorded_at",
+          "observed_at",
+          "source_span"
+        ],
+        "type": "object"
       },
-      "required": [
-        "from",
-        "to"
-      ],
-      "type": "object"
+      "task": false,
+      "ui": null
     },
-    "name": "memory_link",
-    "output": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "appended": {
-          "description": "False when an identical claim was already live, in which case nothing\nwas written.",
-          "type": "boolean"
+    {
+      "description": "Find an exact string in everything ever written, including writes the\nfilter held back from memory. No ranking and no model.",
+      "feature": "core",
+      "hints": null,
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "ignore_case": {
+            "default": false,
+            "description": "Ignore case.",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 20,
+            "description": "How many matches to return.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "literal": {
+            "description": "The exact string to find. Not a pattern.",
+            "type": "string"
+          }
         },
-        "from": {
-          "type": "string"
-        },
-        "kind": {
-          "type": "string"
-        },
-        "to": {
-          "type": "string"
-        },
-        "valid_from": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "valid_to": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "version": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        }
+        "required": [
+          "literal"
+        ],
+        "type": "object"
       },
-      "required": [
-        "from",
-        "to",
-        "kind",
-        "version",
-        "appended"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "description": "Retract a relationship, keeping the record that it was claimed.",
-    "feature": "core",
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "from": {
-          "description": "The topic the relationship starts from.",
-          "type": "string"
+      "name": "memory_grep",
+      "output": {
+        "$defs": {
+          "Match": {
+            "properties": {
+              "excerpt": {
+                "description": "The match with surrounding text, for reading rather than for parsing.",
+                "type": "string"
+              },
+              "filter_decision": {
+                "description": "`promoted` or `filtered`. Filtered evidence is reachable here and\nnowhere else.",
+                "type": "string"
+              },
+              "filter_reason": {
+                "description": "Why the filter decided as it did.",
+                "type": "string"
+              },
+              "source": {
+                "description": "Where the evidence came from.",
+                "type": "string"
+              },
+              "source_version": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "source",
+              "source_version",
+              "version",
+              "filter_decision",
+              "filter_reason",
+              "excerpt"
+            ],
+            "type": "object"
+          }
         },
-        "kind": {
-          "default": "related_to",
-          "description": "Which relationship to retract.",
-          "type": "string"
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "literal": {
+            "type": "string"
+          },
+          "matches": {
+            "items": {
+              "$ref": "#/$defs/Match"
+            },
+            "type": "array"
+          }
         },
-        "reason": {
-          "default": "closed",
-          "description": "Why it is being retracted, which decides what history keeps.\n\n`closed` means the relationship ended: it held until now, and queries\nabout earlier instants still find it. `deleted` means the claim was\nwrong: it never held, and no query finds it at any instant.",
-          "type": "string"
-        },
-        "to": {
-          "description": "The topic it points at.",
-          "type": "string"
-        }
+        "required": [
+          "literal",
+          "matches"
+        ],
+        "type": "object"
       },
-      "required": [
-        "from",
-        "to"
-      ],
-      "type": "object"
+      "task": false,
+      "ui": null
     },
-    "name": "memory_unlink",
-    "output": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "properties": {
-        "closed": {
-          "description": "False when nothing was open to retract.",
-          "type": "boolean"
+    {
+      "description": "List the topics connected to one through the relationship graph, without\nranking them.",
+      "feature": "core",
+      "hints": null,
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "at": {
+            "description": "Only follow edges asserted to hold at this RFC 3339 instant.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "depth": {
+            "default": 2,
+            "description": "How many edges to traverse.",
+            "format": "uint8",
+            "maximum": 4,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kinds": {
+            "default": [],
+            "description": "Restrict traversal to one relationship kind. Repeatable.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "topic": {
+            "description": "The topic to walk out from.",
+            "type": "string"
+          }
         },
-        "from": {
-          "type": "string"
-        },
-        "kind": {
-          "type": "string"
-        },
-        "reason": {
-          "type": "string"
-        },
-        "to": {
-          "type": "string"
-        }
+        "required": [
+          "topic"
+        ],
+        "type": "object"
       },
-      "required": [
-        "from",
-        "to",
-        "kind",
-        "reason",
-        "closed"
-      ],
-      "type": "object"
+      "name": "memory_neighbors",
+      "output": {
+        "$defs": {
+          "Neighbor": {
+            "properties": {
+              "asserted_from": {
+                "description": "The end the final edge was asserted from, and the end it points at.\n\nThe walk is undirected, so `via` says how this topic was reached and\nnot what was claimed. For `depends_on`, `supersedes`, `contradicts`,\n`derived_from` and `part_of` the direction is the claim, and reading it\noff `via` gives the opposite answer depending on which end the walk\nstarted from. These two say it outright.",
+                "type": "string"
+              },
+              "asserted_to": {
+                "type": "string"
+              },
+              "confidence": {
+                "format": "float",
+                "type": "number"
+              },
+              "derivation": {
+                "description": "Whether the edge was asserted by a caller or derived by the engine.",
+                "type": "string"
+              },
+              "edge": {
+                "type": "string"
+              },
+              "hops": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "topic": {
+                "type": "string"
+              },
+              "via": {
+                "description": "The topic on the other end of the final edge.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "topic",
+              "hops",
+              "via",
+              "edge",
+              "asserted_from",
+              "asserted_to",
+              "derivation",
+              "confidence"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "depth": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "neighbors": {
+            "items": {
+              "$ref": "#/$defs/Neighbor"
+            },
+            "type": "array"
+          },
+          "topic": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic",
+          "depth",
+          "neighbors"
+        ],
+        "type": "object"
+      },
+      "task": false,
+      "ui": null
+    },
+    {
+      "description": "Find the topics that already exist, by name and by content, before writing\nto a new one. With no query, lists the most recent.",
+      "feature": "core",
+      "hints": null,
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "limit": {
+            "default": 20,
+            "description": "How many to return.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "query": {
+            "description": "What the topic might be about, or be called. Omit to list recent ones.\n\nAnswered twice over. The content route is forgiving and is what finds a\ntopic from a half-remembered description; the name route is exact on\nthe segmenter's tokens, so `deployment pipeline` finds\n`deployment_pipeline` and `deploy pipeline` does not, and it is there\nfor the topic nobody has written enough about for content to reach.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "memory_topics",
+      "output": {
+        "$defs": {
+          "Found": {
+            "properties": {
+              "how": {
+                "description": "`name` when the name index matched, `content` when a memory under it\ndid, `both` when each did. Which one it was is the difference between\n\"this topic is about that\" and \"this topic is called that\".",
+                "type": "string"
+              },
+              "topic": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "topic",
+              "how"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "query": {
+            "description": "Absent when nothing was asked for, so the list is simply what is here.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "topics": {
+            "items": {
+              "$ref": "#/$defs/Found"
+            },
+            "type": "array"
+          },
+          "total": {
+            "description": "How many topics the project holds, which is the context the page needs:\ntwenty of twenty-two is the whole story, twenty of nine thousand is a\nsample and the caller should narrow instead.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "topics"
+        ],
+        "type": "object"
+      },
+      "task": false,
+      "ui": null
+    },
+    {
+      "description": "Record a memory under a topic. Writing to an existing topic adds a version;\ncontent too short to carry a durable claim is kept as evidence only.",
+      "feature": "core",
+      "hints": null,
+      "input": {
+        "$defs": {
+          "Flags": {
+            "properties": {
+              "valid_from": {
+                "description": "When the claim starts holding, as RFC 3339. Open by default.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "valid_to": {
+                "description": "When it stops holding, as RFC 3339. Open by default.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "content": {
+            "description": "The memory content. The command line reads standard input when it is\nomitted.",
+            "type": "string"
+          },
+          "defer": {
+            "default": false,
+            "description": "Record the memory without waiting for the index to catch up.\n\nThe work is queued rather than skipped. The server runs it once no\nrequest is being answered, and `pamin cascade drain` runs it at once.",
+            "type": "boolean"
+          },
+          "topic": {
+            "description": "The topic this memory belongs to.",
+            "type": "string"
+          },
+          "validity": {
+            "$ref": "#/$defs/Flags",
+            "default": {
+              "valid_from": null,
+              "valid_to": null
+            }
+          }
+        },
+        "required": [
+          "topic",
+          "content"
+        ],
+        "type": "object"
+      },
+      "name": "memory_write",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "cascade": {
+            "description": "Whether the projection caught up before this command returned, or the\nwork is still owed. Either way the memory is recorded.",
+            "type": "string"
+          },
+          "cascade_lagging": {
+            "description": "Set when the projection has fallen far enough behind to say so. The\nqueue is unbounded on purpose -- a write must not fail because the\nindex is slow -- but a backlog nobody reports looks like searches\nquietly missing the newest memories.",
+            "type": "boolean"
+          },
+          "promoted": {
+            "type": "boolean"
+          },
+          "reason": {
+            "description": "Why the filter decided as it did, promoted or not.",
+            "type": "string"
+          },
+          "source_version": {
+            "description": "Always set: evidence is recorded whatever the filter decides.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "topic": {
+            "type": "string"
+          },
+          "valid_from": {
+            "description": "The truth interval this state was asserted for, if one was given.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "description": "Absent when the filter held the content in the evidence layer.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "topic",
+          "promoted",
+          "reason",
+          "source_version",
+          "cascade",
+          "cascade_lagging"
+        ],
+        "type": "object"
+      },
+      "task": false,
+      "ui": null
+    },
+    {
+      "description": "Assert a relationship between two existing topics that their text does not\nstate.",
+      "feature": "core",
+      "hints": null,
+      "input": {
+        "$defs": {
+          "Flags": {
+            "properties": {
+              "valid_from": {
+                "description": "When the claim starts holding, as RFC 3339. Open by default.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "valid_to": {
+                "description": "When it stops holding, as RFC 3339. Open by default.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "from": {
+            "description": "The topic the relationship starts from.",
+            "type": "string"
+          },
+          "kind": {
+            "default": "related_to",
+            "description": "What the relationship is: mentions, supports, contradicts, supersedes,\nrelated_to, part_of, derived_from, same_as, or depends_on.",
+            "type": "string"
+          },
+          "to": {
+            "description": "The topic it points at.",
+            "type": "string"
+          },
+          "validity": {
+            "$ref": "#/$defs/Flags",
+            "default": {
+              "valid_from": null,
+              "valid_to": null
+            }
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
+      "name": "memory_link",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "appended": {
+            "description": "False when an identical claim was already live, in which case nothing\nwas written.",
+            "type": "boolean"
+          },
+          "from": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "valid_from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "kind",
+          "version",
+          "appended"
+        ],
+        "type": "object"
+      },
+      "task": false,
+      "ui": null
+    },
+    {
+      "description": "Retract a relationship, keeping the record that it was claimed.",
+      "feature": "core",
+      "hints": null,
+      "input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "from": {
+            "description": "The topic the relationship starts from.",
+            "type": "string"
+          },
+          "kind": {
+            "default": "related_to",
+            "description": "Which relationship to retract.",
+            "type": "string"
+          },
+          "reason": {
+            "default": "closed",
+            "description": "Why it is being retracted, which decides what history keeps.\n\n`closed` means the relationship ended: it held until now, and queries\nabout earlier instants still find it. `deleted` means the claim was\nwrong: it never held, and no query finds it at any instant.",
+            "type": "string"
+          },
+          "to": {
+            "description": "The topic it points at.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
+      "name": "memory_unlink",
+      "output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "closed": {
+            "description": "False when nothing was open to retract.",
+            "type": "boolean"
+          },
+          "from": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "kind",
+          "reason",
+          "closed"
+        ],
+        "type": "object"
+      },
+      "task": false,
+      "ui": null
     }
-  }
-]
+  ]
+}
