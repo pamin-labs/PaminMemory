@@ -28,7 +28,7 @@ use tokenizers::{EncodeInput, Encoding};
 use crate::error::{IndexError, Result};
 use crate::hub::Repository;
 use crate::tokenizer::Tokenizer;
-use crate::word_embeddings::WordTable;
+use pamin_runtime::prepared::word_embeddings::WordTable;
 
 pub(crate) struct Encoder {
     /// The clean mappings of [`side_by_side`](Self::side_by_side)'s graph
@@ -37,7 +37,7 @@ pub(crate) struct Encoder {
     /// mapped while the sessions do, so they are never another mapping's
     /// addresses. The first field, so that it is dropped -- and the ranges
     /// unregistered -- before any session is.
-    resident: crate::resident::Resident,
+    resident: pamin_runtime::resident::Resident,
     runtime_plan: crate::inference::RuntimePlan,
     tokenizer: Tokenizer,
     session: Session,
@@ -56,7 +56,7 @@ pub(crate) struct Encoder {
     /// at once.
     side_by_side: Option<(PathBuf, Option<SharedCpuSession>, usize)>,
     /// Whether its graph scores correctly only a pass of one unpadded row (see
-    /// `crate::prepared::is_trimmed`); kept when passes stop running side by
+    /// `pamin_runtime::prepared::is_trimmed`); kept when passes stop running side by
     /// side, since [`session`](Self::session) loaded the same graph.
     one_row: bool,
     /// The most passes [`run_each`](Self::run_each) has had running at once.
@@ -97,7 +97,7 @@ impl Encoder {
         max_length: usize,
         providers: impl Into<crate::inference::Target>,
     ) -> Result<Self> {
-        let session = crate::inference::session(threads, providers, model)?;
+        let session = pamin_runtime::session::session(threads, providers, model)?;
         Self::from_session(session, repository, max_length)
     }
 
@@ -124,7 +124,7 @@ impl Encoder {
             token_type_ids,
             word_embeddings: None,
             side_by_side: None,
-            resident: crate::resident::Resident::default(),
+            resident: pamin_runtime::resident::Resident::default(),
             one_row: false,
             #[cfg(test)]
             most_at_once: 0,
@@ -148,7 +148,7 @@ impl Encoder {
         tokenizer: Tokenizer,
         revision: String,
     ) -> Result<Self> {
-        let (session, mapped) = crate::inference::cpu_session(&model, threads)?;
+        let (session, mapped) = pamin_runtime::session::cpu_session(&model, threads)?;
         let word_embeddings = WordTable::beside(&model)?.map(Arc::new);
         if let Some(table) = &word_embeddings
             && !session
@@ -164,7 +164,7 @@ impl Encoder {
         }
         let mut encoder = Self {
             word_embeddings,
-            one_row: crate::prepared::is_trimmed(&model),
+            one_row: pamin_runtime::prepared::is_trimmed(&model),
             side_by_side: Some((model, None, threads)),
             ..Self::from_parts(session, tokenizer, revision)
         };
@@ -184,12 +184,12 @@ impl Encoder {
                 &"static CoreML reranker currently requires at most 256 tokens",
             ));
         }
-        let path = crate::inference::coreml_source(threads, model)?;
+        let path = pamin_runtime::session::coreml_source(threads, model)?;
         // Validate every independently compiled shape inside `preferred`'s
         // fallback window. A lazy shape failure otherwise breaks later searches
         // after the model has already been accepted as CoreML.
         let (session, short, long) = coreml_buckets(|rows, tokens| {
-            crate::inference::fixed_coreml(threads, || Ok(path.clone()), rows, tokens)
+            pamin_runtime::session::fixed_coreml(threads, || Ok(path.clone()), rows, tokens)
                 .map(|loaded| loaded.0)
         })?;
         let tokenizer = crate::tokenizer::load(repository, max_length)?;
@@ -201,7 +201,7 @@ impl Encoder {
             token_type_ids: false,
             word_embeddings: None,
             side_by_side: None,
-            resident: crate::resident::Resident::default(),
+            resident: pamin_runtime::resident::Resident::default(),
             one_row: false,
             #[cfg(test)]
             most_at_once: 0,
@@ -612,9 +612,9 @@ struct SharedCpuSession(Session);
 
 impl SharedCpuSession {
     /// The session, and the clean mappings of `model`'s directory it
-    /// created; see [`crate::resident::loading`].
+    /// created; see [`pamin_runtime::resident::loading`].
     fn load(model: &std::path::Path) -> Result<(Self, Vec<(usize, usize)>)> {
-        let (session, mapped) = crate::inference::cpu_session(model, 1)?;
+        let (session, mapped) = pamin_runtime::session::cpu_session(model, 1)?;
         cpu_alone(&crate::inference::assigned_providers(&session)?)?;
         Ok((Self(session), mapped))
     }

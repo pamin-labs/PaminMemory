@@ -76,6 +76,21 @@ impl From<pamin_runtime::Error> for IndexError {
     }
 }
 
+/// What a caller's closure handed to the runtime failed with -- a download,
+/// say -- crossing into it. Its class survives where the runtime has one,
+/// and its message always does.
+impl From<IndexError> for pamin_runtime::Error {
+    fn from(error: IndexError) -> Self {
+        match error {
+            IndexError::Incompatible(message) => Self::Incompatible(message),
+            IndexError::Engine(message) => Self::Runtime(message),
+            IndexError::PluginConflict(message) => Self::PluginConflict(message),
+            IndexError::Io(error) => Self::Io(error),
+            other => Self::Runtime(other.to_string()),
+        }
+    }
+}
+
 impl From<zvec_rust::Error> for IndexError {
     fn from(error: zvec_rust::Error) -> Self {
         Self::Engine(error.to_string())
