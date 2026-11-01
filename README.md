@@ -7,7 +7,7 @@ AI agents, coding assistants, research tools, and knowledge-heavy applications.
 
 It is designed to turn durable evidence into versioned knowledge that agents can retrieve through structure, meaning, relationships, and time. Instead of treating memory as a pile of extracted snippets, Påmin Memory keeps the source trail intact, tracks how facts evolve, and explains why each piece of context was selected.
 
-> **Early, and measured.** Retrieval, the version ledger, the relationship graph and the resident server all work and are benchmarked below, and Markdown and text files can be ingested a section at a time. Ingestion of other sources, page trees, curated notes and the MCP surface are not built. See [Scope](#scope).
+> **Early, and measured.** Retrieval, the version ledger, the relationship graph and the resident server all work and are benchmarked below, and Markdown and text files can be ingested a section at a time. Agents reach it through the CLI or as MCP tools over stdio (`pamin mcp`). Ingestion of other sources, page trees and curated notes are not built. See [Scope](#scope).
 
 ## What It Does
 
@@ -183,8 +183,17 @@ Every command, its options, and its JSON shape are in [docs/cli.md](docs/cli.md)
 
 ## Teaching An Agent To Use It
 
-The CLI is the whole interface, so an agent needs to know when reaching for it
-beats answering from what it already has. That judgement ships as a skill:
+An agent reaches memory through the CLI or, in a host that loads tools, as MCP
+tools: `pamin mcp` serves `memory_search`, `memory_write` and the rest over
+stdio, with the same arguments and results as the commands ([CLI
+reference](docs/cli.md#pamin-mcp)). For Claude Code:
+
+```bash
+claude mcp add pamin -- pamin mcp --project my_project
+```
+
+Either way, the agent needs to know when reaching for memory beats answering
+from what it already has. That judgement ships as a skill:
 
 ```bash
 npx skills add pamin-labs/pamin-memory --skill pamin-memory
@@ -197,10 +206,11 @@ before you take it.
 
 The skill is about judgement rather than syntax — which of `search`, `read`,
 `grep` and `neighbors` answers which kind of question, how to read the `why`
-trace on a result, and the traps around the evidence filter. It is the only
-skill this repository publishes. There is a second one for people working on
-Påmin Memory itself, about measurement discipline, and it is marked internal so
-it stays out of the way; `INSTALL_INTERNAL_SKILLS=1` reveals it.
+trace on a result, and the traps around the evidence filter. Its twin,
+`pamin-memory-mcp`, says the same for the MCP tools and names every one of
+them; install it with `--skill pamin-memory-mcp`. There is another for people
+working on Påmin Memory itself, about measurement discipline, and it is marked
+internal so it stays out of the way; `INSTALL_INTERNAL_SKILLS=1` reveals it.
 
 ## Any Language
 
@@ -394,7 +404,7 @@ memory per heading section, leaving size to the index's spans, records only the
 sections that changed when it is run again, and takes a section a file no
 longer has off the retrieval surface. Not built yet: ingestion of code, chat
 logs and other formats, and page trees; curated notes and the session brief;
-passive optimization and forgetting; the MCP surface.
+passive optimization and forgetting. `pamin mcp` serves memory as MCP tools over stdio; MCP over HTTP waits for the hosted service.
 
 ### Known and not done
 
