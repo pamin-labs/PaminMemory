@@ -1,0 +1,65 @@
+---
+source: crates/pamin-contract/tests/schemas.rs
+expression: "schema_for! (write::Written)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Written",
+  "type": "object",
+  "properties": {
+    "cascade": {
+      "description": "Whether the projection caught up before this command returned, or the\nwork is still owed. Either way the memory is recorded.",
+      "type": "string"
+    },
+    "cascade_lagging": {
+      "description": "Set when the projection has fallen far enough behind to say so. The\nqueue is unbounded on purpose -- a write must not fail because the\nindex is slow -- but a backlog nobody reports looks like searches\nquietly missing the newest memories.",
+      "type": "boolean"
+    },
+    "promoted": {
+      "type": "boolean"
+    },
+    "reason": {
+      "description": "Why the filter decided as it did, promoted or not.",
+      "type": "string"
+    },
+    "source_version": {
+      "description": "Always set: evidence is recorded whatever the filter decides.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "topic": {
+      "type": "string"
+    },
+    "valid_from": {
+      "description": "The truth interval this state was asserted for, if one was given.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "valid_to": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "version": {
+      "description": "Absent when the filter held the content in the evidence layer.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "topic",
+    "promoted",
+    "reason",
+    "source_version",
+    "cascade",
+    "cascade_lagging"
+  ]
+}

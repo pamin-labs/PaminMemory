@@ -1,7 +1,7 @@
 //! `pamin unlink` — retract a relationship without erasing that it was claimed.
 
 use anyhow::Result;
-use pamin_client::command::unlink::{Args, Unlinked};
+use pamin_contract::unlink::{Args, Unlinked};
 use pamin_core::TombstoneReason;
 use pamin_store::graph;
 

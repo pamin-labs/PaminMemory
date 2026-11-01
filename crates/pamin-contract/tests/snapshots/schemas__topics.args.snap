@@ -1,0 +1,25 @@
+---
+source: crates/pamin-contract/tests/schemas.rs
+expression: "schema_for! (topics::Args)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Args",
+  "type": "object",
+  "properties": {
+    "limit": {
+      "description": "How many to return.",
+      "type": "integer",
+      "format": "uint32",
+      "default": 20,
+      "minimum": 0
+    },
+    "query": {
+      "description": "What the topic might be about, or be called. Omit to list recent ones.\n\nAnswered twice over. The content route is forgiving and is what finds a\ntopic from a half-remembered description; the name route is exact on\nthe segmenter's tokens, so `deployment pipeline` finds\n`deployment_pipeline` and `deploy pipeline` does not, and it is there\nfor the topic nobody has written enough about for content to reach.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

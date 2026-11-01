@@ -1,8 +1,8 @@
 //! `pamin link` — assert a relationship the text does not state.
 
 use anyhow::{Result, bail};
-use pamin_client::command::link::{Args, Linked};
-use pamin_client::command::validity;
+use pamin_contract::link::{Args, Linked};
+use pamin_contract::validity;
 use pamin_store::graph;
 use pamin_store::graph::EdgeClaim;
 

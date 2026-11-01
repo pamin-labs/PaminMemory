@@ -5,6 +5,7 @@ members = [
     "crates/pamin-store",
     "crates/pamin-index",
     "crates/pamin-engine",
+    "crates/pamin-contract",
     "crates/pamin-client",
     "crates/pamin-cli",
 ]
@@ -18,6 +19,7 @@ repository = "https://github.com/pamin-labs/pamin-memory"
 
 [workspace.dependencies]
 pamin-client = { path = "crates/pamin-client" }
+pamin-contract = { path = "crates/pamin-contract" }
 pamin-core = { path = "crates/pamin-core" }
 pamin-engine = { path = "crates/pamin-engine" }
 pamin-index = { path = "crates/pamin-index" }
@@ -30,6 +32,10 @@ anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
+# JSON Schema 2020-12 for the operation contract, the shape MCP tools are
+# described in. A caret, not a pin, so it unifies with the one pamin-kit uses:
+# the contract's types must implement that crate's trait.
+schemars = "1.2"
 serde_json = { version = "1", features = ["raw_value"] }
 thiserror = "2"
 time = { version = "0.3", features = ["serde-well-known"] }
@@ -117,6 +123,8 @@ sqlx = { version = "0.9", default-features = false, features = [
 whatlang = "0.16"
 zvec-rust = "0.7.2"
 tempfile = "3"
+# Test-only: the operation contract's JSON Schema snapshots.
+insta = { version = "1.49", features = ["json"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v7", "serde"] }

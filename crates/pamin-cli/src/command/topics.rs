@@ -14,7 +14,7 @@
 //! only one route cannot tell an absence from a miss.
 
 use anyhow::Result;
-use pamin_client::command::topics::{Args, Found, Topics};
+use pamin_contract::topics::{Args, Found, Topics};
 use pamin_index::VectorIndex;
 
 use crate::session::Session;

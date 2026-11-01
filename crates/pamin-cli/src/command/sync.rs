@@ -1,9 +1,9 @@
 //! `pamin sync` and `pamin unsync` — the paths the server keeps in sync.
 
 use anyhow::Result;
-use pamin_client::command::sync::{Synced, SyncedPath};
-use pamin_client::command::unsync::{Args as UnsyncArgs, Unsynced};
-use pamin_client::command::validity;
+use pamin_contract::sync::{Synced, SyncedPath};
+use pamin_contract::unsync::{Args as UnsyncArgs, Unsynced};
+use pamin_contract::validity;
 
 use crate::session::Session;
 

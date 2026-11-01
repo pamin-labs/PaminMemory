@@ -5,7 +5,7 @@
 //! from the first release so the guarantee is executable rather than stated.
 
 use anyhow::Result;
-use pamin_client::command::reindex::{Args, Reindexed};
+use pamin_contract::reindex::{Args, Reindexed};
 use pamin_index::VectorIndex;
 
 use crate::session::Session;

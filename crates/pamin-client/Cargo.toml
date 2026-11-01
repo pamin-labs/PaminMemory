@@ -14,6 +14,7 @@ repository.workspace = true
 # TLS and the database driver. `tests/light.rs` checks that.
 [dependencies]
 pamin-core = { workspace = true }
+pamin-contract = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
