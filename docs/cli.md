@@ -835,7 +835,9 @@ followed.
 **A search does not wait for the watcher.** Before it answers, it compares the
 files its hits were cut from with their records, a stat each, and ingests any
 that changed under a synced path, then searches again if that or the watcher
-changed what pamin holds while it ranked. A search issued in the second after
+changed what pamin holds while it ranked. A hit from a file with no record —
+one an ingest may be rewriting at that moment — makes the search wait behind
+that ingest the same way before it compares. A search issued in the second after
 an edit, or while a server that was stopped is still catching up, answers with
 what the file says now. Two limits: a file that is gone is left to the watcher,
 which holds a deletion a second in case it is half of a move; and behind an

@@ -508,7 +508,7 @@ pub(crate) struct Stat {
 }
 
 impl Stat {
-    fn recorded(&self, file: &File, content_hash: String) -> FileRecord {
+    pub(crate) fn recorded(&self, file: &File, content_hash: String) -> FileRecord {
         FileRecord {
             root: file.root.clone(),
             file: file.name.clone(),
