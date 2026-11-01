@@ -10,7 +10,12 @@ expression: tools
       "app_only": false,
       "description": "Search memories by meaning and wording. Returns each matching topic at its\ncurrent state, with a `why` trace of the channels and graph paths that found\nit. Ranked, so use grep, read or neighbors when you need certainty.",
       "feature": "core",
-      "hints": null,
+      "hints": {
+        "destructive": false,
+        "idempotent": true,
+        "open_world": false,
+        "read_only": true
+      },
       "input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -345,7 +350,12 @@ expression: tools
       "app_only": false,
       "description": "Read one topic: its current state, an earlier version, or some of the spans\nof a long memory around a search hit.",
       "feature": "core",
-      "hints": null,
+      "hints": {
+        "destructive": false,
+        "idempotent": true,
+        "open_world": false,
+        "read_only": true
+      },
       "input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -533,7 +543,12 @@ expression: tools
       "app_only": false,
       "description": "Find an exact string in everything ever written, including writes the\nfilter held back from memory. No ranking and no model.",
       "feature": "core",
-      "hints": null,
+      "hints": {
+        "destructive": false,
+        "idempotent": true,
+        "open_world": false,
+        "read_only": true
+      },
       "input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -634,7 +649,12 @@ expression: tools
       "app_only": false,
       "description": "List the topics connected to one through the relationship graph, without\nranking them.",
       "feature": "core",
-      "hints": null,
+      "hints": {
+        "destructive": false,
+        "idempotent": true,
+        "open_world": false,
+        "read_only": true
+      },
       "input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -762,7 +782,12 @@ expression: tools
       "app_only": false,
       "description": "Find the topics that already exist, by name and by content, before writing\nto a new one. With no query, lists the most recent.",
       "feature": "core",
-      "hints": null,
+      "hints": {
+        "destructive": false,
+        "idempotent": true,
+        "open_world": false,
+        "read_only": true
+      },
       "input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -847,7 +872,12 @@ expression: tools
       "app_only": false,
       "description": "Record a memory under a topic. Writing to an existing topic adds a version;\ncontent too short to carry a durable claim is kept as evidence only.",
       "feature": "core",
-      "hints": null,
+      "hints": {
+        "destructive": false,
+        "idempotent": false,
+        "open_world": false,
+        "read_only": false
+      },
       "input": {
         "$defs": {
           "Flags": {
@@ -976,7 +1006,12 @@ expression: tools
       "app_only": false,
       "description": "Assert a relationship between two existing topics that their text does not\nstate.",
       "feature": "core",
-      "hints": null,
+      "hints": {
+        "destructive": false,
+        "idempotent": false,
+        "open_world": false,
+        "read_only": false
+      },
       "input": {
         "$defs": {
           "Flags": {
@@ -1088,7 +1123,12 @@ expression: tools
       "app_only": false,
       "description": "Retract a relationship, keeping the record that it was claimed.",
       "feature": "core",
-      "hints": null,
+      "hints": {
+        "destructive": true,
+        "idempotent": false,
+        "open_world": false,
+        "read_only": false
+      },
       "input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {

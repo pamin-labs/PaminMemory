@@ -12,11 +12,34 @@ use std::sync::Arc;
 
 use pamin_contract::{grep, link, neighbors, read, search, topics, unlink, write};
 use pamin_core::Workspace;
-use pamin_kit::{Audience, Ctx, Feature, Hardware, Kit, Local, Manifest, Module, Ops, Routing};
+use pamin_kit::{
+    Audience, Ctx, Feature, Hardware, Hints, Kit, Local, Manifest, Module, Ops, Routing,
+};
 use serde::de::DeserializeOwned;
 
 use crate::protocol::{self, Call, Request};
 use crate::{client, settings};
+
+/// The tools that only read the project.
+const READS: [&str; 5] = [
+    "memory_search",
+    "memory_read",
+    "memory_grep",
+    "memory_neighbors",
+    "memory_topics",
+];
+const READ: Hints = Hints {
+    read_only: true,
+    destructive: false,
+    idempotent: true,
+    open_world: false,
+};
+const ADD: Hints = Hints {
+    read_only: false,
+    destructive: false,
+    idempotent: false,
+    open_world: false,
+};
 
 /// Memory as a pamin-kit module: what a request needs besides its call.
 pub struct Memory {
@@ -105,6 +128,19 @@ impl Module for Memory {
         .tool("memory_unlink", Feature::Core, |m, ctx, a| {
             m.ask::<unlink::Unlinked>(ctx, Call::Unlink(a))
         });
+        for tool in READS {
+            ops.hints(tool, READ);
+        }
+        // Writing and linking add a version and keep the old one.
+        ops.hints("memory_write", ADD).hints("memory_link", ADD);
+        // Unlinking with `deleted` erases that a link ever held.
+        ops.hints(
+            "memory_unlink",
+            Hints {
+                destructive: true,
+                ..ADD
+            },
+        );
     }
 }
 
