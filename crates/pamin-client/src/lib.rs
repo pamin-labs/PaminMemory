@@ -11,6 +11,7 @@
 
 pub mod cli;
 pub mod client;
+pub mod mcp;
 pub mod output;
 pub mod protocol;
 pub mod settings;
