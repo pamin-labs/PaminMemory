@@ -36,6 +36,12 @@ const BETWEEN_CHECKS: usize = 1_000;
 /// `import::LEAST_AT_ONCE`.
 const LEAST_AT_ONCE: usize = 2;
 
+/// The most a file may hold to be read: 8 MiB, a choice and not a
+/// measurement, far above any document this is for. Every text read is held
+/// in the server until its sections are recorded, and a section is one memory
+/// however long, so a stray dump is skipped rather than read.
+const MOST_BYTES: u64 = 8 * 1024 * 1024;
+
 /// A file to ingest, and the name its sections go by.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct File {
@@ -77,14 +83,22 @@ pub async fn execute(
     // Found and not read: their sections are not missing, only unread.
     let mut unread = Vec::new();
     for file in files {
-        match std::fs::read(&file.path) {
-            Ok(bytes) => match String::from_utf8(bytes) {
+        match read_at_most(&file.path, MOST_BYTES) {
+            Ok(Some(bytes)) => match String::from_utf8(bytes) {
                 Ok(text) => texts.push((file.name, file.root, text)),
                 Err(_) => {
                     skipped.push(format!("{}: not UTF-8", file.path.display()));
                     unread.push((file.name, file.root));
                 }
             },
+            Ok(None) => {
+                skipped.push(format!(
+                    "{}: larger than {} MiB",
+                    file.path.display(),
+                    MOST_BYTES / (1024 * 1024)
+                ));
+                unread.push((file.name, file.root));
+            }
             Err(error) => {
                 skipped.push(format!("{}: {error}", file.path.display()));
                 unread.push((file.name, file.root));
@@ -437,6 +451,18 @@ fn walk(
         }
     }
     whole
+}
+
+/// The bytes of the file at `path`, or `None` when it holds more than `most`.
+/// Read no further than one byte past `most`, so a file that grows while it is
+/// read is caught too.
+fn read_at_most(path: &Path, most: u64) -> std::io::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(most + 1)
+        .read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= most).then_some(bytes))
 }
 
 /// Where an ingest looked.
@@ -807,6 +833,18 @@ mod tests {
             on_disk("/home/a/repo", "repo/docs/a.md"),
             Path::new("/home/a/repo/docs/a.md")
         );
+    }
+
+    #[test]
+    fn a_file_over_the_limit_is_not_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("a.md");
+        std::fs::write(&path, "12345").expect("write");
+        assert_eq!(
+            read_at_most(&path, 5).expect("read"),
+            Some(b"12345".to_vec())
+        );
+        assert_eq!(read_at_most(&path, 4).expect("read"), None);
     }
 
     #[test]

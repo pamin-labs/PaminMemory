@@ -624,7 +624,9 @@ symbolic links, and, inside a git repository, whatever git ignores: its
 `.gitignore` files, including any above the directory named,
 `.git/info/exclude` and the global excludes of the user the server runs as. A file named on the command line is read whatever it is called
 and wherever a link it is leads, and is cut as Markdown whatever it holds, so
-`# ` at the start of a line of code is a heading to it. The paths are made
+`# ` at the start of a line of code is a heading to it. A file larger than
+8 MiB, a limit chosen rather than measured, is not read: it is listed under
+`skipped`, and sections an earlier ingest cut from it stay. The paths are made
 absolute by the client before the request leaves, because the server reading
 them may have been started from another directory.
 
