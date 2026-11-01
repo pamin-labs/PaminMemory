@@ -10,6 +10,8 @@ on:
 permissions:
   contents: read
   issues: read
+  # The job's OIDC token is its identity on the bus; no repository secret is needed.
+  id-token: write
 
 concurrency:
   group: pamin-labs-dev-${{ github.event.pull_request.number }}
@@ -26,8 +28,6 @@ jobs:
       - name: Organization PR
         if: github.event.pull_request.head.repo.full_name == github.repository
         env:
-          PAMIN_LABS_DEV_ACCESS_CLIENT_ID: ${{ secrets.PAMIN_LABS_DEV_ACCESS_CLIENT_ID }}
-          PAMIN_LABS_DEV_ACCESS_CLIENT_SECRET: ${{ secrets.PAMIN_LABS_DEV_ACCESS_CLIENT_SECRET }}
           TITLE: ${{ github.event.pull_request.title }}
           BODY: ${{ github.event.pull_request.body }}
           BRANCH: ${{ github.event.pull_request.head.ref }}
