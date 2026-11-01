@@ -1,6 +1,6 @@
 [package]
 name = "memory-engine"
-description = "Composition of the PaminMemory store, index, and embedder."
+description = "Composition of the pamin-memory store, index, and embedder."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
