@@ -1,0 +1,26 @@
+---
+source: crates/pamin-contract/tests/schemas.rs
+expression: "schema_for! (ingest::Args)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Args",
+  "type": "object",
+  "properties": {
+    "no_sync": {
+      "description": "Ingest these paths once and stop keeping them in sync.\n\nBy default the server keeps every path it ingests in sync: it watches\nit and ingests what changes under it, and catches up on what changed\nwhile it was not running. With this, it ingests them and forgets any\nearlier ingest's asking for that.",
+      "type": "boolean",
+      "default": false
+    },
+    "paths": {
+      "description": "Markdown or plain-text files, or directories to read them from.\n\nA directory is read recursively for `.md`, `.markdown` and `.txt`\nfiles, skipping hidden entries, symbolic links and what git ignores.\nMade absolute here, before the request leaves, so the server reads what\nthis directory calls these paths rather than what its own does.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "paths"
+  ]
+}
