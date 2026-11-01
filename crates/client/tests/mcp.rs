@@ -1,4 +1,4 @@
-//! `pamin mcp` passes pamin-kit's conformance suite: valid 2020-12 schemas, no
+//! `pamin-memory mcp` passes pamin-kit's conformance suite: valid 2020-12 schemas, no
 //! tenant, user or project argument, calls without an identity refused, and
 //! every tool named in the MCP skill. The served tool list is snapshotted.
 

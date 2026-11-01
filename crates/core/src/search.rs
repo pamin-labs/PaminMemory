@@ -1,7 +1,7 @@
 //! How far one search reaches, and the depths the product searches with.
 //!
 //! Here rather than beside the engine and the index that use them, because the
-//! command line offers each as a flag of `pamin search` and shows its default,
+//! command line offers each as a flag of `pamin-memory search` and shows its default,
 //! and the client that parses those flags links neither. Each is still
 //! defined once: `memory_engine::Depths`, `memory_index::reranking::DEPTH` and
 //! `memory_index::projection::SEARCH_EFFORT` are these.

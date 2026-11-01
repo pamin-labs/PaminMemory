@@ -185,10 +185,10 @@ The shape it takes:
 
 1. Fetch LongMemEval-S from [its repository][longmemeval]. Fetch rather than
    vendor, the way `crosslingual.rs` fetches XQuAD-R — licence, and size.
-2. Ingest each question's session haystack with `pamin import` (about 10× cheaper
-   per memory than looping `pamin write`), one project per question so the
+2. Ingest each question's session haystack with `pamin-memory import` (about 10× cheaper
+   per memory than looping `pamin-memory write`), one project per question so the
    haystacks stay isolated.
-3. Query with `Engine::search_reranked` — the entry point `pamin search` calls.
+3. Query with `Engine::search_reranked` — the entry point `pamin-memory search` calls.
    Measuring the layer underneath it is the mistake this repository already
    made once; see the `pamin-dev` skill.
 4. Emit results in LongMemEval's expected format and score with its own script,
@@ -470,7 +470,7 @@ conditions it holds fixed, and how each is asserted, are in its README.
 Three of the arms are Påmin Memory at different settings, because the first
 question about any gain is whether it came from the thing you changed:
 
-- **`pamin`** — `pamin import` and `pamin search` at the harness's default
+- **`pamin`** — `pamin-memory import` and `pamin-memory search` at the harness's default
   `--limit 10` (the CLI's own default is 5).
 - **`pamin-wide`** — the same, at `--limit 30`. Nothing else differs, so what
   separates it from `pamin` is the size of the shortlist and nothing else.
@@ -739,14 +739,14 @@ payload.
 ### The envelope, which is what a caller actually pipes
 
 Measured with [benchmarks/envelope.py](../benchmarks/envelope.py), one level
-below the `recall()` the table above uses: the bytes `pamin search --json`
+below the `recall()` the table above uses: the bytes `pamin-memory search --json`
 writes to stdout, the dict mem0's `Memory.search` returns, the dict MemPalace's
 `searcher.search_memories` returns — each serialised the way a caller would put
 it in a prompt, and counted with the same `cl100k_base`.
 
 | what a caller receives | envelope | contents | ratio | not the memory |
 | --- | --- | --- | --- | --- |
-| `pamin search --limit 10 --json` | 1,316 | 532 | 2.4× | 59% |
+| `pamin-memory search --limit 10 --json` | 1,316 | 532 | 2.4× | 59% |
 | mem0 `Memory.search(top_k=10)` | 1,675 | 320 | 5.2× | 81% |
 | MemPalace `search_memories(n_results=10)` | 4,560 | 2,051 | 2.2× | 55% |
 

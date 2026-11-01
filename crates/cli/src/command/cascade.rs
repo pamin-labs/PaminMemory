@@ -1,7 +1,7 @@
-//! `pamin cascade` — run and inspect the work a write left behind.
+//! `pamin-memory cascade` — run and inspect the work a write left behind.
 //!
 //! A write commits what the projection owes and stops there, so something has
-//! to pay it. Ordinarily that is the drain at the end of `pamin write`, and
+//! to pay it. Ordinarily that is the drain at the end of `pamin-memory write`, and
 //! what that leaves -- deferred writes, a queue a process that died left
 //! behind -- the server catches up on between requests. These commands are
 //! for making the index catch up at once, and for jobs that failed often

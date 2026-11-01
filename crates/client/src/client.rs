@@ -3,12 +3,12 @@
 //! The CLI is the primary surface and a shell command is meant to just work, so
 //! nothing here asks the caller to run a server first. A command connects; if
 //! there is nothing listening it starts one and connects again. That is the
-//! same bargain the embedded database already makes -- `pamin init` leaves
+//! same bargain the embedded database already makes -- `pamin-memory init` leaves
 //! PostgreSQL running so the next command does not pay for it -- applied to the
 //! index and the model as well.
 //!
-//! The server it starts is a separate executable, `pamin-server`, installed
-//! beside `pamin`: see [`server_exe`].
+//! The server it starts is a separate executable, `pamin-memory-server`, installed
+//! beside `pamin-memory`: see [`server_exe`].
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -64,7 +64,7 @@ pub async fn ask(
         Response::Err(message) => bail!(message),
         Response::Mismatch { server, wire } => {
             // The server running is the one this would start, and still speaks
-            // another protocol: it is `pamin` that is from another build, and
+            // another protocol: it is `pamin-memory` that is from another build, and
             // replacing the server would start the same one again -- after
             // stopping it under whoever else is using it.
             if server == version() && wire != WIRE {
@@ -99,32 +99,35 @@ pub async fn ask(
 /// built from different sources, so one was installed without the other.
 fn other_build(wire: &str) -> anyhow::Error {
     let server = server_exe().map_or_else(
-        |_| "the pamin-server beside it".to_string(),
+        |_| "the pamin-memory-server beside it".to_string(),
         |path| path.display().to_string(),
     );
     anyhow::anyhow!(
-        "this pamin and {server} are from different builds (protocol {WIRE} against \
-         {}); install pamin and pamin-server together, from one build",
+        "this pamin-memory and {server} are from different builds (protocol {WIRE} against \
+         {}); install pamin-memory and pamin-memory-server together, from one build",
         if wire.is_empty() { "none" } else { wire }
     )
 }
 
-/// The server executable a client starts: `pamin-server`, in the directory
+/// The server executable a client starts: `pamin-memory-server`, in the directory
 /// this executable really is in.
 ///
 /// Really is: `current_exe` can name a symlink -- on macOS it is the path the
-/// process was started by -- and a link to `pamin` on `PATH`, the way Homebrew
+/// process was started by -- and a link to `pamin-memory` on `PATH`, the way Homebrew
 /// installs one, is in another directory from the server it was installed
 /// with. A missing server is refused here, by path, rather than left to fail
 /// as a process that would not start.
 pub fn server_exe() -> Result<PathBuf> {
     let exe = std::env::current_exe().context("finding this executable")?;
     let exe = exe.canonicalize().unwrap_or(exe);
-    let server = exe.with_file_name(format!("pamin-server{}", std::env::consts::EXE_SUFFIX));
+    let server = exe.with_file_name(format!(
+        "pamin-memory-server{}",
+        std::env::consts::EXE_SUFFIX
+    ));
     if !server.is_file() {
         bail!(
-            "the pamin server is not installed: there is no {}. pamin runs commands \
-             through the pamin-server beside it; install both, as `cargo install \
+            "the pamin-memory server is not installed: there is no {}. pamin-memory runs commands \
+             through the pamin-memory-server beside it; install both, as `cargo install \
              --path crates/cli` does",
             server.display()
         );
@@ -160,7 +163,7 @@ const MAX_RESPONSE: usize = 16 * 1024 * 1024;
 /// Starts a server and waits for it to listen.
 ///
 /// Only one process starts one. The rest wait, which is the same outcome and
-/// costs nothing: twenty agents running `pamin search` against a cold workspace
+/// costs nothing: twenty agents running `pamin-memory search` against a cold workspace
 /// should provision it once, not twenty times.
 async fn spawn(workspace: &Workspace, path: &Path, serve: &[std::ffi::OsString]) -> Result<()> {
     std::fs::create_dir_all(workspace.root())?;
@@ -180,7 +183,7 @@ async fn spawn(workspace: &Workspace, path: &Path, serve: &[std::ffi::OsString])
     if won.is_ok() {
         // Both streams go to a file rather than being inherited. A server
         // outlives the command that started it, so an inherited stderr is a
-        // pipe it holds open for ever: `pamin write ... | head` would hang
+        // pipe it holds open for ever: `pamin-memory write ... | head` would hang
         // after the write succeeded, waiting on an end-of-file the server was
         // still holding. Redirecting also gives it somewhere to speak, which
         // matters more for a process nobody is watching than for one in the
@@ -301,7 +304,7 @@ fn diagnose(log: &str, path: &Path) -> String {
     }
     if log.contains("cannot be run as root") {
         out.push_str(
-            "\nPostgreSQL will not run as root. Run pamin as an unprivileged \
+            "\nPostgreSQL will not run as root. Run pamin-memory as an unprivileged \
              user, which in a container means adding one and switching to it.\n",
         );
     }

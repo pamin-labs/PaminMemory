@@ -105,7 +105,7 @@
 //! | **the product** | same-language | **0.7495** | 0.9580 | 82 | 82 of 1,190 |
 //!
 //! "The product" is `search_reranked` at the default tier, which is what
-//! `pamin search` calls. "Fusion alone" is `search_fused`, one stage short of
+//! `pamin-memory search` calls. "Fusion alone" is `search_fused`, one stage short of
 //! it. Both rows are here because the difference between them is the
 //! reranker's, and for a while only the shorter one was measured.
 //!
@@ -1789,7 +1789,7 @@ async fn search_reaches_across_languages() {
     assert_eq!(
         engine.passage(),
         memory_index::Passage::Named,
-        "XQuAD-R needs named passages; run pamin reindex for an older workspace"
+        "XQuAD-R needs named passages; run pamin-memory reindex for an older workspace"
     );
     println!("  index passage: named");
     let expected = harness::index(
@@ -2177,7 +2177,7 @@ async fn search_reaches_across_languages() {
 /// Which of the engine's two search entry points a scoring run drives.
 ///
 /// Both exist because they answer different questions and neither can answer
-/// the other's. `search_reranked` is what `pamin search` calls, so it is the
+/// the other's. `search_reranked` is what `pamin-memory search` calls, so it is the
 /// only thing a floor can guard -- but it fixes `Fusion::default()` internally,
 /// so a weight sweep cannot go through it. `search_fused` takes the weighting
 /// and stops before the reranker.
@@ -2192,7 +2192,7 @@ enum Route {
     /// The same entry point, asked for as many results as a person asks for.
     ///
     /// `DEPTH` is sixty so that recall@50 can be scored, and the whole of
-    /// the reranker's thirty-deep head is inside that. `pamin search` defaults
+    /// the reranker's thirty-deep head is inside that. `pamin-memory search` defaults
     /// to five, where most of that head is past what the caller reads --
     /// which is a different amount of work for the same query and was never
     /// measured. The scores from this route are not comparable with anything
@@ -3346,7 +3346,7 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) {
 
     for sentence in &corpus.sentences {
         // The dataset's own two-letter tags, which are not what the product
-        // writes: `pamin write` takes its language from `detect_language`, and
+        // writes: `pamin-memory write` takes its language from `detect_language`, and
         // that returns ISO-639-3 -- `eng` where this says `en`. Nothing
         // compares the two today, and the rule that would have (a fusion
         // weight that knew the query's language) was measured and dropped.

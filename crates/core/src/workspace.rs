@@ -56,7 +56,7 @@ impl Workspace {
     }
 
     /// Where one project's projection index lives. Derived data: safe to
-    /// delete, and rebuilt from PostgreSQL by `pamin reindex`.
+    /// delete, and rebuilt from PostgreSQL by `pamin-memory reindex`.
     ///
     /// A directory per project rather than one index filtered by project.
     /// A project is a namespace, not an attribute: no query spans two of them,

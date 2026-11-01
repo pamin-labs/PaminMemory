@@ -1,4 +1,4 @@
-//! `pamin stop` — shut down the local database server.
+//! `pamin-memory stop` — shut down the local database server.
 //!
 //! The server is deliberately left running between commands so an agent does
 //! not pay cluster startup on every call. That makes an explicit way to stop it

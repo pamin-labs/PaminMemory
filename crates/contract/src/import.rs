@@ -1,4 +1,4 @@
-//! `pamin import` — record many memories in one call.
+//! `pamin-memory import` — record many memories in one call.
 
 use std::path::PathBuf;
 

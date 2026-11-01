@@ -200,7 +200,7 @@ fn open_tally() {
     });
 }
 
-/// `PAMIN_` variables that say only where something is, which project `pamin`
+/// `PAMIN_` variables that say only where something is, which project `pamin-memory`
 /// works in, or what to log, and change no result: a harness names its own
 /// projects in code. Not `PAMIN_EVAL_POSTGRES_DIR`: it says where a
 /// PostgreSQL installation is, but another installation can be another

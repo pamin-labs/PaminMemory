@@ -29,7 +29,7 @@ pub fn socket_path(workspace: &memory_core::Workspace) -> std::path::PathBuf {
 ///
 /// A server outlives the command that started it, so it cannot inherit that
 /// command's streams: holding the write end of a pipe open for ever turns
-/// `pamin write ... | head` into a hang after the write has already succeeded.
+/// `pamin-memory write ... | head` into a hang after the write has already succeeded.
 /// A file solves that and is also the only way to see what a background server
 /// is doing.
 pub const SERVER_LOG: &str = "serve.log";
@@ -56,8 +56,8 @@ pub struct Request {
     /// The protocol this client speaks: [`WIRE`].
     ///
     /// [`Self::version`] names the server binary, so it catches a server that
-    /// was rebuilt and not a client that was -- `pamin` replaced on its own,
-    /// beside a `pamin-server` from before. Defaulted, so a request from a
+    /// was rebuilt and not a client that was -- `pamin-memory` replaced on its own,
+    /// beside a `pamin-memory-server` from before. Defaulted, so a request from a
     /// build before this was sent is read, and is from another build.
     #[serde(default)]
     pub wire: String,
@@ -169,7 +169,7 @@ pub enum Response {
 /// A fingerprint of the protocol this build speaks: a hash over the sources
 /// that define every request and result, stamped by `build.rs`.
 ///
-/// `pamin` and `pamin-server` both compile it in from this crate, so a pair
+/// `pamin-memory` and `pamin-memory-server` both compile it in from this crate, so a pair
 /// built together always agrees, and a request whose fingerprint differs from
 /// the server's is from another build however its binaries were installed.
 pub const WIRE: &str = env!("PAMIN_WIRE");

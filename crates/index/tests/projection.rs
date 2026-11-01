@@ -604,7 +604,7 @@ fn an_index_keyed_the_old_way_says_so_rather_than_answering_nothing() {
 /// must neither refuse to open nor start mixing `name: content` vectors into
 /// an index of content vectors, whose distances would then compare two
 /// different encodings and look fine. So the marker's missing line reads as
-/// the old encoding, and only a fresh index -- which is what `pamin reindex`
+/// the old encoding, and only a fresh index -- which is what `pamin-memory reindex`
 /// builds -- gets the new one.
 #[test]
 fn an_index_built_before_names_keeps_its_encoding() {
@@ -1749,7 +1749,7 @@ fn each_vector_index_returns_the_nearest_documents() {
 }
 
 /// An fp32 index built before the vector indexes existed is refused with a
-/// message naming `pamin reindex`, and the rebuild lends its vectors rather
+/// message naming `pamin-memory reindex`, and the rebuild lends its vectors rather
 /// than embedding them again.
 ///
 /// Every workspace that predates this holds one. Searching it with half-

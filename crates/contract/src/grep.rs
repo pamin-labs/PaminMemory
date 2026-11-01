@@ -1,4 +1,4 @@
-//! `pamin grep` — find exact strings in the evidence, with nothing ranking.
+//! `pamin-memory grep` — find exact strings in the evidence, with nothing ranking.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

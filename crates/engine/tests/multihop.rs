@@ -978,7 +978,7 @@ async fn write_corpus(
 /// below is a per-question comparison rather than two runs subtracted.
 ///
 /// A prototype: the names are found here, in the harness, and asserted through
-/// the store the way `pamin link` does. Only if it pays is it worth a job in
+/// the store the way `pamin-memory link` does. Only if it pays is it worth a job in
 /// the write path, and a model instead of a regular pattern is a later step.
 ///
 /// **Measured, and it does not pay.** 7,463 names, 57,486 edges beside the

@@ -16,31 +16,31 @@ pub enum IndexError {
 
     #[error(
         "this index holds one document per {indexed} and this build expects one per {expected}; \
-         run `pamin reindex` to rebuild it"
+         run `pamin-memory reindex` to rebuild it"
     )]
     GrainMismatch { indexed: String, expected: String },
 
     #[error(
         "this index was built as vector index {indexed} and {requested} was requested; \
-         run `pamin reindex` to rebuild it"
+         run `pamin-memory reindex` to rebuild it"
     )]
     VectorIndexMismatch { indexed: String, requested: String },
 
     #[error(
         "this workspace has an index from before projects were separated; \
-         run `pamin reindex` to rebuild it per project"
+         run `pamin-memory reindex` to rebuild it per project"
     )]
     LegacyLayout,
 
     #[error(
         "another process is holding this project's index and did not release it \
-         in time ({0}); if a pamin server was just stopped or replaced, retry"
+         in time ({0}); if a pamin-memory server was just stopped or replaced, retry"
     )]
     Busy(String),
 
     #[error(
         "this project's index could not be reopened after it was reshaped ({0}); \
-         restart the server, or run `pamin reindex` to rebuild it"
+         restart the server, or run `pamin-memory reindex` to rebuild it"
     )]
     Unavailable(String),
 
@@ -121,7 +121,7 @@ fn model_mismatch(indexed: &str) -> String {
     };
     format!(
         "this index was built with {built}, and every project now uses BGE-M3 ({current}); \
-         run `pamin reindex` to rebuild it"
+         run `pamin-memory reindex` to rebuild it"
     )
 }
 
@@ -168,7 +168,7 @@ mod tests {
                 "{message}"
             );
             assert!(message.contains(model), "{message}");
-            assert!(message.contains("pamin reindex"), "{message}");
+            assert!(message.contains("pamin-memory reindex"), "{message}");
         }
 
         let unknown = IndexError::ModelMismatch {
@@ -177,6 +177,6 @@ mod tests {
         .to_string();
         assert!(!unknown.contains("profile"), "{unknown}");
         assert!(unknown.contains("someone/else"), "{unknown}");
-        assert!(unknown.contains("pamin reindex"), "{unknown}");
+        assert!(unknown.contains("pamin-memory reindex"), "{unknown}");
     }
 }

@@ -1,4 +1,4 @@
-//! `pamin sync` — list the paths the server keeps in sync with their files.
+//! `pamin-memory sync` — list the paths the server keeps in sync with their files.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -28,7 +28,8 @@ pub struct SyncedPath {
 /// Renders the result for a person reading it.
 pub fn render(result: &Synced) -> String {
     if result.paths.is_empty() {
-        return "No paths are kept in sync: `pamin ingest` keeps what it is given".to_string();
+        return "No paths are kept in sync: `pamin-memory ingest` keeps what it is given"
+            .to_string();
     }
     let mut out = format!("{} paths kept in sync:", result.paths.len());
     for synced in &result.paths {

@@ -1,4 +1,4 @@
-//! `pamin read` — read a topic's current or historical state.
+//! `pamin-memory read` — read a topic's current or historical state.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,7 @@ pub struct Args {
     pub version_offset: u32,
 
     /// Read one span of a memory the index cut into spans, from 0, rather
-    /// than all of it -- what `pamin search` prints as `--span` on a hit.
+    /// than all of it -- what `pamin-memory search` prints as `--span` on a hit.
     #[arg(long)]
     #[serde(default)]
     pub span: Option<u32>,
@@ -73,7 +73,7 @@ pub struct Read {
     pub valid_to: Option<String>,
     /// The byte range in the source this state was derived from.
     ///
-    /// Moved here from `pamin search`, which put one on every hit. Ten of them
+    /// Moved here from `pamin-memory search`, which put one on every hit. Ten of them
     /// cost a caller two hundred and eighty tokens to carry an identifier no
     /// command accepts -- and `read` did not carry it at all, so the claim
     /// that every state traces back to bytes in a source had no surface on the

@@ -8,7 +8,7 @@ expression: "schema_for! (unsync::Args)"
   "type": "object",
   "properties": {
     "paths": {
-      "description": "Paths an ingest was given, as `pamin sync` lists them. Made absolute\nhere, as `ingest` makes its paths.",
+      "description": "Paths an ingest was given, as `pamin-memory sync` lists them. Made absolute\nhere, as `ingest` makes its paths.",
       "type": "array",
       "items": {
         "type": "string"

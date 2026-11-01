@@ -57,7 +57,7 @@ tokio = { version = "1", features = [
 # stops the build depending on that staying true.
 tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
-# The directory walk `pamin ingest` reads a tree with, honouring `.gitignore`,
+# The directory walk `pamin-memory ingest` reads a tree with, honouring `.gitignore`,
 # `.git/info/exclude` and the global excludes the way git does, nested
 # repositories included. ripgrep's, under `MIT OR Unlicense`; it adds `globset`,
 # `walkdir`, `same-file`, `bstr` and, on Windows, `winapi-util` to the tree.

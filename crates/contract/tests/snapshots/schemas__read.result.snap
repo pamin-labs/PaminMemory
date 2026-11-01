@@ -44,7 +44,7 @@ expression: "schema_for! (read::Read)"
       "type": "string"
     },
     "source_span": {
-      "description": "The byte range in the source this state was derived from.\n\nMoved here from `pamin search`, which put one on every hit. Ten of them\ncost a caller two hundred and eighty tokens to carry an identifier no\ncommand accepts -- and `read` did not carry it at all, so the claim\nthat every state traces back to bytes in a source had no surface on the\ncommand line. One per read is where it is affordable and where somebody\nauditing a single claim is already looking.",
+      "description": "The byte range in the source this state was derived from.\n\nMoved here from `pamin-memory search`, which put one on every hit. Ten of them\ncost a caller two hundred and eighty tokens to carry an identifier no\ncommand accepts -- and `read` did not carry it at all, so the claim\nthat every state traces back to bytes in a source had no surface on the\ncommand line. One per read is where it is affordable and where somebody\nauditing a single claim is already looking.",
       "type": "string"
     },
     "span": {

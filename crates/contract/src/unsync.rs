@@ -1,4 +1,4 @@
-//! `pamin unsync` — stop keeping ingested paths in sync with their files.
+//! `pamin-memory unsync` — stop keeping ingested paths in sync with their files.
 
 use std::path::PathBuf;
 
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
-    /// Paths an ingest was given, as `pamin sync` lists them. Made absolute
+    /// Paths an ingest was given, as `pamin-memory sync` lists them. Made absolute
     /// here, as `ingest` makes its paths.
     #[arg(required = true)]
     pub paths: Vec<PathBuf>,

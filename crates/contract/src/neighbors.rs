@@ -1,4 +1,4 @@
-//! `pamin neighbors` — walk the graph directly, without ranking anything.
+//! `pamin-memory neighbors` — walk the graph directly, without ranking anything.
 
 use memory_core::graph::MAX_DEPTH;
 use schemars::JsonSchema;

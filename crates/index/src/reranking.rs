@@ -64,7 +64,7 @@
 //! concentrated and consistent, and it looks small only because the confinement
 //! to unlexical candidates keeps it away from almost every query.
 //!
-//! Measured through `Engine::search_reranked` -- the entry point `pamin search`
+//! Measured through `Engine::search_reranked` -- the entry point `pamin-memory search`
 //! calls -- with `TIERS=1` on the cross-lingual harness, over all 1,190
 //! queries. An earlier version of this table came from a scratch program that
 //! reordered a dumped shortlist with its own copy of the pipeline, and it
@@ -342,7 +342,7 @@ const BATCH: usize = 4;
 /// here, since no pair is longer than [`MAX_TOKENS`].
 ///
 /// Measured against four pairs on the same build, at the entry point. Timing,
-/// `pamin search` through a resident server, 4 vCPU Xeon (AVX-512 VNNI),
+/// `pamin-memory search` through a resident server, 4 vCPU Xeon (AVX-512 VNNI),
 /// three rotated runs of 120 warm queries an arm: p50 0.834 of four pairs'
 /// [0.757, 0.931], p95 0.850 [0.715, 0.997], peak resident memory of the
 /// search server 0.884. Accuracy, `Engine::search_reranked` over copies of one
@@ -1425,7 +1425,7 @@ type Scored = Result<(Vec<Vec<f32>>, u64)>;
 /// its cost was their working memory, about 260 MB more for `accurate` in
 /// proportional set size. The passes now share one session per model, which
 /// took a server's peak resident memory over 120 searches from 5,657 to
-/// 3,021 MB at `pamin search`; `docs/measured.md` has the run.
+/// 3,021 MB at `pamin-memory search`; `docs/measured.md` has the run.
 fn forward(model: &mut Encoder, batches: Vec<Vec<Encoding>>) -> Scored {
     let counts: Vec<usize> = batches.iter().map(Vec::len).collect();
     // Loaded before the clock starts, so the time is of the passes alone.

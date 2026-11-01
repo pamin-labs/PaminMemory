@@ -1,10 +1,10 @@
-//! Keeping ingested files in sync with what pamin holds of them.
+//! Keeping ingested files in sync with what pamin-memory holds of them.
 //!
-//! Every path `pamin ingest` is given is kept in sync unless it was told
+//! Every path `pamin-memory ingest` is given is kept in sync unless it was told
 //! `--no-sync`: the server watches it and ingests what changes under it, one
 //! second after the last change, and when it starts it catches up on what
 //! changed while it was not running. Both go through the ingest a person runs,
-//! so what a watched change records is what `pamin ingest` would have.
+//! so what a watched change records is what `pamin-memory ingest` would have.
 //!
 //! What is watched is exactly what an ingest walks: each directory the walk
 //! goes into gets a watch of its own, and a directory the walk skips -- hidden,
@@ -61,7 +61,7 @@ pub struct Syncing {
     status: Mutex<HashMap<(String, String), Status>>,
 }
 
-/// How a synced path stands, for `pamin sync`.
+/// How a synced path stands, for `pamin-memory sync`.
 #[derive(Clone, Debug, Default)]
 pub struct Status {
     pub state: State,
@@ -813,7 +813,7 @@ impl Watcher {
         watched
     }
 
-    /// Ingests `found` and `deleted` for a followed path, the way `pamin
+    /// Ingests `found` and `deleted` for a followed path, the way `pamin-memory
     /// ingest` does: under the project's lock, counted as serving so index
     /// upkeep waits for it.
     async fn ingest(&mut self, at: usize, found: Found, deleted: Vec<File>) {

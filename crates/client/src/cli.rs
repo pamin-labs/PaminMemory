@@ -1,4 +1,4 @@
-//! The `pamin` command line: what it takes, and running a command through the
+//! The `pamin-memory` command line: what it takes, and running a command through the
 //! workspace's server.
 //!
 //! The CLI is the primary surface: a shell command plus a skill file is a
@@ -16,7 +16,7 @@ use crate::{client, output, protocol, settings};
 
 #[derive(Parser)]
 #[command(
-    name = "pamin",
+    name = "pamin-memory",
     version,
     about = "Universal memory for AI agents",
     long_about = None
@@ -35,7 +35,7 @@ pub struct Cli {
     /// `disk` holds almost nothing resident and is slower to query and much
     /// slower to build; `memory` is the fastest and the smallest on disk, and
     /// holds its graph and vectors resident. The index records which it was
-    /// built with, so changing this requires `pamin reindex`.
+    /// built with, so changing this requires `pamin-memory reindex`.
     #[arg(
         long,
         env = "PAMIN_VECTOR_INDEX",
@@ -249,7 +249,7 @@ pub async fn run(cli: Cli, matches: clap::ArgMatches) -> Result<Option<Unserved>
     };
 
     // Content on standard input is read here rather than server-side: the
-    // server has no standard input, and `git log | pamin write` is in the
+    // server has no standard input, and `git log | pamin-memory write` is in the
     // reference.
     let call = fill_from_stdin(call)?;
     let call = absolute_paths(call)?;
@@ -320,7 +320,7 @@ const REMOVED: &[(&str, &str)] = &[
     ),
     (
         "PAMIN_RERANK",
-        "was removed: `pamin search` always reranks with its one reranker, so there is no \
+        "was removed: `pamin-memory search` always reranks with its one reranker, so there is no \
          tier to choose.",
     ),
     (
@@ -358,19 +358,19 @@ const REMOVED: &[(&str, &str)] = &[
     ),
     (
         "PAMIN_CHANNEL_DEPTH",
-        "was replaced by `pamin search --channel-depth`.",
+        "was replaced by `pamin-memory search --channel-depth`.",
     ),
     (
         "PAMIN_GRAPH_DEPTH",
-        "was replaced by `pamin search --graph-depth`.",
+        "was replaced by `pamin-memory search --graph-depth`.",
     ),
     (
         "PAMIN_RERANK_DEPTH",
-        "was replaced by `pamin search --rerank-depth`.",
+        "was replaced by `pamin-memory search --rerank-depth`.",
     ),
     (
         "PAMIN_SEARCH_EFFORT",
-        "was replaced by `pamin search --search-effort`.",
+        "was replaced by `pamin-memory search --search-effort`.",
     ),
     (
         "PAMIN_RERANK_BATCH",
@@ -685,7 +685,7 @@ mod tests {
 
         let root = tempfile::tempdir().unwrap();
         let matches = Cli::command()
-            .try_get_matches_from(["pamin", "config"])
+            .try_get_matches_from(["pamin-memory", "config"])
             .unwrap();
         let cli = Cli::from_arg_matches(&matches).unwrap();
         let server = settings::Server::resolve(root.path(), &cli.server, &matches).unwrap();
@@ -773,7 +773,7 @@ mod tests {
     #[test]
     fn a_server_flag_after_the_subcommand_is_a_flag() {
         let matches = Cli::command()
-            .try_get_matches_from(["pamin", "search", "q", "--model-idle", "5"])
+            .try_get_matches_from(["pamin-memory", "search", "q", "--model-idle", "5"])
             .unwrap();
         let cli = Cli::from_arg_matches(&matches).unwrap();
         let root = tempfile::tempdir().unwrap();
@@ -796,7 +796,7 @@ mod tests {
         std::fs::write(root.path().join(settings::CONFIG), "[serve\n").unwrap();
         let home = root.path().to_str().unwrap();
         let matches = Cli::command()
-            .try_get_matches_from(["pamin", "--home", home, "stop"])
+            .try_get_matches_from(["pamin-memory", "--home", home, "stop"])
             .unwrap();
         let cli = Cli::from_arg_matches(&matches).unwrap();
         assert!(settings::Server::resolve(root.path(), &cli.server, &matches).is_err());
@@ -813,7 +813,7 @@ mod tests {
     #[test]
     fn a_zero_search_depth_is_refused() {
         let parse = |flag: &str, value: &str| {
-            Cli::command().try_get_matches_from(["pamin", "search", "q", flag, value])
+            Cli::command().try_get_matches_from(["pamin-memory", "search", "q", flag, value])
         };
         for flag in ["--channel-depth", "--rerank-depth", "--search-effort"] {
             assert!(parse(flag, "0").is_err(), "{flag} 0 was accepted");

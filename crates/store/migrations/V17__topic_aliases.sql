@@ -1,6 +1,6 @@
 -- The names a topic went by before it was renamed.
 --
--- `pamin ingest` names a section by its file's path and the headings above it,
+-- `pamin-memory ingest` names a section by its file's path and the headings above it,
 -- so moving a file or renaming a heading changes the name and not the section.
 -- Recorded as a new topic, the section would lose its history and every edge
 -- to it; renamed instead, it keeps them, and the name it had is kept here so

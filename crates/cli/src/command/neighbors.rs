@@ -1,4 +1,4 @@
-//! `pamin neighbors` — walk the graph directly, without ranking anything.
+//! `pamin-memory neighbors` — walk the graph directly, without ranking anything.
 //!
 //! Search fuses the graph with three other channels and returns what it thinks
 //! is relevant. This returns what is actually connected, which is a different

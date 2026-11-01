@@ -1,4 +1,4 @@
-//! `pamin unlink` — retract a relationship without erasing that it was claimed.
+//! `pamin-memory unlink` — retract a relationship without erasing that it was claimed.
 
 use anyhow::Result;
 use memory_contract::unlink::{Args, Unlinked};

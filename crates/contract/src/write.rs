@@ -1,4 +1,4 @@
-//! `pamin write` — record a memory.
+//! `pamin-memory write` — record a memory.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -23,7 +23,7 @@ pub struct Args {
     /// Record the memory without waiting for the index to catch up.
     ///
     /// The work is queued rather than skipped. The server runs it once no
-    /// request is being answered, and `pamin cascade drain` runs it at once.
+    /// request is being answered, and `pamin-memory cascade drain` runs it at once.
     #[arg(long)]
     #[serde(default)]
     pub defer: bool,

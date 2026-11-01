@@ -1,7 +1,7 @@
 //! The evaluation knobs, `PAMIN_EVAL_*`, read in one place.
 //!
 //! libtest owns a test binary's command line, so a harness cannot take flags
-//! the way `pamin` does; its knobs are environment variables. They are named
+//! the way `pamin-memory` does; its knobs are environment variables. They are named
 //! `PAMIN_EVAL_*` so that a bare `PAMIN_*` always means a product setting, and
 //! they are read here, once per run, into the values the libraries take --
 //! never by the libraries, and never written back to the environment.
@@ -122,10 +122,10 @@ pub const KNOBS: &[(&str, &str)] = &[
 ];
 
 /// Product variables a harness may find set and has no use for: they say
-/// where a workspace is or what to log, which `pamin` reads and a harness
+/// where a workspace is or what to log, which `pamin-memory` reads and a harness
 /// does not.
 ///
-/// Not `PAMIN_VECTOR_INDEX`. It changes what `pamin` measures, a harness opens
+/// Not `PAMIN_VECTOR_INDEX`. It changes what `pamin-memory` measures, a harness opens
 /// the vector index it names in code, and a run with it set would be recorded
 /// under that index while measuring the other one.
 const PRODUCT: &[&str] = &["PAMIN_HOME", "PAMIN_PROJECT", "PAMIN_LOG"];

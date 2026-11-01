@@ -108,7 +108,7 @@ const BACKFILL_CANDIDATES: u32 = 500;
 ///
 /// `block_in_place` rather than `spawn_blocking` because the work borrows the
 /// index and the embedder, and neither is `'static`. It requires the
-/// multi-threaded runtime, which is what `pamin` runs on.
+/// multi-threaded runtime, which is what `pamin-memory` runs on.
 pub(crate) fn off_the_runtime<T>(work: impl FnOnce() -> T) -> T {
     tokio::task::block_in_place(work)
 }
@@ -422,7 +422,7 @@ pub struct Engine {
     /// index's is what lets several searches read the index at once while one
     /// of them is embedding.
     ///
-    /// **Empty until something embeds, which is why `pamin link` can go
+    /// **Empty until something embeds, which is why `pamin-memory link` can go
     /// through this crate at all.** Loading was part of opening an engine, so
     /// opening one cost 1,625 MB of resident memory and about four and a half
     /// seconds -- and `read`, `grep`, `topics`, `link`, `unlink` and
@@ -1118,7 +1118,7 @@ impl Engine {
     /// `set_max_doc_count_per_segment` on an open one returns `Ok` and changes
     /// nothing, which ADR 0001 records. [`reshape`](Self::reshape) does that
     /// by copying the index while it is served, and a server runs it on its
-    /// own; `pamin reindex` fixes it at once.
+    /// own; `pamin-memory reindex` fixes it at once.
     pub fn segmentation(&self) -> Result<memory_index::Segmentation> {
         Ok(self.index().segmentation()?)
     }
@@ -1425,7 +1425,7 @@ impl Engine {
         Ok((verdict, recorded))
     }
 
-    /// [`remember`](Self::remember), for a section `pamin ingest` cut out of a
+    /// [`remember`](Self::remember), for a section `pamin-memory ingest` cut out of a
     /// file -- which returns `None` and writes nothing when the section says
     /// what its topic already does, or, for one the filter holds, what it said
     /// when it was last held.
@@ -1532,8 +1532,8 @@ impl Engine {
 
     /// Gives a section of a file the name it now goes by -- its file moved, or
     /// a heading above it renamed -- keeping its topic: its history, its edges
-    /// and its evidence. The old name stays as an alias `pamin read` and
-    /// `pamin link` resolve, and the projection is owed the topic again, since
+    /// and its evidence. The old name stays as an alias `pamin-memory read` and
+    /// `pamin-memory link` resolve, and the projection is owed the topic again, since
     /// its name is read into every span's header.
     ///
     /// As [`retire_section`](Self::retire_section) is: only a topic whose every
@@ -1741,7 +1741,7 @@ impl Engine {
             (version, None)
         };
 
-        // The first time somebody writes a topic by hand that `pamin ingest`
+        // The first time somebody writes a topic by hand that `pamin-memory ingest`
         // created, the name ingest left out of the index goes in, with the
         // backfill a new name owes: the topic is theirs too now, and a name
         // somebody wrote is one a memory may name. Only on that first write --
@@ -2426,7 +2426,7 @@ impl Engine {
     /// fusion runs on were settled by measurement and are re-settled the same
     /// way, so the harness that measures them has to be able to vary them.
     /// Callers that are not measuring want
-    /// [`search_reranked`](Self::search_reranked), which is what `pamin
+    /// [`search_reranked`](Self::search_reranked), which is what `pamin-memory
     /// search` calls. This used to name a third entry point, one stage
     /// shorter than the shipped one, and both evaluation harnesses took it:
     /// every retrieval figure this project published described a pipeline
@@ -3039,7 +3039,7 @@ pub struct SearchHit {
     /// The topic, by the name a caller addresses it with.
     pub topic: String,
     /// What that topic stands for now. Search ranks topics and never their
-    /// history; `pamin read --version-offset` is what reaches an earlier one.
+    /// history; `pamin-memory read --version-offset` is what reaches an earlier one.
     pub state: TopicState,
     pub result: FusedResult,
     /// For a hit the graph reached, the content of the memory the walk started
@@ -3670,7 +3670,7 @@ pub fn place<T>(list: Vec<T>, shown: &[usize], head: usize, best_first: &[usize]
 /// user. The harnesses ask for 51 results so they can measure recall@50, and
 /// the reranker's head is 20, so every position it touches is inside what they
 /// read and this returns `true` on every query they run -- the accuracy
-/// figures cannot move, by construction rather than by measurement. `pamin
+/// figures cannot move, by construction rather than by measurement. `pamin-memory
 /// search` defaults to five. On a query whose first five results all carry a
 /// lexical hit, which is the ordinary shape of a same-language query, every
 /// unlexical candidate is at rank five or beyond and the 226 ms was buying a

@@ -1,13 +1,13 @@
 [package]
 name = "memory-client"
-description = "The pamin command line's client half: its arguments, the wire protocol, and rendering."
+description = "The pamin-memory command line's client half: its arguments, the wire protocol, and rendering."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# What the `pamin` executable is built from, so it must stay light: every
+# What the `pamin-memory` executable is built from, so it must stay light: every
 # dependency here is paid by every command an agent runs, at every start. In
 # particular nothing here may reach `memory-index`, `memory-store` or
 # `memory-engine` -- and through them the inference runtime, the vector engine,
@@ -15,7 +15,7 @@ repository.workspace = true
 [dependencies]
 memory-core = { workspace = true }
 memory-contract = { workspace = true }
-# `pamin mcp`: the contract served as MCP over stdio. Without its `http`
+# `pamin-memory mcp`: the contract served as MCP over stdio. Without its `http`
 # feature it builds no HTTP server.
 pamin-kit = { workspace = true }
 anyhow = { workspace = true }

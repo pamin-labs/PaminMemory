@@ -606,7 +606,7 @@ async fn assert_within(
 /// from affordable into unfinishable.
 ///
 /// `keep` is what the content says now, so this closes the difference. Derived
-/// edges only: an edge somebody asserted with `pamin link` is a claim of theirs
+/// edges only: an edge somebody asserted with `pamin-memory link` is a claim of theirs
 /// and is not answered by what a memory happens to say.
 ///
 /// Closing rather than deleting, and `closed` rather than `deleted`: the claim
@@ -869,7 +869,7 @@ pub struct Expansion<'a> {
     /// still to come sorts behind all of them and cannot enter the result.
     ///
     /// `None` walks to the depth whatever it finds, which is what
-    /// `pamin neighbors` wants -- it is asking what the neighbourhood *is*,
+    /// `pamin-memory neighbors` wants -- it is asking what the neighbourhood *is*,
     /// not for the best few of it.
     pub keep: Option<usize>,
 }

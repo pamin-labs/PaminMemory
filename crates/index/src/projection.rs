@@ -401,7 +401,7 @@ pub struct ProjectionIndex {
 /// two encodings in one index produce distances that mean nothing and look
 /// fine. An index built before this existed has no line for it and was built
 /// from content alone, which is what it keeps being written with -- so an
-/// existing workspace goes on working unchanged, and `pamin reindex`, which
+/// existing workspace goes on working unchanged, and `pamin-memory reindex`, which
 /// builds a fresh index, is what moves it to the current encoding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Passage {
@@ -639,7 +639,7 @@ const SMALLEST_SEGMENT: u64 = 10_000;
 /// A collection records this when it is created, so a project that has grown
 /// by orders of magnitude keeps the size it was created with until something
 /// recreates it: a server reshapes it on its own once
-/// [`Segmentation::is_worth_rebuilding`] says so, and `pamin reindex` rebuilds
+/// [`Segmentation::is_worth_rebuilding`] says so, and `pamin-memory reindex` rebuilds
 /// it at once.
 pub fn segment_documents(documents: u64) -> u64 {
     (documents / TARGET_SEGMENTS).clamp(SMALLEST_SEGMENT, LARGEST_SEGMENT)
@@ -659,7 +659,7 @@ pub fn segment_documents(documents: u64) -> u64 {
 /// index is served, with every vector reused and the lock held a batch at a
 /// time -- see [`crate::Reshape`]. A process holding the index without a
 /// server, such as an evaluation harness, has nothing doing that on its own.
-/// `pamin cascade drain` reports the shape, and `pamin reindex` rebuilds it,
+/// `pamin-memory cascade drain` reports the shape, and `pamin-memory reindex` rebuilds it,
 /// also without embedding anything again; see [`Previous`].
 #[derive(Clone, Copy, Debug)]
 pub struct Segmentation {
@@ -875,7 +875,7 @@ pub fn vector_index_lags(documents: u64, completeness: f32, budget: std::num::No
 /// new scheme's, match nothing, and every search comes back with no results
 /// and no error anywhere. A grain this build does not know -- the topic state
 /// an index was once keyed by -- is refused with a message naming
-/// `pamin reindex`.
+/// `pamin-memory reindex`.
 ///
 /// Like the [`Passage`], an index keeps the grain it was built with, and a
 /// rebuild builds the one its caller asks for. Either grain is read the same
@@ -1148,7 +1148,7 @@ impl ProjectionIndex {
     /// `None` for no index, and for one recorded with a vector index no build
     /// makes any more, which only a rebuild can open. An index recorded with
     /// another embedding model is [`IndexError::ModelMismatch`], so that a
-    /// caller can say which and that `pamin reindex` rebuilds it, rather than
+    /// caller can say which and that `pamin-memory reindex` rebuilds it, rather than
     /// passing over it as if there were nothing there.
     pub fn built_for(dir: &Path) -> Result<Option<VectorIndex>> {
         let Some(recorded) = Marker::read(dir)? else {
@@ -1343,7 +1343,7 @@ impl ProjectionIndex {
         // Creating is a write however the caller means to use the result, so a
         // read-only open of a workspace nothing has been written to yet still
         // creates first and reopens. That is one extra open, once in a
-        // workspace's life, and the alternative is `pamin search` failing on a
+        // workspace's life, and the alternative is `pamin-memory search` failing on a
         // workspace that is merely empty.
         let path = path.to_string_lossy().to_string();
         let collection = open_contended(|| {
@@ -2269,13 +2269,13 @@ const LOCK_BUDGET: Duration = Duration::from_millis(2_000);
 /// Opens the collection, waiting out another process that holds its lock.
 ///
 /// The engine takes the lock non-blocking and exclusive, so a second opener
-/// does not queue -- it is refused outright. This used to be for `pamin`
+/// does not queue -- it is refused outright. This used to be for `pamin-memory`
 /// commands overlapping, each opening the index itself. They no longer open
 /// it: the workspace's server does, and it is the only process the CLI opens
 /// an index in. What is left is a handover between two processes, and
 /// it is still worth waiting out:
 ///
-/// - **A server being replaced.** `pamin stop` and then any command, or a
+/// - **A server being replaced.** `pamin-memory stop` and then any command, or a
 ///   client that found a server from another build, stops one server and
 ///   starts another. The old one
 ///   removes its socket and then exits, and its lock goes only when the kernel
@@ -2769,7 +2769,7 @@ mod marker {
         );
 
         // An index from a retired profile is not passed over as if it were
-        // not there: it is named, so a caller can say `pamin reindex`.
+        // not there: it is named, so a caller can say `pamin-memory reindex`.
         let retired = tempfile::tempdir().expect("a directory");
         Marker {
             model: "intfloat/multilingual-e5-small+p1".to_string(),

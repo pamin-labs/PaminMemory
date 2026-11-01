@@ -1,4 +1,4 @@
-//! `pamin topics` — what is already here, so a writer does not invent a name
+//! `pamin-memory topics` — what is already here, so a writer does not invent a name
 //! for something that already has one.
 
 use schemars::JsonSchema;

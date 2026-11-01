@@ -1,7 +1,7 @@
 //! The client crate stays light: nothing it depends on, on any platform,
-//! reaches what `pamin-server` alone should pay for.
+//! reaches what `pamin-memory-server` alone should pay for.
 //!
-//! `pamin` is built from this crate alone, and what a process links is what
+//! `pamin-memory` is built from this crate alone, and what a process links is what
 //! it costs at every start. The inference runtime is the expensive one: any
 //! binary that links the `ort` crate at all runs its static initialisers and
 //! needs the C++ runtime, whatever its `main` reaches, so no amount of dead

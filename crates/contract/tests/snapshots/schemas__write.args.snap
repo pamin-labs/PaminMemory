@@ -13,7 +13,7 @@ expression: "schema_for! (write::Args)"
       "type": "string"
     },
     "defer": {
-      "description": "Record the memory without waiting for the index to catch up.\n\nThe work is queued rather than skipped. The server runs it once no\nrequest is being answered, and `pamin cascade drain` runs it at once.",
+      "description": "Record the memory without waiting for the index to catch up.\n\nThe work is queued rather than skipped. The server runs it once no\nrequest is being answered, and `pamin-memory cascade drain` runs it at once.",
       "type": "boolean",
       "default": false
     },

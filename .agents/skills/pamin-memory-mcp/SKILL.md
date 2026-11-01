@@ -10,7 +10,7 @@ promotes what is durable into versioned memories, indexes them, connects them
 through a graph, and can explain why any result came back. Every tool works on
 one project, chosen by whoever started the server; no tool takes a project.
 
-The same operations exist as the `pamin` command line, with the same arguments
+The same operations exist as the `pamin-memory` command line, with the same arguments
 and results; the `pamin-memory` skill describes that surface.
 
 ## The one thing to understand first

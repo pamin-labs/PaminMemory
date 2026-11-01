@@ -102,7 +102,7 @@ expression: "schema_for! (search::Results)"
           "type": "string"
         },
         "parent": {
-          "description": "For a section of a file, the section it sits under, by name: what to\n`pamin read` when the hit depends on the heading above it. Absent for a\nmemory that sits under nothing.",
+          "description": "For a section of a file, the section it sits under, by name: what to\n`pamin-memory read` when the hit depends on the heading above it. Absent for a\nmemory that sits under nothing.",
           "type": [
             "string",
             "null"
@@ -117,7 +117,7 @@ expression: "schema_for! (search::Results)"
           "format": "float"
         },
         "span": {
-          "description": "For a memory the index cut into spans, which of them `content` is: the\nspan the search matched best and what fits a budget of about 600 tokens\naround it, nearer neighbours first. Absent for a memory\nof one span, whose `content` is all of it. `pamin read --span` reads\nmore of the memory around it.",
+          "description": "For a memory the index cut into spans, which of them `content` is: the\nspan the search matched best and what fits a budget of about 600 tokens\naround it, nearer neighbours first. Absent for a memory\nof one span, whose `content` is all of it. `pamin-memory read --span` reads\nmore of the memory around it.",
           "anyOf": [
             {
               "$ref": "#/$defs/Span"
@@ -128,7 +128,7 @@ expression: "schema_for! (search::Results)"
           ]
         },
         "topic": {
-          "description": "What to pass to `pamin read` to see this topic's other versions.\n\nThe name, and not the state's identifier. Search ranks topics and\nreturns the current state of each, and no command anywhere takes a\nstate id as an argument -- so one on every hit was two hundred and\neighty tokens of a context window that nothing could spend.",
+          "description": "What to pass to `pamin-memory read` to see this topic's other versions.\n\nThe name, and not the state's identifier. Search ranks topics and\nreturns the current state of each, and no command anywhere takes a\nstate id as an argument -- so one on every hit was two hundred and\neighty tokens of a context window that nothing could spend.",
           "type": "string"
         },
         "valid_from": {

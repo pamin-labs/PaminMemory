@@ -1,4 +1,4 @@
-//! Cutting a file into the memories `pamin ingest` records.
+//! Cutting a file into the memories `pamin-memory ingest` records.
 //!
 //! A file is not one memory. Its sections are about different things, and a
 //! section is what a caller asks after and what a link points at, so each

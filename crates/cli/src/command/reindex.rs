@@ -1,4 +1,4 @@
-//! `pamin reindex` — rebuild the projection index from PostgreSQL.
+//! `pamin-memory reindex` — rebuild the projection index from PostgreSQL.
 //!
 //! This command is the guarantee that makes a pre-1.0 index engine acceptable:
 //! whatever the index does, the authority store can reproduce it. It exists

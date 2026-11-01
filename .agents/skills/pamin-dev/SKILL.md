@@ -14,7 +14,7 @@ tests. What follows is what those mistakes cost and how to avoid repeating them.
 
 ## Measure the entry point the product calls
 
-Both evaluation harnesses drove `Engine::search_fused`. `pamin search` calls
+Both evaluation harnesses drove `Engine::search_fused`. `pamin-memory search` calls
 `Engine::search_reranked`. Every retrieval figure this repository published
 therefore described a pipeline one stage shorter than the one that ships. When
 it was re-measured through the real entry point:
@@ -32,8 +32,8 @@ while the product defaulted to `accuracy` — 21.8 ms against the real 32.1. (Th
 profiles and the `fast` tier have since been removed; the lesson stands.)
 
 So, before running anything, answer one question: **what does the user's command
-actually call?** Trace it. `pamin search` → `Engine::search_reranked`;
-`pamin write` → the full write path including the filter and the transaction.
+actually call?** Trace it. `pamin-memory search` → `Engine::search_reranked`;
+`pamin-memory write` → the full write path including the filter and the transaction.
 Measure that function, with the defaults the product ships.
 
 The exception is deliberate and worth stating when you take it: a *sweep* over a
@@ -47,7 +47,7 @@ re-implements the pipeline to measure it, you are measuring the scratch program.
 
 A component result is not one either, even when it times the product's own
 code. Running a rerank's side-by-side passes on one shared session took a
-rerank timed alone to 0.81 of its predecessor. At `pamin search` the same
+rerank timed alone to 0.81 of its predecessor. At `pamin-memory search` the same
 change measured 1.044 [0.937, 1.157]: no significant change was detected, and
 its measured gain turned out to be memory, 47% off the search server's peak.
 Had the component figure been published, it would have claimed a speedup the
@@ -295,8 +295,8 @@ retrieval. They were wrong about the box.
   since-removed `fast` reranker loaded too, and before models were mapped from
   a prepared copy), and two of them do not fit. Before
   running anything beside a measurement, price it in memory.
-- **Count the servers, and count them again after.** `pamin search` starts a
-  server when none is listening. A harness that spawns `pamin serve` and then
+- **Count the servers, and count them again after.** `pamin-memory search` starts a
+  server when none is listening. A harness that spawns `pamin-memory serve` and then
   probes it with a search races the two: the spawned one has not bound the
   socket yet, the probe starts a second, and two copies of a large model are
   resident. Wait on the socket, then assert the count is exactly one.
@@ -367,7 +367,7 @@ child's output path) do not.
 Behind the CLI the setting is the server's, not the command's: the server reads
 its flags and `$PAMIN_HOME/config.toml` when it starts and keeps them, and a
 command asking for others is refused. Stop the server before timing a CLI arm
-with different settings; `pamin config` shows what a command would start one
+with different settings; `pamin-memory config` shows what a command would start one
 with, and the server logs what it started with.
 
 `PAMIN_EVAL_HOME` is where the harnesses keep datasets, models and workspaces
@@ -385,7 +385,7 @@ repository after a large merge found six:
 | where | said | actually |
 | --- | --- | --- |
 | README `why` example | ends on `"modifier": "importance", "factor": 1.0` | the ranker stopped emitting modifiers that changed nothing |
-| README Quickstart | `pamin stop` shuts the database down | it stops the resident server too |
+| README Quickstart | `pamin-memory stop` shuts the database down | it stops the resident server too |
 | README "What It Does" | leads with page/tree structure | the same file lists it under "Not built yet" |
 | `docs/cli.md` weight table | lexical weight `0.5` | `0.25` since the sweep settled it |
 | `docs/cli.md` reranker prose | same-language ranking "unchanged" | the table three lines above says −0.0062 |
@@ -527,7 +527,7 @@ instructions install, and have the arm refuse to run when one is missing.
 
 **Time the same layer on both sides, or do not report time.** The accuracy run
 recorded a `recall_seconds` per question and it looked like a latency column.
-It was not one: Påmin Memory was timed through `su ubuntu -c "pamin ... search
+It was not one: Påmin Memory was timed through `su ubuntu -c "pamin-memory ... search
 ..."` -- two process spawns and a socket round trip -- and mem0 as an
 in-process library call, while ten arms, an embedding endpoint and a PostgreSQL
 cluster shared four cores. It read 170 ms against 106 and the obvious

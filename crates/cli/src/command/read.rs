@@ -1,4 +1,4 @@
-//! `pamin read` — read a topic's current or historical state.
+//! `pamin-memory read` — read a topic's current or historical state.
 
 use anyhow::{Result, bail};
 use memory_contract::read::{Args, Read, Span};

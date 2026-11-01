@@ -1,4 +1,4 @@
-//! `pamin`, the command line an agent runs.
+//! `pamin-memory`, the command line an agent runs.
 //!
 //! The CLI is the primary surface: a shell command plus a skill file is a
 //! zero-integration path for any agent that can run a process, with no client
@@ -10,7 +10,7 @@
 //! what a process links is what it pays for at every start, so a command pays
 //! for parsing, one socket round trip and printing. Being the server, and
 //! stopping a database that no server is running to stop, take the engine;
-//! this hands those to `pamin-server`, the executable installed beside it.
+//! this hands those to `pamin-memory-server`, the executable installed beside it.
 //!
 //! Nothing here may name `memory_engine`, `memory_index` or `memory_store`:
 //! rustc links only the crates a binary uses, and naming one would put it all
@@ -33,11 +33,11 @@ fn main() -> Result<()> {
     }
 }
 
-/// Runs this command line again as `pamin-server`, which does what a client
+/// Runs this command line again as `pamin-memory-server`, which does what a client
 /// cannot.
 ///
 /// The same arguments, so the server parses, resolves and refuses exactly
-/// what this did, and on Unix in this process's place: `pamin serve` in the
+/// what this did, and on Unix in this process's place: `pamin-memory serve` in the
 /// foreground is then the server itself, with its signals, its streams and
 /// its exit status.
 fn hand_over() -> Result<()> {

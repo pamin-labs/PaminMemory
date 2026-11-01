@@ -10,7 +10,7 @@
 //! tuning retrieval should set is left out of the schema, and keeps the
 //! default it has on the command line.
 //!
-//! Kept light for the reason `memory-client` is: the `pamin` executable is
+//! Kept light for the reason `memory-client` is: the `pamin-memory` executable is
 //! built from it, and what it links every command pays for at start.
 
 /// The contract's version, which MCP clients see as the server's. Within a

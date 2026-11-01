@@ -495,7 +495,7 @@ async fn shipped(
     let mut worst: Vec<(f64, String, Vec<String>)> = Vec::new();
 
     for query in queries {
-        // `search_reranked`, because that is what `pamin search` calls and a
+        // `search_reranked`, because that is what `pamin-memory search` calls and a
         // floor is only worth having over the path that ships. The sweep below
         // stays on `search_fused`, which is the one that takes a weighting.
         //

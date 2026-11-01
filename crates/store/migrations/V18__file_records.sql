@@ -1,4 +1,4 @@
--- What each file `pamin ingest` read looked like when it read it, so that the
+-- What each file `pamin-memory ingest` read looked like when it read it, so that the
 -- next ingest of it -- a re-run, a server catching up after being stopped, a
 -- file watcher -- can tell an unchanged file by its metadata alone and leave
 -- it unread, the way git's index tells a clean file from a stat.

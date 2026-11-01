@@ -1,7 +1,7 @@
 //! What cutting a file at its headings is worth to retrieval: Qasper, through
-//! `pamin ingest`'s cutting and `pamin search`'s entry point.
+//! `pamin-memory ingest`'s cutting and `pamin-memory search`'s entry point.
 //!
-//! **What this is here to settle.** `pamin ingest` records a file as one
+//! **What this is here to settle.** `pamin-memory ingest` records a file as one
 //! memory per heading section, and leaves size to the index, which cuts every
 //! memory into spans. This asks what that is worth on documents nobody here
 //! wrote, against recording each file whole and letting the index's spans do
@@ -18,7 +18,7 @@
 //! found in its paper is dropped and counted.
 //!
 //! **What is measured.** Every question through `Engine::search_reranked`, the
-//! function `pamin search` calls, at the product's depths. Two scores:
+//! function `pamin-memory search` calls, at the product's depths. Two scores:
 //!
 //! - **evidence recall within a budget**, the primary one. The hits are read
 //!   in rank order, as a caller filling a context window would, until
@@ -111,7 +111,7 @@ const PER_FILE: usize = 3;
 const LIMIT: u32 = 30;
 
 /// The directory every paper is ingested from, recorded with its sections as
-/// `pamin ingest` records a repository's root.
+/// `pamin-memory ingest` records a repository's root.
 const ROOT: &str = "/qasper";
 
 struct Paper {

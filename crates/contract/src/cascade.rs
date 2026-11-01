@@ -1,4 +1,4 @@
-//! `pamin cascade` — run and inspect the work a write left behind.
+//! `pamin-memory cascade` — run and inspect the work a write left behind.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -82,7 +82,7 @@ pub fn render_drained(result: &Drained) -> String {
             "\nThis index is spread over {} segments where {} would do, because it \
              recorded its segment size when it was empty. Searches pay for the extra \
              segments; the server reshapes it in the background, copying what it holds \
-             rather than embedding it again; `pamin reindex` rebuilds it now.",
+             rather than embedding it again; `pamin-memory reindex` rebuilds it now.",
             segments.holds, segments.wants
         ));
     }

@@ -20,7 +20,7 @@ BUDGETS = ROOT / "ci" / "budgets.json"
 PROFILE = ROOT / "target" / "release"
 # What `cargo install` puts on a user's machine: the client every command
 # starts, and the server it starts.
-BINARIES = (PROFILE / "pamin", PROFILE / "pamin-server")
+BINARIES = (PROFILE / "pamin-memory", PROFILE / "pamin-memory-server")
 
 
 def run(*args: str) -> None:

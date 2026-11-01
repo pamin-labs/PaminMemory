@@ -47,7 +47,9 @@ mod tests {
     #[test]
     fn nothing_set_is_the_library_defaults() {
         let root = tempfile::tempdir().unwrap();
-        let matches = Test::command().try_get_matches_from(["pamin"]).unwrap();
+        let matches = Test::command()
+            .try_get_matches_from(["pamin-memory"])
+            .unwrap();
         let parsed = Test::from_arg_matches(&matches).unwrap();
         let server =
             memory_client::settings::Server::resolve(root.path(), &parsed.server, &matches)

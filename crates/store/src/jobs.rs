@@ -376,7 +376,7 @@ pub async fn complete(
 /// Records a failure and schedules a retry, until the attempts run out.
 ///
 /// A job that has used its attempts is left pending with its error, which is
-/// what `pamin cascade failed` reads. It is not retried again on its own:
+/// what `pamin-memory cascade failed` reads. It is not retried again on its own:
 /// retrying for ever turns one poisoned job into a worker that never does
 /// anything else.
 pub async fn fail(
@@ -470,7 +470,7 @@ pub async fn any_in_flight(executor: impl PgExecutor<'_>, project: ProjectId) ->
 /// This stops at `cap` rows, so a write pays for at most the bound it compares
 /// against.
 ///
-/// `pamin cascade` reports the exact figure and uses [`pending`].
+/// `pamin-memory cascade` reports the exact figure and uses [`pending`].
 pub async fn pending_up_to(
     executor: impl PgExecutor<'_>,
     project: ProjectId,

@@ -1,4 +1,4 @@
-//! `pamin sync` and `pamin unsync` — the paths the server keeps in sync.
+//! `pamin-memory sync` and `pamin-memory unsync` — the paths the server keeps in sync.
 
 use anyhow::Result;
 use memory_contract::sync::{Synced, SyncedPath};
