@@ -69,6 +69,7 @@ impl From<pamin_runtime::Error> for IndexError {
     fn from(error: pamin_runtime::Error) -> Self {
         match error {
             pamin_runtime::Error::Incompatible(message) => Self::Incompatible(message),
+            pamin_runtime::Error::Numerical(message) => Self::Numerical(message),
             pamin_runtime::Error::Runtime(message) => Self::Engine(message),
             pamin_runtime::Error::PluginConflict(message) => Self::PluginConflict(message),
             pamin_runtime::Error::Io(error) => Self::Io(error),
