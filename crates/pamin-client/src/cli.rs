@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use pamin_core::{VectorIndex, Workspace};
 
-use crate::{client, command, output, protocol, settings};
+use crate::{client, output, protocol, settings};
 
 #[derive(Parser)]
 #[command(
@@ -68,46 +68,46 @@ pub enum Command {
     Init,
 
     /// Record a memory.
-    Write(command::write::Args),
+    Write(pamin_contract::write::Args),
 
     /// Record many memories from a file, in one call.
-    Import(command::import::Args),
+    Import(pamin_contract::import::Args),
 
     /// Record Markdown and text files as memories, one per section.
-    Ingest(command::ingest::Args),
+    Ingest(pamin_contract::ingest::Args),
 
     /// Read a topic's current or historical state.
-    Read(command::read::Args),
+    Read(pamin_contract::read::Args),
 
     /// Search memories across every recall channel.
-    Search(command::search::Args),
+    Search(pamin_contract::search::Args),
 
     /// Find an exact string in the evidence, with nothing ranking.
-    Grep(command::grep::Args),
+    Grep(pamin_contract::grep::Args),
 
     /// Assert a relationship between two topics.
-    Link(command::link::Args),
+    Link(pamin_contract::link::Args),
 
     /// Retract a relationship, leaving the record that it was claimed.
-    Unlink(command::unlink::Args),
+    Unlink(pamin_contract::unlink::Args),
 
     /// List the topics connected to one, without ranking them.
-    Neighbors(command::neighbors::Args),
+    Neighbors(pamin_contract::neighbors::Args),
 
     /// Find the topics already here, by what they are called or what they hold.
-    Topics(command::topics::Args),
+    Topics(pamin_contract::topics::Args),
 
     /// List the paths the server keeps in sync with their files.
-    Sync(command::sync::Args),
+    Sync(pamin_contract::sync::Args),
 
     /// Stop keeping ingested paths in sync with their files.
-    Unsync(command::unsync::Args),
+    Unsync(pamin_contract::unsync::Args),
 
     /// Rebuild the projection index from PostgreSQL.
-    Reindex(command::reindex::Args),
+    Reindex(pamin_contract::reindex::Args),
 
     /// Run and inspect the work a write left for the projection.
-    Cascade(command::cascade::Args),
+    Cascade(pamin_contract::cascade::Args),
 
     /// Stop the local database server, and the resident server if one is up.
     Stop,
@@ -439,68 +439,105 @@ fn render(
 
     match call {
         protocol::Call::Init => {
-            let result: command::init::Initialized = parse(value, "init")?;
-            format.emit(&result, || command::init::render(&result));
+            let result: pamin_contract::init::Initialized = parse(value, "init")?;
+            format.emit(&result, || pamin_contract::init::render(&result));
         }
         protocol::Call::Import(_) => {
-            let result: command::import::Imported = parse(value, "import")?;
-            format.emit(&result, || command::import::render(&result));
+            let result: pamin_contract::import::Imported = parse(value, "import")?;
+            format.emit(&result, || pamin_contract::import::render(&result));
         }
         protocol::Call::Ingest(_) => {
-            let result: command::ingest::Ingested = parse(value, "ingest")?;
-            format.emit(&result, || command::ingest::render(&result));
+            let result: pamin_contract::ingest::Ingested = parse(value, "ingest")?;
+            format.emit(&result, || pamin_contract::ingest::render(&result));
         }
         protocol::Call::Write(_) => {
-            let result: command::write::Written = parse(value, "write")?;
-            format.emit(&result, || command::write::render(&result));
+            let result: pamin_contract::write::Written = parse(value, "write")?;
+            format.emit(&result, || pamin_contract::write::render(&result));
         }
         protocol::Call::Read(_) => {
-            let result: command::read::Read = parse(value, "read")?;
-            format.emit(&result, || command::read::render(&result));
+            let result: pamin_contract::read::Read = parse(value, "read")?;
+            format.emit(&result, || pamin_contract::read::render(&result));
         }
         protocol::Call::Search(_) => {
-            let results: command::search::Results = parse(value, "search")?;
-            format.emit(&results, || command::search::render(&results));
+            let results: pamin_contract::search::Results = parse(value, "search")?;
+            format.emit(&results, || pamin_contract::search::render(&results));
         }
         protocol::Call::Grep(_) => {
-            let result: command::grep::Matches = parse(value, "grep")?;
-            format.emit(&result, || command::grep::render(&result));
+            let result: pamin_contract::grep::Matches = parse(value, "grep")?;
+            format.emit(&result, || pamin_contract::grep::render(&result));
         }
         protocol::Call::Link(_) => {
-            let result: command::link::Linked = parse(value, "link")?;
-            format.emit(&result, || command::link::render(&result));
+            let result: pamin_contract::link::Linked = parse(value, "link")?;
+            format.emit(&result, || pamin_contract::link::render(&result));
         }
         protocol::Call::Unlink(_) => {
-            let result: command::unlink::Unlinked = parse(value, "unlink")?;
-            format.emit(&result, || command::unlink::render(&result));
+            let result: pamin_contract::unlink::Unlinked = parse(value, "unlink")?;
+            format.emit(&result, || pamin_contract::unlink::render(&result));
         }
         protocol::Call::Neighbors(_) => {
-            let result: command::neighbors::Neighborhood = parse(value, "neighbors")?;
-            format.emit(&result, || command::neighbors::render(&result));
+            let result: pamin_contract::neighbors::Neighborhood = parse(value, "neighbors")?;
+            format.emit(&result, || pamin_contract::neighbors::render(&result));
         }
         protocol::Call::Topics(_) => {
-            let result: command::topics::Topics = parse(value, "topics")?;
-            format.emit(&result, || command::topics::render(&result));
+            let result: pamin_contract::topics::Topics = parse(value, "topics")?;
+            format.emit(&result, || pamin_contract::topics::render(&result));
         }
         protocol::Call::Sync(_) => {
-            let result: command::sync::Synced = parse(value, "sync")?;
-            format.emit(&result, || command::sync::render(&result));
+            let result: pamin_contract::sync::Synced = parse(value, "sync")?;
+            format.emit(&result, || pamin_contract::sync::render(&result));
         }
         protocol::Call::Unsync(_) => {
-            let result: command::unsync::Unsynced = parse(value, "unsync")?;
-            format.emit(&result, || command::unsync::render(&result));
+            let result: pamin_contract::unsync::Unsynced = parse(value, "unsync")?;
+            format.emit(&result, || pamin_contract::unsync::render(&result));
         }
         protocol::Call::Reindex(_) => {
-            let result: command::reindex::Reindexed = parse(value, "reindex")?;
-            format.emit(&result, || command::reindex::render(&result));
+            let result: pamin_contract::reindex::Reindexed = parse(value, "reindex")?;
+            format.emit(&result, || pamin_contract::reindex::render(&result));
         }
         protocol::Call::Stop => {
-            let result: command::stop::Stopped = parse(value, "stop")?;
-            format.emit(&result, || command::stop::render(&result));
+            let result: pamin_contract::stop::Stopped = parse(value, "stop")?;
+            format.emit(&result, || pamin_contract::stop::render(&result));
         }
         // The subcommands answer with different types, so which one to parse
         // into is a question about the request rather than the response.
-        protocol::Call::Cascade(args) => command::cascade::render_value(args, value, format)?,
+        protocol::Call::Cascade(args) => render_cascade(args, value, format)?,
+    }
+
+    Ok(())
+}
+
+/// Prints a subcommand's result, given the request that produced it.
+///
+/// Which type the JSON is depends on which subcommand was asked for, so the
+/// request has to be in hand to read the response. That is the cost of one
+/// command answering with four shapes, and it is paid here rather than by
+/// flattening them into one shape nobody wanted.
+fn render_cascade(
+    args: &pamin_contract::cascade::Args,
+    value: &serde_json::value::RawValue,
+    format: output::Format,
+) -> Result<()> {
+    match args.command {
+        pamin_contract::cascade::Command::Drain => {
+            let result: pamin_contract::cascade::Drained = serde_json::from_str(value.get())?;
+            format.emit(&result, || pamin_contract::cascade::render_drained(&result));
+        }
+        pamin_contract::cascade::Command::Failed => {
+            let result: pamin_contract::cascade::Failures = serde_json::from_str(value.get())?;
+            format.emit(&result, || {
+                pamin_contract::cascade::render_failures(&result)
+            });
+        }
+        pamin_contract::cascade::Command::Replay => {
+            let result: pamin_contract::cascade::Moved = serde_json::from_str(value.get())?;
+            format.emit(&result, || {
+                format!("Queued {} failed jobs to run again", result.jobs)
+            });
+        }
+        pamin_contract::cascade::Command::Discard => {
+            let result: pamin_contract::cascade::Moved = serde_json::from_str(value.get())?;
+            format.emit(&result, || format!("Abandoned {} failed jobs", result.jobs));
+        }
     }
 
     Ok(())

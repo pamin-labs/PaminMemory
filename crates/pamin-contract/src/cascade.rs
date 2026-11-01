@@ -1,9 +1,6 @@
 //! `pamin cascade` — run and inspect the work a write left behind.
 
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
-
-use crate::output::Format;
 
 #[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {
@@ -72,44 +69,9 @@ pub struct Moved {
     pub jobs: u64,
 }
 
-/// Prints a subcommand's result, given the request that produced it.
-///
-/// Which type the JSON is depends on which subcommand was asked for, so the
-/// request has to be in hand to read the response. That is the cost of one
-/// command answering with four shapes, and it is paid here rather than by
-/// flattening them into one shape nobody wanted.
-pub fn render_value(
-    args: &Args,
-    value: &serde_json::value::RawValue,
-    format: Format,
-) -> Result<()> {
-    match args.command {
-        Command::Drain => {
-            let result: Drained = serde_json::from_str(value.get())?;
-            format.emit(&result, || render_drained(&result));
-        }
-        Command::Failed => {
-            let result: Failures = serde_json::from_str(value.get())?;
-            format.emit(&result, || render_failures(&result));
-        }
-        Command::Replay => {
-            let result: Moved = serde_json::from_str(value.get())?;
-            format.emit(&result, || {
-                format!("Queued {} failed jobs to run again", result.jobs)
-            });
-        }
-        Command::Discard => {
-            let result: Moved = serde_json::from_str(value.get())?;
-            format.emit(&result, || format!("Abandoned {} failed jobs", result.jobs));
-        }
-    }
-
-    Ok(())
-}
-
 /// What a drain did, and what shape it left the index in if that is worth
 /// saying.
-fn render_drained(result: &Drained) -> String {
+pub fn render_drained(result: &Drained) -> String {
     let mut rendered = format!(
         "Ran {} jobs, {} failed, {} still owed",
         result.completed, result.failed, result.pending
@@ -127,7 +89,7 @@ fn render_drained(result: &Drained) -> String {
 }
 
 /// Renders the failed jobs for a person reading them.
-fn render_failures(result: &Failures) -> String {
+pub fn render_failures(result: &Failures) -> String {
     if result.failed.is_empty() {
         return "Nothing has failed".to_string();
     }

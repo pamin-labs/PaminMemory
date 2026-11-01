@@ -5,6 +5,7 @@ members = [
     "crates/pamin-store",
     "crates/pamin-index",
     "crates/pamin-engine",
+    "crates/pamin-contract",
     "crates/pamin-client",
     "crates/pamin-cli",
 ]
@@ -18,6 +19,7 @@ repository = "https://github.com/pamin-labs/pamin-memory"
 
 [workspace.dependencies]
 pamin-client = { path = "crates/pamin-client" }
+pamin-contract = { path = "crates/pamin-contract" }
 pamin-core = { path = "crates/pamin-core" }
 pamin-engine = { path = "crates/pamin-engine" }
 pamin-index = { path = "crates/pamin-index" }

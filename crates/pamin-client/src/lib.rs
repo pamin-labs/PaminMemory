@@ -11,7 +11,6 @@
 
 pub mod cli;
 pub mod client;
-pub mod command;
 pub mod output;
 pub mod protocol;
 pub mod settings;

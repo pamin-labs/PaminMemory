@@ -1982,6 +1982,7 @@ dependencies = [
  "ignore",
  "notify",
  "pamin-client",
+ "pamin-contract",
  "pamin-core",
  "pamin-engine",
  "pamin-index",
@@ -2005,6 +2006,7 @@ dependencies = [
  "anyhow",
  "clap",
  "futures",
+ "pamin-contract",
  "pamin-core",
  "serde",
  "serde_json",
@@ -2016,6 +2018,18 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "pamin-contract"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "pamin-core",
+ "serde",
+ "serde_json",
+ "time",
 ]
 
 [[package]]

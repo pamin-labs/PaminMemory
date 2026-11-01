@@ -1,7 +1,7 @@
 //! What each command does, run against the server's session.
 //!
 //! Each command's arguments, its result and how that result reads as text are
-//! the client's, in `pamin_client::command`; this is the half that computes
+//! the contract's, in `pamin-contract`; this is the half that computes
 //! the result.
 
 pub mod cascade;

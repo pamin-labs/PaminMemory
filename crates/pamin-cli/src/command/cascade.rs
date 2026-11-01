@@ -8,7 +8,7 @@
 //! enough to be set aside for a person to look at.
 
 use anyhow::Result;
-use pamin_client::command::cascade::{Args, Command, Drained, Failure, Failures, Moved, Segments};
+use pamin_contract::cascade::{Args, Command, Drained, Failure, Failures, Moved, Segments};
 use pamin_engine::Owed;
 use pamin_index::VectorIndex;
 use pamin_store::jobs;

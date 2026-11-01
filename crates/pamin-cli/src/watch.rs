@@ -1065,7 +1065,7 @@ async fn ingest_for(
     synced: &SyncedPath,
     found: Found,
     deleted: Vec<File>,
-) -> anyhow::Result<pamin_client::command::ingest::Ingested> {
+) -> anyhow::Result<pamin_contract::ingest::Ingested> {
     let project = session.project(&synced.project).await?;
     let dir = session.workspace().index_dir(project);
     let built = tokio::task::spawn_blocking(move || ProjectionIndex::built_for(&dir)).await??;

@@ -1,13 +1,13 @@
 //! `pamin read` — read a topic's current or historical state.
 
 use anyhow::{Result, bail};
-use pamin_client::command::read::{Args, Read, Span};
+use pamin_contract::read::{Args, Read, Span};
 use pamin_core::VersionOffset;
 use pamin_engine::SpanView;
 use pamin_index::VectorIndex;
 use pamin_store::repository;
 
-use pamin_client::command::validity;
+use pamin_contract::validity;
 
 use crate::command::resolve;
 use crate::session::Session;

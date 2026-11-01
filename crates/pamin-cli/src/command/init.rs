@@ -1,7 +1,7 @@
 //! `pamin init` — provision the local database.
 
 use anyhow::Result;
-use pamin_client::command::init::Initialized;
+use pamin_contract::init::Initialized;
 
 use crate::session::Session;
 
