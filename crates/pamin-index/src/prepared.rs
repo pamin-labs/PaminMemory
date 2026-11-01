@@ -119,23 +119,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
-use ort::session::builder::GraphOptimizationLevel;
+pub(crate) use pamin_runtime::prepared::{LEVEL, features, source_digest};
 use sha2::{Digest, Sha256};
 
 use crate::error::{IndexError, Result};
-
-/// The optimization level the copy is written at.
-///
-/// It has to be the level the copy is loaded at, so it is the one
-/// `crate::inference::session` loads every model at: `Level3`, ONNX Runtime's
-/// layout level, which is what `fastembed` builds every session at with no way
-/// to ask for another. Loading runs the optimizers again over the optimized
-/// graph.
-/// That the result scores bit-identically and still finds its packed weights
-/// on disk is not argued here but checked, by `tests/prepared.rs`; a change of
-/// level is exactly what that check would have to be re-run for, so the level
-/// is part of the key.
-pub(crate) const LEVEL: GraphOptimizationLevel = GraphOptimizationLevel::Level3;
 
 /// What a prepared copy's two files are called.
 ///
@@ -1396,32 +1383,18 @@ impl Source {
     }
 
     /// The directory name a copy of this source is kept under, and what it was
-    /// derived from, for the log.
-    ///
-    /// The source, and everything that decides whether a copy written here is
-    /// valid there: the runtime's build, the architecture and its matrix
-    /// features, and the optimization level. Hashed because the build string
-    /// alone is longer than some filesystems allow a name to be.
+    /// derived from, for the log: the source, keyed to this runtime and CPU
+    /// by [`pamin_runtime::prepared::key`].
     fn key(&self) -> (String, String) {
-        let described = format!(
-            "source {} {} bytes modified {}{}; runtime 1.{} {}; {} {}; {LEVEL:?}",
+        pamin_runtime::prepared::key(&format!(
+            "source {} {} bytes modified {}{}",
             self.name,
             self.length,
             self.modified,
             self.digest
                 .as_ref()
                 .map_or(String::new(), |digest| format!(" sha256 {digest}")),
-            ort::MINOR_VERSION,
-            ort::info(),
-            std::env::consts::ARCH,
-            features().join(","),
-        );
-        let digest = Sha256::digest(described.as_bytes());
-        let key = digest[..16]
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        (key, described)
+        ))
     }
 
     /// One line each, as [`release`] writes it.
@@ -1511,76 +1484,6 @@ impl Source {
             );
         }
     }
-}
-
-/// Content identity without keeping the complete model on the heap.
-pub(crate) fn source_digest(source: &Path) -> Result<String> {
-    let mut digest = Sha256::new();
-    std::io::copy(&mut File::open(source)?, &mut digest)?;
-    Ok(format!("{:x}", digest.finalize()))
-}
-
-/// The CPU features that decide how the matrix kernels pack a weight.
-///
-/// Named rather than read as raw CPUID, because raw leaves also carry
-/// microcode mitigation bits that change with an update and would orphan every
-/// copy for nothing. AMX is read from CPUID directly: `std` does not yet
-/// detect it on a stable toolchain. That reads what the CPU has, not whether
-/// the kernel lets this process use it, which is the one case where two
-/// machines could share a key and pack differently -- and the cost of that is
-/// the heap packing described above, not a wrong score.
-#[cfg(target_arch = "x86_64")]
-pub(crate) fn features() -> Vec<&'static str> {
-    use std::arch::is_x86_feature_detected as has;
-    let mut found: Vec<&'static str> = [
-        ("avx", has!("avx")),
-        ("avx2", has!("avx2")),
-        ("fma", has!("fma")),
-        ("f16c", has!("f16c")),
-        ("avx512f", has!("avx512f")),
-        ("avx512bw", has!("avx512bw")),
-        ("avx512dq", has!("avx512dq")),
-        ("avx512vl", has!("avx512vl")),
-        ("avx512vnni", has!("avx512vnni")),
-        ("avx512bf16", has!("avx512bf16")),
-        ("avx512fp16", has!("avx512fp16")),
-        ("avxvnni", has!("avxvnni")),
-        ("avxvnniint8", has!("avxvnniint8")),
-    ]
-    .into_iter()
-    .filter_map(|(name, present)| present.then_some(name))
-    .collect();
-    if std::arch::x86_64::__cpuid(0).eax >= 7 {
-        let extended = std::arch::x86_64::__cpuid_count(7, 0).edx;
-        for (bit, name) in [(22, "amx-bf16"), (24, "amx-tile"), (25, "amx-int8")] {
-            if extended >> bit & 1 == 1 {
-                found.push(name);
-            }
-        }
-    }
-    found
-}
-
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn features() -> Vec<&'static str> {
-    use std::arch::is_aarch64_feature_detected as has;
-    [
-        ("neon", has!("neon")),
-        ("fp16", has!("fp16")),
-        ("dotprod", has!("dotprod")),
-        ("i8mm", has!("i8mm")),
-        ("bf16", has!("bf16")),
-        ("sve", has!("sve")),
-        ("sve2", has!("sve2")),
-    ]
-    .into_iter()
-    .filter_map(|(name, present)| present.then_some(name))
-    .collect()
-}
-
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-pub(crate) fn features() -> Vec<&'static str> {
-    Vec::new()
 }
 
 #[cfg(test)]
