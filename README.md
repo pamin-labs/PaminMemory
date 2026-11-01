@@ -185,12 +185,12 @@ The CLI is the whole interface, so an agent needs to know when reaching for it
 beats answering from what it already has. That judgement ships as a skill:
 
 ```bash
-npx skills add pamin-labs/PaminMemory --skill pamin-memory
+npx skills add pamin-labs/pamin-memory --skill pamin-memory
 ```
 
 It installs to `./.agents/skills/pamin-memory` and symlinks into the paths the
 individual agents read, so one install covers Claude Code, Codex, Cline, Amp and
-the rest. `npx skills add pamin-labs/PaminMemory --list` shows what is there
+the rest. `npx skills add pamin-labs/pamin-memory --list` shows what is there
 before you take it.
 
 The skill is about judgement rather than syntax — which of `search`, `read`,
