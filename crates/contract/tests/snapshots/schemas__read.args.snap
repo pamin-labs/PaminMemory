@@ -16,7 +16,7 @@ expression: "schema_for! (read::Args)"
       "minimum": 0
     },
     "span": {
-      "description": "Read one span of a memory the index cut into spans, from 0, rather\nthan all of it -- what `pamin search` prints as `--span` on a hit.",
+      "description": "Read one span of a memory the index cut into spans, from 0, rather\nthan all of it -- what `pamin-memory search` prints as `--span` on a hit.",
       "type": [
         "integer",
         "null"

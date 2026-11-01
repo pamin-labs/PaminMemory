@@ -886,12 +886,12 @@
   },
   {
     "topic": "cmd_cascade_drain",
-    "content": "pamin cascade drain runs everything that is due and stops, unlike run which keeps going",
+    "content": "pamin-memory cascade drain runs everything that is due and stops, unlike run which keeps going",
     "language": "en"
   },
   {
     "topic": "cmd_write_defer",
-    "content": "pamin write --defer records the memory and leaves the indexing for the queue",
+    "content": "pamin-memory write --defer records the memory and leaves the indexing for the queue",
     "language": "en"
   },
   {

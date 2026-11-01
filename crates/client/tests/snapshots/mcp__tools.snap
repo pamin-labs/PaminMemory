@@ -135,7 +135,7 @@ expression: tools
                 "type": "string"
               },
               "parent": {
-                "description": "For a section of a file, the section it sits under, by name: what to\n`pamin read` when the hit depends on the heading above it. Absent for a\nmemory that sits under nothing.",
+                "description": "For a section of a file, the section it sits under, by name: what to\n`pamin-memory read` when the hit depends on the heading above it. Absent for a\nmemory that sits under nothing.",
                 "type": [
                   "string",
                   "null"
@@ -158,10 +158,10 @@ expression: tools
                     "type": "null"
                   }
                 ],
-                "description": "For a memory the index cut into spans, which of them `content` is: the\nspan the search matched best and what fits a budget of about 600 tokens\naround it, nearer neighbours first. Absent for a memory\nof one span, whose `content` is all of it. `pamin read --span` reads\nmore of the memory around it."
+                "description": "For a memory the index cut into spans, which of them `content` is: the\nspan the search matched best and what fits a budget of about 600 tokens\naround it, nearer neighbours first. Absent for a memory\nof one span, whose `content` is all of it. `pamin-memory read --span` reads\nmore of the memory around it."
               },
               "topic": {
-                "description": "What to pass to `pamin read` to see this topic's other versions.\n\nThe name, and not the state's identifier. Search ranks topics and\nreturns the current state of each, and no command anywhere takes a\nstate id as an argument -- so one on every hit was two hundred and\neighty tokens of a context window that nothing could spend.",
+                "description": "What to pass to `pamin-memory read` to see this topic's other versions.\n\nThe name, and not the state's identifier. Search ranks topics and\nreturns the current state of each, and no command anywhere takes a\nstate id as an argument -- so one on every hit was two hundred and\neighty tokens of a context window that nothing could spend.",
                 "type": "string"
               },
               "valid_from": {
@@ -368,7 +368,7 @@ expression: tools
           },
           "span": {
             "default": null,
-            "description": "Read one span of a memory the index cut into spans, from 0, rather\nthan all of it -- what `pamin search` prints as `--span` on a hit.",
+            "description": "Read one span of a memory the index cut into spans, from 0, rather\nthan all of it -- what `pamin-memory search` prints as `--span` on a hit.",
             "format": "uint32",
             "minimum": 0,
             "type": [
@@ -485,7 +485,7 @@ expression: tools
             "type": "string"
           },
           "source_span": {
-            "description": "The byte range in the source this state was derived from.\n\nMoved here from `pamin search`, which put one on every hit. Ten of them\ncost a caller two hundred and eighty tokens to carry an identifier no\ncommand accepts -- and `read` did not carry it at all, so the claim\nthat every state traces back to bytes in a source had no surface on the\ncommand line. One per read is where it is affordable and where somebody\nauditing a single claim is already looking.",
+            "description": "The byte range in the source this state was derived from.\n\nMoved here from `pamin-memory search`, which put one on every hit. Ten of them\ncost a caller two hundred and eighty tokens to carry an identifier no\ncommand accepts -- and `read` did not carry it at all, so the claim\nthat every state traces back to bytes in a source had no surface on the\ncommand line. One per read is where it is affordable and where somebody\nauditing a single claim is already looking.",
             "type": "string"
           },
           "span": {
@@ -908,7 +908,7 @@ expression: tools
           },
           "defer": {
             "default": false,
-            "description": "Record the memory without waiting for the index to catch up.\n\nThe work is queued rather than skipped. The server runs it once no\nrequest is being answered, and `pamin cascade drain` runs it at once.",
+            "description": "Record the memory without waiting for the index to catch up.\n\nThe work is queued rather than skipped. The server runs it once no\nrequest is being answered, and `pamin-memory cascade drain` runs it at once.",
             "type": "boolean"
           },
           "topic": {

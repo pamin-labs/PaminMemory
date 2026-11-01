@@ -1,7 +1,7 @@
 //! What a caller decides about a server process, shared by the libraries that
 //! honour it and the command-line client that shows and forwards it.
 //!
-//! The client resolves these settings, shows their defaults in `pamin config`
+//! The client resolves these settings, shows their defaults in `pamin-memory config`
 //! and asks a running server for them, and it links none of `memory-index`,
 //! `memory-store` or `memory-engine` -- which is what keeps it from paying for
 //! the inference runtime, the vector engine and TLS at every start. So the
@@ -56,10 +56,10 @@ impl DeviceChoice {
 ///
 /// The marker records which one an index was built with, and an index is
 /// never searched as the other: opening one under the other is refused with a
-/// message naming `pamin reindex`, as a model change is. Reading an index
+/// message naming `pamin-memory reindex`, as a model change is. Reading an index
 /// built one way as another is the silent-wrong-answer shape ADR 0001 records
 /// from the first attempt at quantization, which returned recall@10 of 0.000
-/// with no error. `pamin reindex` lends every vector the old index holds to
+/// with no error. `pamin-memory reindex` lends every vector the old index holds to
 /// the new one (see `memory_index::Previous`), so changing costs a build and no embedding.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum VectorIndex {

@@ -11,7 +11,7 @@
 //! **One project per conversation, searched two ways.** Each conversation is
 //! written once, every turn a memory, with consecutive turns of a session
 //! joined by an explicit `related_to` edge, which is what the ledger arm does
-//! with `pamin link`. The topic names are dialogue ids, so mention derivation
+//! with `pamin-memory link`. The topic names are dialogue ids, so mention derivation
 //! finds nothing and the only edges are those links. Every question is asked
 //! twice of that one project: with the shipped fusion, and with the graph
 //! channel taken out and not walked (graph depth 0, so the reranker is shown
@@ -27,11 +27,11 @@
 //! here read the same index and the same ids.
 //!
 //! **What it calls, and at what limit.** `Engine::search_reranked_with`, the
-//! function `pamin search` reaches, at the shipped depths, reranker and
+//! function `pamin-memory search` reaches, at the shipped depths, reranker and
 //! fusion, but asked for [`RECALL_AT`] results rather than the CLI's default
 //! `--limit 5`, so that recall at that depth can be read. The limit is more
 //! than a cut: the rerank pass runs only when a candidate it may move sits
-//! above the limit, so the first five here need not be the five `pamin
+//! above the limit, so the first five here need not be the five `pamin-memory
 //! search` prints. This is the shipped search path measured wider than a user
 //! sees it, and says nothing on its own about the visible five.
 //!
@@ -83,7 +83,7 @@
 //!
 //! Any other `PAMIN_` variable fails the run before it starts: one no test
 //! reads (`support::eval::check`), or one of the search's tuning knobs
-//! ([`TUNING`]), which would make this a sweep rather than `pamin search`.
+//! ([`TUNING`]), which would make this a sweep rather than `pamin-memory search`.
 //!
 //! Projects are named after a digest of the records and links they hold, and
 //! of the execution plan and model revision that embedded them, so a reused
@@ -163,12 +163,12 @@ const MISCITED: [(&str, usize, &str); 6] = [
 /// so leave their question scored.
 const RECITED_UNCHANGED: usize = 62;
 
-/// What the product's `pamin search` asks for by default. A constant because
+/// What the product's `pamin-memory search` asks for by default. A constant because
 /// the rule replay sizes a constant from it; the test asserts it still equals
 /// [`Depths::default`].
 const DEPTHS: Depths = Depths::DEFAULT;
 
-/// The knobs that tune a search away from what `pamin search` ships: the
+/// The knobs that tune a search away from what `pamin-memory search` ships: the
 /// rerank shortlist, its token cap, and the vector search's width. A run with
 /// one set is a sweep, not the shipped search path, which this run searches
 /// with ([`DEPTHS`] and the default reranker settings).
@@ -632,7 +632,7 @@ async fn write(engine: &Engine, conversation: &Conversation) {
     harness::drain(engine).await;
 }
 
-/// Joins consecutive turns of each session, as the ledger arm's `pamin link`
+/// Joins consecutive turns of each session, as the ledger arm's `pamin-memory link`
 /// does. Idempotent: an identical live claim appends nothing.
 async fn link(engine: &Engine, conversation: &Conversation) -> usize {
     let pool = engine.database.pool();
@@ -670,7 +670,7 @@ async fn locomo_evidence_with_and_without_links() {
     assert_eq!(
         (DEPTHS.channel, DEPTHS.graph),
         (shipped.channel, shipped.graph),
-        "DEPTHS must be what `pamin search` ships"
+        "DEPTHS must be what `pamin-memory search` ships"
     );
     for name in TUNING {
         assert!(
@@ -879,7 +879,7 @@ async fn locomo_evidence_with_and_without_links() {
 
     println!(
         "\n  LOCOMO evidence retrieval, {named}, the shipped search path at limit {RECALL_AT} \
-         (`pamin search` shows 5), {} conversations, {questions} questions, {linked_edges} links",
+         (`pamin-memory search` shows 5), {} conversations, {questions} questions, {linked_edges} links",
         conversations.len()
     );
     println!(

@@ -70,7 +70,7 @@ pub struct Drained {
     /// of the difference -- is it zero, is it past the lag bound -- are both
     /// answered exactly below the cap. Counting a backlog in full costs a read
     /// of all of it, on every write, exactly when the writer is behind. A
-    /// caller that reports the number, as `pamin cascade` does, counts it
+    /// caller that reports the number, as `pamin-memory cascade` does, counts it
     /// with `jobs::pending`.
     pub pending: i64,
     /// Jobs that failed and will be tried again, or have run out of attempts.
@@ -87,7 +87,7 @@ pub struct Drained {
 /// one write does not, so it pays for its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Owed {
-    /// Everything. What `pamin cascade` means, and what a process with nothing
+    /// Everything. What `pamin-memory cascade` means, and what a process with nothing
     /// behind it has to do for itself. That includes work other rounds on the
     /// project hold: it is flushed, or waited for until its claim is
     /// recorded, or lapses and this drain claims it again.

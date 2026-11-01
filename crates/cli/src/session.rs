@@ -164,7 +164,7 @@ impl Session {
     /// The lock every ingest of `project` holds while it runs.
     ///
     /// An ingest reads a file, records its sections and then records the file
-    /// as read; a second ingest of the same file in between -- `pamin ingest`
+    /// as read; a second ingest of the same file in between -- `pamin-memory ingest`
     /// beside the file watcher -- could record older text after newer and
     /// leave a record trusting the newer. Within one project, ingests take
     /// turns; projects do not wait for each other.

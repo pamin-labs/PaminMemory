@@ -204,7 +204,7 @@ impl Embedder {
     ///
     /// A vector is at most four kilobytes of float payload per query, so at
     /// 256 entries that is up to one MiB of vector payload. Per process,
-    /// like the reranker's, so it is `pamin serve` that makes it worth
+    /// like the reranker's, so it is `pamin-memory serve` that makes it worth
     /// anything.
     const REMEMBERED_QUERIES: usize = 256;
 

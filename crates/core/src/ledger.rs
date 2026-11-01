@@ -28,7 +28,7 @@ pub struct Project {
 pub enum SourceKind {
     /// Written directly through the CLI or API.
     Manual,
-    /// A section of a file, cut out of it by `pamin ingest`.
+    /// A section of a file, cut out of it by `pamin-memory ingest`.
     File,
 }
 

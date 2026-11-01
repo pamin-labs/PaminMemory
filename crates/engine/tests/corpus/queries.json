@@ -1075,14 +1075,14 @@
   },
   {
     "group": "lexical",
-    "query": "pamin cascade drain",
+    "query": "pamin-memory cascade drain",
     "relevant": [
       "cmd_cascade_drain"
     ]
   },
   {
     "group": "lexical",
-    "query": "pamin write --defer",
+    "query": "pamin-memory write --defer",
     "relevant": [
       "cmd_write_defer"
     ]

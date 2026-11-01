@@ -1,4 +1,4 @@
-//! `pamin link` — assert a relationship the text does not state.
+//! `pamin-memory link` — assert a relationship the text does not state.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

@@ -1,6 +1,6 @@
-//! `pamin ingest` — record files as memories, one per section.
+//! `pamin-memory ingest` — record files as memories, one per section.
 //!
-//! What `pamin import` is for memories somebody has already written, this is
+//! What `pamin-memory import` is for memories somebody has already written, this is
 //! for the files they were written in. A file is cut into sections by
 //! [`memory_index::sections`], and each section is recorded the way an import
 //! records a memory: against one open engine, several topics at once, with the
@@ -86,7 +86,7 @@ pub async fn execute(
 
 /// Keeps the paths an ingest was given in sync from now on, or stops keeping
 /// them under `--no-sync`. Each as it resolves, which is how the server watches
-/// it and how `pamin sync` lists it.
+/// it and how `pamin-memory sync` lists it.
 async fn keep_in_sync(
     session: &Session,
     project: &str,

@@ -1,4 +1,4 @@
-//! `pamin serve` — the process that holds what every command used to rebuild.
+//! `pamin-memory serve` — the process that holds what every command used to rebuild.
 //!
 //! One [`Session`] for the process: one pool, migrated once, and one engine per
 //! project, each holding its index open, with the models loaded once. A
@@ -67,7 +67,7 @@ pub async fn run(workspace: &Workspace, server: Server) -> Result<()> {
     // the running one as its own and tries to start its own.
     if tokio::net::UnixStream::connect(&path).await.is_ok() {
         bail!(
-            "a server is already listening at {}; run `pamin stop` first if you \
+            "a server is already listening at {}; run `pamin-memory stop` first if you \
              mean to replace it",
             path.display()
         );
@@ -284,9 +284,9 @@ const REOPEN_AFTER: std::time::Duration = std::time::Duration::from_secs(10 * 60
 ///
 /// A write drains what its own memory needs before it returns, so ordinarily
 /// nothing is owed. Two things leave work owed with nobody coming back for it:
-/// `pamin write --defer`, and a server that died holding claims. Before this,
+/// `pamin-memory write --defer`, and a server that died holding claims. Before this,
 /// both waited for the next write or import into the same project or for
-/// `pamin cascade drain`, and until then the memories were recorded and could
+/// `pamin-memory cascade drain`, and until then the memories were recorded and could
 /// not be found. Now they are found a tick or two later.
 ///
 /// Three rules keep it out of the way of the requests it is doing work for:
@@ -354,7 +354,7 @@ impl CatchingUp {
                 Ok(Some(built)) => built,
                 Ok(None) => continue,
                 // An index built with a retired model is owed work only a
-                // `pamin reindex` can do. Said once a refusal window rather
+                // `pamin-memory reindex` can do. Said once a refusal window rather
                 // than every tick, and not passed over in silence: its
                 // searches go on missing what was written until then.
                 Err(error) => {
@@ -485,7 +485,7 @@ const RESHAPE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 
 /// The reshapes this server has started, one per project at most.
 ///
 /// Held by the upkeep loop rather than the session, because nothing else
-/// starts one: `pamin reindex` is a rebuild, and waits for a reshape of its
+/// starts one: `pamin-memory reindex` is a rebuild, and waits for a reshape of its
 /// project to finish rather than being one.
 #[derive(Default)]
 struct Reshapes {
@@ -613,7 +613,7 @@ const MAPPED_FROM: i32 = 1 << 20;
 /// own, up to eight per core, and an arena keeps what it has freed. A search
 /// runs its reranker passes on threads of their own, so a four-core server
 /// ended a search holding thirty-two arenas and about a gigabyte of free heap
-/// in them. Measured at the entry point (q51: `pamin serve` at d0b6b89, four
+/// in them. Measured at the entry point (q51: `pamin-memory serve` at d0b6b89, four
 /// Xeon cores, 3,230 texts, 120 timed searches, four rotated runs an arm,
 /// the same cap set through `GLIBC_TUNABLES`): search peak RSS 2,354 to
 /// 1,306 MB, its anonymous part 1,425 to 398 MB, ingest peak RSS 1,797 to
@@ -625,7 +625,7 @@ const MAPPED_FROM: i32 = 1 << 20;
 /// The model passes' intermediate buffers, a few megabytes each, therefore
 /// come from the heap after the first few passes, and a heap keeps what it
 /// has freed. Fixed at 1 MiB, they are mapped and returned. Measured at the
-/// entry point (q69: `pamin serve` at 1d141db against this change, same
+/// entry point (q69: `pamin-memory serve` at 1d141db against this change, same
 /// corpus and host as q51, four rotated runs an arm): search peak RSS 1,019
 /// to 993 MB, its anonymous part 368 to 338 MB, ingest peak RSS 986 to 789
 /// MB, round-1 search p50 1.028x [1.003, 1.079] (borderline: pooled over

@@ -1,4 +1,4 @@
-//! `pamin write` — record a memory.
+//! `pamin-memory write` — record a memory.
 
 use anyhow::{Context, Result};
 use memory_contract::validity;

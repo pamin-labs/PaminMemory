@@ -8,7 +8,7 @@
 //! **These reach `memory-store` directly, and `docs/architecture.md` says that
 //! is what only `memory-engine` does.** The reason is cost rather than
 //! oversight: opening an engine opens the projection index, measured at 489 MB
-//! and about 600 ms on a 13,014-document project, and `pamin link` has no use
+//! and about 600 ms on a 13,014-document project, and `pamin-memory link` has no use
 //! for an index. Deferring the *model* took 1,075 MB and four seconds off that
 //! (see `Engine`'s `embedder` field); deferring the index as well is what
 //! would let these go through the engine, and it moves a blocking open under

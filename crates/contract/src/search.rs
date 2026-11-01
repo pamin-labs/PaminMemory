@@ -1,4 +1,4 @@
-//! `pamin search` — retrieve memories, with the reasoning attached.
+//! `pamin-memory search` — retrieve memories, with the reasoning attached.
 
 use memory_core::{Channel, Depths, Derivation, EdgeKind, Why};
 use schemars::JsonSchema;
@@ -177,7 +177,7 @@ impl From<Why> for Trace {
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Hit {
-    /// What to pass to `pamin read` to see this topic's other versions.
+    /// What to pass to `pamin-memory read` to see this topic's other versions.
     ///
     /// The name, and not the state's identifier. Search ranks topics and
     /// returns the current state of each, and no command anywhere takes a
@@ -213,12 +213,12 @@ pub struct Hit {
     /// For a memory the index cut into spans, which of them `content` is: the
     /// span the search matched best and what fits a budget of about 600 tokens
     /// around it, nearer neighbours first. Absent for a memory
-    /// of one span, whose `content` is all of it. `pamin read --span` reads
+    /// of one span, whose `content` is all of it. `pamin-memory read --span` reads
     /// more of the memory around it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub span: Option<Span>,
     /// For a section of a file, the section it sits under, by name: what to
-    /// `pamin read` when the hit depends on the heading above it. Absent for a
+    /// `pamin-memory read` when the hit depends on the heading above it. Absent for a
     /// memory that sits under nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
@@ -318,7 +318,7 @@ mod tests {
             graph_depth: u8,
             rerank: String,
         }
-        let args = Command::parse_from(["pamin", "deployment rollback"]).args;
+        let args = Command::parse_from(["pamin-memory", "deployment rollback"]).args;
         let wire = serde_json::to_string(&args).unwrap();
         let before: Before = serde_json::from_str(&wire).expect("an older server reads it");
         assert_eq!(before.rerank, "accurate");

@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 fn same<A: Args + FromArgMatches + Serialize + DeserializeOwned>(cli: &[&str], tool: Value) {
-    let command = A::augment_args(clap::Command::new("pamin").no_binary_name(true));
+    let command = A::augment_args(clap::Command::new("pamin-memory").no_binary_name(true));
     let matches = command
         .try_get_matches_from(cli)
         .expect("the CLI parses it");

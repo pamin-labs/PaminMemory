@@ -1,6 +1,6 @@
-//! `pamin import` — record many memories in one call.
+//! `pamin-memory import` — record many memories in one call.
 //!
-//! `pamin write` costs a process, a socket round trip, and a drain per memory,
+//! `pamin-memory write` costs a process, a socket round trip, and a drain per memory,
 //! and for one memory that is the right shape: an agent writes when something
 //! happened, and what it wants back is whether that memory is findable. An
 //! import wants none of that. Measured here, two and a half thousand deferred

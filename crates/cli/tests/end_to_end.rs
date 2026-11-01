@@ -1,4 +1,4 @@
-//! Drives the actual `pamin` binary through a full lifecycle.
+//! Drives the actual `pamin-memory` binary through a full lifecycle.
 //!
 //! Ignored by default: it provisions PostgreSQL and downloads model weights.
 //! Run with `cargo test -p memory-cli -- --ignored`.
@@ -40,15 +40,15 @@ impl Cli {
     }
 
     fn run(&self, args: &[&str]) -> String {
-        let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
+        let output = Command::new(env!("CARGO_BIN_EXE_pamin-memory"))
             .args(args)
             .env("PAMIN_HOME", self.home())
             .output()
-            .expect("running pamin");
+            .expect("running pamin-memory");
 
         assert!(
             output.status.success(),
-            "pamin {args:?} failed: {}",
+            "pamin-memory {args:?} failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8(output.stdout).expect("utf-8 output")
@@ -83,7 +83,7 @@ impl Cli {
     /// A server given `flags` as well, for a test that shortens a window.
     fn serve_with(&self, filter: &str, flags: &[&str]) -> std::process::Child {
         let log = std::fs::File::create(self.home().join("serve.log")).expect("server log");
-        let child = Command::new(env!("CARGO_BIN_EXE_pamin"))
+        let child = Command::new(env!("CARGO_BIN_EXE_pamin-memory"))
             .args(["serve"])
             .args(flags)
             .env("PAMIN_HOME", self.home())
@@ -109,11 +109,11 @@ impl Cli {
     }
 
     fn fails(&self, args: &[&str]) -> String {
-        let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
+        let output = Command::new(env!("CARGO_BIN_EXE_pamin-memory"))
             .args(args)
             .env("PAMIN_HOME", self.home())
             .output()
-            .expect("running pamin");
+            .expect("running pamin-memory");
         assert!(!output.status.success(), "expected {args:?} to fail");
         String::from_utf8_lossy(&output.stderr).into_owned()
     }
@@ -122,7 +122,7 @@ impl Cli {
 impl Drop for Cli {
     fn drop(&mut self) {
         // Leaves no server behind for the next test to collide with.
-        let _ = Command::new(env!("CARGO_BIN_EXE_pamin"))
+        let _ = Command::new(env!("CARGO_BIN_EXE_pamin-memory"))
             .args(["stop"])
             .env("PAMIN_HOME", self.home())
             .output();
@@ -1159,12 +1159,12 @@ fn a_removed_setting_is_refused_rather_than_ignored() {
         ("PAMIN_RERANK_DEPTH", ["20", "30"]),
     ] {
         for value in values {
-            let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
+            let output = Command::new(env!("CARGO_BIN_EXE_pamin-memory"))
                 .args(["read", "deploy"])
                 .env("PAMIN_HOME", home.path())
                 .env(name, value)
                 .output()
-                .expect("running pamin");
+                .expect("running pamin-memory");
 
             assert!(!output.status.success(), "{name}={value} should be refused");
             let error = String::from_utf8_lossy(&output.stderr);
@@ -1203,11 +1203,11 @@ fn a_walk_deeper_than_the_graph_channel_goes_is_refused() {
         ["neighbors", "deploy", "--depth", "255"],
         ["search", "deploy", "--graph-depth", "255"],
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_pamin"))
+        let output = Command::new(env!("CARGO_BIN_EXE_pamin-memory"))
             .args(args)
             .env("PAMIN_HOME", home.path())
             .output()
-            .expect("running pamin");
+            .expect("running pamin-memory");
 
         assert!(!output.status.success(), "{args:?} should be refused");
 
@@ -1469,7 +1469,7 @@ fn a_pre_split_workspace_is_migrated_by_reindexing() {
 /// A request would open the project, and a project that is open is caught up
 /// by the ordinary path; one nobody has asked about is the case a queue left
 /// by a dead server is actually in, and the one that used to wait for the next
-/// write or `pamin cascade drain` before a search could find anything in it.
+/// write or `pamin-memory cascade drain` before a search could find anything in it.
 #[test]
 #[ignore = "provisions postgres and downloads model weights"]
 fn work_a_write_left_behind_outlives_the_process_that_left_it() {
@@ -1564,7 +1564,7 @@ fn work_a_write_left_behind_outlives_the_process_that_left_it() {
 ///
 /// `--defer` leaves the index's work in the queue and returns. Before the
 /// server caught up on it, nothing ran that queue until the next write or
-/// import into the same project, or `pamin cascade drain` -- so a memory
+/// import into the same project, or `pamin-memory cascade drain` -- so a memory
 /// written this way was recorded, readable, and not searchable for as long as
 /// nobody did either, which could be for ever. Against that build this fails
 /// at the deadline.
@@ -2143,7 +2143,7 @@ fn resident_kib(server: &std::process::Child) -> u64 {
 /// seven million subjects.
 ///
 /// One document per topic, holding what the topic says now. What it said before
-/// is a question for `pamin read --version-offset`, which reads the ledger and
+/// is a question for `pamin-memory read --version-offset`, which reads the ledger and
 /// never goes near the index.
 #[test]
 #[ignore = "provisions postgres and downloads model weights"]
@@ -2228,7 +2228,7 @@ fn an_import_records_the_whole_file_or_none_of_it() {
     )
     .expect("writing the broken file");
 
-    let refused = Command::new(env!("CARGO_BIN_EXE_pamin"))
+    let refused = Command::new(env!("CARGO_BIN_EXE_pamin-memory"))
         .args(["import", "--from"])
         .arg(&broken)
         .env("PAMIN_HOME", cli.home())
@@ -2333,7 +2333,7 @@ fn recorded_vector_indexes(cli: &Cli) -> Vec<String> {
 /// rebuilding it -- which reuses every vector rather than embedding again.
 ///
 /// Asking an index built one way to answer as the other is refused and names
-/// `pamin reindex`: searched with the other index's
+/// `pamin-memory reindex`: searched with the other index's
 /// parameters it would answer, plausibly and wrongly.
 #[test]
 #[ignore = "provisions postgres and downloads model weights"]
@@ -2453,7 +2453,7 @@ fn an_ingested_file_is_found_by_section_and_re_ingested_by_change() {
 
     // The same tree named relatively from inside it: the same sections,
     // nothing to record.
-    let relative = Command::new(env!("CARGO_BIN_EXE_pamin"))
+    let relative = Command::new(env!("CARGO_BIN_EXE_pamin-memory"))
         .args(["ingest", "--no-sync", "docs", "--json"])
         .current_dir(tree.path())
         .env("PAMIN_HOME", cli.home())

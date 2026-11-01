@@ -1,9 +1,9 @@
-//! Checks that an installed `pamin` runs without the tree that built it, and
+//! Checks that an installed `pamin-memory` runs without the tree that built it, and
 //! that the client stays a client.
 //!
-//! `cargo install` puts two executables side by side: `pamin`, the client,
-//! and `pamin-server`, which links the engine. Both have to start from where
-//! they were installed, and `pamin` has to link none of what only the server
+//! `cargo install` puts two executables side by side: `pamin-memory`, the client,
+//! and `pamin-memory-server`, which links the engine. Both have to start from where
+//! they were installed, and `pamin-memory` has to link none of what only the server
 //! needs, which is the whole reason it is a separate binary.
 //!
 //! The retrieval engine is a dynamic library. Cargo installs the executable
@@ -60,7 +60,7 @@ fn an_installed_binary_runs_without_the_tree_that_built_it() {
     );
 
     let bin = root.path().join("bin");
-    for name in ["pamin", "pamin-server"] {
+    for name in ["pamin-memory", "pamin-memory-server"] {
         let installed = bin.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
         let version = as_a_user_would(Command::new(&installed).arg("--version"))
             .output()
@@ -75,12 +75,12 @@ fn an_installed_binary_runs_without_the_tree_that_built_it() {
         assert_no_library_comes_from_the_build_tree(&installed);
     }
 
-    assert_the_client_links_nothing_heavy(&bin.join("pamin"));
+    assert_the_client_links_nothing_heavy(&bin.join("pamin-memory"));
 }
 
 /// Fails when the installed client records a library only the server needs.
 ///
-/// `pamin` is started by every command an agent runs, and it is kept light
+/// `pamin-memory` is started by every command an agent runs, and it is kept light
 /// by linking nothing that reaches the engine: not the vector engine's shared
 /// library, not TLS, and not the inference runtime, which drags in the C++
 /// runtime. A dependency added to the wrong crate puts them back and nothing
@@ -117,7 +117,7 @@ fn assert_the_client_links_nothing_heavy(client: &Path) {
         .collect();
     assert!(
         heavy.is_empty(),
-        "the installed pamin links what only pamin-server needs:\n{heavy:#?}"
+        "the installed pamin-memory links what only pamin-memory-server needs:\n{heavy:#?}"
     );
 }
 

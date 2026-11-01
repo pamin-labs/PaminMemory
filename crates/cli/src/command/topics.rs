@@ -1,4 +1,4 @@
-//! `pamin topics` — what is already here, so a writer does not invent a name
+//! `pamin-memory topics` — what is already here, so a writer does not invent a name
 //! for something that already has one.
 //!
 //! Every other read command needs a topic name to start from, and an agent

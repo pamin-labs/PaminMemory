@@ -1,7 +1,7 @@
 //! Stamps the client with a fingerprint of the protocol it speaks.
 //!
-//! `pamin` and `pamin-server` are two executables, so a client can meet a
-//! server from another build: `pamin` upgraded alone, or copied out of one
+//! `pamin-memory` and `pamin-memory-server` are two executables, so a client can meet a
+//! server from another build: `pamin-memory` upgraded alone, or copied out of one
 //! tree and run against another. The server binary's own identity -- its size
 //! and modification time -- catches a server that was rebuilt; it cannot
 //! catch a client that was. So each request also carries this, which both

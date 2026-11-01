@@ -1,4 +1,4 @@
-//! `pamin mcp`: the operation contract served as MCP over standard input and
+//! `pamin-memory mcp`: the operation contract served as MCP over standard input and
 //! output, for agents that load tools rather than run commands.
 //!
 //! Each tool is one request to the workspace's server, made the way the

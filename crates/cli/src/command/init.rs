@@ -1,4 +1,4 @@
-//! `pamin init` — provision the local database.
+//! `pamin-memory init` — provision the local database.
 
 use anyhow::Result;
 use memory_contract::init::Initialized;

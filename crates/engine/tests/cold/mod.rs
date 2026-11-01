@@ -1,13 +1,13 @@
 //! Where the first search after an idle release spends its time.
 //!
 //! A resident server gives back its indexes and both models after
-//! its idle window (`--model-idle`), so the next `pamin search` opens the project's index,
+//! its idle window (`--model-idle`), so the next `pamin-memory search` opens the project's index,
 //! loads BGE-M3 and the reranker, and only then answers. That wait is the
 //! latency a user sees after stepping away, and the parts of it are what
 //! decide what is worth making concurrent. So each round here starts from what
 //! a released server holds -- a database and nothing else -- and asks the
 //! question the server asks, through `Engine::attached` and `search_reranked`
-//! at the defaults `pamin search` passes.
+//! at the defaults `pamin-memory search` passes.
 //!
 //! Three kinds of round, interleaved so a busy machine charges them alike:
 //!
@@ -65,7 +65,7 @@ use memory_engine::{Engine, Models};
 use memory_index::{Access, Embedder, Reranker, VectorIndex};
 use memory_store::{Database, Workspace};
 
-/// What `pamin search` passes when a caller says nothing.
+/// What `pamin-memory search` passes when a caller says nothing.
 const LIMIT: u32 = 5;
 
 /// Rounds of each kind, from `COLD_ROUNDS`. Seven by default: enough for a

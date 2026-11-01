@@ -1494,7 +1494,7 @@ async fn write_corpus(engine: &Engine, corpus: &Corpus) {
     let mut written = 0usize;
 
     for passage in &corpus.passages {
-        // The dataset's own language, as the other harness does it: `pamin
+        // The dataset's own language, as the other harness does it: `pamin-memory
         // write` takes this from `detect_language`, and nothing reads the
         // column today.
         if !harness::write_absent(

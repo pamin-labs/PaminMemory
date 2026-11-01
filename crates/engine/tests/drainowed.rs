@@ -6,7 +6,7 @@
 //!
 //! A resident server drains on nobody's behalf, owing only what a memory needs:
 //! it applies the writes and leaves their flush, and the claims they hold, to
-//! the next upkeep tick. `pamin cascade drain`, asked on the same engine in
+//! the next upkeep tick. `pamin-memory cascade drain`, asked on the same engine in
 //! between, claimed nothing -- every job was held -- and returned with those
 //! jobs counted as still owed, done and waiting only to be recorded.
 

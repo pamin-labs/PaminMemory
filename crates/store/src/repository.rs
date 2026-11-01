@@ -515,7 +515,7 @@ pub async fn create_topic_named(
 /// Files the name of the topic called `name` in the name index, if the topic
 /// exists and is not filed there yet.
 ///
-/// For a topic `pamin ingest` created, which is left out of the index, when
+/// For a topic `pamin-memory ingest` created, which is left out of the index, when
 /// somebody writes it by hand: from then on it is theirs too, and a name
 /// somebody wrote is one a memory may name.
 ///
@@ -1428,7 +1428,7 @@ pub async fn names_matching(
 }
 
 /// Every topic in a project that belongs in the name index: all of them but
-/// the sections `pamin ingest` cut out of files, which
+/// the sections `pamin-memory ingest` cut out of files, which
 /// [`create_topic_unnamed`] keeps out of it.
 ///
 /// Told apart by their sources rather than their name. A section's evidence is
@@ -1470,7 +1470,7 @@ pub async fn topics_to_name(
         .collect())
 }
 
-/// A topic `pamin ingest` has put on the retrieval surface.
+/// A topic `pamin-memory ingest` has put on the retrieval surface.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileTopic {
     pub name: String,
@@ -1481,7 +1481,7 @@ pub struct FileTopic {
     pub root: Option<String>,
 }
 
-/// Every topic `pamin ingest` has put on the retrieval surface in this project.
+/// Every topic `pamin-memory ingest` has put on the retrieval surface in this project.
 ///
 /// One read for a whole ingest, rather than one per file: an ingest compares
 /// each file's sections against what an earlier ingest left under that file,
@@ -1833,7 +1833,7 @@ pub async fn forget_file_record_of(
     Ok(())
 }
 
-/// A path `pamin ingest` keeps in sync. See `V19__synced_paths`.
+/// A path `pamin-memory ingest` keeps in sync. See `V19__synced_paths`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SyncedPath {
     /// The project's name.

@@ -1,10 +1,10 @@
-//! `pamin-server`, the resident server behind the `pamin` command line.
+//! `pamin-memory-server`, the resident server behind the `pamin-memory` command line.
 //!
 //! It holds the database, the index and the models, and answers the commands
-//! `pamin` sends it. `pamin` starts it as `pamin-server serve`, and hands it
-//! `pamin serve` and a `pamin stop` that finds no server to ask.
+//! `pamin-memory` sends it. `pamin-memory` starts it as `pamin-memory-server serve`, and hands it
+//! `pamin-memory serve` and a `pamin-memory stop` that finds no server to ask.
 //!
-//! It takes the same command line as `pamin`, parsed by the same
+//! It takes the same command line as `pamin-memory`, parsed by the same
 //! `memory_client`, and runs any command the same way; what it adds is what a
 //! client cannot do -- be the server, and stop a database that no server is
 //! running to stop -- and with it everything that links: the inference

@@ -63,9 +63,9 @@ PostgreSQL is also the shortest path to a distributed future rather than an obst
 
 Doing this now costs nothing. Doing it after a cloud tier exists is a migration.
 
-PostgreSQL is bundled rather than brought by the user. `pamin init` provisions and hosts a local instance through `postgresql_embedded`, so there is no Docker and no configuration. This changes only the distribution mechanism; PostgreSQL remains the sole authority.
+PostgreSQL is bundled rather than brought by the user. `pamin-memory init` provisions and hosts a local instance through `postgresql_embedded`, so there is no Docker and no configuration. This changes only the distribution mechanism; PostgreSQL remains the sole authority.
 
-**The bundled cluster runs with `fsync` on and `synchronous_commit` off.** `postgresql_embedded` 0.21 starts every cluster with `-F`, which is `fsync=off`, and until this was noticed every workspace ran that way: nothing PostgreSQL wrote was forced to disk, so a power cut could leave the data directory corrupt, not merely behind. For the one store here that cannot be rebuilt from anything else that is the wrong trade at any price, and the store now passes `fsync=on` after the flag, which overrides it. What it gives up instead is the last moments: with `synchronous_commit` off a commit returns before its WAL is flushed, the WAL writer flushes within a few hundred milliseconds, and a crash can lose the commits of that window but cannot leave the cluster inconsistent. A memory lost that way is one whose write had returned, which is a real cost; its evidence is the agent's own recent output, which is the cheapest thing in the system to say again. Waiting for the flush on every commit was measured through `Engine::write` on a synthetic project of 152,000 topics, three runs alternating the two settings with `fsync` on, 100 writes each: p50 3.0-5.9 ms a write with synchronous commit against 2.3-2.7 ms without, on this machine's disk, in a debug build at a load average near 12. A laptop's flush can cost more or less than this container's; the direction is the same. A workspace that is already running keeps what it was started with until `pamin stop`.
+**The bundled cluster runs with `fsync` on and `synchronous_commit` off.** `postgresql_embedded` 0.21 starts every cluster with `-F`, which is `fsync=off`, and until this was noticed every workspace ran that way: nothing PostgreSQL wrote was forced to disk, so a power cut could leave the data directory corrupt, not merely behind. For the one store here that cannot be rebuilt from anything else that is the wrong trade at any price, and the store now passes `fsync=on` after the flag, which overrides it. What it gives up instead is the last moments: with `synchronous_commit` off a commit returns before its WAL is flushed, the WAL writer flushes within a few hundred milliseconds, and a crash can lose the commits of that window but cannot leave the cluster inconsistent. A memory lost that way is one whose write had returned, which is a real cost; its evidence is the agent's own recent output, which is the cheapest thing in the system to say again. Waiting for the flush on every commit was measured through `Engine::write` on a synthetic project of 152,000 topics, three runs alternating the two settings with `fsync` on, 100 writes each: p50 3.0-5.9 ms a write with synchronous commit against 2.3-2.7 ms without, on this machine's disk, in a debug build at a load average near 12. A laptop's flush can cost more or less than this container's; the direction is the same. A workspace that is already running keeps what it was started with until `pamin-memory stop`.
 
 ### The driver stays `sqlx`: pipelining measured
 
@@ -156,7 +156,7 @@ pipelining or stops pinging on release.
 `zvec` is pre-1.0 and has made breaking changes between minor versions. Two mitigations make that acceptable, and both are executable rather than declared:
 
 - It appears only in `memory-index`, behind the `Projection` trait; `zvec` types must not reach `memory-core`. Both halves are checked rather than reviewed: the trait is what `memory-engine` holds, and `ci/budget.py` fails the build if the engine becomes reachable from a crate outside `memory-index`, `memory-engine`, and `memory-cli`.
-- The index is fully rebuildable from PostgreSQL, and `pamin reindex` is delivered and tested alongside it. A breaking upgrade is therefore a reindex, not a migration.
+- The index is fully rebuildable from PostgreSQL, and `pamin-memory reindex` is delivered and tested alongside it. A breaking upgrade is therefore a reindex, not a migration.
 
 LanceDB and Qdrant Edge were also evaluated. LanceDB has the broadest tokenizer coverage available, but its Rust crate is pre-1.0 and pulls roughly sixty direct dependencies including Arrow and DataFusion, which is exactly the build cost Påmin Memory is trying to avoid. Qdrant Edge runs in-process with on-device BM25, but its API is documented as beta.
 
@@ -982,7 +982,7 @@ pipeline has an explicit evidence-sufficiency decision with adaptive stopping �
 which wins that column close to by construction. The paper reports no
 ablations, so nothing in it separates a retrieval gain from an abstention gain,
 and the per-column decomposition says most of it is the second. This project
-has no abstention at all: `pamin search` returns its best candidates whatever
+has no abstention at all: `pamin-memory search` returns its best candidates whatever
 the evidence looks like. That is a gap worth naming, and it is a different gap
 from retrieval quality. The historical calibrated-reranker experiment is invalid for product
 calibration because it compared different INT8 batch contexts; no abstention
@@ -1069,7 +1069,7 @@ Against that, three differences in their design are specific enough to test:
 - **Relation type decides traversal, not just provenance.** Nine `EdgeKind`s
   exist here and `graph::expand` can filter on them, but nothing in the search
   path ever does: every kind is walked identically, and the only kind the engine
-  ever derives is `Mentions`. Everything else needs an explicit `pamin link`.
+  ever derives is `Mentions`. Everything else needs an explicit `pamin-memory link`.
   They insert a typed edge only when its relation probability clears 0.60 and
   then route per type.
 - **Traversal is gated on predicted need.** Depth is derived per query from a
@@ -1284,7 +1284,7 @@ and a state that fits in one span is indexed exactly as before. The reason is
 length rather than history: the vector channel reads the first 512 tokens of a
 document and the reranker the first 256, so a whole-session memory was judged
 by its opening. Spans are derived and rebuildable, never stored in PostgreSQL;
-an index records the grain it was built with, and `pamin reindex` rebuilds an
+an index records the grain it was built with, and `pamin-memory reindex` rebuilds an
 older one into spans. The measurements are in [what the project
 measures](../measured.md).
 
@@ -1623,7 +1623,7 @@ is negative.
 baseline's text, not its model.** They were +0.0029 cross-lingual (p = 0.5351)
 and +0.0355 same-language (p = 0.0001) on XQuAD-R. Those paired pplx on a fresh
 index against BGE-M3 indexes built before 0c2ff9f, which embed content alone
-and keep doing so until `pamin reindex` rebuilds them. Measured alone on the
+and keep doing so until `pamin-memory reindex` rebuilds them. Measured alone on the
 same harness, the encoding moves BGE-M3 from content to `name: content` by
 +0.0101 cross-lingual (444 wins / 321 losses), +0.0193 same-language
 (141 / 80) and +0.0294 on MuSiQue (249 / 166), each at p = 0.0001. So the
@@ -1633,7 +1633,7 @@ different encodings (783551a). The prediction for the encoding was wrong in
 sign on XQuAD-R (−0.003 and −0.002, on the reasoning that names like `de:12:3`
 are noise to the model) and low on MuSiQue (+0.012). It also separates two
 decisions: a BGE-M3 workspace built before 0c2ff9f gains the encoding figures
-from `pamin reindex` with no change of model.
+from `pamin-memory reindex` with no change of model.
 
 What it costs:
 
@@ -1734,7 +1734,7 @@ thirty.** Accuracy, paired per question:
 | XQuAD-R same-language (1,190), nDCG@10 | 0.8041 | 0.8199 | **+0.0157** | 162 / 111 | 0.010 |
 | XQuAD-R cross-lingual (1,190), nDCG@10 | 0.6745 | 0.6699 | −0.0045 | 412 / 493 | 0.24 |
 
-Cost, in two long-lived processes opened as `pamin serve` opens them, the two
+Cost, in two long-lived processes opened as `pamin-memory serve` opens them, the two
 models alternated per query on 100 MuSiQue and 100 XQuAD-R queries at the CLI
 defaults (load average 5.6 to 7.2 on four cores):
 
@@ -1794,7 +1794,7 @@ The consequence was not accuracy. It was reproducibility: `reindex` embedded in 
 
 ### What else zvec-rust 0.7.2 offers, measured
 
-The binding exposes more than rotation: a half-precision vector field, IVF-RaBitQ and DiskANN as alternatives to the graph, an explicit memory limit, and a document iterator. Each was measured against a rule written down before its first number, under this project's order of priorities — accuracy, then latency, then memory, then disk — and each rule asked for a win measured where the product runs: `search_reranked` at the default tier on the `accuracy` profile, with the reranker's and the embedder's caches bypassed and the arms taken in rotated order. That ran over all 157 own-corpus queries, every second of XQuAD-R's 1,190 (595, scored in both groups) and every fifth of MuSiQue's first thousand (200), on four cores that two other evaluations were sharing (load about 9) — so the times below are ratios within a question, never absolute figures. The index-level figures are over the MIRACL-sw passages the evaluation workspace holds — 131,924 real BGE-M3 vectors, the 482 real queries embedded, exact search as the truth — and over the 50,000 synthetic clustered vectors `recall.rs` uses, in the four-segment shape `pamin reindex` produces.
+The binding exposes more than rotation: a half-precision vector field, IVF-RaBitQ and DiskANN as alternatives to the graph, an explicit memory limit, and a document iterator. Each was measured against a rule written down before its first number, under this project's order of priorities — accuracy, then latency, then memory, then disk — and each rule asked for a win measured where the product runs: `search_reranked` at the default tier on the `accuracy` profile, with the reranker's and the embedder's caches bypassed and the arms taken in rotated order. That ran over all 157 own-corpus queries, every second of XQuAD-R's 1,190 (595, scored in both groups) and every fifth of MuSiQue's first thousand (200), on four cores that two other evaluations were sharing (load about 9) — so the times below are ratios within a question, never absolute figures. The index-level figures are over the MIRACL-sw passages the evaluation workspace holds — 131,924 real BGE-M3 vectors, the 482 real queries embedded, exact search as the truth — and over the 50,000 synthetic clustered vectors `recall.rs` uses, in the four-segment shape `pamin-memory reindex` produces.
 
 | | recall@10, MIRACL | recall@10, synthetic | index query, MIRACL | disk, MIRACL vectors | resident, MIRACL vectors | end-to-end nDCG@10 | end-to-end time |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1810,7 +1810,7 @@ End-to-end nDCG@10 is own corpus / XQuAD-R / MuSiQue, each against fp32 on the s
 
 **Int8 is the trade the section above describes, and at the whole search it buys nothing.** Recall and every ranking were identical — not one of 952 questions scored differently — and the index answers in 0.53 to 0.79 of fp32's time on MIRACL, but a search spends a few milliseconds in the vector index out of 1.1 s (own corpus) to 6 s (MuSiQue), almost all of it in the reranker. Measured there, it is 0.993, 0.998 and 1.002 of fp32's time on the three corpora (pooled 0.998, p = 0.47), against a rule that asked for at least 2% at p < 0.05. What it costs is real: 16% more disk on MuSiQue, 22% on XQuAD-R and 27% on MIRACL's vectors, and 25% more resident. So fp32 stays, now with the end-to-end number behind it rather than the index one.
 
-**IVF-RaBitQ saves nothing at this size; DiskANN saves resident memory and pays for it in everything else.** Both were the expected path for a large or cold project. IVF-RaBitQ is faster than the graph at every probe count tried and less accurate at all of them — within 0.002 only when probing half the lists — and it holds more, not less: 703 MB on disk against 596, and 630 MB resident against 565, which is what a full-precision copy beside the codes would look like. On the synthetic clusters it is worse again, 0.951 at half the lists, with a resident peak of 1.14 GB against 0.77. DiskANN is the one real memory lever here: it recalls everything fp32 does and opening it and answering 482 queries added 22 MB to the process, against 565 MB for the graph, because it reads the vectors from disk per query rather than holding them — so what it touches sits in the page cache, which the kernel can take back, rather than in the process. Everything else goes the other way: 2.5 to 5 times the index query time (30.8 ms in one run, against fp32's 5.95 to 12.55 ms in four), twice the disk (1,160.5 MB), fourteen times the build (757 s against 55) with a 3.2 GB peak while building, and a 5,000-document build that took 70 s against the graph's 3. Under this project's order latency outranks memory, and the rule asked for no slower than 1.03 at the index, so it is not the default. It is the path for a project whose resident set is the constraint and whose searches can afford some 20 ms more in the index — not measured end to end, where that would be roughly 0.3 to 2% of a search at the times above — and, like `enable_mmap`, it is fixed when a collection is created, so reaching it is `pamin reindex` -- which, with `--vector-index`, is now how a project moves between it and the in-memory graph.
+**IVF-RaBitQ saves nothing at this size; DiskANN saves resident memory and pays for it in everything else.** Both were the expected path for a large or cold project. IVF-RaBitQ is faster than the graph at every probe count tried and less accurate at all of them — within 0.002 only when probing half the lists — and it holds more, not less: 703 MB on disk against 596, and 630 MB resident against 565, which is what a full-precision copy beside the codes would look like. On the synthetic clusters it is worse again, 0.951 at half the lists, with a resident peak of 1.14 GB against 0.77. DiskANN is the one real memory lever here: it recalls everything fp32 does and opening it and answering 482 queries added 22 MB to the process, against 565 MB for the graph, because it reads the vectors from disk per query rather than holding them — so what it touches sits in the page cache, which the kernel can take back, rather than in the process. Everything else goes the other way: 2.5 to 5 times the index query time (30.8 ms in one run, against fp32's 5.95 to 12.55 ms in four), twice the disk (1,160.5 MB), fourteen times the build (757 s against 55) with a 3.2 GB peak while building, and a 5,000-document build that took 70 s against the graph's 3. Under this project's order latency outranks memory, and the rule asked for no slower than 1.03 at the index, so it is not the default. It is the path for a project whose resident set is the constraint and whose searches can afford some 20 ms more in the index — not measured end to end, where that would be roughly 0.3 to 2% of a search at the times above — and, like `enable_mmap`, it is fixed when a collection is created, so reaching it is `pamin-memory reindex` -- which, with `--vector-index`, is now how a project moves between it and the in-memory graph.
 
 **The memory limit is not read by an index opened this way.** `initialize(Some(..))` with `ConfigBuilder::memory_limit` sets the size of the pool the engine reads vectors through when a collection was created with mmap off; left unset, the engine takes 80% of the cgroup's or the host's memory. Every collection here is created with the default, mmap on, and the pool is then not consulted. Measured rather than read, over XQuAD-R's 13,014 documents, each arm in its own process and two rounds: 256 MiB, 2 GiB and no limit opened at the same resident set (243 MB, to the kilobyte's noise), returned identical results for 400 vector and 400 lexical queries, answered in the same time within noise (4.6 to 5.5 ms a pair, overlapping across arms), and built the same index in 25.2 to 26.4 s with a peak of 826 to 873 MB — no limit lowest in both rounds. The engine is still initialized with `None`.
 
@@ -1832,7 +1832,7 @@ Measured against exact search, recall@10 and recall@50, with the rescore; fp32 H
 | **`memory`** (default): fp16 HNSW, width 700 | 0.9965 / 0.9965 | 1.0000 / 0.9997 | 5.9 / 10.0 ms | 84 s | +721 MB | 327.8 MB | 320 MB |
 | **`disk`**: fp16 DiskANN, width 1,200 | 0.9985 / 0.9975 | 1.0000 / 0.9996 | 68.6 / 79.2 ms | 1,379 s | +1,353 MB | 618.1 MB | 34 MB |
 
-Resident is what opening the vector-only collection and answering the 482 queries added to the process. Build and peak are one `optimize` over every document, the way `pamin reindex` builds. The synthetic set shows the same ordering: `memory` built in 58 to 64 s, fp32 in 98 s and `disk` in 922 to 1,024 s; they held 130, 224 and 27.5 MB resident and took 132.1, 232.0 and 235.6 MB of disk.
+Resident is what opening the vector-only collection and answering the 482 queries added to the process. Build and peak are one `optimize` over every document, the way `pamin-memory reindex` builds. The synthetic set shows the same ordering: `memory` built in 58 to 64 s, fp32 in 98 s and `disk` in 922 to 1,024 s; they held 130, 224 and 27.5 MB resident and took 132.1, 232.0 and 235.6 MB of disk.
 
 **`memory` meets the bar at the width it already had.** Its recall is inside 0.002 of fp32's on the synthetic set and inside 0.001 on MIRACL, and it is faster to query, to build and smaller on disk and resident than the fp32 graph, all of it from half the bytes a vector. The query width was measured again for it, because a narrower one is where its remaining milliseconds are: at 200, 300 and 500 it saves about a millisecond a query and misses the bar at fifty on both sets (0.9458, 0.9769 and 0.9927 on the synthetic set; 0.9980, 0.9988 and 0.9993 on MIRACL), so it stays at 700.
 
@@ -1881,11 +1881,11 @@ No measurements or product defaults were changed by this correction.
 
 **What `disk` does to the write path is its largest cost, and it decided the default.** Measured through the product's own index on 25,000 synthetic vectors written the way a grown project holds them (segments of 10,000), with searches and writes running beside the `optimize` that upkeep issues: both indexes keep a freshly written memory searchable before any build -- every one of fifty found itself, by exhaustive scan of the unbuilt segment -- and neither holds a search up while it builds (`disk`: 15,423 searches during the build, median 13.5 ms, p95 26 ms; `memory`: median 20.5 ms). But `disk`'s first build took 567 s where `memory`'s took 81, and its index queries afterwards ran at a median of 166 ms and a p95 of 537 ms on a machine at load 12 to 15 against `memory`'s 6.8 and 11. And then five increments of 64 documents, each written, flushed and followed by an `optimize` -- what a working drain produces -- took **114, 114, 174, 196 and 310 s** of `optimize` each under `disk`, against 1.1 to 1.6 s under `memory`. Whatever the engine rebuilds when a few documents join an on-disk graph, it rebuilds a great deal of it, and the cost grew with each round. Upkeep runs `optimize` whenever the file budget, the unmerged blocks or the unindexed remainder asks for it, so how often a working project asks is what decides this cost: each time is minutes of two or more cores under `disk` and about a second under `memory`. That settled it: with that cost measured, the owner made `memory` the default, since this project ranks query time above resident memory and `memory` already holds half what the fp32 graph did.
 
-**End to end, neither index moves a ranking, and `disk` costs a few percent of a search.** Measured through `search_reranked` at the shipped defaults (`accuracy`, `accurate` reranking), each project rebuilt from its fp32 index the way `pamin reindex` rebuilds, lending every vector: the own corpus's 157 questions, and every second XQuAD-R question, 595 of them scored in two groups. Against fp32 on the same questions (the fp32 arm of the section above), nDCG@10 moved by +0.0003 on the own corpus (3 better, 2 worse, p = 0.76 by paired sign-flip) and −0.0003 on XQuAD-R (55 better, 55 worse, p = 0.68) under either index, because `disk` and `memory` scored identically on every question: their vector top ten agreed on 100 of 100 probe queries before a question was timed. In the same run, `disk` took 1.033 of `memory`'s time on the own corpus (median 1,371 ms against 1,287, p = 0.34) and 1.054 on XQuAD-R (2,339 against 2,236 ms, p < 0.001). Against fp32 the ratios are 1.23 and 1.13 for `disk` and 1.20 and 1.08 for `memory`, but fp32 was timed in an earlier run at a mean load of 8.9 and 9.0 against 15.1 and 10.4 here, so those carry the machine as well as the index and are not a figure. The rebuild that moved XQuAD-R's 13,014 documents onto each index took 424 s under `disk` and 30 s under `memory`, and left 108.1 and 80.6 MB of index where fp32's was 123.1.
+**End to end, neither index moves a ranking, and `disk` costs a few percent of a search.** Measured through `search_reranked` at the shipped defaults (`accuracy`, `accurate` reranking), each project rebuilt from its fp32 index the way `pamin-memory reindex` rebuilds, lending every vector: the own corpus's 157 questions, and every second XQuAD-R question, 595 of them scored in two groups. Against fp32 on the same questions (the fp32 arm of the section above), nDCG@10 moved by +0.0003 on the own corpus (3 better, 2 worse, p = 0.76 by paired sign-flip) and −0.0003 on XQuAD-R (55 better, 55 worse, p = 0.68) under either index, because `disk` and `memory` scored identically on every question: their vector top ten agreed on 100 of 100 probe queries before a question was timed. In the same run, `disk` took 1.033 of `memory`'s time on the own corpus (median 1,371 ms against 1,287, p = 0.34) and 1.054 on XQuAD-R (2,339 against 2,236 ms, p < 0.001). Against fp32 the ratios are 1.23 and 1.13 for `disk` and 1.20 and 1.08 for `memory`, but fp32 was timed in an earlier run at a mean load of 8.9 and 9.0 against 15.1 and 10.4 here, so those carry the machine as well as the index and are not a figure. The rebuild that moved XQuAD-R's 13,014 documents onto each index took 424 s under `disk` and 30 s under `memory`, and left 108.1 and 80.6 MB of index where fp32's was 123.1.
 
 **The two end-to-end tests the write path depends on pass under both, and one of them is flaky before this change as well.** `a_deferred_write_is_found_without_anything_else_being_run` passed in every run: three under `disk`, three under `memory` and three on the fp32 build this branches from, a deferred write searchable after 5.2 to 32.1 s, 5.5 to 34.5 s and 5.5 to 34.7 s against a limit of 60. `catching_up_does_not_hold_a_search_up` passed 2 of 3 times under `disk`, 1 of 3 under `memory` and 0 of 3 on the fp32 build. Its failures are of the same two shapes on every build: the server caught up only once while the thirty searches ran, so the test refused to time them, or one search during catching up took 21.7 to 24.4 s against a settled slowest under 0.1 s. Both shapes appear on the fp32 build this branches from, so neither is this change's. In every run, on every build, two logged rounds of catching up were 28 to 35 s apart where the loop sleeps five seconds between them; what holds the loop, and whether it is what the long searches waited for, is not established and is not fixed here.
 
-**An index built before this is refused rather than searched.** Its marker's storage line says `fp32`, or nothing, which reads as `fp32`; it names neither index, so opening it fails with the message the profile check already gives — run `pamin reindex` — and the rebuild lends every vector it holds, reading them as fp32 and storing them as half precision would have stored the model's. Changing `--vector-index` on a built project goes the same way: refused, then rebuilt without embedding anything. Refusing is what the marker already did for a profile change, and it keeps one way of searching: an index is only ever searched as what it was built as. `each_vector_index_reads_back_what_it_stored_and_is_opened_only_as_itself`, `an_fp32_index_from_before_is_refused_and_lends_to_its_rebuild` and `each_vector_index_returns_the_nearest_documents` in `crates/index/tests/projection.rs` hold the three properties, and the last fails at 0.01 recall when the query is scrambled.
+**An index built before this is refused rather than searched.** Its marker's storage line says `fp32`, or nothing, which reads as `fp32`; it names neither index, so opening it fails with the message the profile check already gives — run `pamin-memory reindex` — and the rebuild lends every vector it holds, reading them as fp32 and storing them as half precision would have stored the model's. Changing `--vector-index` on a built project goes the same way: refused, then rebuilt without embedding anything. Refusing is what the marker already did for a profile change, and it keeps one way of searching: an index is only ever searched as what it was built as. `each_vector_index_reads_back_what_it_stored_and_is_opened_only_as_itself`, `an_fp32_index_from_before_is_refused_and_lends_to_its_rebuild` and `each_vector_index_returns_the_nearest_documents` in `crates/index/tests/projection.rs` hold the three properties, and the last fails at 0.01 recall when the query is scrambled.
 
 **Deferring DiskANN compaction by file count was tested and rejected, 2026-09-27.** The [upstream compaction tracker](https://github.com/alibaba/zvec/issues/728) lists FLAT, HNSW and HNSW_RABITQ on its segment-reuse path, with Vamana/DiskANN among the full-rebuild fallbacks. `zvec-rust` 0.7.2 exposes one `Collection::optimize()` call and no incremental-Vamana switch; the exact work in its prebuilt native library was not instrumented here. An index-level scratch test built 25,000 clustered vectors in 10,000-document segments, then flushed 220 rounds of 64 new vectors without another build. Every round's new vector was searchable before `optimize`. At 513 files, 30 fixed queries had exact-neighbour recall@10 **1.0000 both before and after** compaction; index-only search was 134 versus 138 ms/query in one run and 104 versus 114 in another. Those non-alternated timings do not establish a search-speed gain. `optimize` took 26–38 seconds on this machine, against an earlier 114–310 seconds on a busy four-core build. The larger 512-file ceiling would defer that cost, but it is unsafe under a 512-descriptor hard limit because every counted index file stays open; multiple projects reduce the available headroom further. It also held **1,233 MiB before** versus **181 MiB after** compaction, about 1.05 GiB of additional allocated disk that persists if writes stop below the new threshold. **Decision: keep the 256-file ceiling for both index types.** A future change needs a descriptor-safe policy and a paired product-path latency win that justifies the steady-state disk cost.
 
@@ -1917,7 +1917,7 @@ The crossover is near 25,000, and the build cost is superlinear where the query 
 
 The cost of segmenting at all is that BM25 statistics are per segment, so a term's rarity is measured against a segment rather than the project. It is small and it was measured, not assumed: six segments against one over the same 13,014 sentences moved same-language nDCG@10 from 0.8558 to 0.8517 and recall@50 from 0.9639 to 0.9655, while a query went from 208 ms to 63 ms.
 
-**`pamin reindex` is the entry point for recomputing this.** The size is written into the collection's manifest when it is created, from the document count at that moment — which for a project that grows from nothing is the floor. A project that has since grown by orders of magnitude keeps the size it was created with until it is rebuilt, and rebuilding is what recomputes it. That is a deliberate consequence of the size living in the manifest rather than a gap: changing it in place would mean resealing every segment, which is a rebuild under another name.
+**`pamin-memory reindex` is the entry point for recomputing this.** The size is written into the collection's manifest when it is created, from the document count at that moment — which for a project that grows from nothing is the floor. A project that has since grown by orders of magnitude keeps the size it was created with until it is rebuilt, and rebuilding is what recomputes it. That is a deliberate consequence of the size living in the manifest rather than a gap: changing it in place would mean resealing every segment, which is a rebuild under another name.
 
 **And the rule above was never implemented.** "Whenever a segment has sealed without a graph" is the policy; what the cascade actually asked was whether the index had spread across more than 256 files, and it queued one job for both answers. That was sound while every write flushed the index — files grew about two a write, so the budget was reached every sixty or so and a sealed segment never waited long. The release that moved the flush to the server ended it: 136 files after three thousand writes, so the trigger moved from every sixty writes to roughly every 5,650, and `cascade.rs` kept the paragraph explaining why the graph needed no condition of its own.
 
@@ -1956,7 +1956,7 @@ Learned sparse retrieval such as SPLADE outperforms BM25 on most benchmarks but 
 
 The section above ends by noting that a collection records its segment size at
 creation, so a project that has grown keeps the size it was created with until
-`pamin reindex` rebuilds it. That is true and it understates the case, because
+`pamin-memory reindex` rebuilds it. That is true and it understates the case, because
 of what a collection is created *with*: nothing. A workspace is created before
 anything has been written to it, so `segment_documents` is asked about zero
 documents, is clamped to `SMALLEST_SEGMENT`, and records 2,000.
@@ -2017,7 +2017,7 @@ exists, and on a schema read back from an open collection it returns `Ok`,
 reports the new value from that handle, and changes nothing: reopening the
 collection reports 2,000 again. That is the same shape as `enable_mmap` above
 -- a setter that is a no-op after creation and says so only by being ignored --
-so resegmenting means recreating the collection, which is what `pamin reindex`
+so resegmenting means recreating the collection, which is what `pamin-memory reindex`
 does.
 
 What to do about it is a live question rather than a decision recorded here.
@@ -2081,7 +2081,7 @@ with the non-commercial tier went the licence notice and the
 `PAMIN_ACCEPT_NONCOMMERCIAL` variable that existed only for it. Asking for
 either tier by name is now the unknown-tier error.
 
-Measured through `Engine::search_reranked`, the entry point `pamin search`
+Measured through `Engine::search_reranked`, the entry point `pamin-memory search`
 calls, with `TIERS=1` on the cross-lingual harness over all 1,190 queries. The
 first version of this table came from a scratch program that reordered a dumped
 shortlist with its own copy of the pipeline, and overstated both gains by about
@@ -2586,7 +2586,7 @@ validate nor refute the abstention strategy or cross-corpus calibration. No corr
 N/A.
 
 **Historical signal, with invalid batch comparability.** The `accurate` tier's
-logit for the top hit `pamin search` returns -- reused when the reranker already scored it, scored as one more pair
+logit for the top hit `pamin-memory search` returns -- reused when the reranker already scored it, scored as one more pair
 after the ranking is final when it did not, so the order returned is
 unchanged -- mapped through an isotonic fit, with the verdict `weak` below a
 probability of 0.5. The historical rule treated the half as an equal-cost
@@ -2660,7 +2660,7 @@ strategy or measured calibration gain is claimed.
 Conditions: a release build of the verdict (`2a72188`, `5d7adf0`) with an
 empty table, so each row recorded the raw sigmoid of the logit; the table was
 fitted afterwards and applied to those logits offline. An identical lookup
-does not repair incompatible inference inputs. `pamin search --limit 10 --json` at
+does not repair incompatible inference inputs. `pamin-memory search --limit 10 --json` at
 the shipped tier, four cores at a load average near 18. The latency of the
 extra pair was not measured; the historical rule interpretation is withdrawn. The
 top hit arrived without a reranker score on 1,789 of the 1,986 LoCoMo
@@ -3117,7 +3117,7 @@ another process -- the spinning threads hold cores the working threads need.
 written before anything was timed: ship if rankings and scores are
 bit-identical, the paired search-time ratio at the machine's own load is at
 most 1.05, under a fixed contention it is at most 0.80 at `p < 0.01`, and eight
-concurrent callers get no less throughput. Through `pamin serve` and `pamin
+concurrent callers get no less throughput. Through `pamin-memory serve` and `pamin
 search` at the defaults, one hundred queries (sixty from the own corpus, forty
 from an XQuAD-R subset of three languages), a fresh server per arm and round so
 no query is a cache hit, three rounds in rotated order, on four cores:
@@ -3157,7 +3157,7 @@ One methodological note, because it nearly went the other way: `Engine::open`
 takes `Connections::PerCommand`, which caps the pool at four, and a search uses
 several connections. The first run of this sweep went through it, so eight
 concurrent searches were partly queueing on connections rather than on anything
-being measured. Re-running against `Connections::Resident` — what `pamin serve`
+being measured. Re-running against `Connections::Resident` — what `pamin-memory serve`
 actually uses — moved no number outside run-to-run noise, so the pool was not
 the confound it looked like. A measurement of a lock has to be a measurement of
 that lock.
@@ -3175,7 +3175,7 @@ Exceeding a budget is a trade to record in the pull request, not drift to accept
 - A cold build compiles the whole dependency tree, and `target/` is large. The dependency tree is kept thin deliberately: no web or metrics stack until something calls it, and no compile-time SQL macros.
 
   This originally read as a decision against `sqlx`, on the grounds of its compile-time macros. That was wrong twice over. The macros are one feature, off by default, and `sqlx` was already in the tree underneath `postgresql_embedded`, so refusing it bought a second driver rather than none: `tokio-postgres` and `refinery` alongside it, with a duplicate SHA-2 and a duplicate SCRAM implementation compiled into every binary. Moving the store onto `sqlx` and dropping both took the dependency count from 434 to 388. The `macros` feature stays off, which is the part of the original reasoning that survives.
-- `zvec` is pre-1.0, so a breaking upgrade will require a reindex. `pamin reindex` exists from the first release precisely so this stays routine.
+- `zvec` is pre-1.0, so a breaking upgrade will require a reindex. `pamin-memory reindex` exists from the first release precisely so this stays routine.
 - Building `zvec` downloads a prebuilt native library, and ONNX Runtime does the same. Neither compiles C++ locally, but both require network access at build time and a measure of supply-chain trust.
 - Two full-text fields roughly double the lexical index. This is a measured trade, revisited when the evaluation harness exists.
 - Fusion in our own layer means more code than calling an engine helper. That code is the explainability contract, so it is the product rather than overhead.
@@ -3391,7 +3391,7 @@ the check.
 an error naming the setting, following `PAMIN_NO_SERVER`, rather than being
 ignored: a caller that set one expected it to change something. An index built
 under a retired profile refuses to open with an error that names the profile
-and `pamin reindex`, and the server's catch-up logs it rather than passing over
+and `pamin-memory reindex`, and the server's catch-up logs it rather than passing over
 the project in silence. Retired model downloads are not deleted, because a
 model directory can be shared; [cli.md](../cli.md#upgrading-from-profiles-and-tiers)
 lists them.
@@ -3399,7 +3399,7 @@ lists them.
 **Costs.** There is no longer a cheaper search to ask for: a workspace that
 used `fast` or `off` for latency now pays the full rerank, historically 1.2 to
 1.5 s a search on four cores, against 0.1 to 0.4 s for `off` and `fast`
-([cli.md](../cli.md#pamin-search)). The evaluation arms that
+([cli.md](../cli.md#pamin-memory-search)). The evaluation arms that
 depended on the MiniLM reranker (the cascade routes, the router's small-model
 features) went with it; fusion alone (`Engine::search_fused`) remains the
 evaluations' comparison for what reranking is worth.
@@ -3427,7 +3427,7 @@ plan once more.
 call went from 2,105 and 2,163 ms to 1,212 and 1,269 ms in two runs, every
 score bit-identical; through `Embedder`, 500 texts stored 64 at a time went
 from 38.3 and 40.3 s to 18.7 and 17.3 s, every vector bit-identical. The
-shared session and one pair a pass were then measured at `pamin search`,
+shared session and one pair a pass were then measured at `pamin-memory search`,
 each against its immediate predecessor, in three rotated runs an arm on a
 4 vCPU 2.8 GHz Xeon over 3,230 texts and 120 warm queries;
 [measured.md](../measured.md) has the conditions and every row:
@@ -3452,7 +3452,7 @@ each; the 95% CIs of the differences run from [−0.0052, +0.0026] to
 [−0.0029, +0.0113], all including zero).
 
 **What it costs.** For the shared session, no significant latency change was
-detected at `pamin search` (p50 1.044 [0.937, 1.157], p95 0.999
+detected at `pamin-memory search` (p50 1.044 [0.937, 1.157], p95 0.999
 [0.880, 1.191]); a component result of 0.81 for it did not carry over, and its
 measured gain is memory. One pair a pass moves rankings, and no significant
 nDCG@10 change was detected in any group measured: the top-five set was the same on 82 of 120 timed queries and in the same order on

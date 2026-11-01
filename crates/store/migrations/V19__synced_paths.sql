@@ -1,4 +1,4 @@
--- The paths `pamin ingest` keeps in sync: every path an ingest was given,
+-- The paths `pamin-memory ingest` keeps in sync: every path an ingest was given,
 -- unless it was told `--no-sync`. The server watches each one and ingests what
 -- changes under it, and catches up on what changed while it was not running.
 CREATE TABLE synced_paths (

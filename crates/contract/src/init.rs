@@ -1,4 +1,4 @@
-//! `pamin init` — provision the local database.
+//! `pamin-memory init` — provision the local database.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

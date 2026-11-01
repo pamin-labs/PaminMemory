@@ -1,4 +1,4 @@
-//! `pamin link` — assert a relationship the text does not state.
+//! `pamin-memory link` — assert a relationship the text does not state.
 
 use anyhow::{Result, bail};
 use memory_contract::link::{Args, Linked};

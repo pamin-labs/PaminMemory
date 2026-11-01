@@ -65,7 +65,7 @@ pub const CONFIG: &str = "config.toml";
 /// each one's memtable a hash index of a million buckets, an 8,000,000-byte
 /// array allocated and zeroed when the memtable is: 96 MB before the first
 /// memory is written. A one-memory `speed` index measured 93 MiB anonymous
-/// (98 MB), and nothing pamin configures changes the bucket count. In the
+/// (98 MB), and nothing pamin-memory configures changes the bucket count. In the
 /// hundred-project end-to-end test, one-memory `accuracy` indexes added 103 to
 /// 152 MiB apiece while the first sixteen opened.
 ///
@@ -505,7 +505,7 @@ impl Server {
     /// A value the client chose -- by flag, by `PAMIN_DEVICE`, or in the file
     /// -- has to be the one running. A value the client left to the default
     /// has to be too, unless the server was started with a flag for it: a
-    /// server started as `pamin serve --model-idle 60`, or by a command given
+    /// server started as `pamin-memory serve --model-idle 60`, or by a command given
     /// `--model-idle 60`, still answers commands that name no idle window,
     /// but one started from a file that has since lost the key does not.
     pub fn mismatch(&self, asked: &BTreeMap<String, Asked>) -> Option<String> {
@@ -530,7 +530,7 @@ impl Server {
         (!differing.is_empty()).then(|| {
             format!(
                 "the running server was started with other settings than this command \
-                 asks for: {}. Settings are fixed when the server starts: run `pamin \
+                 asks for: {}. Settings are fixed when the server starts: run `pamin-memory \
                  stop`, then run the command again to start a server with them.",
                 differing.join("; ")
             )
@@ -547,7 +547,7 @@ pub struct Asked {
 }
 
 /// The flags a command was given for the server, as arguments to the
-/// `pamin serve` it starts. The file is not forwarded: the server reads it.
+/// `pamin-memory serve` it starts. The file is not forwarded: the server reads it.
 pub fn forwarded(args: &ServerArgs) -> Vec<std::ffi::OsString> {
     let mut forwarded: Vec<std::ffi::OsString> = Vec::new();
     let mut flag = |name: &str, value: std::ffi::OsString| {
@@ -587,7 +587,7 @@ pub fn forwarded(args: &ServerArgs) -> Vec<std::ffi::OsString> {
     forwarded
 }
 
-/// What `pamin config` shows.
+/// What `pamin-memory config` shows.
 #[derive(Serialize)]
 pub struct Shown {
     /// The file read, whether or not it exists, shown by
@@ -681,7 +681,7 @@ mod tests {
 
     fn resolve(root: &Path, line: &[&str]) -> Result<Server> {
         let matches = Test::command()
-            .try_get_matches_from(std::iter::once("pamin").chain(line.iter().copied()))?;
+            .try_get_matches_from(std::iter::once("pamin-memory").chain(line.iter().copied()))?;
         let parsed = Test::from_arg_matches(&matches)?;
         Server::resolve(root, &parsed.server, &matches)
     }
@@ -774,7 +774,7 @@ mod tests {
         assert_eq!(server.ep_libraries, [root.path().join("npu.so")]);
     }
 
-    /// `pamin --json config` in a workspace whose path is not UTF-8
+    /// `pamin-memory --json config` in a workspace whose path is not UTF-8
     /// serializes, with the path spelled byte for byte.
     #[cfg(unix)]
     #[test]
@@ -900,7 +900,7 @@ mod tests {
         let resolve_with = |library: &PathBuf, prefix: &PathBuf| {
             let matches = Test::command()
                 .try_get_matches_from([
-                    std::ffi::OsStr::new("pamin"),
+                    std::ffi::OsStr::new("pamin-memory"),
                     "--ep-library".as_ref(),
                     library.as_os_str(),
                     "--postgres-dir".as_ref(),
@@ -948,7 +948,7 @@ mod tests {
             message.contains("model_idle = 5 (running with 60, from flag)"),
             "{message}"
         );
-        assert!(message.contains("pamin stop"), "{message}");
+        assert!(message.contains("pamin-memory stop"), "{message}");
 
         // A server that took a value from the file does not answer a client
         // that no longer finds it there.

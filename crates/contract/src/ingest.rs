@@ -1,4 +1,4 @@
-//! `pamin ingest` — record files as memories, one per section.
+//! `pamin-memory ingest` — record files as memories, one per section.
 
 use std::path::PathBuf;
 

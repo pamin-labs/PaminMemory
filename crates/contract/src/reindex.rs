@@ -1,4 +1,4 @@
-//! `pamin reindex` — rebuild the projection index from PostgreSQL.
+//! `pamin-memory reindex` — rebuild the projection index from PostgreSQL.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

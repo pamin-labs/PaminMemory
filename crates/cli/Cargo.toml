@@ -1,23 +1,23 @@
 [package]
 name = "memory-cli"
-description = "The pamin command line interface."
+description = "The pamin-memory command line interface."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# Two executables, installed together. `pamin` is the command an agent runs,
+# Two executables, installed together. `pamin-memory` is the command an agent runs,
 # built from `memory-client` alone so it links none of the engine; it starts
-# `pamin-server`, the resident server, which links all of it. Both come from
+# `pamin-memory-server`, the resident server, which links all of it. Both come from
 # one package so one `cargo install` puts them side by side.
 [[bin]]
-name = "pamin"
+name = "pamin-memory"
 path = "src/main.rs"
 
 [[bin]]
-name = "pamin-server"
-path = "src/pamin_server.rs"
+name = "pamin-memory-server"
+path = "src/pamin_memory_server.rs"
 
 [dependencies]
 memory-client = { workspace = true }

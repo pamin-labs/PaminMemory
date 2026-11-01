@@ -1,8 +1,8 @@
-//! Makes `pamin-server` able to find the retrieval engine's native library.
+//! Makes `pamin-memory-server` able to find the retrieval engine's native library.
 //!
-//! Only the server links it. `pamin`, the client, is built from
+//! Only the server links it. `pamin-memory`, the client, is built from
 //! `memory-client` alone and records no engine library and no rpath, so
-//! everything below is scoped to the `pamin-server` binary.
+//! everything below is scoped to the `pamin-memory-server` binary.
 //!
 //! The engine ships as a dynamic library that the linker records by name only.
 //! Cargo's test harness happens to set a library search path, so tests pass
@@ -39,7 +39,7 @@
 use std::path::{Path, PathBuf};
 
 /// The one binary that links the engine.
-const SERVER: &str = "pamin-server";
+const SERVER: &str = "pamin-memory-server";
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -97,7 +97,7 @@ fn stage_under_cargo_home(library: &Path, name: &std::ffi::OsStr) -> Option<Path
     // Named after this project rather than dropped into a shared `lib`: the
     // file belongs to one version of one binary, and a shared directory is how
     // two tools end up disagreeing about which copy is the right one.
-    let staged = home.join("lib").join("pamin");
+    let staged = home.join("lib").join("pamin-memory");
 
     std::fs::create_dir_all(&staged).ok()?;
 

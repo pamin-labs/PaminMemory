@@ -1,4 +1,4 @@
-//! `pamin search` — retrieve memories, with the reasoning attached.
+//! `pamin-memory search` — retrieve memories, with the reasoning attached.
 
 use anyhow::Result;
 use memory_contract::search::{Args, Hit, Results, Span, Trace};
@@ -27,7 +27,7 @@ pub async fn execute(
         .await?;
     // A hit from a file that changed since it was ingested answers with what
     // the file said then: the file is ingested now, and the search asked
-    // again if that changed what pamin holds -- or if the watcher's ingest
+    // again if that changed what pamin-memory holds -- or if the watcher's ingest
     // did while this ranked, which leaves the file looking fresh and the hits
     // stale. A failure is the watcher's to report, not the search's.
     let topics: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();

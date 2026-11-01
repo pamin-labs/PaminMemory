@@ -134,7 +134,7 @@ fn the_vector_channel_returns_the_nearest_documents_and_not_merely_near_ones() {
     let dir = tempfile::tempdir().expect("temp dir");
 
     // Sized as the engine would size it for a project this big -- which is
-    // the shape `pamin reindex` produces and **not** the shape a workspace
+    // the shape `pamin-memory reindex` produces and **not** the shape a workspace
     // that grew from empty has. A collection records its segment size at
     // creation and a workspace is created before anything is written to it, so
     // a grown project records `SMALLEST_SEGMENT` and holds five segments over

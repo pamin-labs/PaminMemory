@@ -1,4 +1,4 @@
-//! `pamin stop` — shut down the local database server.
+//! `pamin-memory stop` — shut down the local database server.
 
 use anyhow::Result;
 use memory_contract::stop::Stopped;

@@ -1,4 +1,4 @@
-//! `pamin grep` — find exact strings in the evidence, with nothing ranking.
+//! `pamin-memory grep` — find exact strings in the evidence, with nothing ranking.
 //!
 //! Search asks what is relevant. This asks what is literally there, in the
 //! verbatim source, including content the sensory filter held and no index

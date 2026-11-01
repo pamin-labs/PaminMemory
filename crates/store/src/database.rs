@@ -17,7 +17,7 @@ use crate::workspace::{LocalServer, StartedWith, Workspace};
 pub use memory_core::settings::installation_missing;
 
 /// The database name created inside the embedded cluster.
-const DATABASE: &str = "pamin";
+const DATABASE: &str = "pamin_memory";
 
 /// How many connections a process may hold against the cluster.
 ///
@@ -114,7 +114,7 @@ impl Database {
     /// Whether the recorded server is up is asked of its port, and then the
     /// pool this returns makes the first connection. It used to be asked by
     /// opening a throwaway pool, which cost a connection on every command and,
-    /// when nothing was listening -- a record left behind by `pamin stop` or a
+    /// when nothing was listening -- a record left behind by `pamin-memory stop` or a
     /// reboot -- retried the refused connection for its whole thirty-second
     /// acquire timeout before starting the server.
     pub async fn open(
@@ -206,7 +206,7 @@ fn other_settings(
     }
     crate::StoreError::OtherSettings(format!(
         "the PostgreSQL of {} is running with {}, and this asked for {}; they apply \
-         only when it starts, so stop the workspace first (`pamin --home {} stop`)",
+         only when it starts, so stop the workspace first (`pamin-memory --home {} stop`)",
         workspace.root().display(),
         described(server.started_with.as_ref()),
         described(Some(&started_with(requested))),
@@ -216,7 +216,7 @@ fn other_settings(
 
 /// Opens a pool sized for one short-lived command.
 ///
-/// Every `pamin` invocation used to be its own process with its own pool, all
+/// Every `pamin-memory` invocation used to be its own process with its own pool, all
 /// pointing at one cluster, so the pool's size was multiplied by however many
 /// agents were running. The default of ten connections each meant thirty
 /// agents asked for three hundred, against a server that allows a hundred, and
@@ -264,7 +264,7 @@ fn settings(store: &StoreSettings) -> HashMap<String, String> {
     HashMap::from([
         // PostgreSQL allows a hundred clients, and every process that opens
         // the workspace without a server has its own pool pointing at this
-        // one cluster -- which used to include every `pamin` command. A few
+        // one cluster -- which used to include every `pamin-memory` command. A few
         // dozen agents working at once exhausted that, and what they saw was
         // a connection timeout rather than anything naming the limit.
         ("max_connections".to_string(), "300".to_string()),
@@ -319,7 +319,7 @@ fn settings(store: &StoreSettings) -> HashMap<String, String> {
 /// | --- | --- |
 /// | the read path's hydration of 150 candidates' current states | 84 |
 /// | every topic joined to its current state, the widest this schema states | 1313 |
-/// | `pamin grep`, whose top node a matching `LIMIT` caps | 56 |
+/// | `pamin-memory grep`, whose top node a matching `LIMIT` caps | 56 |
 ///
 /// The first is bounded by `channel_depth` rather than by the project, so it
 /// does not grow at all, and the third is capped because the `ORDER BY`
@@ -497,7 +497,7 @@ async fn start_server(workspace: &Workspace, store: &StoreSettings) -> Result<Lo
         // project up for the first time, which is the worst audience for it.
         timeout: Some(Duration::from_secs(60)),
         // Passed to the server as it starts, so an already-initialised
-        // workspace keeps whatever it was started with until `pamin stop`.
+        // workspace keeps whatever it was started with until `pamin-memory stop`.
         configuration: {
             let mut configuration = settings(store);
             // A distribution compiles in its own socket directory --
@@ -699,7 +699,7 @@ mod tests {
         for named in [
             "running with jit off and /usr/lib/postgresql/17",
             "asked for jit on and /usr/lib/postgresql/17",
-            "`pamin --home /home/agent/.pamin stop`",
+            "`pamin-memory --home /home/agent/.pamin stop`",
         ] {
             assert!(message.contains(named), "{message}");
         }
@@ -718,7 +718,7 @@ mod tests {
             port: 5432,
             username: "postgres".into(),
             password: "secret".into(),
-            database: "pamin".into(),
+            database: "pamin_memory".into(),
             installation_dir: "/usr/lib/postgresql/17".into(),
             started_with: Some(super::started_with(store)),
         }
