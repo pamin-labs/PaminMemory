@@ -35,6 +35,11 @@ jobs:
       - name: Cache dependency builds
         uses: Swatinem/rust-cache@v2
 
+      # The cache holds only the crates Linux builds, but `light.rs` runs
+      # `cargo metadata --offline`, which needs every platform's crates in the lock.
+      - name: Fetch every platform's crates
+        run: cargo fetch --locked
+
       - name: Format
         run: cargo fmt --all --check
 
