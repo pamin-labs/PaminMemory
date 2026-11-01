@@ -6,7 +6,7 @@
 //! on its way to becoming one.
 
 use anyhow::Result;
-use pamin_client::command::grep::{Args, Match, Matches};
+use pamin_contract::grep::{Args, Match, Matches};
 use pamin_store::repository;
 
 use crate::session::Session;
