@@ -976,7 +976,7 @@ which is the one kept; see
 The comparison that chose it is below. It is historical, measured before the
 corrected XQuAD-R same-language key and the current full-head pass, and its
 same-language and latency figures do not describe the current path. The
-current comparison is tracked in [#121](https://github.com/pamin-labs/PaminMemory/pull/121).
+current comparison is tracked in [#121](https://github.com/pamin-labs/pamin-memory/pull/121).
 
 | | what it loads | a search costs | cross-lingual nDCG@10 | same-language |
 |---|---|---|---|---|

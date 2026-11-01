@@ -188,7 +188,7 @@ pub struct TopicState {
     pub language: Option<String>,
     /// When the source claims the fact was true or happened.
     pub observed_at: OffsetDateTime,
-    /// When PaminMemory recorded it.
+    /// When pamin-memory recorded it.
     pub recorded_at: OffsetDateTime,
     /// The truth interval, independent of when we learned about it.
     pub validity: Validity,

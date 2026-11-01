@@ -5,7 +5,7 @@
 
 ## Context
 
-PaminMemory stores durable evidence, keeps a versioned ledger of how facts change, and retrieves context through several independent channels fused into one explainable result. Before writing code we had to settle the language, the authoritative store, the retrieval engine, how any human language gets tokenized, and how embeddings are produced.
+pamin-memory stores durable evidence, keeps a versioned ledger of how facts change, and retrieves context through several independent channels fused into one explainable result. Before writing code we had to settle the language, the authoritative store, the retrieval engine, how any human language gets tokenized, and how embeddings are produced.
 
 Three criteria decided every question: **fast, cheap, accurate**. A decision that appears to improve all three without a cost has not been examined closely enough, so each choice below states which criterion pays.
 
@@ -1582,7 +1582,7 @@ int8 output changed for one of 32 texts even though the pre-quantization
 pooled output stayed within cosine 0.99999970, so it cannot be used as a
 bit-identical acceleration of the current encoding.
 
-**Reproduction.** The [fixed, non-merge experimental commit](https://github.com/pamin-labs/PaminMemory/commit/8a72a16e39d5239b978db189764d9ff03063e8cf)
+**Reproduction.** The [fixed, non-merge experimental commit](https://github.com/pamin-labs/pamin-memory/commit/8a72a16e39d5239b978db189764d9ff03063e8cf)
 pins the official pplx model revision, carries an optional profile solely for
 this trial, and includes `benchmarks/reproduce_pplx_current.sh`. It creates an
 ignored Greek test target, invokes the existing full XQuAD-R product harness,

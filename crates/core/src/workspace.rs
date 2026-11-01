@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::ProjectId;
 use serde::{Deserialize, Serialize};
 
-/// Where PaminMemory keeps its database, indexes, and models.
+/// Where pamin-memory keeps its database, indexes, and models.
 ///
 /// Defaults to `~/.pamin-memory`. The binary takes another with `--home` (or
 /// `PAMIN_MEMORY_HOME`) so a test or a second checkout can run against its own state;
