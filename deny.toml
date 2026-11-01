@@ -22,6 +22,10 @@ allow = [
     "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
+    # `borrow-or-share`, under jsonschema in pamin-kit's conformance feature,
+    # which only the MCP tests turn on. MIT without the notice requirement;
+    # pamin-kit allows it for the same crate.
+    "MIT-0",
     # The PostgreSQL licence, from the `postgres` family. BSD-style.
     "PostgreSQL",
     "Unicode-3.0",
