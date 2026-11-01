@@ -1,0 +1,63 @@
+---
+source: crates/pamin-contract/tests/schemas.rs
+expression: "schema_for! (grep::Matches)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Matches",
+  "type": "object",
+  "properties": {
+    "literal": {
+      "type": "string"
+    },
+    "matches": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Match"
+      }
+    }
+  },
+  "required": [
+    "literal",
+    "matches"
+  ],
+  "$defs": {
+    "Match": {
+      "type": "object",
+      "properties": {
+        "excerpt": {
+          "description": "The match with surrounding text, for reading rather than for parsing.",
+          "type": "string"
+        },
+        "filter_decision": {
+          "description": "`promoted` or `filtered`. Filtered evidence is reachable here and\nnowhere else.",
+          "type": "string"
+        },
+        "filter_reason": {
+          "description": "Why the filter decided as it did.",
+          "type": "string"
+        },
+        "source": {
+          "description": "Where the evidence came from.",
+          "type": "string"
+        },
+        "source_version": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "source",
+        "source_version",
+        "version",
+        "filter_decision",
+        "filter_reason",
+        "excerpt"
+      ]
+    }
+  }
+}

@@ -1,0 +1,33 @@
+---
+source: crates/pamin-contract/tests/schemas.rs
+expression: "schema_for! (search::Args)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Args",
+  "type": "object",
+  "properties": {
+    "graph_depth": {
+      "description": "How many edges the graph channel walks out from its seeds.",
+      "type": "integer",
+      "format": "uint8",
+      "default": 2,
+      "maximum": 4,
+      "minimum": 0
+    },
+    "limit": {
+      "description": "How many results to return.",
+      "type": "integer",
+      "format": "uint32",
+      "default": 5,
+      "minimum": 0
+    },
+    "query": {
+      "description": "What to search for, in any language.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "query"
+  ]
+}

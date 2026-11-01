@@ -123,6 +123,8 @@ sqlx = { version = "0.9", default-features = false, features = [
 whatlang = "0.16"
 zvec-rust = "0.7.2"
 tempfile = "3"
+# Test-only: the operation contract's JSON Schema snapshots.
+insta = { version = "1.49", features = ["json"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v7", "serde"] }

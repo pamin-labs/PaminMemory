@@ -1,0 +1,21 @@
+---
+source: crates/pamin-contract/tests/schemas.rs
+expression: "schema_for! (unsync::Args)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Args",
+  "type": "object",
+  "properties": {
+    "paths": {
+      "description": "Paths an ingest was given, as `pamin sync` lists them. Made absolute\nhere, as `ingest` makes its paths.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "paths"
+  ]
+}

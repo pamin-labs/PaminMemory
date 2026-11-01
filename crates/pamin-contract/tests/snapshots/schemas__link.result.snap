@@ -1,0 +1,48 @@
+---
+source: crates/pamin-contract/tests/schemas.rs
+expression: "schema_for! (link::Linked)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Linked",
+  "type": "object",
+  "properties": {
+    "appended": {
+      "description": "False when an identical claim was already live, in which case nothing\nwas written.",
+      "type": "boolean"
+    },
+    "from": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "to": {
+      "type": "string"
+    },
+    "valid_from": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "valid_to": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "from",
+    "to",
+    "kind",
+    "version",
+    "appended"
+  ]
+}
