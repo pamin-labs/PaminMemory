@@ -1627,6 +1627,29 @@ A workspace created before projects had separate indexes holds a single shared
 one. Opening it would search another project's memories, and ignoring it would
 search nothing, so commands report it and `pamin-memory reindex` migrates it.
 
+## `pamin-memory purge`
+
+Deletes the project named by `--project` and everything it holds, for good.
+
+```console
+$ pamin-memory --project customer_42 purge --yes
+Purged the project: 118 topics and 40 sources deleted, with their index
+```
+
+This is for privacy requests. Every other way of removing something keeps
+history: a newer version supersedes an older one, and `unlink --reason deleted`
+still records that the claim was made. A purge keeps nothing: the project's
+evidence, versions, relationships, queued work and synced paths are deleted
+from PostgreSQL, and its index directory is removed. No query at any instant
+finds them afterwards. Other projects are untouched.
+
+It is refused without `--yes`. It is not an MCP tool, so a model cannot reach
+it. The server waits for requests already working on the project's index, up
+to two minutes, before deleting it; past that the purge is refused and can be
+asked for again. A workspace that still holds the index shared by every
+project is refused until `pamin-memory reindex` has split it. A later command
+naming the same project starts a new, empty one.
+
 ## `pamin-memory cascade`
 
 Runs the work a write left for the projection.

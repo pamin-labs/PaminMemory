@@ -828,9 +828,12 @@ async fn answer(session: &Arc<Session>, request: Request) -> Result<Payload> {
 
     // Before the request, not after it: the loads are what the next search
     // would wait for, and this request is the earliest sign one is coming.
-    // Not for `reindex`, which discards the index a warm-up would be holding
-    // open, nor for the calls about synced paths, which never touch it.
-    if !matches!(call, Call::Reindex(_) | Call::Sync(_) | Call::Unsync(_)) {
+    // Not for `reindex` or `purge`, which discard the index a warm-up would be
+    // holding open, nor for the calls about synced paths, which never touch it.
+    if !matches!(
+        call,
+        Call::Reindex(_) | Call::Sync(_) | Call::Unsync(_) | Call::Purge(_)
+    ) {
         session.warm(&project, vector_index);
     }
 
@@ -866,6 +869,7 @@ async fn answer(session: &Arc<Session>, request: Request) -> Result<Payload> {
         }
         Call::Sync(_) => json(command::sync::list(session, &project).await?)?,
         Call::Unsync(args) => json(command::sync::unsync(session, &project, args).await?)?,
+        Call::Purge(args) => json(command::purge::execute(session, &project, args).await?)?,
         Call::Stop => unreachable!("answered above"),
     };
 
