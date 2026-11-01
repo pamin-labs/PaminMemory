@@ -178,6 +178,11 @@ pub fn named(sections: Vec<Unnamed>, previous: &[Section]) -> Vec<Section> {
 /// it, and has no section of its own to be part of. A section with no such
 /// heading above it sits under the file's first section, unless it is that
 /// section.
+///
+/// A parent is always a section before its child. The first section of a
+/// repeated heading can come after a section under the heading's first copy,
+/// when that copy had nothing under it and joined its subsection; it is not
+/// taken, so `part_of` never runs in a cycle.
 pub fn parents(bases: &[&str]) -> Vec<(usize, usize)> {
     let first: std::collections::HashMap<&str, usize> = bases
         .iter()
@@ -192,7 +197,7 @@ pub fn parents(bases: &[&str]) -> Vec<(usize, usize)> {
             let mut above = *base;
             while let Some((rest, _)) = above.rsplit_once(SEPARATOR) {
                 above = rest;
-                if let Some(&parent) = first.get(above) {
+                if let Some(&parent) = first.get(above).filter(|&&parent| parent < at) {
                     return Some((at, parent));
                 }
             }
@@ -1123,6 +1128,25 @@ mod tests {
             "f.md › Oncall › Rota", // 5
         ];
         assert_eq!(parents(&bases), [(1, 0), (2, 1), (3, 1), (4, 1), (5, 0)]);
+    }
+
+    /// `# Notes` twice, the first with nothing but `## Setup` under it: the
+    /// second copy's section comes after `Setup`, so it is not `Setup`'s
+    /// parent, and the two are not each other's.
+    #[test]
+    fn a_parent_comes_before_its_child() {
+        let text = format!(
+            "# Notes\n\n## Setup\n\n{}\n\n# Notes\n\n{}\n",
+            words(60),
+            words(60)
+        );
+        let cut = sections("f.md", &text, &Words);
+        let bases: Vec<&str> = cut
+            .iter()
+            .map(|section| section.name.trim_end_matches(" #2"))
+            .collect();
+        assert_eq!(bases, ["f.md › Notes › Setup", "f.md › Notes"]);
+        assert_eq!(parents(&bases), [(1, 0)]);
     }
 
     /// With nothing before its first heading, a file's first section is what
