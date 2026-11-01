@@ -43,6 +43,8 @@ fn every_operation_matches_its_schema_snapshot() {
         "unsync.result" => unsync::Unsynced,
         "reindex.args" => reindex::Args,
         "reindex.result" => reindex::Reindexed,
+        "purge.args" => purge::Args,
+        "purge.result" => purge::Purged,
         "cascade.args" => cascade::Args,
         "cascade.drain.result" => cascade::Drained,
         "cascade.failed.result" => cascade::Failures,

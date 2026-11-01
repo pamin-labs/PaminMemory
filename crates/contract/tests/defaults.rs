@@ -6,7 +6,7 @@
 //! and compares what the server would receive.
 
 use clap::{Args, FromArgMatches};
-use memory_contract::{grep, link, neighbors, read, search, topics, unlink, write};
+use memory_contract::{grep, link, neighbors, purge, read, search, topics, unlink, write};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -32,6 +32,7 @@ fn a_tool_call_and_the_cli_agree_on_every_default() {
     same::<grep::Args>(&["s"], json!({"literal": "s"}));
     same::<neighbors::Args>(&["t"], json!({"topic": "t"}));
     same::<topics::Args>(&[], json!({}));
+    same::<purge::Args>(&[], json!({}));
     same::<write::Args>(
         &["--topic", "t", "c"],
         json!({"topic": "t", "content": "c"}),
