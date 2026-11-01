@@ -97,8 +97,9 @@ from (see [cli.md](cli.md)).
 | `pamin-store` | the PostgreSQL authority: evidence, ledger, graph, outbox. |
 | `pamin-index` | the projection: multilingual segmentation, lexical and vector channels. |
 | `pamin-engine` | where the two are composed, and where their drift is supposed to be visible. Sits above `pamin-core` so index types never reach the domain layer. It is **not** the only crate holding both, and the exception is named rather than left to be discovered: see below. |
-| `pamin-client` | the command surface: every command's arguments and result types, the wire protocol, reaching or starting the server, and rendering. Depends on `pamin-core` alone, and a test fails if it reaches the inference runtime, the vector engine, TLS or the database driver. |
-| `pamin-cli` | two executables. `pamin` is built from `pamin-client` alone; `pamin-server` is the resident server, which runs each command against the engine and answers with `pamin-client`'s result types. |
+| `pamin-contract` | the operation contract: every operation's arguments and result types, with their JSON Schema (snapshotted in its tests) and text rendering. The CLI, the socket and MCP all use it. Light for the same reason as `pamin-client`, and not published. |
+| `pamin-client` | the command surface: the wire protocol, reaching or starting the server, and rendering. Depends on `pamin-core` and `pamin-contract` alone, and a test fails if it reaches the inference runtime, the vector engine, TLS or the database driver. |
+| `pamin-cli` | two executables. `pamin` is built from `pamin-client` alone; `pamin-server` is the resident server, which runs each command against the engine and answers with `pamin-contract`'s result types. |
 
 Two executables rather than one because what a process links is what it pays
 for at every start. The inference runtime is a static library, and the `ort`
