@@ -467,7 +467,9 @@ struct Gone {
 /// The sections in `recorded` -- every section an ingest has put on the
 /// retrieval surface -- that are not among `cut` and that this ingest would
 /// have cut again: from a file it read, or from a file under a directory it
-/// walked that is no longer there -- deleted, moved, or ignored now.
+/// walked that is no longer on disk -- deleted, or moved. One the walk skipped
+/// but still on disk -- hidden, or ignored by git, now or when it was named on
+/// its own -- is listed but not retirable.
 ///
 /// Each from the root it was recorded from, so that another tree whose files
 /// are named alike -- another clone, another `notes` -- is not taken for this

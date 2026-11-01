@@ -690,7 +690,7 @@ one ([measured](../benchmarks/results/ingest/ingest-cost-2026-10-23.md)).
 
 **A section that is no longer there is taken off the retrieval surface**, and
 listed under `removed`: its heading renamed or removed, or its file deleted
-from a directory the command walked, moved out of it, or now ignored by git.
+from a directory the command walked, or moved out of it.
 Every version of its topic is soft deleted, so search no longer returns it, and
 the edges its content derived are closed. Nothing is lost: the ledger keeps
 every version and its evidence, `pamin grep` still finds the text, and
@@ -703,7 +703,8 @@ is not where a section went missing, and its sections stay. Under a directory
 whose walk met an error — a subdirectory it could not open — a file it did not
 find may only have been out of reach, so its sections are listed under
 `missing` and stay; so are those of a file the walk skipped that is still on
-disk, hidden or ignored by git and named on its own some earlier time. A section is retired only from the tree it was last
+disk: hidden, or ignored by git, whether since it was last ingested or because
+it was named on its own some earlier time. A section is retired only from the tree it was last
 ingested from: each file's sections record that directory, so another tree
 whose files are named alike, another clone or another `notes`, is not taken
 for this one. And a section another ingest wrote again after this one looked —
