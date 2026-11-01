@@ -315,7 +315,11 @@ fn primary_model(
     )?;
 
     if device == crate::inference::Device::Cpu {
-        crate::prepared::release(&repository.file(cache_dir, JOINT_FILE), cache_dir, settings);
+        pamin_runtime::prepared::release(
+            &repository.file(cache_dir, JOINT_FILE),
+            cache_dir,
+            &settings.copies(),
+        );
     }
     Ok((model, device))
 }
@@ -472,7 +476,7 @@ fn preserves_fixture_retrieval(actual: &[Vec<f32>], cpu: &[Vec<f32>]) -> bool {
 /// 100 as queries came out bit-identical at one thread and at four.
 fn joint_session(
     repository: &Repository,
-    weights: &impl crate::prepared::Download,
+    weights: &impl pamin_runtime::prepared::Download,
     cache_dir: &std::path::Path,
     settings: &crate::InferenceSettings,
     device: crate::inference::Device,
@@ -481,16 +485,16 @@ fn joint_session(
     let threads = settings.budget()?;
     let mut download = None;
     if device == crate::inference::Device::Cpu {
-        let path = crate::prepared::load_path(
+        let path = pamin_runtime::prepared::load_path(
             weights,
             cache_dir,
-            settings,
-            crate::prepared::Passes::Padded,
+            &settings.copies(),
+            pamin_runtime::prepared::Passes::Padded,
         )?;
         // Side by side only over a mapped copy, whose weights the sessions
         // share. Over the download it falls back to, each session would copy
         // them onto the heap, so that loads the one session it did before.
-        if crate::prepared::is_copy(&path, cache_dir) {
+        if pamin_runtime::prepared::is_copy(&path, cache_dir) {
             let tokenizer = crate::tokenizer::load(repository, JOINT_MAX_TOKENS)?;
             return Encoder::side_by_side(path, threads, tokenizer, repository.revision())
                 .map_err(|error| error.context("loading embedding model"));
@@ -636,15 +640,15 @@ mod tests {
                     split_embeddings: false,
                     ..crate::InferenceSettings::default()
                 };
-                crate::prepared::load_path(
+                pamin_runtime::prepared::load_path(
                     &weights,
                     &cache,
-                    &settings,
-                    crate::prepared::Passes::Padded,
+                    &settings.copies(),
+                    pamin_runtime::prepared::Passes::Padded,
                 )
                 .unwrap()
             });
-        let session = crate::inference::options(threads, vec![crate::inference::cpu()])
+        let session = pamin_runtime::budget::options(threads, vec![crate::inference::cpu()])
             .unwrap()
             .with_disabled_optimizers("MatMulAddFusion")
             .unwrap()

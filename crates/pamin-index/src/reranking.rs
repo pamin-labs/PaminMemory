@@ -388,11 +388,11 @@ fn batch_on(side_by_side: bool, budget: usize, explicit: Option<NonZeroUsize>) -
 /// How the passes over a mapped copy are shaped. The copy is loaded side by
 /// side, so a pass takes one pair where [`batch_on`] says so, and a pass of
 /// one pair is never padded; any more and the rows of a pass can be.
-fn cpu_passes(settings: &crate::InferenceSettings) -> crate::prepared::Passes {
+fn cpu_passes(settings: &crate::InferenceSettings) -> pamin_runtime::prepared::Passes {
     if batch_on(true, side_by_side_budget(settings), settings.rerank.batch) == 1 {
-        crate::prepared::Passes::OneRow
+        pamin_runtime::prepared::Passes::OneRow
     } else {
-        crate::prepared::Passes::Padded
+        pamin_runtime::prepared::Passes::Padded
     }
 }
 
@@ -916,10 +916,10 @@ impl Reranker {
     /// downloads it.
     pub fn is_downloaded(cache_dir: &Path, settings: &crate::InferenceSettings) -> bool {
         Repository::open_at(cache_dir, REPOSITORY, REVISION).is_ok_and(|repository| {
-            crate::prepared::is_ready(
+            pamin_runtime::prepared::is_ready(
                 &repository.file(cache_dir, onnx(Device::Cpu)),
                 cache_dir,
-                settings,
+                &settings.copies(),
             )
         })
     }
@@ -1113,15 +1113,20 @@ fn cpu_model(
     let threads = settings.budget()?;
     let max_tokens = settings.rerank.max_tokens.get();
     let weights = repository.file(cache_dir, onnx(Device::Cpu));
-    let path = crate::prepared::load_path(&weights, cache_dir, settings, cpu_passes(settings))?;
-    let encoder = if crate::prepared::is_copy(&path, cache_dir) {
+    let path = pamin_runtime::prepared::load_path(
+        &weights,
+        cache_dir,
+        &settings.copies(),
+        cpu_passes(settings),
+    )?;
+    let encoder = if pamin_runtime::prepared::is_copy(&path, cache_dir) {
         let tokenizer = crate::tokenizer::load(repository, max_tokens)?;
         Encoder::side_by_side(path, threads, tokenizer, repository.revision())
     } else {
         Encoder::load(threads, || Ok(path), repository, max_tokens, providers)
     }
     .map_err(|error| error.context("loading the reranker"))?;
-    crate::prepared::release(&weights, cache_dir, settings);
+    pamin_runtime::prepared::release(&weights, cache_dir, &settings.copies());
     Ok(encoder)
 }
 
@@ -1143,7 +1148,9 @@ fn load_model(cache_dir: &Path, settings: &crate::InferenceSettings) -> Result<(
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             Device::CoreMl => {
                 let source = repository.get(onnx(device))?;
-                crate::native::prepare(&source, cache_dir)
+                Ok(pamin_runtime::prepared::native::prepare(
+                    &source, cache_dir,
+                )?)
             }
             _ => repository.get(onnx(device)),
         };
@@ -2689,11 +2696,15 @@ mod tests {
                 },
                 ..Default::default()
             };
-            let path =
-                crate::prepared::load_path(&weights, &cache, &settings, cpu_passes(&settings))
-                    .expect("load the reranker's copy");
+            let path = pamin_runtime::prepared::load_path(
+                &weights,
+                &cache,
+                &settings.copies(),
+                cpu_passes(&settings),
+            )
+            .expect("load the reranker's copy");
             assert!(
-                crate::prepared::is_copy(&path, &cache),
+                pamin_runtime::prepared::is_copy(&path, &cache),
                 "{}",
                 path.display()
             );
@@ -2719,7 +2730,7 @@ mod tests {
     /// v4 did so on purpose: the CPU plan v3 measured ran four pairs a pass,
     /// and a plan measured with one cap is not a measurement of the other.
     /// v5 too: a CPU of one pair a pass loads the trimmed, unmasked graph
-    /// (`crate::prepared::Passes`), and a plan timed on the graph before it
+    /// (`pamin_runtime::prepared::Passes`), and a plan timed on the graph before it
     /// is not a timing of it.
     #[test]
     fn the_plan_key_names_both_batch_caps() {
@@ -2759,7 +2770,7 @@ mod tests {
     /// an explicit batch of more than one pair, keeps the masked graph.
     #[test]
     fn only_passes_of_one_pair_load_the_unmasked_graph() {
-        use crate::prepared::Passes;
+        use pamin_runtime::prepared::Passes;
         let passes = |threads: usize, batch: Option<usize>| {
             cpu_passes(&crate::InferenceSettings {
                 threads: NonZeroUsize::new(threads),
