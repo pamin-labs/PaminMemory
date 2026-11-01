@@ -87,10 +87,7 @@ impl InferenceSettings {
     /// How many threads inference may keep busy: [`threads`](Self::threads),
     /// or one per core.
     pub fn budget(&self) -> std::io::Result<usize> {
-        Ok(match self.threads {
-            Some(threads) => threads.get(),
-            None => std::thread::available_parallelism()?.get(),
-        })
+        pamin_runtime::budget::threads(self.threads)
     }
 
     /// Every setting that differs from the default, as `(name, value)` pairs

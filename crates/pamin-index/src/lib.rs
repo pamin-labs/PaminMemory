@@ -27,8 +27,6 @@ pub mod segmentation;
 pub mod settings;
 pub mod spans;
 mod tokenizer;
-#[cfg(target_os = "windows")]
-mod winml;
 mod word_embeddings;
 
 pub use activity::LoadActivity;
