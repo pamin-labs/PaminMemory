@@ -524,7 +524,7 @@ fn joint_session(
 /// ColBERT representations come back from the same pass and are dropped. They
 /// are not free -- the pass computes them -- but neither is wanted, and no
 /// cheaper export of this model's int8 weights exists.
-fn dense(outputs: crate::encoder::Outputs) -> Result<Vec<f32>> {
+fn dense(outputs: pamin_runtime::session::Outputs) -> Result<Vec<f32>> {
     let (_, first) = outputs
         .first()
         .ok_or_else(|| IndexError::Engine("the joint export returned nothing".into()))?;
