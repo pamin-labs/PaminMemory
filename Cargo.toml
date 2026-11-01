@@ -22,6 +22,9 @@ pamin-core = { path = "crates/pamin-core" }
 pamin-engine = { path = "crates/pamin-engine" }
 pamin-index = { path = "crates/pamin-index" }
 pamin-store = { path = "crates/pamin-store" }
+# Instruction-set kernels, ONNX Runtime devices, thread budgets and prepared-
+# model keys, shared by every Pamin module that runs models locally.
+pamin-runtime = "=0.1.0"
 
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
@@ -61,7 +64,6 @@ libc = "0.2"
 # `$PAMIN_HOME/config.toml`, the server's settings file. Nothing in the tree
 # parsed TOML before; parsing and serde only, no writer.
 toml = { version = "0.9", default-features = false, features = ["std", "parse", "serde"] }
-half = "2.7.1"
 # Test-only: `pamin-index`'s `shared_vocabulary` test compares the encoder with
 # what `fastembed` computed before the encoder replaced it. No product code
 # calls it. image-models is on by default and pulls a full image codec stack,

@@ -87,10 +87,18 @@ impl InferenceSettings {
     /// How many threads inference may keep busy: [`threads`](Self::threads),
     /// or one per core.
     pub fn budget(&self) -> std::io::Result<usize> {
-        Ok(match self.threads {
-            Some(threads) => threads.get(),
-            None => std::thread::available_parallelism()?.get(),
-        })
+        pamin_runtime::budget::threads(self.threads)
+    }
+
+    /// What decides the prepared copies a model loads; see
+    /// `pamin_runtime::prepared`.
+    pub fn copies(&self) -> pamin_runtime::prepared::Settings {
+        pamin_runtime::prepared::Settings {
+            prepared: self.prepared,
+            fused_attention: self.fused_attention,
+            split_embeddings: self.split_embeddings,
+            threads: self.threads,
+        }
     }
 
     /// Every setting that differs from the default, as `(name, value)` pairs
@@ -160,6 +168,15 @@ impl InferenceSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The defaults the client shows are the runtime's.
+    #[test]
+    fn the_default_copies_are_the_runtime_default() {
+        assert_eq!(
+            InferenceSettings::default().copies(),
+            pamin_runtime::prepared::Settings::default()
+        );
+    }
 
     #[test]
     fn the_defaults_override_nothing() {

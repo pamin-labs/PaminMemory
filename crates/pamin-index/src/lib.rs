@@ -3,8 +3,6 @@
 //! Everything here is derived data. Losing it costs a reindex, not a migration,
 //! which is what makes a pre-1.0 index engine an acceptable dependency.
 
-mod activity;
-mod attention;
 #[cfg(test)]
 mod build_profile;
 mod descriptors;
@@ -14,25 +12,15 @@ pub mod error;
 mod half;
 mod hub;
 mod inference;
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-mod native;
-mod onnx;
-mod prepared;
 pub mod projection;
 pub mod reranking;
 mod reshape;
-mod resident;
 pub mod sections;
 pub mod segmentation;
 pub mod settings;
 pub mod spans;
 mod tokenizer;
-mod vector_math;
-#[cfg(target_os = "windows")]
-mod winml;
-mod word_embeddings;
 
-pub use activity::LoadActivity;
 pub use descriptors::raise_open_file_limit;
 pub use embedding::{DIMENSIONS, Embedder, MODEL_ID};
 pub use error::{IndexError, Result};
@@ -41,6 +29,7 @@ pub use hub::cache_root as model_cache_root;
 pub use inference::{
     CUDA_SELECTION, Device, EXECUTION_SETTINGS, PlanOrigin, PlanUse, cuda_devices,
 };
+pub use pamin_runtime::activity::LoadActivity;
 
 /// What this crate was built from and how: a sha256 over its sources, the
 /// workspace manifests and Cargo config, the target, profile, opt-level,

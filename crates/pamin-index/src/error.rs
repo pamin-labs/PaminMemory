@@ -45,7 +45,7 @@ pub enum IndexError {
     Unavailable(String),
 
     /// A plugin execution-provider library that cannot be told apart from
-    /// one already registered; see `inference::claim`.
+    /// one already registered; see `pamin_runtime::device::accelerators`.
     #[error("{0}")]
     PluginConflict(String),
 
@@ -59,6 +59,47 @@ impl IndexError {
             Self::Incompatible(message) => Self::Incompatible(format!("{context}: {message}")),
             Self::Numerical(message) => Self::Numerical(format!("{context}: {message}")),
             other => Self::Engine(format!("{context}: {other}")),
+        }
+    }
+}
+
+/// What a measured device choice needs to know of a model's failure.
+impl pamin_runtime::plan::Failure for IndexError {
+    fn is_permanent(&self) -> bool {
+        matches!(self, Self::Incompatible(_) | Self::Numerical(_))
+    }
+
+    fn context(self, context: &str) -> Self {
+        IndexError::context(self, context)
+    }
+}
+
+/// The runtime's failures keep their class: a provider that will not register
+/// is still incompatible, so a plan is not revalidated against it.
+impl From<pamin_runtime::Error> for IndexError {
+    fn from(error: pamin_runtime::Error) -> Self {
+        match error {
+            pamin_runtime::Error::Incompatible(message) => Self::Incompatible(message),
+            pamin_runtime::Error::Numerical(message) => Self::Numerical(message),
+            pamin_runtime::Error::Runtime(message) => Self::Engine(message),
+            pamin_runtime::Error::PluginConflict(message) => Self::PluginConflict(message),
+            pamin_runtime::Error::Io(error) => Self::Io(error),
+        }
+    }
+}
+
+/// What a caller's closure handed to the runtime failed with -- a download,
+/// say -- crossing into it. Its class survives where the runtime has one,
+/// and its message always does.
+impl From<IndexError> for pamin_runtime::Error {
+    fn from(error: IndexError) -> Self {
+        match error {
+            IndexError::Incompatible(message) => Self::Incompatible(message),
+            IndexError::Numerical(message) => Self::Numerical(message),
+            IndexError::Engine(message) => Self::Runtime(message),
+            IndexError::PluginConflict(message) => Self::PluginConflict(message),
+            IndexError::Io(error) => Self::Io(error),
+            other => Self::Runtime(other.to_string()),
         }
     }
 }
