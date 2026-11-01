@@ -1445,7 +1445,7 @@ fn forward(model: &mut Encoder, batches: Vec<Vec<Encoding>>) -> Scored {
 }
 
 /// The first column of a pass's `logits`, one score a pair.
-fn first_column(outputs: crate::encoder::Outputs) -> Result<Vec<f32>> {
+fn first_column(outputs: pamin_runtime::session::Outputs) -> Result<Vec<f32>> {
     let logits = outputs
         .iter()
         .find_map(|(name, value)| (name == "logits").then_some(value))

@@ -14,15 +14,13 @@
 //! batch's word embeddings, which are read here for its ids.
 
 use std::borrow::Cow;
-use std::ffi::CString;
 use std::path::PathBuf;
-use std::ptr::NonNull;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 
 use ort::session::{Session, SessionInputValue, SessionOutputs};
-use ort::value::{DynValue, Tensor};
+use ort::value::Tensor;
 use tokenizers::{EncodeInput, Encoding};
 
 use crate::error::{IndexError, Result};
@@ -54,7 +52,11 @@ pub(crate) struct Encoder {
     /// session from, and that session once it has been loaded; `None` runs
     /// every text on [`session`](Self::session); and how many passes it runs
     /// at once.
-    side_by_side: Option<(PathBuf, Option<SharedCpuSession>, usize)>,
+    side_by_side: Option<(
+        PathBuf,
+        Option<pamin_runtime::session::SharedCpuSession>,
+        usize,
+    )>,
     /// Whether its graph scores correctly only a pass of one unpadded row (see
     /// `pamin_runtime::prepared::is_trimmed`); kept when passes stop running side by
     /// side, since [`session`](Self::session) loaded the same graph.
@@ -66,9 +68,6 @@ pub(crate) struct Encoder {
     /// [`Repository::revision`] resolves it once its files are fetched.
     revision: String,
 }
-
-/// A forward pass's outputs, by name, in the graph's order.
-pub(crate) type Outputs = Vec<(String, DynValue)>;
 
 impl pamin_runtime::plan::RuntimeModel for Encoder {
     fn runtime_plan(&self) -> &pamin_runtime::plan::RuntimePlan {
@@ -292,7 +291,7 @@ impl Encoder {
             // The shared session only saves time, and `session` still runs
             // every batch: one that will not load leaves the passes to it,
             // and stops passes being planned for running side by side.
-            match SharedCpuSession::load(model) {
+            match pamin_runtime::session::SharedCpuSession::load(model) {
                 Ok((session, mapped)) => {
                     *shared = Some(session);
                     self.resident.extend(mapped);
@@ -332,7 +331,7 @@ impl Encoder {
     pub(crate) fn run_each<T: Send>(
         &mut self,
         batches: Vec<Vec<Encoding>>,
-        read: impl Fn(Outputs) -> Result<T> + Sync,
+        read: impl Fn(pamin_runtime::session::Outputs) -> Result<T> + Sync,
     ) -> Result<Vec<T>> {
         // The weights stay resident while passes run, and are handed back
         // once the model has gone unused for a while. See `crate::resident`.
@@ -345,7 +344,7 @@ impl Encoder {
     fn run_each_resident<T: Send>(
         &mut self,
         batches: Vec<Vec<Encoding>>,
-        read: impl Fn(Outputs) -> Result<T> + Sync,
+        read: impl Fn(pamin_runtime::session::Outputs) -> Result<T> + Sync,
     ) -> Result<Vec<T>> {
         let workers = self.ready(batches.len())?;
         let session = match &self.side_by_side {
@@ -353,7 +352,7 @@ impl Encoder {
             _ => {
                 return batches
                     .into_iter()
-                    .map(|batch| read(owned(self.run_encoded(batch)?)))
+                    .map(|batch| read(pamin_runtime::session::owned(self.run_encoded(batch)?)))
                     .collect();
             }
         };
@@ -389,7 +388,8 @@ impl Encoder {
                                 let feed = feed(&batch, shape, token_type_ids, word_embeddings)?;
                                 #[cfg(test)]
                                 most.fetch_max(running.fetch_add(1, SeqCst) + 1, SeqCst);
-                                let outputs = run_shared(session, &feed);
+                                let outputs = pamin_runtime::session::run_shared(session, &feed)
+                                    .map_err(IndexError::from);
                                 #[cfg(test)]
                                 running.fetch_sub(1, SeqCst);
                                 outputs
@@ -592,122 +592,6 @@ fn native_shape(length: usize) -> (usize, usize) {
     }
 }
 
-/// The one session [`run_shared`] runs from several threads at once: loaded
-/// on ONNX Runtime's CPU execution provider alone, with every node of the
-/// graph assigned to it.
-///
-/// Concurrent `Run` is safe on some execution providers and not on others,
-/// so this type is the only way onto the concurrent path, and it admits the
-/// CPU alone. ONNX Runtime documents `Run` as callable from several threads
-/// on one session (`InferenceSession::Run` in
-/// `onnxruntime/core/session/inference_session.h`), and an execution provider
-/// that cannot take that says so through `ConcurrentRunSupported`, for which
-/// ONNX Runtime then serializes `Run` itself (XNNPACK, WebGPU, WebNN, JS in
-/// 1.28). DirectML does not declare it and documents that only one thread may
-/// call `Run` at a time; CUDA and TensorRT have concurrency reports against
-/// them. None of those may reach this type: [`load`](Self::load) builds the
-/// session from the CPU provider alone and refuses it unless ONNX Runtime
-/// assigned every node to that provider.
-struct SharedCpuSession(Session);
-
-impl SharedCpuSession {
-    /// The session, and the clean mappings of `model`'s directory it
-    /// created; see [`pamin_runtime::resident::loading`].
-    fn load(model: &std::path::Path) -> Result<(Self, Vec<(usize, usize)>)> {
-        let (session, mapped) = pamin_runtime::session::cpu_session(model, 1)?;
-        cpu_alone(&pamin_runtime::device::assigned_providers(&session)?)?;
-        Ok((Self(session), mapped))
-    }
-}
-
-/// Whether `assigned`, a session's node count by execution provider, puts
-/// every node on the CPU provider. An empty assignment is refused too: it
-/// means ONNX Runtime recorded none, not that there was nothing to assign.
-fn cpu_alone(assigned: &std::collections::BTreeMap<String, usize>) -> Result<()> {
-    if assigned.is_empty() {
-        return Err(failed(&"a shared session recorded no provider assignment"));
-    }
-    match assigned
-        .iter()
-        .find(|(provider, nodes)| *provider != "CPUExecutionProvider" && **nodes > 0)
-    {
-        Some((provider, _)) => Err(failed(&format!(
-            "a shared session assigned nodes to {provider}, not the CPU alone"
-        ))),
-        None => Ok(()),
-    }
-}
-
-/// One forward pass over `feed` on `session`, which other threads may be
-/// running at the same moment, as [`Session::run`] would make it.
-///
-/// `ort` runs a session only through `&mut`: its author does not trust ONNX
-/// Runtime's `Run` from several threads, naming "certain EP allocators or
-/// statistics trackers" in `ort`'s source, and recommends a session per
-/// thread. Here the session is a [`SharedCpuSession`] -- the CPU provider
-/// alone, its arena off, no profiling -- of one intra-op thread, so that every
-/// pass runs on the thread that asked for it. So this is `Run` itself, through
-/// ONNX Runtime's C API, called on a shared session -- the call the `ort`
-/// crate makes, without the exclusive borrow it puts in front of it.
-fn run_shared(
-    session: &SharedCpuSession,
-    feed: &[(Cow<'static, str>, SessionInputValue<'static>)],
-) -> Result<Outputs> {
-    use ort::AsPointer;
-    let session = &session.0;
-    let names = |names: &mut dyn Iterator<Item = &str>| -> Result<Vec<CString>> {
-        names
-            .map(|name| CString::new(name).map_err(|error| failed(&error)))
-            .collect()
-    };
-    let inputs = names(&mut feed.iter().map(|(name, _)| name.as_ref()))?;
-    let outputs = names(&mut session.outputs().iter().map(|output| output.name()))?;
-    let input_names: Vec<_> = inputs.iter().map(|name| name.as_ptr()).collect();
-    let output_names: Vec<_> = outputs.iter().map(|name| name.as_ptr()).collect();
-    let values: Vec<_> = feed.iter().map(|(_, value)| value.ptr()).collect();
-    let mut fetched = vec![std::ptr::null_mut(); outputs.len()];
-    // SAFETY: the session is live for the call, and ONNX Runtime allows `Run`
-    // on it from several threads at once on the CPU provider, the only one a
-    // `SharedCpuSession` admits (see above). Every name is a
-    // NUL-terminated string and every input a live value, all outliving the
-    // call; `fetched` has a slot for each output name, which `Run` fills.
-    let status = unsafe {
-        (ort::api().Run)(
-            session.ptr().cast_mut(),
-            std::ptr::null(),
-            input_names.as_ptr(),
-            values.as_ptr(),
-            values.len(),
-            output_names.as_ptr(),
-            output_names.len(),
-            fetched.as_mut_ptr(),
-        )
-    };
-    // SAFETY: the status comes straight from ONNX Runtime and is read once.
-    unsafe { ort::Error::result_from_status(status) }.map_err(|error| failed(&error))?;
-    let owner = session.inner();
-    outputs
-        .into_iter()
-        .zip(fetched)
-        .map(|(name, value)| {
-            let value = NonNull::new(value).ok_or_else(|| failed(&"an output came back empty"))?;
-            // SAFETY: `Run` succeeded, so `value` is an output it allocated
-            // and this pass now owns; `owner` keeps the session alive for as
-            // long as the value is.
-            let value = unsafe { DynValue::from_ptr(value, Some(std::sync::Arc::clone(&owner))) };
-            Ok((name.to_string_lossy().into_owned(), value))
-        })
-        .collect()
-}
-
-/// `outputs` as [`run_shared`] returns them.
-fn owned(outputs: SessionOutputs<'_>) -> Outputs {
-    outputs
-        .into_iter()
-        .map(|(name, value)| (name.to_owned(), value))
-        .collect()
-}
-
 fn failed(error: &dyn std::fmt::Display) -> IndexError {
     IndexError::Engine(format!("running the model: {error}"))
 }
@@ -759,41 +643,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// Only a session whose every node is on the CPU provider may be run from
-    /// several threads at once.
-    #[test]
-    fn only_the_cpu_alone_reaches_the_shared_session() {
-        let assigned = |entries: &[(&str, usize)]| {
-            entries
-                .iter()
-                .map(|(provider, nodes)| (provider.to_string(), *nodes))
-                .collect::<std::collections::BTreeMap<_, _>>()
-        };
-        assert!(cpu_alone(&assigned(&[("CPUExecutionProvider", 900)])).is_ok());
-        assert!(cpu_alone(&assigned(&[])).is_err(), "nothing recorded");
-        for other in [
-            "DmlExecutionProvider",
-            "CUDAExecutionProvider",
-            "CoreMLExecutionProvider",
-            "TensorrtExecutionProvider",
-            "XnnpackExecutionProvider",
-        ] {
-            assert!(
-                cpu_alone(&assigned(&[("CPUExecutionProvider", 10), (other, 1)])).is_err(),
-                "{other} reached the shared session"
-            );
-        }
-    }
-
-    /// A real graph loaded for sharing records its nodes on the CPU provider,
-    /// so the guard above admits it rather than refusing every model.
-    #[test]
-    fn a_cpu_graph_loads_as_a_shared_session() {
-        let model = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/coreml-normalization.onnx");
-        SharedCpuSession::load(&model).expect("a CPU graph is admitted");
     }
 
     /// A shared session that will not load leaves every pass to `session`,
