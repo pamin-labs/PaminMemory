@@ -9,6 +9,11 @@
 //! crate would put it, the vector engine, TLS and the database driver back
 //! into every command an agent runs, with nothing failing to say so.
 //!
+//! The same graph keeps dependencies pointing one way: adapters (the CLI, the
+//! socket, MCP) over the contract over the engine. The engine reaching an
+//! adapter or the contract would let a transport's types into the domain, so
+//! that fails too.
+//!
 //! Read from `cargo metadata`'s resolved graph, over every target platform
 //! rather than the host's, following normal dependencies only: a build script
 //! or a test may use what it likes. Not `--offline`: every platform's graph
@@ -34,8 +39,31 @@ const HEAVY: &[&str] = &[
     "pamin-engine",
 ];
 
+/// What the engine, and everything under it, may not reach.
+const ADAPTERS: &[&str] = &["pamin-client", "pamin-contract", "pamin-kit", "rmcp"];
+
 #[test]
 fn the_client_reaches_nothing_only_the_server_needs() {
+    let heavy = reached_from("pamin-client", HEAVY);
+    assert!(
+        heavy.is_empty(),
+        "the client crate reaches what only the server should link:\n{}",
+        heavy.into_iter().collect::<Vec<_>>().join("\n")
+    );
+}
+
+#[test]
+fn the_engine_reaches_no_adapter() {
+    let adapters = reached_from("pamin-engine", ADAPTERS);
+    assert!(
+        adapters.is_empty(),
+        "the engine reaches an adapter or the contract:\n{}",
+        adapters.into_iter().collect::<Vec<_>>().join("\n")
+    );
+}
+
+/// The path to each package in `forbidden` that `package` links.
+fn reached_from(package: &str, forbidden: &[&str]) -> BTreeSet<String> {
     let output = Command::new(env!("CARGO"))
         .args(["metadata", "--format-version", "1", "--locked"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
@@ -67,15 +95,15 @@ fn the_client_reaches_nothing_only_the_server_needs() {
         .map(|node| (node["id"].as_str().expect("an id"), node))
         .collect();
 
-    let client = names
+    let root = names
         .iter()
-        .find(|(_, name)| **name == "pamin-client")
+        .find(|(_, name)| **name == package)
         .map(|(id, _)| *id)
-        .expect("pamin-client is in the workspace");
+        .unwrap_or_else(|| panic!("{package} is in the workspace"));
 
-    // Every package the client links, and the path that reached each.
-    let mut reached: HashMap<&str, Vec<&str>> = HashMap::from([(client, vec!["pamin-client"])]);
-    let mut pending = vec![client];
+    // Every package the root links, and the path that reached each.
+    let mut reached: HashMap<&str, Vec<&str>> = HashMap::from([(root, vec![package])]);
+    let mut pending = vec![root];
     while let Some(id) = pending.pop() {
         for dependency in nodes[id]["deps"].as_array().expect("deps") {
             let normal = dependency["dep_kinds"]
@@ -95,17 +123,12 @@ fn the_client_reaches_nothing_only_the_server_needs() {
 
     assert!(
         reached.len() > 10,
-        "only {} packages reached, so this is not reading the graph",
+        "only {} packages reached from {package}, so this is not reading the graph",
         reached.len()
     );
-    let heavy: BTreeSet<String> = reached
+    reached
         .iter()
-        .filter(|(id, _)| HEAVY.contains(&names[*id]))
+        .filter(|(id, _)| forbidden.contains(&names[*id]))
         .map(|(_, path)| path.join(" -> "))
-        .collect();
-    assert!(
-        heavy.is_empty(),
-        "the client crate reaches what only the server should link:\n{}",
-        heavy.into_iter().collect::<Vec<_>>().join("\n")
-    );
+        .collect()
 }

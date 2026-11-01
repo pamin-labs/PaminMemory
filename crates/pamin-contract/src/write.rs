@@ -5,13 +5,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::validity;
 
+/// Record a memory under a topic. Writing to an existing topic adds a version;
+/// content too short to carry a durable claim is kept as evidence only.
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     /// The topic this memory belongs to.
     #[arg(long)]
     pub topic: String,
 
-    /// The memory content. Reads standard input when omitted.
+    /// The memory content. The command line reads standard input when it is
+    /// omitted.
+    // Required in the schema: only the command line has a standard input to
+    // read it from, and it fills this in before the request is sent.
+    #[schemars(required)]
     pub content: Option<String>,
 
     /// Record the memory without waiting for the index to catch up.

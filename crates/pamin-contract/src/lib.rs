@@ -13,6 +13,11 @@
 //! Kept light for the reason `pamin-client` is: the `pamin` executable is
 //! built from it, and what it links every command pays for at start.
 
+/// The contract's version, which MCP clients see as the server's. Within a
+/// major version the contract only grows: a removed field, or one whose type or
+/// meaning changed, starts the next one.
+pub const VERSION: &str = "1.0.0";
+
 pub mod cascade;
 pub mod grep;
 pub mod import;
