@@ -40,6 +40,10 @@ struct GraphRecallOptions {
 /// interchangeable. Provisional, like every other retrieval constant here.
 const MENTION_CONFIDENCE: f32 = 0.5;
 
+/// Every kind of edge the engine derives: what a memory names. A topic that
+/// resolves to nothing derives none of them.
+pub(crate) const DERIVED: [EdgeKind; 1] = [EdgeKind::Mentions];
+
 /// How many topics the graph channel is willing to walk out from.
 ///
 /// Not a query count -- the walk asks one question per hop for the whole
@@ -532,7 +536,7 @@ impl Models {
     /// them as `settings` says.
     pub fn new(workspace: &Workspace, settings: Settings) -> Self {
         Self {
-            dir: workspace.root().join("models"),
+            dir: workspace.models_dir(),
             settings: Arc::new(settings),
             loaded: Arc::default(),
             reranker: Arc::default(),
@@ -840,6 +844,22 @@ fn is_idle(last_used: Instant, now: Instant, idle: Duration) -> bool {
 fn content_hash(content: &str) -> String {
     use sha2::Digest as _;
     format!("{:x}", sha2::Sha256::digest(content.as_bytes()))
+}
+
+/// Where a section of a file named `topic` has its evidence filed, for a
+/// caller that addresses its source directly.
+pub fn file_locator(topic: &str) -> String {
+    locator(SourceKind::File, topic)
+}
+
+/// Where a topic's evidence of `kind` is filed: `manual:{topic}` for what was
+/// written by hand, `file:{topic}` for a section of a file, whose name is the
+/// file's path and the headings it sits under.
+fn locator(kind: SourceKind, topic: &str) -> String {
+    match kind {
+        SourceKind::Manual => format!("manual:{topic}"),
+        SourceKind::File => format!("file:{topic}"),
+    }
 }
 
 impl Engine {
@@ -1393,14 +1413,135 @@ impl Engine {
         let current =
             repository::current_content(self.database.pool(), self.project, topic).await?;
         let verdict = pamin_core::SensoryFilter::default().judge(content, current.as_deref());
+        let recorded = self
+            .record(topic, content, validity, verdict, SourceKind::Manual, None)
+            .await?;
+        Ok((verdict, recorded))
+    }
 
+    /// [`remember`](Self::remember), for a section `pamin ingest` cut out of a
+    /// file -- which returns `None` and writes nothing when the section says
+    /// what its topic already does, or, for one the filter holds, what it said
+    /// when it was last held.
+    ///
+    /// Re-ingesting a file is the ordinary case, not the exception, and most of
+    /// a re-ingested file has not changed. `remember` would record each
+    /// unchanged section as evidence the filter holds: a full copy of it in
+    /// `source_versions` on every ingest, for a version nothing reads. Asked of
+    /// the filter's own verdict rather than compared here, so "unchanged" means
+    /// exactly what a restatement means everywhere else.
+    ///
+    /// `root` is the directory the file was ingested from, filed with the
+    /// section's source so that an ingest of another tree that names its
+    /// files alike can tell the two apart. A section that writes nothing does
+    /// not file it: [`repository::set_roots_at`] does that for a whole ingest's
+    /// unchanged sections in one statement.
+    pub async fn remember_section(
+        &self,
+        topic: &str,
+        content: &str,
+        validity: pamin_core::Validity,
+        root: &str,
+    ) -> Result<Option<(pamin_core::Verdict, Recorded)>> {
+        let current =
+            repository::current_content(self.database.pool(), self.project, topic).await?;
+        let verdict = pamin_core::SensoryFilter::default().judge(content, current.as_deref());
+        if verdict.rejection == Some(pamin_core::Rejection::Restatement) {
+            return Ok(None);
+        }
+        // A section the filter holds never gets a topic, so the read above
+        // finds no content to restate, and it would be held again -- and its
+        // evidence copied again -- on every ingest. Its own last evidence is
+        // what it is compared with instead. Not for a topic that has content:
+        // a section cut down below the filter's minimum leaves its old text
+        // searchable, and being held again on every ingest is what says so.
+        if !verdict.is_promoted() && current.is_none() {
+            let last = repository::latest_hash_at(
+                self.database.pool(),
+                self.project,
+                &locator(SourceKind::File, topic),
+            )
+            .await?;
+            if last.as_deref() == Some(content_hash(content).as_str()) {
+                return Ok(None);
+            }
+        }
+        let recorded = self
+            .record(
+                topic,
+                content,
+                validity,
+                verdict,
+                SourceKind::File,
+                Some(root),
+            )
+            .await?;
+        Ok(Some((verdict, recorded)))
+    }
+
+    /// Takes a section of a file off the retrieval surface, because the file
+    /// no longer has it: every version of its topic soft deleted, its document
+    /// and the edges its content derived owed removal. History, evidence and
+    /// the topic's name stay, and ingesting the section again brings it back.
+    ///
+    /// Only a topic whose every source is a file's. One somebody also wrote
+    /// by hand is theirs as well as the file's, and is left alone, as is a
+    /// name with no topic or nothing surviving under it.
+    ///
+    /// And only while the topic still says what `seen` -- the state the
+    /// ingest found it at -- says: another write since, a concurrent ingest
+    /// that found the section back in its file among them, is newer than the
+    /// question this answers.
+    pub async fn retire_section(&self, topic: &str, seen: TopicStateId) -> Result<Retired> {
+        let mut transaction = self.database.pool().begin().await?;
+
+        let Some(locked) = repository::lock_topic(&mut transaction, self.project, topic).await?
+        else {
+            return Ok(Retired::Absent);
+        };
+        match locked.current {
+            None => return Ok(Retired::Absent),
+            Some(current) if current != seen => return Ok(Retired::Changed),
+            Some(_) => {}
+        }
+        if repository::source_at(
+            &mut *transaction,
+            self.project,
+            &locator(SourceKind::Manual, topic),
+        )
+        .await?
+        {
+            return Ok(Retired::Kept);
+        }
+        let retired =
+            repository::retire_topic(&mut transaction, self.project, locked.topic.id).await?;
+        transaction.commit().await?;
+
+        Ok(if retired {
+            Retired::Retired
+        } else {
+            Retired::Absent
+        })
+    }
+
+    /// The rest of a memory once the filter has judged it: its language, and
+    /// the transaction.
+    async fn record(
+        &self,
+        topic: &str,
+        content: &str,
+        validity: pamin_core::Validity,
+        verdict: pamin_core::Verdict,
+        kind: SourceKind,
+        root: Option<&str>,
+    ) -> Result<Recorded> {
         let (language, confidence) = match pamin_index::detect_language(content) {
             Some((language, confidence)) => (Some(language), Some(confidence)),
             None => (None, None),
         };
 
-        let recorded = self
-            .write(&Write {
+        self.write_from(
+            &Write {
                 topic,
                 content,
                 content_hash: &content_hash(content),
@@ -1411,10 +1552,11 @@ impl Engine {
                 language_confidence: confidence,
                 observed_at: OffsetDateTime::now_utc(),
                 validity,
-            })
-            .await?;
-
-        Ok((verdict, recorded))
+            },
+            kind,
+            root,
+        )
+        .await
     }
 
     /// Records a memory: evidence, the span over it, and -- when the filter
@@ -1431,17 +1573,43 @@ impl Engine {
     /// The topic is created only when something is promoted under it, and only
     /// inside this transaction, so a held write leaves no name behind.
     pub async fn write(&self, request: &Write<'_>) -> Result<Recorded> {
+        self.write_from(request, SourceKind::Manual, None).await
+    }
+
+    /// [`write`](Self::write), for evidence of `kind`.
+    ///
+    /// A section of a file differs from a manual write in two things only: its
+    /// evidence is filed as the file's, and its topic is kept out of the name
+    /// index (see [`repository::create_topic_unnamed`]) -- so it owes no
+    /// backfill either, since a backfill looks for memories naming a topic
+    /// that cannot be named.
+    ///
+    /// `root`, for a section of a file, is the directory it was ingested from.
+    async fn write_from(
+        &self,
+        request: &Write<'_>,
+        kind: SourceKind,
+        root: Option<&str>,
+    ) -> Result<Recorded> {
         let mut transaction = self.database.pool().begin().await?;
 
-        // Manual writes to one topic share a source, so their evidence forms a
-        // single chain rather than a new source per write.
-        let source = repository::ensure_source(
+        // Writes to one topic share a source, so their evidence forms a single
+        // chain rather than a new source per write. Per topic for a file's
+        // sections too, rather than one source per file: the source row is
+        // locked for the whole transaction, and one row for a file would
+        // record its sections one at a time.
+        let (source, first) = repository::ensure_source_created(
             &mut transaction,
             self.project,
-            SourceKind::Manual,
-            &format!("manual:{}", request.topic),
+            kind,
+            &locator(kind, request.topic),
         )
         .await?;
+        if let Some(root) = root {
+            repository::set_source_root(&mut *transaction, source, root).await?;
+        }
+        // Whether this write creates the topic, and files its name with it.
+        let mut created = false;
 
         // Evidence always, whatever the verdict. That is what makes a rejection
         // recoverable instead of a loss.
@@ -1454,57 +1622,95 @@ impl Engine {
             language_confidence: request.language_confidence,
         };
 
-        let (version, state) =
-            if request.promoted {
-                let (topic, found) =
-                    match repository::lock_topic(&mut transaction, self.project, request.topic)
-                        .await?
-                    {
-                        Some(topic) => (topic, true),
-                        None => (
-                            self.create_topic(&mut transaction, request.topic).await?,
-                            false,
-                        ),
-                    };
-
-                // Committed with the state rather than after it. A crash between
-                // the two would otherwise leave a memory the ledger knows about and
-                // the projection never hears of -- which is the failure an outbox
-                // exists to make impossible, and the one a `tokio::spawn` here
-                // would leave wide open.
-                //
-                // The third is for a topic that did not exist a moment ago, which
-                // may already be named by memories written before it. Finding them
-                // is a scan, so it is scheduled rather than paid for by whoever
-                // created the topic -- and it is skipped entirely for a rewrite,
-                // which is why the three cannot simply be one kind.
-                let mut owed = vec![JobKind::SyncTopicIndex, JobKind::DeriveMentions];
-                if !found {
-                    owed.push(JobKind::BackfillMentions);
+        let (version, state) = if request.promoted {
+            let (topic, found) = match repository::lock_topic(
+                &mut transaction,
+                self.project,
+                request.topic,
+            )
+            .await?
+            {
+                Some(topic) => (topic, true),
+                None if kind == SourceKind::File => (
+                    repository::create_topic_unnamed(&mut transaction, self.project, request.topic)
+                        .await?,
+                    false,
+                ),
+                None => {
+                    created = true;
+                    (
+                        self.create_topic(&mut transaction, request.topic).await?,
+                        false,
+                    )
                 }
+            };
 
-                // The evidence, its span, the state, the pointer and the jobs in
-                // one statement, now that both locks are held.
-                let (version, _, state) = repository::append_promoted(
-                    &mut transaction,
+            // Committed with the state rather than after it. A crash between
+            // the two would otherwise leave a memory the ledger knows about and
+            // the projection never hears of -- which is the failure an outbox
+            // exists to make impossible, and the one a `tokio::spawn` here
+            // would leave wide open.
+            //
+            // The third is for a topic that did not exist a moment ago, which
+            // may already be named by memories written before it. Finding them
+            // is a scan, so it is scheduled rather than paid for by whoever
+            // created the topic -- and it is skipped entirely for a rewrite,
+            // which is why the three cannot simply be one kind.
+            let mut owed = vec![JobKind::SyncTopicIndex, JobKind::DeriveMentions];
+            if !found && kind != SourceKind::File {
+                owed.push(JobKind::BackfillMentions);
+            }
+
+            // The evidence, its span, the state, the pointer and the jobs in
+            // one statement, now that both locks are held.
+            let (version, _, state) = repository::append_promoted(
+                &mut transaction,
+                self.project,
+                source,
+                &evidence,
+                &repository::Promotion {
+                    topic: &topic,
+                    observed_at: request.observed_at,
+                    validity: request.validity,
+                    owed: &owed,
+                },
+            )
+            .await?;
+            (version, Some(state))
+        } else {
+            let (version, _) =
+                repository::append_evidence(&mut transaction, self.project, source, &evidence)
+                    .await?;
+            (version, None)
+        };
+
+        // The first time somebody writes a topic by hand that `pamin ingest`
+        // created, the name ingest left out of the index goes in, with the
+        // backfill a new name owes: the topic is theirs too now, and a name
+        // somebody wrote is one a memory may name. Only on that first write --
+        // the one that creates its manual source -- so every later write runs
+        // the statements it ran before.
+        if kind == SourceKind::Manual && first && !created {
+            let tokens = off_the_runtime(|| self.segmenter.name_sequence(request.topic));
+            if let Some(topic) = repository::name_topic(
+                &mut *transaction,
+                self.project,
+                request.topic,
+                &tokens.join(" "),
+                tokens.len(),
+            )
+            .await?
+            {
+                pamin_store::jobs::enqueue(
+                    &mut *transaction,
                     self.project,
-                    source,
-                    &evidence,
-                    &repository::Promotion {
-                        topic: &topic,
-                        observed_at: request.observed_at,
-                        validity: request.validity,
-                        owed: &owed,
-                    },
+                    JobKind::BackfillMentions,
+                    Some(topic.0),
                 )
                 .await?;
-                (version, Some(state))
-            } else {
-                let (version, _) =
-                    repository::append_evidence(&mut transaction, self.project, source, &evidence)
-                        .await?;
-                (version, None)
-            };
+                self.remember_widest_name(tokens.len());
+            }
+        }
 
         transaction.commit().await?;
 
@@ -2517,14 +2723,15 @@ impl Engine {
         })
     }
 
-    /// Restates every topic's name in the name index.
+    /// Restates every topic's name in the name index -- every topic but the
+    /// sections of files, which are never filed there.
     ///
     /// Reads the topics rather than the table, so a name that is missing is
     /// added and one that is wrong is corrected. This is the one path that
     /// still walks every topic in a project, and it is the right one to: a
     /// rebuild is by definition proportional to what it rebuilds.
     async fn rebuild_name_index(&self) -> Result<usize> {
-        let topics = repository::all_topics(self.database.pool(), self.project).await?;
+        let topics = repository::topics_to_name(self.database.pool(), self.project).await?;
 
         let keys: Vec<(TopicId, String, usize)> = off_the_runtime(|| {
             let segmenter = &self.segmenter;
@@ -2573,6 +2780,19 @@ pub struct Write<'a> {
     pub language_confidence: Option<f32>,
     pub observed_at: OffsetDateTime,
     pub validity: Validity,
+}
+
+/// What [`Engine::retire_section`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Retired {
+    /// Taken off the retrieval surface.
+    Retired,
+    /// Left on it, because somebody also wrote it by hand.
+    Kept,
+    /// Left on it, because it changed after the ingest looked.
+    Changed,
+    /// Nothing under that name was on it.
+    Absent,
 }
 
 /// What a write left in the ledger.
