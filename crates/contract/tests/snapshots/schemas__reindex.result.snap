@@ -1,0 +1,41 @@
+---
+source: crates/contract/tests/schemas.rs
+expression: "schema_for! (reindex::Reindexed)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Reindexed",
+  "type": "object",
+  "properties": {
+    "indexed": {
+      "description": "Topics written to the projection. One document each, whatever a topic's\nversion history holds -- searching ranks what a topic says now.",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "names": {
+      "description": "Topic names restated in the index that answers which topics a memory\nnames.",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "repaired_pointers": {
+      "description": "Topics whose current-state pointer disagreed with the ledger and was\ncorrected. Zero unless something stopped maintaining it.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "reused": {
+      "description": "Of those, topics that kept the vector the replaced index held, because\ntheir text had not changed, rather than being embedded again.",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "indexed",
+    "reused",
+    "repaired_pointers",
+    "names"
+  ]
+}

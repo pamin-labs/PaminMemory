@@ -59,12 +59,12 @@ def projection_containment() -> list[str]:
     workspace = set()
     for line in out.stdout.splitlines():
         name = line.split(" ", 1)[0]
-        if name.startswith("pamin-"):
+        if name.startswith("memory-"):
             workspace.add(name)
     return sorted(workspace)
 
 
-ALLOWED_TO_REACH_ZVEC = {"pamin-index", "pamin-engine", "pamin-cli"}
+ALLOWED_TO_REACH_ZVEC = {"memory-index", "memory-engine", "memory-cli"}
 
 def directory_bytes(path: pathlib.Path) -> int:
     return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
@@ -145,7 +145,7 @@ def measure() -> dict[str, float]:
     # incremental one. Touching the most-edited crate is what makes this the
     # number a developer actually waits on.
     run("cargo", "check", "--workspace")
-    (ROOT / "crates" / "pamin-core" / "src" / "lib.rs").touch()
+    (ROOT / "crates" / "core" / "src" / "lib.rs").touch()
 
     start = time.monotonic()
     run("cargo", "check", "--workspace")

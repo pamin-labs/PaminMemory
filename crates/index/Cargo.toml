@@ -1,0 +1,51 @@
+[package]
+name = "memory-index"
+description = "Projection index: multilingual segmentation, lexical and vector recall channels."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# For the open-file limit. A projection index is what holds the descriptors,
+# so raising the limit belongs to this crate rather than to whoever opens one;
+# already in the tree as `memory-cli`'s, so this adds no lockfile entry.
+libc = { workspace = true }
+memory-core = { workspace = true }
+# The kernels, devices, thread budget and prepared-copy keys the models run on.
+pamin-runtime = { workspace = true }
+hf-hub = { workspace = true }
+icu_segmenter = { workspace = true }
+icu_provider = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Content identities: a model's tokenizer and the reranker's export. Already
+# `memory-engine`'s, so this adds no lockfile entry.
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokenizers = { workspace = true }
+yada = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+whatlang = { workspace = true }
+zvec-rust = { workspace = true }
+# The inference runtime, named directly: the reranker and BGE-M3 run their
+# sessions on it (see `encoder`). Which providers each platform's build
+# carries is `pamin-runtime`'s, whose features this unifies with.
+ort = { workspace = true, features = ["api-24"] }
+
+# sha2 0.10 enables its ARM SHA instructions only with this feature. Its
+# backend checks CPU support and retains the software fallback. Keep the
+# assembly build off MSVC; x86 already detects SHA instructions by default.
+[target.'cfg(all(unix, target_arch = "aarch64"))'.dependencies]
+sha2 = { workspace = true, features = ["asm"] }
+
+[build-dependencies]
+sha2 = { workspace = true }
+
+[dev-dependencies]
+# Only for the `shared_vocabulary` parity test; see the workspace manifest.
+fastembed = { workspace = true }
+tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }

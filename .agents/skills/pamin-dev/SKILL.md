@@ -209,7 +209,7 @@ that only one of them knows about is a row nobody can re-run.
 Two kinds, two homes, and the rule is about what the harness asserts:
 
 - **It asserts an invariant** → it belongs in the repository, as a normal test.
-  `crates/pamin-store/tests/hubcost.rs` is in the tree because it asserts that a
+  `crates/store/tests/hubcost.rs` is in the tree because it asserts that a
   bounded graph walk returns the same top fifty as an unbounded one *and* reaches
   fewer rows. Removing the bound fails it.
 - **It only produces numbers** → it stays in the scratchpad, and the numbers go
@@ -217,20 +217,20 @@ Two kinds, two homes, and the rule is about what the harness asserts:
   nothing costs CI time and rots.
 
 Measurement harnesses **never modify tracked files**. Two of them used to append
-code into `crates/pamin-engine/tests/crosslingual.rs` and restore it on exit,
+code into `crates/engine/tests/crosslingual.rs` and restore it on exit,
 and every failure mode of that arrived: 216 lines of scratch committed and
 pushed because `git add -A` ran while a background harness held the file; a
 completion hook reporting uncommitted changes a dozen times across a three-hour
 run; and a killed run leaving the file modified because the trap never fired.
 
 The pattern that replaced it — `.gitignore` covers `crates/*/tests/scratch_*.rs`,
-and the harness generates `crates/pamin-engine/tests/scratch_<name>.rs` as a
+and the harness generates `crates/engine/tests/scratch_<name>.rs` as a
 copy of the base test plus its measurement block. Cargo discovers `tests/*.rs`
 as its own integration target with no `Cargo.toml` entry:
 
 ```sh
-SCRATCH=$REPO/crates/pamin-engine/tests/scratch_conc.rs
-rm -f "$REPO"/crates/pamin-engine/tests/scratch_*.rs   # sweep at START too
+SCRATCH=$REPO/crates/engine/tests/scratch_conc.rs
+rm -f "$REPO"/crates/engine/tests/scratch_*.rs   # sweep at START too
 trap 'rm -f "$SCRATCH"' EXIT
 cat "$BASE" "$SP/conccost.rs.append" > "$SCRATCH"
 cargo test --test scratch_conc -- --ignored --nocapture
@@ -354,7 +354,7 @@ shared by every test thread in the binary. Add a flag only when a CLI-level
 timing needs one, and keep it hidden unless it is a supported setting.
 
 Harnesses and tests take their knobs from `PAMIN_EVAL_*` variables, so a bare
-`PAMIN_*` always means a product setting. `crates/pamin-index/tests/support/eval.rs`
+`PAMIN_*` always means a product setting. `crates/index/tests/support/eval.rs`
 lists every knob and is the one place they are read: once per run, into
 `Settings` and `Depths`, refusing a value that does not parse and any `PAMIN_*`
 variable the run would silently ignore -- a misspelled knob, or a product name
