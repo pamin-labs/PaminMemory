@@ -50,6 +50,10 @@ futures = "0.3"
 # repositories included. ripgrep's, under `MIT OR Unlicense`; it adds `globset`,
 # `walkdir`, `same-file`, `bstr` and, on Windows, `winapi-util` to the tree.
 ignore = "0.4"
+# The file watcher that keeps ingested files in sync: inotify on Linux,
+# FSEvents on macOS, one crate. Without default features it would lose the
+# FSEvents backend, which is its default.
+notify = "8"
 # `getrlimit`/`setrlimit`, for the server to raise its own open-file limit.
 # Already compiled -- it is under tokio and sqlx both -- so declaring it adds
 # nothing to the tree.
