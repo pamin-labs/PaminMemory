@@ -5,6 +5,7 @@ expression: "schema_for! (link::Args)"
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Args",
+  "description": "Assert a relationship between two existing topics that their text does not\nstate.",
   "type": "object",
   "properties": {
     "from": {

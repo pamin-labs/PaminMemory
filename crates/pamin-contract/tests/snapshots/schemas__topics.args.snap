@@ -5,6 +5,7 @@ expression: "schema_for! (topics::Args)"
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Args",
+  "description": "Find the topics that already exist, by name and by content, before writing\nto a new one. With no query, lists the most recent.",
   "type": "object",
   "properties": {
     "limit": {

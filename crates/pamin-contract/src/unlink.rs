@@ -3,6 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Retract a relationship, keeping the record that it was claimed.
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     /// The topic the relationship starts from.

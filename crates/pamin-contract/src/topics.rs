@@ -4,6 +4,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Find the topics that already exist, by name and by content, before writing
+/// to a new one. With no query, lists the most recent.
 #[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     /// What the topic might be about, or be called. Omit to list recent ones.
