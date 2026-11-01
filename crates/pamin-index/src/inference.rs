@@ -563,14 +563,14 @@ struct CachedPlan {
 }
 
 impl CachedPlan {
-    fn fresh(device: Device, target: Target, numerical: bool) -> Self {
+    fn fresh(device: Device, target: Target, retry_soon: bool) -> Self {
         Self {
             device,
             target,
             references: References::default(),
             revalidate: Some(
                 std::time::Instant::now()
-                    + std::time::Duration::from_secs(if numerical { 300 } else { 86400 }),
+                    + std::time::Duration::from_secs(if retry_soon { 300 } else { 86400 }),
             ),
         }
     }
@@ -2121,7 +2121,6 @@ fn calibrated_with_references<T>(
     references.replace(References::default());
     let mut reference = load(Device::Cpu, vec![cpu()].into(), false)?;
     let mut transient_failure = false;
-    let mut numerical_failure = false;
     let rounds = 3;
     let mut observations: Vec<Vec<(std::time::Duration, bool)>> = vec![Vec::new(); plans.len()];
     let mut quarantined = vec![false; plans.len()];
@@ -2135,7 +2134,6 @@ fn calibrated_with_references<T>(
             let mut candidate = match load(device, target, false) {
                 Ok(model) => model,
                 Err(error) => {
-                    numerical_failure |= matches!(error, IndexError::Numerical(_));
                     quarantined[index] |= matches!(
                         error,
                         IndexError::Incompatible(_) | IndexError::Numerical(_)
@@ -2149,7 +2147,6 @@ fn calibrated_with_references<T>(
             let elapsed = match evaluate(&mut candidate, device) {
                 Ok(elapsed) => elapsed,
                 Err(error) => {
-                    numerical_failure |= matches!(error, IndexError::Numerical(_));
                     quarantined[index] |= matches!(
                         error,
                         IndexError::Incompatible(_) | IndexError::Numerical(_)
@@ -2196,7 +2193,11 @@ fn calibrated_with_references<T>(
     let (device, target) = fastest;
     if device == Device::Cpu {
         let deadline = if !transient_failure {
-            let plan = CachedPlan::fresh(device, target, numerical_failure)
+            // Every candidate was measured or rejected. A numerical reject
+            // repeats under this key, and a repaired export or build changes
+            // the key, so retrying it before the normal lifetime only stalls
+            // the next idle reload.
+            let plan = CachedPlan::fresh(device, target, false)
                 .with_references(references.borrow().clone());
             let deadline = plan.revalidate;
             remember_plan(key, disk, cache, plan);
@@ -2213,7 +2214,7 @@ fn calibrated_with_references<T>(
         Ok(model) => {
             // A validated winner remains useful when another target is down.
             // Reuse it, but revisit failed alternatives at the short deadline.
-            let plan = CachedPlan::fresh(device, target, numerical_failure || transient_failure)
+            let plan = CachedPlan::fresh(device, target, transient_failure)
                 .with_references(references.borrow().clone());
             let deadline = plan.revalidate;
             remember_plan(key, disk, cache, plan);
@@ -4011,6 +4012,32 @@ mod tests {
         );
         recovered.set(true);
         assert_eq!(run().unwrap().1, Device::Cuda);
+    }
+
+    #[test]
+    fn completed_measurement_keeps_cpu_past_an_idle_reload_after_a_numerical_reject() {
+        use std::time::{Duration, Instant};
+        let cache = std::sync::Mutex::new(std::collections::HashMap::new());
+        let (_, device) = calibrated(
+            "fixture",
+            vec![(Device::Cuda, vec![cpu()].into())],
+            &cache,
+            |device, _, _| Ok(device),
+            |_, device| {
+                if device == Device::Cuda {
+                    Err(IndexError::Numerical("fixture drift".into()))
+                } else {
+                    Ok(Duration::from_millis(10))
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(device, Device::Cpu);
+        let revalidate = cache.lock().unwrap()["fixture"].revalidate.unwrap();
+        assert!(
+            revalidate > Instant::now() + Duration::from_secs(1800),
+            "a deterministic reject was recalibrated on the next idle reload"
+        );
     }
 
     #[test]
