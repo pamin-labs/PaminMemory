@@ -46,6 +46,11 @@ impl Workspace {
         self.root.join("postgres").join("data")
     }
 
+    /// Where model weights and tokenizers are cached.
+    pub fn models_dir(&self) -> PathBuf {
+        self.root.join("models")
+    }
+
     pub fn postgres_password_file(&self) -> PathBuf {
         self.root.join("postgres").join("pgpass")
     }
