@@ -11,7 +11,8 @@
 //!
 //! Read from `cargo metadata`'s resolved graph, over every target platform
 //! rather than the host's, following normal dependencies only: a build script
-//! or a test may use what it likes.
+//! or a test may use what it likes. Not `--offline`: every platform's graph
+//! needs manifests a host build never downloads, such as Windows-only crates.
 
 use std::collections::{BTreeSet, HashMap};
 use std::process::Command;
@@ -36,7 +37,7 @@ const HEAVY: &[&str] = &[
 #[test]
 fn the_client_reaches_nothing_only_the_server_needs() {
     let output = Command::new(env!("CARGO"))
-        .args(["metadata", "--format-version", "1", "--locked", "--offline"])
+        .args(["metadata", "--format-version", "1", "--locked"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("running cargo metadata");

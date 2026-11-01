@@ -1,0 +1,421 @@
+
+// ---------------------------------------------------------------------------
+// SCRATCH (not tracked): Blocking 3 of the ingest review. Heading sections
+// plus span grain (`headings`, what HEAD's `sections` cuts) against the
+// branch's sized sections (`sized`, `sections` at a2b6fb3, dumped to JSON by
+// scratch_dump) and `whole`. Every arm indexed by this binary, at the
+// product's defaults, searched through `Engine::search_reranked`.
+// ---------------------------------------------------------------------------
+
+/// The ranks covered@k is read at.
+const KS: [usize; 3] = [1, 5, 10];
+
+#[derive(Clone, Copy, PartialEq)]
+enum Scratch {
+    Whole,
+    Sized,
+    Headings,
+}
+
+impl Scratch {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Whole => "whole",
+            Self::Sized => "sized",
+            Self::Headings => "headings",
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct Row {
+    arm: &'static str,
+    round: usize,
+    paper: String,
+    question: usize,
+    ndcg10: f64,
+    recall10: f64,
+    covered: [f64; 3],
+    bytes: [usize; 3],
+    budget_recall_view: f64,
+    search_ms: f64,
+}
+
+#[derive(serde::Serialize)]
+struct ArmRun {
+    arm: &'static str,
+    round: usize,
+    position: usize,
+    memories: usize,
+    spans: usize,
+    ingest_s: f64,
+    index_bytes: u64,
+    search_p50_ms: f64,
+    search_p95_ms: f64,
+}
+
+/// What a hit returns to its caller: the window the span view names, or the
+/// whole memory when it is one span.
+fn view(hit: &pamin_engine::SearchHit) -> &str {
+    match &hit.span {
+        Some(span) => &hit.state.content[span.range.clone()],
+        None => &hit.state.content,
+    }
+}
+
+/// The best-served annotator's share of evidence found in `texts`, all from
+/// the question's paper.
+fn coverage(question: &Question, texts: &[&str]) -> f64 {
+    let mut read = HashSet::new();
+    for text in texts {
+        read.extend(words(text));
+    }
+    question
+        .evidence
+        .iter()
+        .map(|cited| {
+            cited.iter().filter(|paragraph| covers(&read, paragraph)).count() as f64
+                / cited.len() as f64
+        })
+        .fold(0.0, f64::max)
+}
+
+fn bytes_of(dir: &Path) -> u64 {
+    let mut total = 0;
+    for entry in std::fs::read_dir(dir).expect("read a directory").flatten() {
+        let meta = entry.metadata().expect("metadata");
+        total += if meta.is_dir() {
+            bytes_of(&entry.path())
+        } else {
+            meta.len()
+        };
+    }
+    total
+}
+
+fn index_dirs(home: &Path) -> BTreeSet<std::path::PathBuf> {
+    std::fs::read_dir(home.join("index"))
+        .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default()
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn scratch_arm(
+    arm: Scratch,
+    round: usize,
+    position: usize,
+    cut: &[(String, Vec<Section>)],
+    workspace: &Workspace,
+    home: &Path,
+    questions: &[Question],
+    counter: &dyn TokenCount,
+    nonce: &str,
+    rows: &mut Vec<Row>,
+) -> ArmRun {
+    let label = arm.label();
+    let memories: usize = cut.iter().map(|(_, sections)| sections.len()).sum();
+    let before = index_dirs(home);
+    let engine = Engine::open(
+        workspace,
+        &format!("scratch-qasper-{label}-r{round}-{nonce}"),
+        VectorIndex::default(),
+        Access::ReadWrite,
+        &harness::settings(),
+    )
+    .await
+    .expect("open the engine");
+
+    let started = Instant::now();
+    let mut written = 0;
+    for (_, sections) in cut {
+        for section in sections {
+            let recorded = engine
+                .remember_section(
+                    &section.name,
+                    &section.content,
+                    pamin_core::Validity::ALWAYS,
+                    ROOT,
+                )
+                .await
+                .expect("record a section");
+            written += usize::from(recorded.is_some());
+        }
+    }
+    harness::drain(&engine).await;
+    let ingest_s = started.elapsed().as_secs_f64();
+    // Premise: a fresh project that this run wrote in full, and holds nothing else.
+    assert_eq!(written, memories, "{label} r{round}: not a fresh project");
+    let mut spans = 0;
+    for (_, sections) in cut {
+        for section in sections {
+            spans += engine
+                .cut(&section.name, &section.content)
+                .expect("cut")
+                .len();
+        }
+    }
+    // The index holds one document per span `Engine::cut` predicts.
+    assert_eq!(
+        engine.indexed_documents().expect("count documents") as usize,
+        spans,
+        "{label} r{round}: the index does not hold the arm's spans"
+    );
+    let created: Vec<_> = index_dirs(home).difference(&before).cloned().collect();
+    assert_eq!(created.len(), 1, "{label} r{round}: not one new index: {created:?}");
+    let index_bytes = bytes_of(&created[0]);
+
+
+    let by_paper: BTreeMap<&str, &Vec<Section>> = cut
+        .iter()
+        .map(|(id, sections)| (id.as_str(), sections))
+        .collect();
+    let mut search_ms = Vec::new();
+    for (at, question) in questions.iter().enumerate() {
+        let started = Instant::now();
+        let hits = engine
+            .search_reranked(&question.text, LIMIT, harness::depths())
+            .await
+            .expect("search");
+        let ms = started.elapsed().as_secs_f64() * 1e3;
+        search_ms.push(ms);
+        assert!(!hits.is_empty(), "{label}: no hits for {:?}", question.text);
+
+        let own: Vec<bool> = hits
+            .iter()
+            .map(|hit| file_of(&hit.topic) == question.file)
+            .collect();
+        let views: Vec<&str> = hits.iter().map(view).collect();
+        let mut covered = [0.0; 3];
+        let mut bytes = [0; 3];
+        for (slot, k) in KS.iter().enumerate() {
+            let k = (*k).min(hits.len());
+            let texts: Vec<&str> = (0..k).filter(|i| own[*i]).map(|i| views[i]).collect();
+            covered[slot] = coverage(question, &texts);
+            bytes[slot] = views[..k].iter().map(|text| text.len()).sum();
+        }
+        let ranked_views: Vec<(&str, &str)> = hits
+            .iter()
+            .zip(&views)
+            .map(|(hit, text)| (hit.topic.as_str(), *text))
+            .collect();
+        let budget_recall_view = budget_recall(question, &ranked_views, counter).0;
+
+        let judged = by_paper[question.paper.as_str()]
+            .iter()
+            .filter(|section| relevant(question, &section.name, &section.content))
+            .count();
+        let relevant_names: HashSet<&str> = hits
+            .iter()
+            .filter(|hit| relevant(question, &hit.topic, &hit.state.content))
+            .map(|hit| hit.topic.as_str())
+            .collect();
+        let topics: Vec<String> = hits.iter().map(|hit| hit.topic.clone()).collect();
+        let mut one = Scores::default();
+        one.add(&topics, judged, |name| relevant_names.contains(name));
+        let found10 = topics
+            .iter()
+            .take(10)
+            .filter(|name| relevant_names.contains(name.as_str()))
+            .count();
+        rows.push(Row {
+            arm: label,
+            round,
+            paper: question.paper.clone(),
+            question: at,
+            ndcg10: one.per_query[0],
+            recall10: if judged == 0 {
+                0.0
+            } else {
+                found10 as f64 / judged as f64
+            },
+            covered,
+            bytes,
+            budget_recall_view,
+            search_ms: ms,
+        });
+    }
+    let run = ArmRun {
+        arm: label,
+        round,
+        position,
+        memories,
+        spans,
+        ingest_s,
+        index_bytes,
+        search_p50_ms: percentile(&search_ms, 0.5),
+        search_p95_ms: percentile(&search_ms, 0.95),
+    };
+    println!(
+        "  r{round} #{position} {label:<8} memories {memories:>6} spans {spans:>6} ingest {ingest_s:>7.1} s \
+         index {:>6.1} MiB  search p50 {:.0} ms p95 {:.0} ms",
+        index_bytes as f64 / 1048576.0,
+        run.search_p50_ms,
+        run.search_p95_ms
+    );
+    run
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "scratch"]
+async fn scratch_qasper_arms() {
+    let (papers, questions) = corpus();
+    let home = harness::eval_home();
+    let workspace = Workspace::at(&home);
+    let counter = SpanTokens::load(&workspace.models_dir()).expect("BGE-M3's tokenizer");
+    let out = std::path::PathBuf::from(std::env::var("SCRATCH_OUT").expect("SCRATCH_OUT"));
+    let rounds: usize = std::env::var("SCRATCH_ROUNDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(3);
+    let nonce = format!(
+        "{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_secs()
+    );
+
+    let sized: BTreeMap<String, Vec<(String, String)>> = serde_json::from_slice(
+        &std::fs::read(std::env::var("SIZED_IN").expect("SIZED_IN")).expect("read sized"),
+    )
+    .expect("sized json");
+    let cut_of = |arm: Scratch| -> Vec<(String, Vec<Section>)> {
+        papers
+            .iter()
+            .map(|paper| {
+                let sections = match arm {
+                    Scratch::Whole => vec![Section {
+                        name: paper.name.clone(),
+                        content: paper.markdown.clone(),
+                    }],
+                    Scratch::Headings => sections(&paper.name, &paper.markdown, &counter),
+                    Scratch::Sized => sized
+                        .get(&paper.id)
+                        .unwrap_or_else(|| panic!("{} missing from the sized dump", paper.id))
+                        .iter()
+                        .map(|(name, content)| Section {
+                            name: name.clone(),
+                            content: content.clone(),
+                        })
+                        .collect(),
+                };
+                (paper.id.clone(), sections)
+            })
+            .collect()
+    };
+    let cuts: Vec<(Scratch, Vec<(String, Vec<Section>)>)> =
+        [Scratch::Whole, Scratch::Sized, Scratch::Headings]
+            .into_iter()
+            .map(|arm| (arm, cut_of(arm)))
+            .collect();
+
+    // Premises: the sized arm is the sized cut (it has size parts, and more
+    // sections than heading sections), and the heading arm has no parts.
+    let count = |arm: Scratch| -> usize {
+        cuts.iter()
+            .find(|(a, _)| *a == arm)
+            .unwrap()
+            .1
+            .iter()
+            .map(|(_, s)| s.len())
+            .sum()
+    };
+    let named = |arm: Scratch, test: &dyn Fn(&str) -> bool| -> usize {
+        cuts.iter()
+            .find(|(a, _)| *a == arm)
+            .unwrap()
+            .1
+            .iter()
+            .flat_map(|(_, s)| s.iter())
+            .filter(|s| test(&s.name))
+            .count()
+    };
+    let part = |name: &str| name.ends_with(')') && name.rsplit_once(" (").is_some_and(|(_, n)| n.trim_end_matches(')').parse::<u32>().is_ok());
+    let sized_parts = named(Scratch::Sized, &part);
+    let heading_parts = named(Scratch::Headings, &part);
+    println!(
+        "  sections: whole {} sized {} ({sized_parts} size parts) headings {} ({heading_parts} parts)",
+        count(Scratch::Whole),
+        count(Scratch::Sized),
+        count(Scratch::Headings)
+    );
+    assert!(sized_parts > 0, "the sized dump has no size parts");
+    assert_eq!(heading_parts, 0, "heading sections carry size parts");
+    assert!(count(Scratch::Sized) > count(Scratch::Headings));
+
+    let mut rows = Vec::new();
+    let mut runs = Vec::new();
+    let arms = [Scratch::Whole, Scratch::Sized, Scratch::Headings];
+    for round in 0..rounds {
+        for position in 0..arms.len() {
+            let arm = arms[(round + position) % arms.len()];
+            let cut = &cuts.iter().find(|(a, _)| *a == arm).unwrap().1;
+            runs.push(
+                scratch_arm(
+                    arm, round, position, cut, &workspace, &home, &questions, &counter, &nonce,
+                    &mut rows,
+                )
+                .await,
+            );
+            std::fs::write(
+                &out,
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "papers": papers.len(),
+                    "questions": questions.len(),
+                    "runs": runs,
+                    "rows": rows,
+                }))
+                .expect("serialize"),
+            )
+            .expect("write");
+        }
+    }
+
+    // Accuracy, from round 0, paired by paper.
+    let groups = vec![0; questions.len()];
+    let keys: Vec<String> = questions.iter().map(|q| q.paper.clone()).collect();
+    let pick = |arm: &str, metric: &dyn Fn(&Row) -> f64| -> Vec<f64> {
+        let scores: Vec<f64> = rows
+            .iter()
+            .filter(|r| r.arm == arm && r.round == 0)
+            .map(metric)
+            .collect();
+        statistics::cluster_macro_contributions(&scores, &groups, &keys)
+    };
+    let metrics: Vec<(&str, Box<dyn Fn(&Row) -> f64>)> = vec![
+        ("nDCG@10", Box::new(|r: &Row| r.ndcg10)),
+        ("recall@10", Box::new(|r: &Row| r.recall10)),
+        ("covered@1", Box::new(|r: &Row| r.covered[0])),
+        ("covered@5", Box::new(|r: &Row| r.covered[1])),
+        ("covered@10", Box::new(|r: &Row| r.covered[2])),
+        ("bytes@10", Box::new(|r: &Row| r.bytes[2] as f64)),
+        ("budget recall (view)", Box::new(|r: &Row| r.budget_recall_view)),
+    ];
+    for other in ["sized", "whole"] {
+        println!("\n  headings against {other}, paired by paper (Δ = headings − {other}):");
+        for (name, metric) in &metrics {
+            let base = pick(other, metric.as_ref());
+            let new = pick("headings", metric.as_ref());
+            println!(
+                "  {name:<22} {other} {:.4}  headings {:.4}  {}",
+                mean(&base),
+                mean(&new),
+                statistics::compare(&base, &new)
+            );
+        }
+    }
+    // Determinism across rounds: the same arm should score the same.
+    for arm in ["whole", "sized", "headings"] {
+        let worst = (1..rounds)
+            .map(|round| {
+                rows.iter()
+                    .filter(|r| r.arm == arm && r.round == 0)
+                    .zip(rows.iter().filter(|r| r.arm == arm && r.round == round))
+                    .map(|(a, b)| (a.ndcg10 - b.ndcg10).abs() + (a.covered[2] - b.covered[2]).abs())
+                    .fold(0.0, f64::max)
+            })
+            .fold(0.0, f64::max);
+        println!("  {arm}: largest per-question drift across rounds {worst:.6}");
+    }
+    println!("  rows: {}", out.display());
+}
