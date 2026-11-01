@@ -94,9 +94,114 @@ async fn the_ledger_holds_its_promises() {
     a_promoted_write_is_one_statement_after_its_locks(&database).await;
     an_edge_reads_the_same_direction_from_either_end(&database).await;
     a_version_is_numbered_and_read_from_its_own_key(&database, &workspace).await;
+    a_scoped_transaction_reaches_only_its_project(&database).await;
 
     drop(database);
     a_stopped_server_is_started_again_without_waiting(&workspace).await;
+}
+
+/// Inside a scoped transaction the guarded tables hold one project's rows.
+///
+/// Row-level security is the second guard behind every query's own
+/// `project_id` filter, so this asks without the filter: whatever the query
+/// says, it sees only its project, cannot touch another's rows, and sees
+/// nothing at all as the guarded role with no project named. Late in the run,
+/// so the checks above have filled several projects.
+async fn a_scoped_transaction_reaches_only_its_project(database: &Database) {
+    let guarded: Vec<(String,)> = sqlx::query_as(
+        "SELECT relname::text FROM pg_class
+          WHERE relnamespace = current_schema()::regnamespace AND relrowsecurity
+          ORDER BY relname",
+    )
+    .fetch_all(database.pool())
+    .await
+    .expect("list the guarded tables");
+    let guarded: Vec<String> = guarded.into_iter().map(|(table,)| table).collect();
+    assert_eq!(
+        guarded,
+        [
+            "file_records",
+            "relationship_versions",
+            "relationships",
+            "source_spans",
+            "source_versions",
+            "sources",
+            "topic_aliases",
+            "topic_name_tokens",
+            "topic_states",
+            "topics",
+        ]
+    );
+
+    let projects: Vec<(uuid::Uuid,)> = sqlx::query_as(
+        "SELECT project_id FROM topics GROUP BY project_id ORDER BY count(*) DESC LIMIT 2",
+    )
+    .fetch_all(database.pool())
+    .await
+    .expect("the projects with topics");
+    let [(mine,), (theirs,)] = projects[..] else {
+        panic!("the premise: two projects hold topics, found {projects:?}");
+    };
+
+    let mut scoped = database.scoped(mine.into()).await.expect("scoped");
+    for table in &guarded {
+        let (owned,): (i64,) = sqlx::query_as(AssertSqlSafe(format!(
+            "SELECT count(*) FROM {table} WHERE project_id = $1"
+        )))
+        .bind(mine)
+        .fetch_one(database.pool())
+        .await
+        .expect("count as the owner");
+        let (seen,): (i64,) =
+            sqlx::query_as(AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
+                .fetch_one(&mut *scoped)
+                .await
+                .unwrap_or_else(|error| panic!("counting {table}: {error}"));
+        assert_eq!(
+            seen, owned,
+            "{table} shows the project its own rows and no others"
+        );
+    }
+    let touched = sqlx::query("UPDATE topics SET name = name WHERE project_id = $1")
+        .bind(theirs)
+        .execute(&mut *scoped)
+        .await
+        .expect("update another project's topics");
+    assert_eq!(
+        touched.rows_affected(),
+        0,
+        "another project's rows are out of reach"
+    );
+    let moved =
+        sqlx::query("UPDATE topics SET project_id = $1 WHERE id = (SELECT id FROM topics LIMIT 1)")
+            .bind(theirs)
+            .execute(&mut *scoped)
+            .await;
+    assert!(moved.is_err(), "a row cannot be moved into another project");
+    drop(scoped);
+
+    // On one connection, so the second transaction finds the setting the
+    // first one left: '' rather than unset, which must deny rather than fail.
+    let mut connection = database.pool().acquire().await.expect("a connection");
+    for statement in [
+        format!("BEGIN; SET LOCAL ROLE pamin_memory_app; SET LOCAL app.project_id = '{mine}'"),
+        "COMMIT".to_string(),
+        "BEGIN; SET LOCAL ROLE pamin_memory_app".to_string(),
+    ] {
+        sqlx::raw_sql(AssertSqlSafe(statement))
+            .execute(&mut *connection)
+            .await
+            .expect("set up the transaction");
+    }
+    let (unnamed,): (i64,) = sqlx::query_as("SELECT count(*) FROM topics")
+        .fetch_one(&mut *connection)
+        .await
+        .expect("count with no project named");
+    assert_eq!(unnamed, 0, "with no project named the role sees nothing");
+    sqlx::raw_sql("ROLLBACK")
+        .execute(&mut *connection)
+        .await
+        .expect("roll back");
 }
 
 /// Opening a workspace whose server was stopped starts it, promptly.

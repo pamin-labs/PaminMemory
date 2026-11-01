@@ -117,6 +117,11 @@ fn migrations() -> Vec<Migration> {
             "synced_paths",
             include_str!("../migrations/V19__synced_paths.sql"),
         ),
+        migration(
+            20,
+            "row_level_security",
+            include_str!("../migrations/V20__row_level_security.sql"),
+        ),
     ]
 }
 
