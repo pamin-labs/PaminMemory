@@ -20,8 +20,8 @@ icu_segmenter = { workspace = true }
 icu_provider = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# Content identities: a model's tokenizer, a typed reranker and a compute
-# plan's key. Already `pamin-engine`'s, so this adds no lockfile entry.
+# Content identities: a model's tokenizer and the reranker's export. Already
+# `pamin-engine`'s, so this adds no lockfile entry.
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokenizers = { workspace = true }
