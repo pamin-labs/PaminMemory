@@ -1,6 +1,6 @@
 [package]
 name = "pamin-core"
-description = "Domain model, version ledger semantics, and retrieval fusion for PaminMemory."
+description = "Domain model, version ledger semantics, and retrieval fusion for pamin-memory."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

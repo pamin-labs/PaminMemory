@@ -1,6 +1,6 @@
 # Repository Instructions
 
-## PaminMemory Workflow
+## pamin-memory Workflow
 
 - For every CPU compute path, consider and prefer SIMD where supported and worthwhile; reuse optimized library/runtime kernels and justify material scalar exceptions with measurements.
 - When changing compute/inference dispatch, follow the [mixed accelerator policy](docs/adr/0001-tech-selection.md#mixed-accelerator-policy-2026-09-29): choose measured speed across supported single/mixed plans; do not permanently retreat to CPU solely for numerical drift.
@@ -8,7 +8,7 @@
 
 - Before making changes, branch from the latest `main` with a concise name that matches the intended PR.
 - Coordinate through pamin-labs-dev before editing. With the plugin, its hooks and the `protocol` skill guide you. Without it (other agents, other tools), declare an intent with the `pamin-labs-dev` CLI first (`pamin-labs-dev intent declare ...`), work on its branch `<type>/i-<number>-<slug>`, and put `Intent: I-<number>` in the PR description; CI rejects PRs without a live intent for their branch. External contributors follow [CONTRIBUTING.md](CONTRIBUTING.md) instead.
-- Read the relevant `pamin-memory/` materials in InternalDocs before implementing PaminMemory changes. InternalDocs is a sibling clone at `$PAMIN_LABS_DEV_INTERNAL_DOCS` (default `../internal-docs`); pull it first. See [docs/internal-docs.md](docs/internal-docs.md).
+- Read the relevant `pamin-memory/` materials in InternalDocs before implementing pamin-memory changes. InternalDocs is a sibling clone at `$PAMIN_LABS_DEV_INTERNAL_DOCS` (default `../internal-docs`); pull it first. See [docs/internal-docs.md](docs/internal-docs.md).
 - Keep private planning, monetization, strategy, and sensitive internal notes out of public files.
 - When internal documentation changes are needed, open a PR in the private `internal-docs` repository. This repository keeps no pointer to it; cite InternalDocs evidence with SHA permalinks (`https://github.com/pamin-labs/internal-docs/blob/<sha>/<path>`).
 - Do not recreate local private planning folders in this repository.

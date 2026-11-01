@@ -22,7 +22,7 @@ use crate::{client, output, protocol, settings};
     long_about = None
 )]
 pub struct Cli {
-    /// Where PaminMemory keeps its database, indexes, and models.
+    /// Where pamin-memory keeps its database, indexes, and models.
     #[arg(long, env = "PAMIN_HOME", global = true)]
     pub home: Option<std::path::PathBuf>,
 
