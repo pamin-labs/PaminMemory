@@ -16,7 +16,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
-use pamin_client::command::import::{Args, Imported};
+use pamin_contract::import::{Args, Imported};
 use pamin_engine::Owed;
 use pamin_index::VectorIndex;
 use serde::Deserialize;

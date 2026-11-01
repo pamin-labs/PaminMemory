@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::command::validity;
+use crate::validity;
 
 #[derive(clap::Args, Serialize, Deserialize)]
 pub struct Args {

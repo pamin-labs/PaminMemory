@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use pamin_client::command::ingest::{Args, Ingested, Renamed};
+use pamin_contract::ingest::{Args, Ingested, Renamed};
 use pamin_engine::{Owed, Retired};
 use pamin_index::VectorIndex;
 use pamin_index::sections::{SEPARATOR, Section, Unnamed, named, number, pairs, parents, unnamed};

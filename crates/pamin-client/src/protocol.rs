@@ -13,8 +13,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::command;
-
 /// The socket, relative to the workspace root.
 ///
 /// Beside `server.json`, which records the database the same workspace started,
@@ -95,20 +93,20 @@ pub struct Request {
 #[serde(rename_all = "snake_case")]
 pub enum Call {
     Init,
-    Write(command::write::Args),
-    Import(command::import::Args),
-    Ingest(command::ingest::Args),
-    Read(command::read::Args),
-    Search(command::search::Args),
-    Grep(command::grep::Args),
-    Link(command::link::Args),
-    Unlink(command::unlink::Args),
-    Neighbors(command::neighbors::Args),
-    Topics(command::topics::Args),
-    Reindex(command::reindex::Args),
-    Cascade(command::cascade::Args),
-    Sync(command::sync::Args),
-    Unsync(command::unsync::Args),
+    Write(pamin_contract::write::Args),
+    Import(pamin_contract::import::Args),
+    Ingest(pamin_contract::ingest::Args),
+    Read(pamin_contract::read::Args),
+    Search(pamin_contract::search::Args),
+    Grep(pamin_contract::grep::Args),
+    Link(pamin_contract::link::Args),
+    Unlink(pamin_contract::unlink::Args),
+    Neighbors(pamin_contract::neighbors::Args),
+    Topics(pamin_contract::topics::Args),
+    Reindex(pamin_contract::reindex::Args),
+    Cascade(pamin_contract::cascade::Args),
+    Sync(pamin_contract::sync::Args),
+    Unsync(pamin_contract::unsync::Args),
     /// Stop the database, and the server answering this. The one call a client
     /// will not start a server in order to make.
     Stop,

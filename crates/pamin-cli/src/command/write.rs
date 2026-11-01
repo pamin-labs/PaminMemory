@@ -1,8 +1,8 @@
 //! `pamin write` — record a memory.
 
 use anyhow::{Context, Result};
-use pamin_client::command::validity;
-use pamin_client::command::write::{Args, Written};
+use pamin_contract::validity;
+use pamin_contract::write::{Args, Written};
 use pamin_index::VectorIndex;
 
 use crate::session::Session;

@@ -62,7 +62,7 @@ async fn answer(unserved: Unserved) -> Result<()> {
         // one starts the database.
         Unserved::Stop { workspace, format } => {
             let result = command::stop::execute(&workspace).await?;
-            format.emit(&result, || pamin_client::command::stop::render(&result));
+            format.emit(&result, || pamin_contract::stop::render(&result));
             Ok(())
         }
     }

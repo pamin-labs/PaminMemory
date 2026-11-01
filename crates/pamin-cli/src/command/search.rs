@@ -1,8 +1,8 @@
 //! `pamin search` — retrieve memories, with the reasoning attached.
 
 use anyhow::Result;
-use pamin_client::command::search::{Args, Hit, Results, Span, Trace};
-use pamin_client::command::validity;
+use pamin_contract::search::{Args, Hit, Results, Span, Trace};
+use pamin_contract::validity;
 use pamin_engine::Depths;
 use pamin_index::VectorIndex;
 

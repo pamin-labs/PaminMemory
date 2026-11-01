@@ -5,8 +5,8 @@
 //! question and the one to ask when the ranking is what you doubt.
 
 use anyhow::Result;
-use pamin_client::command::neighbors::{Args, Neighbor, Neighborhood};
-use pamin_client::command::validity;
+use pamin_contract::neighbors::{Args, Neighbor, Neighborhood};
+use pamin_contract::validity;
 use pamin_store::graph::Expansion;
 use pamin_store::{graph, repository};
 

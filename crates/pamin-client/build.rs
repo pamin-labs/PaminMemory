@@ -9,10 +9,11 @@
 //! is treated as one from another build.
 //!
 //! A hash over what decides the protocol: this crate's sources, which hold
-//! every request and result type, and `pamin-core`'s, whose types several
-//! results carry. Hashing more than the types is deliberate. A rebuild that
-//! changes a comment changes the fingerprint too, and costs at most a server
-//! restart; a fingerprint that missed a change would cost a misread answer.
+//! the request envelope, `pamin-contract`'s, which hold every request and
+//! result type, and `pamin-core`'s, whose types several results carry.
+//! Hashing more than the types is deliberate. A rebuild that changes a
+//! comment changes the fingerprint too, and costs at most a server restart; a
+//! fingerprint that missed a change would cost a misread answer.
 
 use std::path::{Path, PathBuf};
 
@@ -20,7 +21,7 @@ use sha2::{Digest, Sha256};
 
 fn main() {
     let mut files = vec![PathBuf::from("build.rs"), PathBuf::from("Cargo.toml")];
-    for directory in ["src", "../pamin-core/src"] {
+    for directory in ["src", "../pamin-contract/src", "../pamin-core/src"] {
         let directory = Path::new(directory);
         // A registry build would carry this crate and not its neighbour.
         if directory.is_dir() {
