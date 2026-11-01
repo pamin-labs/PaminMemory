@@ -55,13 +55,13 @@ fn settings() -> memory_engine::Settings {
     }
 }
 
-/// The store settings: the defaults, and `PAMIN_EVAL_JIT` and
-/// `PAMIN_EVAL_POSTGRES_DIR`.
+/// The store settings: the defaults, and `PAMIN_MEMORY_EVAL_JIT` and
+/// `PAMIN_MEMORY_EVAL_POSTGRES_DIR`.
 fn store() -> memory_store::StoreSettings {
     support::eval::check();
     memory_store::StoreSettings {
-        jit: support::eval::switch("PAMIN_EVAL_JIT").unwrap_or_default(),
-        postgres_dir: support::eval::path("PAMIN_EVAL_POSTGRES_DIR"),
+        jit: support::eval::switch("PAMIN_MEMORY_EVAL_JIT").unwrap_or_default(),
+        postgres_dir: support::eval::path("PAMIN_MEMORY_EVAL_POSTGRES_DIR"),
     }
 }
 
@@ -83,7 +83,7 @@ fn request<'a>(topic: &'a str, content: &'a str, hash: &'a str) -> Write<'a> {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "provisions postgres and downloads model weights"]
 async fn a_drain_leaves_a_graph_over_what_it_wrote() {
-    let home = std::env::var("PAMIN_EVAL_HOME").ok();
+    let home = std::env::var("PAMIN_MEMORY_EVAL_HOME").ok();
     let scratch = home
         .is_none()
         .then(|| tempfile::tempdir().expect("temp workspace"));

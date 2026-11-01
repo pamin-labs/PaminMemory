@@ -172,7 +172,7 @@ pub enum Response {
 /// `pamin-memory` and `pamin-memory-server` both compile it in from this crate, so a pair
 /// built together always agrees, and a request whose fingerprint differs from
 /// the server's is from another build however its binaries were installed.
-pub const WIRE: &str = env!("PAMIN_WIRE");
+pub const WIRE: &str = env!("PAMIN_MEMORY_WIRE");
 
 /// The identity of the server binary this client starts, for the version
 /// handshake: [`identity`] of [`crate::client::server_exe`].

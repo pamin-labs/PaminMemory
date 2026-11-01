@@ -1,8 +1,8 @@
-//! The evaluation knobs, `PAMIN_EVAL_*`, read in one place.
+//! The evaluation knobs, `PAMIN_MEMORY_EVAL_*`, read in one place.
 //!
 //! libtest owns a test binary's command line, so a harness cannot take flags
 //! the way `pamin-memory` does; its knobs are environment variables. They are named
-//! `PAMIN_EVAL_*` so that a bare `PAMIN_*` always means a product setting, and
+//! `PAMIN_MEMORY_EVAL_*` so that a bare `PAMIN_MEMORY_*` always means a product setting, and
 //! they are read here, once per run, into the values the libraries take --
 //! never by the libraries, and never written back to the environment.
 //!
@@ -15,108 +15,123 @@ use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-/// Every knob a harness or test reads, with what it sets. A `PAMIN_EVAL_*`
+/// Every knob a harness or test reads, with what it sets. A `PAMIN_MEMORY_EVAL_*`
 /// variable not listed here is refused by [`check`]: a misspelled knob that
 /// silently measured the default is the failure this list exists to stop.
 pub const KNOBS: &[(&str, &str)] = &[
     // What a run measures: the product's settings, as a harness sets them.
-    ("PAMIN_EVAL_DEVICE", "auto or cpu (`--device`)"),
+    ("PAMIN_MEMORY_EVAL_DEVICE", "auto or cpu (`--device`)"),
     (
-        "PAMIN_EVAL_INFERENCE_THREADS",
+        "PAMIN_MEMORY_EVAL_INFERENCE_THREADS",
         "threads per pass (`--inference-threads`)",
     ),
     (
-        "PAMIN_EVAL_EP_LIBRARIES",
+        "PAMIN_MEMORY_EVAL_EP_LIBRARIES",
         "plugin execution providers, a path list (`--ep-library`)",
     ),
     (
-        "PAMIN_EVAL_PREPARED",
+        "PAMIN_MEMORY_EVAL_PREPARED",
         "load the mapped copy, true or false (`--prepared`)",
     ),
     (
-        "PAMIN_EVAL_FUSED_ATTENTION",
+        "PAMIN_MEMORY_EVAL_FUSED_ATTENTION",
         "load the fused graph, true or false (`--fused-attention`)",
     ),
     (
-        "PAMIN_EVAL_SPLIT_EMBEDDINGS",
+        "PAMIN_MEMORY_EVAL_SPLIT_EMBEDDINGS",
         "load the split graph, true or false (`--split-embeddings`)",
     ),
     (
-        "PAMIN_EVAL_RERANK_BATCH",
+        "PAMIN_MEMORY_EVAL_RERANK_BATCH",
         "pairs per reranker pass (no flag)",
     ),
     (
-        "PAMIN_EVAL_RERANK_BATCH_TOKENS",
+        "PAMIN_MEMORY_EVAL_RERANK_BATCH_TOKENS",
         "padded tokens per reranker pass (no flag)",
     ),
     (
-        "PAMIN_EVAL_RERANK_MAX_TOKENS",
+        "PAMIN_MEMORY_EVAL_RERANK_MAX_TOKENS",
         "longest candidate the reranker reads (no flag)",
     ),
     (
-        "PAMIN_EVAL_RERANK_DEPTH",
+        "PAMIN_MEMORY_EVAL_RERANK_DEPTH",
         "candidates reranked (`search --rerank-depth`)",
     ),
     (
-        "PAMIN_EVAL_SEARCH_EFFORT",
+        "PAMIN_MEMORY_EVAL_SEARCH_EFFORT",
         "vector graph search width (`search --search-effort`)",
     ),
     (
-        "PAMIN_EVAL_UNINDEXED_BUDGET",
+        "PAMIN_MEMORY_EVAL_UNINDEXED_BUDGET",
         "documents outside the vector graph before upkeep builds it (no flag)",
     ),
     (
-        "PAMIN_EVAL_SPAN_TOKENS",
+        "PAMIN_MEMORY_EVAL_SPAN_TOKENS",
         "cut memories into spans of at most this many tokens (no flag)",
     ),
-    ("PAMIN_EVAL_JIT", "PostgreSQL JIT, true or false (`--jit`)"),
     (
-        "PAMIN_EVAL_POSTGRES_DIR",
+        "PAMIN_MEMORY_EVAL_JIT",
+        "PostgreSQL JIT, true or false (`--jit`)",
+    ),
+    (
+        "PAMIN_MEMORY_EVAL_POSTGRES_DIR",
         "a PostgreSQL installation (`--postgres-dir`)",
     ),
     // Where things are, and the protocol with re-executed children. These
     // change no result.
-    ("PAMIN_EVAL_HOME", "datasets, models and workspaces"),
+    ("PAMIN_MEMORY_EVAL_HOME", "datasets, models and workspaces"),
     (
-        "PAMIN_EVAL_MODEL_CACHE",
+        "PAMIN_MEMORY_EVAL_MODEL_CACHE",
         "the model cache a model test loads from",
     ),
     (
-        "PAMIN_EVAL_MODELS",
+        "PAMIN_MEMORY_EVAL_MODELS",
         "an existing model cache, to copy instead of downloading",
     ),
     (
-        "PAMIN_EVAL_JOINT_GRAPH",
+        "PAMIN_MEMORY_EVAL_JOINT_GRAPH",
         "a joint embedding graph to compare",
     ),
     (
-        "PAMIN_EVAL_PARITY_CORPORA",
+        "PAMIN_MEMORY_EVAL_PARITY_CORPORA",
         "tokenizer parity corpora, a path list",
     ),
-    ("PAMIN_EVAL_NATIVE_MODEL_SOURCE", "a cached FP16 BGE export"),
     (
-        "PAMIN_EVAL_NATIVE_CACHE",
+        "PAMIN_MEMORY_EVAL_NATIVE_MODEL_SOURCE",
+        "a cached FP16 BGE export",
+    ),
+    (
+        "PAMIN_MEMORY_EVAL_NATIVE_CACHE",
         "the native preparation test's cache",
     ),
-    ("PAMIN_EVAL_EXPECT_DEVICE", "the device a child must report"),
     (
-        "PAMIN_EVAL_EMBEDDING_OUTPUT",
+        "PAMIN_MEMORY_EVAL_EXPECT_DEVICE",
+        "the device a child must report",
+    ),
+    (
+        "PAMIN_MEMORY_EVAL_EMBEDDING_OUTPUT",
         "where a child writes its embeddings",
     ),
     (
-        "PAMIN_EVAL_RERANK_OUTPUT",
+        "PAMIN_MEMORY_EVAL_RERANK_OUTPUT",
         "where a child writes its scores",
     ),
-    ("PAMIN_EVAL_PREPARED_ARM", "a measuring child's arm"),
-    ("PAMIN_EVAL_PREPARED_CACHE", "a measuring child's cache"),
-    ("PAMIN_EVAL_SHARED_ARM", "a measuring child's arm"),
-    ("PAMIN_EVAL_SHARED_CACHE", "a measuring child's cache"),
+    ("PAMIN_MEMORY_EVAL_PREPARED_ARM", "a measuring child's arm"),
     (
-        "PAMIN_EVAL_SHARED_EMBEDDER_COPY",
+        "PAMIN_MEMORY_EVAL_PREPARED_CACHE",
+        "a measuring child's cache",
+    ),
+    ("PAMIN_MEMORY_EVAL_SHARED_ARM", "a measuring child's arm"),
+    (
+        "PAMIN_MEMORY_EVAL_SHARED_CACHE",
+        "a measuring child's cache",
+    ),
+    (
+        "PAMIN_MEMORY_EVAL_SHARED_EMBEDDER_COPY",
         "a prepared copy a child loads",
     ),
     (
-        "PAMIN_EVAL_SHARED_ACCURATE_COPY",
+        "PAMIN_MEMORY_EVAL_SHARED_ACCURATE_COPY",
         "a prepared copy a child loads",
     ),
 ];
@@ -125,10 +140,14 @@ pub const KNOBS: &[(&str, &str)] = &[
 /// where a workspace is or what to log, which `pamin-memory` reads and a harness
 /// does not.
 ///
-/// Not `PAMIN_VECTOR_INDEX`. It changes what `pamin-memory` measures, a harness opens
+/// Not `PAMIN_MEMORY_VECTOR_INDEX`. It changes what `pamin-memory` measures, a harness opens
 /// the vector index it names in code, and a run with it set would be recorded
 /// under that index while measuring the other one.
-const PRODUCT: &[&str] = &["PAMIN_HOME", "PAMIN_PROJECT", "PAMIN_LOG"];
+const PRODUCT: &[&str] = &[
+    "PAMIN_MEMORY_HOME",
+    "PAMIN_MEMORY_PROJECT",
+    "PAMIN_MEMORY_LOG",
+];
 
 /// Variables a build script sets with `cargo:rustc-env` -- `memory-index`'s
 /// two and `memory-engine`'s four -- which Cargo also sets on every test of
@@ -136,28 +155,28 @@ const PRODUCT: &[&str] = &["PAMIN_HOME", "PAMIN_PROJECT", "PAMIN_LOG"];
 /// what a record names its build by, so no check refuses them and no arm is
 /// named by them.
 pub const BUILD: [&str; 6] = [
-    "PAMIN_ENGINE_BUILD_ENVIRONMENT",
-    "PAMIN_ENGINE_COMMIT",
-    "PAMIN_ENGINE_DIRTY",
-    "PAMIN_ENGINE_SOURCES",
-    "PAMIN_INFERENCE_BUILD",
-    "PAMIN_INFERENCE_CARGO",
+    "PAMIN_MEMORY_ENGINE_BUILD_ENVIRONMENT",
+    "PAMIN_MEMORY_ENGINE_COMMIT",
+    "PAMIN_MEMORY_ENGINE_DIRTY",
+    "PAMIN_MEMORY_ENGINE_SOURCES",
+    "PAMIN_MEMORY_INFERENCE_BUILD",
+    "PAMIN_MEMORY_INFERENCE_CARGO",
 ];
 
-/// Refuses any `PAMIN_*` variable a run would silently ignore: a misspelled
-/// knob, or a product setting the libraries no longer read (`PAMIN_DEVICE`,
-/// `PAMIN_RERANK_DEPTH`), which a harness takes as `PAMIN_EVAL_*` instead.
+/// Refuses any `PAMIN_MEMORY_*` variable a run would silently ignore: a misspelled
+/// knob, or a product setting the libraries no longer read (`PAMIN_MEMORY_DEVICE`,
+/// `PAMIN_MEMORY_RERANK_DEPTH`), which a harness takes as `PAMIN_MEMORY_EVAL_*` instead.
 pub fn check() {
     for (name, _) in std::env::vars_os() {
         let Some(name) = name.to_str() else { continue };
-        if !name.starts_with("PAMIN_")
+        if !name.starts_with("PAMIN_MEMORY_")
             || PRODUCT.contains(&name)
             || BUILD.contains(&name)
             || KNOBS.iter().any(|(knob, _)| *knob == name)
         {
             continue;
         }
-        let renamed = name.replacen("PAMIN_", "PAMIN_EVAL_", 1);
+        let renamed = name.replacen("PAMIN_MEMORY_", "PAMIN_MEMORY_EVAL_", 1);
         if KNOBS.iter().any(|(knob, _)| *knob == renamed) {
             panic!("{name} is not read by a test: set {renamed} instead");
         }

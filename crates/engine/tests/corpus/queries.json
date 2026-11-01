@@ -984,7 +984,7 @@
   },
   {
     "group": "lexical",
-    "query": "PAMIN_HOME",
+    "query": "PAMIN_MEMORY_HOME",
     "relevant": [
       "env_pamin_home"
     ]
@@ -998,7 +998,7 @@
   },
   {
     "group": "lexical",
-    "query": "PAMIN_PROFILE",
+    "query": "PAMIN_MEMORY_PROFILE",
     "relevant": [
       "env_pamin_profile"
     ]

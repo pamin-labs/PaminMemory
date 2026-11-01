@@ -46,7 +46,7 @@ pub(crate) fn preferred<T>(
 /// them: every [`EXECUTION_SETTINGS`] setting that differs from the default,
 /// then the thread count.
 ///
-/// The plans were keyed by every `PAMIN_` variable in the environment before
+/// The plans were keyed by every `PAMIN_MEMORY_` variable in the environment before
 /// settings were passed in, and by `threads:None` where none was set, so a
 /// default configuration spells this exactly as a clean environment did and
 /// the plans it measured are reused.
@@ -65,7 +65,7 @@ fn dispatch_identity(settings: &crate::InferenceSettings) -> String {
 /// prepared copy with or without fused attention, and with or without its
 /// word embeddings split out -- it loads. A plan's key is named by these.
 ///
-/// Only these: a plan's key named every `PAMIN_` variable set, so a knob
+/// Only these: a plan's key named every `PAMIN_MEMORY_` variable set, so a knob
 /// that never reaches a model -- the reranker's depth, the search's effort,
 /// where the workspace is -- recalibrated every model and renamed every
 /// plan. What a model's own settings change, such as the reranker's batch
@@ -105,7 +105,7 @@ pub(crate) fn measured<T: RuntimeModel>(
         pamin_runtime::plan::Measure {
             accelerators: accelerators(settings)?,
             dispatch: &dispatch_identity(settings),
-            build: env!("PAMIN_INFERENCE_BUILD"),
+            build: env!("PAMIN_MEMORY_INFERENCE_BUILD"),
             ep_libraries: &settings.ep_libraries,
         },
         identity,
@@ -124,7 +124,7 @@ mod tests {
 
     /// Plans measured before settings were passed in are reused: a default
     /// configuration spells the settings part of a plan's namespace and key
-    /// exactly as a process with no `PAMIN_` variable set did, an empty list
+    /// exactly as a process with no `PAMIN_MEMORY_` variable set did, an empty list
     /// of variables and no thread count.
     #[test]
     fn a_default_configuration_keys_plans_as_a_clean_environment_did() {

@@ -192,7 +192,7 @@ async fn retrieval_quality_by_group() {
     // A named workspace is reused; an unnamed one is thrown away. Embedding a
     // few hundred memories takes minutes, and a harness that pays that on every
     // run is a harness nobody runs twice in an afternoon.
-    let home = std::env::var("PAMIN_EVAL_HOME").ok();
+    let home = std::env::var("PAMIN_MEMORY_EVAL_HOME").ok();
     let scratch = home
         .is_none()
         .then(|| tempfile::tempdir().expect("temp workspace"));

@@ -177,18 +177,18 @@
 //! index them.
 //!
 //! ```text
-//! env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p memory-engine --test crosslingual prepare_pinned_xquad_models -- --exact --ignored
-//! env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_EVAL_DEVICE=cpu cargo test -p memory-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
+//! env -u HF_HOME PAMIN_MEMORY_EVAL_HOME=/path/to/eval-home cargo test -p memory-engine --test crosslingual prepare_pinned_xquad_models -- --exact --ignored
+//! env -u HF_HOME PAMIN_MEMORY_EVAL_HOME=/path/to/eval-home PAMIN_MEMORY_EVAL_DEVICE=cpu cargo test -p memory-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
 //! ```
 //!
-//! The dataset is fetched with `curl` into `$PAMIN_EVAL_HOME/xquad-r`, or into
+//! The dataset is fetched with `curl` into `$PAMIN_MEMORY_EVAL_HOME/xquad-r`, or into
 //! `$LAREQA_DIR` if that is set. It is not vendored: it is CC-BY-SA-4.0 and
-//! this repository is Apache-2.0. Setting `PAMIN_EVAL_HOME` also keeps the
+//! this repository is Apache-2.0. Setting `PAMIN_MEMORY_EVAL_HOME` also keeps the
 //! embeddings and the indexed workspace between runs, which is the difference
 //! between minutes and most of an hour.
 //!
-//! The search refuses to run with any `PAMIN_EVAL_*` setting but the CPU
-//! device and a PostgreSQL prefix, `PAMIN_EVAL_POSTGRES_DIR` (see
+//! The search refuses to run with any `PAMIN_MEMORY_EVAL_*` setting but the CPU
+//! device and a PostgreSQL prefix, `PAMIN_MEMORY_EVAL_POSTGRES_DIR` (see
 //! `require_the_shipped_settings_on_the_cpu`): an inference thread
 //! count, for one, changes how many pairs a reranker pass takes, and with it
 //! the rankings.
@@ -202,7 +202,7 @@
 //! `single_target` language (see `harness::shape::SEED` for the default); the
 //! other two groups do not depend on it. Each run prints its `shape` lines --
 //! corpus digest, seed, asked and excluded -- and a `coverage` line at the
-//! end, and records them under `$PAMIN_EVAL_HOME/shape/`, one file per test,
+//! end, and records them under `$PAMIN_MEMORY_EVAL_HOME/shape/`, one file per test,
 //! profile, arm, digest and query order.
 
 mod channels;
@@ -944,7 +944,7 @@ fn old_content_only_passage_diagnostic_is_refused() {
 fn requested_pinned_home(home: Option<String>, explicitly_selected: bool) -> Option<String> {
     assert!(
         home.is_some() || !explicitly_selected,
-        "set PAMIN_EVAL_HOME when explicitly selecting a pinned XQuAD benchmark"
+        "set PAMIN_MEMORY_EVAL_HOME when explicitly selecting a pinned XQuAD benchmark"
     );
     home
 }
@@ -956,9 +956,11 @@ fn selected_by_libtest(test: &str, args: impl Iterator<Item = String>) -> bool {
 
 fn pinned_benchmark_home(test: &str) -> Option<String> {
     let selected = selected_by_libtest(test, std::env::args().skip(1));
-    let home = requested_pinned_home(std::env::var("PAMIN_EVAL_HOME").ok(), selected);
+    let home = requested_pinned_home(std::env::var("PAMIN_MEMORY_EVAL_HOME").ok(), selected);
     if home.is_none() {
-        eprintln!("skipping {test}: set PAMIN_EVAL_HOME and use its documented filtered command");
+        eprintln!(
+            "skipping {test}: set PAMIN_MEMORY_EVAL_HOME and use its documented filtered command"
+        );
     }
     home
 }
@@ -994,7 +996,7 @@ fn unconfigured_workspace_gate_does_not_start_a_pinned_benchmark() {
 }
 
 #[test]
-#[should_panic(expected = "set PAMIN_EVAL_HOME")]
+#[should_panic(expected = "set PAMIN_MEMORY_EVAL_HOME")]
 fn explicitly_selected_pinned_benchmark_requires_setup() {
     requested_pinned_home(None, true);
 }
@@ -1044,13 +1046,13 @@ fn prepare_pinned_model(api: &hf_hub::api::sync::Api, models: &Path, model: &ser
 }
 
 /// The reproducible XQuAD-R baseline is the shipped settings on the CPU:
-/// `PAMIN_EVAL_DEVICE=cpu`, and no other `PAMIN_EVAL_*` setting that can move
+/// `PAMIN_MEMORY_EVAL_DEVICE=cpu`, and no other `PAMIN_MEMORY_EVAL_*` setting that can move
 /// a ranking. Checked rather than asked of the command line, because a knob
 /// left exported in the shell would otherwise be measured under the
 /// baseline's name -- an inference thread count, for one, changes how many
 /// pairs a reranker pass takes, and with it the rankings.
 ///
-/// `PAMIN_EVAL_POSTGRES_DIR` is allowed: it says where a PostgreSQL
+/// `PAMIN_MEMORY_EVAL_POSTGRES_DIR` is allowed: it says where a PostgreSQL
 /// installation is, which a host without a downloadable one needs, and no
 /// ranking reads it (see [`ranking`]).
 fn require_the_shipped_settings_on_the_cpu() {
@@ -1058,13 +1060,13 @@ fn require_the_shipped_settings_on_the_cpu() {
         ranking(harness::settings()),
         shipped_on_the_cpu(),
         "the reproducible XQuAD-R baseline runs the shipped settings on the CPU: set \
-         PAMIN_EVAL_DEVICE=cpu and no other PAMIN_EVAL_ setting but PAMIN_EVAL_POSTGRES_DIR"
+         PAMIN_MEMORY_EVAL_DEVICE=cpu and no other PAMIN_MEMORY_EVAL_ setting but PAMIN_MEMORY_EVAL_POSTGRES_DIR"
     );
     assert_eq!(
         harness::depths(),
         Depths::DEFAULT,
         "the reproducible XQuAD-R baseline searches at the shipped depths: unset \
-         PAMIN_EVAL_RERANK_DEPTH and PAMIN_EVAL_SEARCH_EFFORT"
+         PAMIN_MEMORY_EVAL_RERANK_DEPTH and PAMIN_MEMORY_EVAL_SEARCH_EFFORT"
     );
 }
 
@@ -1106,7 +1108,7 @@ fn the_baseline_guard_allows_a_postgres_prefix_and_nothing_that_ranks() {
 /// A cheap real-loader check for the reproduction log and verifier, without
 /// indexing or scoring a corpus. The Python verifier consumes its stdout.
 #[test]
-#[ignore = "loads cached pinned CPU models; set PAMIN_EVAL_HOME and PAMIN_EVAL_DEVICE=cpu"]
+#[ignore = "loads cached pinned CPU models; set PAMIN_MEMORY_EVAL_HOME and PAMIN_MEMORY_EVAL_DEVICE=cpu"]
 fn pinned_model_loads_report_actual_graph_paths() {
     // Loads models: one test at a time (see `harness::ModelsTurn`).
     let _turn = harness::load_models();
@@ -1757,7 +1759,7 @@ async fn search_reaches_across_languages() {
     // A named workspace is reused; an unnamed one is thrown away. Indexing
     // thirteen thousand sentences is minutes, and a harness that pays that on
     // every run is a harness nobody runs twice in an afternoon.
-    let home = std::env::var("PAMIN_EVAL_HOME").ok();
+    let home = std::env::var("PAMIN_MEMORY_EVAL_HOME").ok();
     let scratch = home
         .is_none()
         .then(|| tempfile::tempdir().expect("temp workspace"));

@@ -23,17 +23,17 @@ fn settings() -> memory_engine::Settings {
     memory_engine::Settings {
         inference: support::inference(),
         store: memory_store::StoreSettings {
-            jit: support::eval::switch("PAMIN_EVAL_JIT").unwrap_or_default(),
-            postgres_dir: support::eval::path("PAMIN_EVAL_POSTGRES_DIR"),
+            jit: support::eval::switch("PAMIN_MEMORY_EVAL_JIT").unwrap_or_default(),
+            postgres_dir: support::eval::path("PAMIN_MEMORY_EVAL_POSTGRES_DIR"),
         },
         ..memory_engine::Settings::default()
     }
 }
 
-/// A fresh project, in `PAMIN_EVAL_HOME`'s workspace when it is set -- where
+/// A fresh project, in `PAMIN_MEMORY_EVAL_HOME`'s workspace when it is set -- where
 /// the model a reindex loads is already downloaded -- or in a scratch one.
 async fn engine() -> (Engine, Option<tempfile::TempDir>) {
-    let home = std::env::var("PAMIN_EVAL_HOME").ok();
+    let home = std::env::var("PAMIN_MEMORY_EVAL_HOME").ok();
     let scratch = home
         .is_none()
         .then(|| tempfile::tempdir().expect("temp workspace"));

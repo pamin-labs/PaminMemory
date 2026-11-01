@@ -1761,7 +1761,7 @@ latency weighed about equally, a 4.8% relative multi-hop gain did not buy a
 
 This decision recorded stored-vector quantization as deferred "until the binding exposes rotation", and expected it to be a disk saving — vectors are 55% of a real index's bytes. Both halves turned out wrong, and one of them was a defect this project shipped.
 
-`PAMIN_VECTOR_STORAGE` built the projection's vector field five ways (it has since been removed, with every storage below; see "Two vector indexes, both half precision"). Over 50,000 clustered 1024-dimensional vectors in four segments, everything else held equal, on an otherwise idle machine:
+`PAMIN_MEMORY_VECTOR_STORAGE` built the projection's vector field five ways (it has since been removed, with every storage below; see "Two vector indexes, both half precision"). Over 50,000 clustered 1024-dimensional vectors in four segments, everything else held equal, on an otherwise idle machine:
 
 | storage | recall@10 | per query | build | whole index |
 | --- | --- | --- | --- | --- |
@@ -1820,7 +1820,7 @@ The runs are scratch builds (a storage label read at open and the two caches byp
 
 ### Two vector indexes, both half precision: `memory` by default
 
-The section above measured each storage against a rule and shipped none of them. The owner then set the rule aside for the vector index and decided the shape directly: vectors are stored in half precision, the index is one of two, `disk` (DiskANN) or `memory` (HNSW), chosen with `--vector-index` / `PAMIN_VECTOR_INDEX`, and `disk` was made the default because this project ranks resident memory above query time and disk, and `disk` is the index that holds almost nothing resident. Once the write-path cost below was measured, the owner made `memory` the default instead; `disk` stays for projects whose memory is scarce. Everything else — fp32 as a way to write, int8, int4, RaBitQ, IVF-RaBitQ, the quantizer's rotation, `PAMIN_VECTOR_STORAGE` — is gone from the code. What was measured to hold that decision to the accuracy bar, and what it costs, follows.
+The section above measured each storage against a rule and shipped none of them. The owner then set the rule aside for the vector index and decided the shape directly: vectors are stored in half precision, the index is one of two, `disk` (DiskANN) or `memory` (HNSW), chosen with `--vector-index` / `PAMIN_MEMORY_VECTOR_INDEX`, and `disk` was made the default because this project ranks resident memory above query time and disk, and `disk` is the index that holds almost nothing resident. Once the write-path cost below was measured, the owner made `memory` the default instead; `disk` stays for projects whose memory is scarce. Everything else — fp32 as a way to write, int8, int4, RaBitQ, IVF-RaBitQ, the quantizer's rotation, `PAMIN_MEMORY_VECTOR_STORAGE` — is gone from the code. What was measured to hold that decision to the accuracy bar, and what it costs, follows.
 
 **Half precision is accurate once the engine's scores are not trusted.** The paragraph above found the fp16 field losing 0.033 of synthetic recall, and a later probe found why: on a CPU with AVX-512 FP16 the engine's cosine and inner-product kernels multiply and accumulate in half precision (`inner_product_distance_batch_impl_fp16_avx512fp16.cc` upstream), so its scores are off by about 4e-4 where rounding the vectors alone moves a cosine by about 1e-5. The fix is on this side of the boundary: ask either index for twice the candidates with their stored vectors, and rank those again by an exact f32 cosine against the query as the model produced it. That leaves only the rounding's error, which is what exact search over the rounded vectors recalls. The stored vectors are read back through the C API — the binding's f32 getter returns nothing for an fp16 field, which is why the section above concluded they could not be — and `crates/index/src/half.rs` carries the three crossings the binding lacks.
 
@@ -2078,7 +2078,7 @@ cross-lingual. `balanced`'s one distinction, the only significant *positive* on
 same-language, is +0.0029 and not worth 821 ms. They were kept for a while so
 the product's own tier table could say so; the numbers are here instead, and
 with the non-commercial tier went the licence notice and the
-`PAMIN_ACCEPT_NONCOMMERCIAL` variable that existed only for it. Asking for
+`PAMIN_MEMORY_ACCEPT_NONCOMMERCIAL` variable that existed only for it. Asking for
 either tier by name is now the unknown-tier error.
 
 Measured through `Engine::search_reranked`, the entry point `pamin-memory search`
@@ -3075,7 +3075,7 @@ column appeared to say the opposite.
 
 **What the cores are divided between is worth setting, and is not worth
 changing by default.** ONNX Runtime splits one forward pass across every core
-unless told otherwise, and `PAMIN_INFERENCE_THREADS` (now `--inference-threads`) is the other way to divide
+unless told otherwise, and `PAMIN_MEMORY_INFERENCE_THREADS` (now `--inference-threads`) is the other way to divide
 them — fewer threads per pass, more passes at once. Throughput in queries a
 second, same sweep:
 
@@ -3353,7 +3353,7 @@ The 2026-10-01 cluster inference is a post-hoc correction of a question-independ
 `accurate` tier), and no setting that chooses either. The `speed` and
 `balanced` (multilingual E5) and `dual_accuracy` (BGE-M3 beside PPLX 0.6B)
 profiles, the `off` and `fast` (MiniLM) tiers, `--profile`, `--rerank`,
-`PAMIN_PROFILE` and `PAMIN_RERANK` are removed. `fastembed`, which only the
+`PAMIN_MEMORY_PROFILE` and `PAMIN_MEMORY_RERANK` are removed. `fastembed`, which only the
 E5 profiles called, leaves the runtime dependencies and stays for one parity
 test.
 
@@ -3387,8 +3387,8 @@ more; see [2026-10-16](#2026-10-16-side-by-side-passes-one-shared-session-one-pa
 default search path bit-identical, and the pull request that made it records
 the check.
 
-**Compatibility.** Setting `PAMIN_PROFILE` or `PAMIN_RERANK` to any value is
-an error naming the setting, following `PAMIN_NO_SERVER`, rather than being
+**Compatibility.** Setting `PAMIN_MEMORY_PROFILE` or `PAMIN_MEMORY_RERANK` to any value is
+an error naming the setting, following `PAMIN_MEMORY_NO_SERVER`, rather than being
 ignored: a caller that set one expected it to change something. An index built
 under a retired profile refuses to open with an error that names the profile
 and `pamin-memory reindex`, and the server's catch-up logs it rather than passing over

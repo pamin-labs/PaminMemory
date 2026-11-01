@@ -14,7 +14,7 @@ pub mod compiled;
 pub mod shape;
 pub mod vectors;
 
-/// The `PAMIN_EVAL_*` knobs and the inference settings they build, shared
+/// The `PAMIN_MEMORY_EVAL_*` knobs and the inference settings they build, shared
 /// with the index's own tests.
 #[path = "../../../index/tests/support/mod.rs"]
 pub mod support;
@@ -156,8 +156,8 @@ impl Drop for ModelsTurn {
     }
 }
 
-/// A `PAMIN_EVAL_*` knob an arm sweeps -- `PAMIN_EVAL_RERANK_DEPTH` for
-/// depth variants, `PAMIN_EVAL_SEARCH_EFFORT` for the effort sweep.
+/// A `PAMIN_MEMORY_EVAL_*` knob an arm sweeps -- `PAMIN_MEMORY_EVAL_RERANK_DEPTH` for
+/// depth variants, `PAMIN_MEMORY_EVAL_SEARCH_EFFORT` for the effort sweep.
 ///
 /// A value the caller set is refused: it would name the record while no
 /// pass ran under it. The sweep itself sets no variable: each pass takes its
@@ -191,9 +191,9 @@ impl KnobSweep {
 }
 
 /// Where the harnesses keep datasets, models and workspaces between runs:
-/// `PAMIN_EVAL_HOME`, or `pamin-eval` under the system's temporary directory.
+/// `PAMIN_MEMORY_EVAL_HOME`, or `pamin-eval` under the system's temporary directory.
 pub fn eval_home() -> PathBuf {
-    std::env::var("PAMIN_EVAL_HOME")
+    std::env::var("PAMIN_MEMORY_EVAL_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| std::env::temp_dir().join("pamin-eval"))
 }
@@ -208,7 +208,7 @@ pub fn dataset_dir(var: &str, name: &str) -> PathBuf {
 }
 
 /// The settings a run measures: the product's defaults, and whatever the
-/// `PAMIN_EVAL_*` knobs change about them (see [`eval::KNOBS`]). Not when an
+/// `PAMIN_MEMORY_EVAL_*` knobs change about them (see [`eval::KNOBS`]). Not when an
 /// idle model is given back: only the resident server's sweep reads that, and
 /// no harness runs it, so there is no knob a record could be named by.
 ///
@@ -222,34 +222,37 @@ pub fn settings() -> memory_engine::Settings {
         inference: support::inference(),
         store: store(),
         model_idle: default.model_idle,
-        unindexed_budget: eval::parsed::<std::num::NonZeroU64>("PAMIN_EVAL_UNINDEXED_BUDGET")
-            .unwrap_or(default.unindexed_budget),
-        grain: eval::parsed::<std::num::NonZeroU32>("PAMIN_EVAL_SPAN_TOKENS")
+        unindexed_budget: eval::parsed::<std::num::NonZeroU64>(
+            "PAMIN_MEMORY_EVAL_UNINDEXED_BUDGET",
+        )
+        .unwrap_or(default.unindexed_budget),
+        grain: eval::parsed::<std::num::NonZeroU32>("PAMIN_MEMORY_EVAL_SPAN_TOKENS")
             .map_or(default.grain, memory_index::Grain::Spans),
     }
 }
 
-/// The store settings a run measures: the defaults, and `PAMIN_EVAL_JIT` and
-/// `PAMIN_EVAL_POSTGRES_DIR`.
+/// The store settings a run measures: the defaults, and `PAMIN_MEMORY_EVAL_JIT` and
+/// `PAMIN_MEMORY_EVAL_POSTGRES_DIR`.
 pub fn store() -> memory_store::StoreSettings {
     eval::check();
     let default = memory_store::StoreSettings::default();
     memory_store::StoreSettings {
-        jit: eval::switch("PAMIN_EVAL_JIT").unwrap_or(default.jit),
-        postgres_dir: eval::absolute_path("PAMIN_EVAL_POSTGRES_DIR").or(default.postgres_dir),
+        jit: eval::switch("PAMIN_MEMORY_EVAL_JIT").unwrap_or(default.jit),
+        postgres_dir: eval::absolute_path("PAMIN_MEMORY_EVAL_POSTGRES_DIR")
+            .or(default.postgres_dir),
     }
 }
 
 /// The depths a run searches with: the product's, and the reranker's depth
-/// and the vector graph's width as `PAMIN_EVAL_RERANK_DEPTH` and
-/// `PAMIN_EVAL_SEARCH_EFFORT` say. A search's own value, so an arm that varies
+/// and the vector graph's width as `PAMIN_MEMORY_EVAL_RERANK_DEPTH` and
+/// `PAMIN_MEMORY_EVAL_SEARCH_EFFORT` say. A search's own value, so an arm that varies
 /// one passes another [`Depths`].
 pub fn depths() -> Depths {
     eval::check();
     Depths {
-        rerank: eval::parsed::<std::num::NonZeroUsize>("PAMIN_EVAL_RERANK_DEPTH")
+        rerank: eval::parsed::<std::num::NonZeroUsize>("PAMIN_MEMORY_EVAL_RERANK_DEPTH")
             .unwrap_or(Depths::DEFAULT.rerank),
-        effort: eval::parsed::<std::num::NonZeroU32>("PAMIN_EVAL_SEARCH_EFFORT")
+        effort: eval::parsed::<std::num::NonZeroU32>("PAMIN_MEMORY_EVAL_SEARCH_EFFORT")
             .unwrap_or(Depths::DEFAULT.effort),
         ..Depths::DEFAULT
     }
@@ -257,13 +260,13 @@ pub fn depths() -> Depths {
 
 /// [`PROFILE`], once nothing asks for another.
 ///
-/// `PAMIN_PROFILE` chose the embedding model a harness measured. It chooses
+/// `PAMIN_MEMORY_PROFILE` chose the embedding model a harness measured. It chooses
 /// nothing now, and a run that set it would be recorded under the name of a
 /// model it did not use, so it is refused rather than ignored.
 pub fn profile() -> String {
-    if let Some(named) = std::env::var_os("PAMIN_PROFILE") {
+    if let Some(named) = std::env::var_os("PAMIN_MEMORY_PROFILE") {
         panic!(
-            "PAMIN_PROFILE={} was removed: there is one embedding model. Unset it to continue.",
+            "PAMIN_MEMORY_PROFILE={} was removed: there is one embedding model. Unset it to continue.",
             named.to_string_lossy()
         );
     }
@@ -412,13 +415,19 @@ mod tests {
     /// a run can set is claimed.
     #[test]
     fn a_knob_sweep_refuses_a_set_value() {
-        for name in ["PAMIN_EVAL_RERANK_DEPTH", "PAMIN_EVAL_SEARCH_EFFORT"] {
+        for name in [
+            "PAMIN_MEMORY_EVAL_RERANK_DEPTH",
+            "PAMIN_MEMORY_EVAL_SEARCH_EFFORT",
+        ] {
             assert!(std::panic::catch_unwind(|| super::KnobSweep::claimed(name, true)).is_err());
             assert_eq!(super::KnobSweep::claimed(name, false).name(), name);
         }
         assert!(
-            std::panic::catch_unwind(|| super::KnobSweep::claimed("PAMIN_RERANK_DEPTH", false))
-                .is_err()
+            std::panic::catch_unwind(|| super::KnobSweep::claimed(
+                "PAMIN_MEMORY_RERANK_DEPTH",
+                false
+            ))
+            .is_err()
         );
     }
 

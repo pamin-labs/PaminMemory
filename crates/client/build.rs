@@ -42,7 +42,7 @@ fn main() {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    println!("cargo:rustc-env=PAMIN_WIRE={fingerprint}");
+    println!("cargo:rustc-env=PAMIN_MEMORY_WIRE={fingerprint}");
 }
 
 fn sources(directory: &Path, into: &mut Vec<PathBuf>) {

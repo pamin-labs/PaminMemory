@@ -1147,21 +1147,21 @@ pub(crate) mod tests {
     /// with
     ///
     /// ```sh
-    /// PAMIN_EVAL_MODELS=/path/to/models PAMIN_EVAL_PARITY_CORPORA=/path/a.json:/path/b.json \
+    /// PAMIN_MEMORY_EVAL_MODELS=/path/to/models PAMIN_MEMORY_EVAL_PARITY_CORPORA=/path/a.json:/path/b.json \
     ///   cargo test --release -p memory-index --lib -- --ignored --nocapture \
     ///   the_compact_vocabulary_encodes_as_tokenizers_own
     /// ```
     ///
-    /// `PAMIN_EVAL_MODELS` is a model cache in the hub's layout, written to
+    /// `PAMIN_MEMORY_EVAL_MODELS` is a model cache in the hub's layout, written to
     /// only to fetch what it lacks; without it the files are fetched into a
-    /// temporary one. `PAMIN_EVAL_PARITY_CORPORA` lists JSON files, every string
+    /// temporary one. `PAMIN_MEMORY_EVAL_PARITY_CORPORA` lists JSON files, every string
     /// in which is a text -- the XQuAD-R, MuSiQue and LOCOMO files the
     /// evaluation harnesses read, for instance.
     #[test]
     #[ignore = "needs the models' tokenizer files and corpora; see the comment"]
     fn the_compact_vocabulary_encodes_as_tokenizers_own() {
         let temporary = tempfile::tempdir().expect("a temporary directory");
-        let cache = std::env::var_os("PAMIN_EVAL_MODELS")
+        let cache = std::env::var_os("PAMIN_MEMORY_EVAL_MODELS")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| temporary.path().to_path_buf());
 
@@ -1174,7 +1174,7 @@ pub(crate) mod tests {
             .collect();
         let mut seen = std::collections::HashSet::new();
         for path in std::env::split_paths(
-            &std::env::var_os("PAMIN_EVAL_PARITY_CORPORA").unwrap_or_default(),
+            &std::env::var_os("PAMIN_MEMORY_EVAL_PARITY_CORPORA").unwrap_or_default(),
         )
         .filter(|path| !path.as_os_str().is_empty())
         {
@@ -1394,10 +1394,11 @@ pub(crate) mod tests {
     /// what lets `spans::pack` count blocks one at a time; and its offsets
     /// fall on character boundaries in every script.
     #[test]
-    #[ignore = "reads BGE-M3's tokenizer; set PAMIN_TEST_MODEL_CACHE"]
+    #[ignore = "reads BGE-M3's tokenizer; set PAMIN_MEMORY_TEST_MODEL_CACHE"]
     fn bge_tokens_add_up_across_lines_and_fall_on_boundaries() {
         let cache = std::path::PathBuf::from(
-            std::env::var_os("PAMIN_TEST_MODEL_CACHE").expect("set PAMIN_TEST_MODEL_CACHE"),
+            std::env::var_os("PAMIN_MEMORY_TEST_MODEL_CACHE")
+                .expect("set PAMIN_MEMORY_TEST_MODEL_CACHE"),
         );
         let tokens = SpanTokens::load(&cache).expect("load the tokenizer");
         let blocks = [

@@ -694,12 +694,12 @@ mod tests {
         let read: crate::LocalServer = serde_json::from_value(old.into()).unwrap();
         assert!(!super::reusable(&read, &StoreSettings::default()));
 
-        let workspace = crate::Workspace::at("/home/agent/.pamin");
+        let workspace = crate::Workspace::at("/home/agent/.pamin-memory");
         let message = super::other_settings(&workspace, &read_started(&started), &jit).to_string();
         for named in [
             "running with jit off and /usr/lib/postgresql/17",
             "asked for jit on and /usr/lib/postgresql/17",
-            "`pamin-memory --home /home/agent/.pamin stop`",
+            "`pamin-memory --home /home/agent/.pamin-memory stop`",
         ] {
             assert!(message.contains(named), "{message}");
         }

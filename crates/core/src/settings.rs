@@ -45,7 +45,7 @@ impl DeviceChoice {
 /// Which vector index a project's index is built with, and what its marker
 /// records.
 ///
-/// A setting (`--vector-index`, `PAMIN_VECTOR_INDEX`) with two values, because
+/// A setting (`--vector-index`, `PAMIN_MEMORY_VECTOR_INDEX`) with two values, because
 /// the choice is a trade between resident memory on one side and query and
 /// build time on the other that only the person running a project can make.
 /// Both store vectors in half precision and both are searched the same way:

@@ -54,7 +54,7 @@ mod tests {
         let server =
             memory_client::settings::Server::resolve(root.path(), &parsed.server, &matches)
                 .unwrap();
-        // `PAMIN_DEVICE` may be set by whoever runs the tests; nothing else is
+        // `PAMIN_MEMORY_DEVICE` may be set by whoever runs the tests; nothing else is
         // read from the environment.
         let settings = memory_engine::Settings {
             inference: memory_index::InferenceSettings {

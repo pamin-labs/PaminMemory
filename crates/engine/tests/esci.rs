@@ -339,7 +339,7 @@ async fn search_ranks_product_listings() {
     corpus.describe();
 
     let named = profile();
-    let home = std::env::var("PAMIN_EVAL_HOME").ok();
+    let home = std::env::var("PAMIN_MEMORY_EVAL_HOME").ok();
     let scratch = home
         .is_none()
         .then(|| tempfile::tempdir().expect("temp workspace"));

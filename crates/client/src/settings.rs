@@ -10,7 +10,7 @@
 //! which device, how many threads, how long a model stays loaded -- is fixed
 //! when the server starts, so it is decided here, from (highest first):
 //!
-//! 1. a flag on the command line, or for `--device` its `PAMIN_DEVICE`
+//! 1. a flag on the command line, or for `--device` its `PAMIN_MEMORY_DEVICE`
 //!    fallback;
 //! 2. the `[serve]` table of `config.toml` in the workspace;
 //! 3. the default, the constant each library documents beside its
@@ -86,7 +86,7 @@ pub struct ServerArgs {
     /// accelerator and CPU plan, `cpu` uses the optimized CPU only.
     #[arg(
         long,
-        env = "PAMIN_DEVICE",
+        env = "PAMIN_MEMORY_DEVICE",
         global = true,
         value_parser = parse_device,
         help_heading = "Server settings"
@@ -502,7 +502,7 @@ impl Server {
     /// Why this server cannot answer a client that asked for `asked`, or
     /// `None` if it can.
     ///
-    /// A value the client chose -- by flag, by `PAMIN_DEVICE`, or in the file
+    /// A value the client chose -- by flag, by `PAMIN_MEMORY_DEVICE`, or in the file
     /// -- has to be the one running. A value the client left to the default
     /// has to be too, unless the server was started with a flag for it: a
     /// server started as `pamin-memory serve --model-idle 60`, or by a command given

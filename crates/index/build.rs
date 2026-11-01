@@ -101,12 +101,12 @@ fn build_identity() {
         hash.update(output.stdout);
     }
     println!(
-        "cargo:rustc-env=PAMIN_INFERENCE_BUILD={:x}",
+        "cargo:rustc-env=PAMIN_MEMORY_INFERENCE_BUILD={:x}",
         hash.finalize()
     );
     readable.sort();
     println!(
-        "cargo:rustc-env=PAMIN_INFERENCE_CARGO={}",
+        "cargo:rustc-env=PAMIN_MEMORY_INFERENCE_CARGO={}",
         readable.join("\x1f")
     );
 }

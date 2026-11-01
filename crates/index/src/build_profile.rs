@@ -59,7 +59,7 @@ mod tests {
         assert!(baseline.contains_key("CARGO_PROFILE_RELEASE_LTO"));
         assert_eq!(
             baseline,
-            settings("release", [("PAMIN_DEVICE".into(), "cpu".into())])
+            settings("release", [("PAMIN_MEMORY_DEVICE".into(), "cpu".into())])
         );
     }
 

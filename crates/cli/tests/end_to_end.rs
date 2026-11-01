@@ -25,7 +25,7 @@ impl Cli {
         let home = tempfile::tempdir().expect("temp home");
         // A PostgreSQL already installed, for a machine that cannot download
         // one: written where `--postgres-dir` would read it.
-        if let Ok(dir) = std::env::var("PAMIN_TEST_POSTGRES_DIR") {
+        if let Ok(dir) = std::env::var("PAMIN_MEMORY_TEST_POSTGRES_DIR") {
             std::fs::write(
                 home.path().join("config.toml"),
                 format!("[serve]\npostgres_dir = {dir:?}\n"),
@@ -42,7 +42,7 @@ impl Cli {
     fn run(&self, args: &[&str]) -> String {
         let output = Command::new(env!("CARGO_BIN_EXE_pamin-memory"))
             .args(args)
-            .env("PAMIN_HOME", self.home())
+            .env("PAMIN_MEMORY_HOME", self.home())
             .output()
             .expect("running pamin-memory");
 
@@ -86,8 +86,8 @@ impl Cli {
         let child = Command::new(env!("CARGO_BIN_EXE_pamin-memory"))
             .args(["serve"])
             .args(flags)
-            .env("PAMIN_HOME", self.home())
-            .env("PAMIN_LOG", filter)
+            .env("PAMIN_MEMORY_HOME", self.home())
+            .env("PAMIN_MEMORY_LOG", filter)
             .stdout(log.try_clone().expect("a second handle on the log"))
             .stderr(log)
             .spawn()
@@ -111,7 +111,7 @@ impl Cli {
     fn fails(&self, args: &[&str]) -> String {
         let output = Command::new(env!("CARGO_BIN_EXE_pamin-memory"))
             .args(args)
-            .env("PAMIN_HOME", self.home())
+            .env("PAMIN_MEMORY_HOME", self.home())
             .output()
             .expect("running pamin-memory");
         assert!(!output.status.success(), "expected {args:?} to fail");
@@ -124,7 +124,7 @@ impl Drop for Cli {
         // Leaves no server behind for the next test to collide with.
         let _ = Command::new(env!("CARGO_BIN_EXE_pamin-memory"))
             .args(["stop"])
-            .env("PAMIN_HOME", self.home())
+            .env("PAMIN_MEMORY_HOME", self.home())
             .output();
     }
 }
@@ -1135,14 +1135,14 @@ fn the_index_rebuilds_from_postgres(cli: &Cli) {
 
 /// A setting that was removed is refused, not quietly ignored.
 ///
-/// `PAMIN_NO_SERVER=1` ran a command in the calling process. It was removed
+/// `PAMIN_MEMORY_NO_SERVER=1` ran a command in the calling process. It was removed
 /// when every command came to go through the server, and for a release it was
 /// simply no longer read -- so whoever set it, to debug the server or to get
 /// one process to reason about, got the server anyway and nothing said so.
-/// `PAMIN_RERANK` chose a reranking tier until there was one reranker; set to
+/// `PAMIN_MEMORY_RERANK` chose a reranking tier until there was one reranker; set to
 /// `off`, ignoring it would charge a reranker to somebody who turned it off.
 /// The settings that became flags are refused the same way, naming the flag:
-/// `PAMIN_INFERENCE_THREADS=2` ignored would be a server running with more
+/// `PAMIN_MEMORY_INFERENCE_THREADS=2` ignored would be a server running with more
 /// threads than its operator set.
 ///
 /// Not ignored, and it needs no workspace: the refusal comes before anything
@@ -1152,16 +1152,16 @@ fn a_removed_setting_is_refused_rather_than_ignored() {
     let home = tempfile::tempdir().expect("temp home");
 
     for (name, values) in [
-        ("PAMIN_NO_SERVER", ["1", "0"]),
-        ("PAMIN_PROFILE", ["accuracy", "speed"]),
-        ("PAMIN_RERANK", ["off", "accurate"]),
-        ("PAMIN_INFERENCE_THREADS", ["2", "1"]),
-        ("PAMIN_RERANK_DEPTH", ["20", "30"]),
+        ("PAMIN_MEMORY_NO_SERVER", ["1", "0"]),
+        ("PAMIN_MEMORY_PROFILE", ["accuracy", "speed"]),
+        ("PAMIN_MEMORY_RERANK", ["off", "accurate"]),
+        ("PAMIN_MEMORY_INFERENCE_THREADS", ["2", "1"]),
+        ("PAMIN_MEMORY_RERANK_DEPTH", ["20", "30"]),
     ] {
         for value in values {
             let output = Command::new(env!("CARGO_BIN_EXE_pamin-memory"))
                 .args(["read", "deploy"])
-                .env("PAMIN_HOME", home.path())
+                .env("PAMIN_MEMORY_HOME", home.path())
                 .env(name, value)
                 .output()
                 .expect("running pamin-memory");
@@ -1205,7 +1205,7 @@ fn a_walk_deeper_than_the_graph_channel_goes_is_refused() {
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_pamin-memory"))
             .args(args)
-            .env("PAMIN_HOME", home.path())
+            .env("PAMIN_MEMORY_HOME", home.path())
             .output()
             .expect("running pamin-memory");
 
@@ -2231,7 +2231,7 @@ fn an_import_records_the_whole_file_or_none_of_it() {
     let refused = Command::new(env!("CARGO_BIN_EXE_pamin-memory"))
         .args(["import", "--from"])
         .arg(&broken)
-        .env("PAMIN_HOME", cli.home())
+        .env("PAMIN_MEMORY_HOME", cli.home())
         .output()
         .expect("running import");
     assert!(
@@ -2456,7 +2456,7 @@ fn an_ingested_file_is_found_by_section_and_re_ingested_by_change() {
     let relative = Command::new(env!("CARGO_BIN_EXE_pamin-memory"))
         .args(["ingest", "--no-sync", "docs", "--json"])
         .current_dir(tree.path())
-        .env("PAMIN_HOME", cli.home())
+        .env("PAMIN_MEMORY_HOME", cli.home())
         .output()
         .expect("running ingest");
     assert!(relative.status.success(), "{relative:?}");

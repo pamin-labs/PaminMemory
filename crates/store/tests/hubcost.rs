@@ -159,7 +159,7 @@ async fn a_walk_stops_once_the_caller_has_enough() {
     // constraint. This test could therefore be run once, which is the same
     // defect as a guard that only covers the path it was written on.
     let workspace = Workspace::at(
-        std::env::var("PAMIN_EVAL_HOME").unwrap_or_else(|_| "/tmp/pamin-ws".to_string()),
+        std::env::var("PAMIN_MEMORY_EVAL_HOME").unwrap_or_else(|_| "/tmp/pamin-ws".to_string()),
     );
     let database = Database::open(&workspace, Connections::PerCommand, &common::store())
         .await
@@ -656,7 +656,7 @@ async fn random_graph(
 #[ignore = "needs a real postgres cluster"]
 async fn a_bounded_walk_ranks_as_the_whole_walk_does() {
     let workspace = Workspace::at(
-        std::env::var("PAMIN_EVAL_HOME").unwrap_or_else(|_| "/tmp/pamin-ws".to_string()),
+        std::env::var("PAMIN_MEMORY_EVAL_HOME").unwrap_or_else(|_| "/tmp/pamin-ws".to_string()),
     );
     let database = Database::open(&workspace, Connections::PerCommand, &common::store())
         .await

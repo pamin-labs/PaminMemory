@@ -2599,12 +2599,13 @@ mod tests {
     /// time; side by side is as many one-threaded passes at once as there are
     /// cores, all on one shared session, longest first. A fixed list of pairs from a few tokens to the
     /// truncation limit, in more batches than cores. The models are read
-    /// from, or downloaded into, `PAMIN_EVAL_MODEL_CACHE`.
+    /// from, or downloaded into, `PAMIN_MEMORY_EVAL_MODEL_CACHE`.
     #[test]
-    #[ignore = "downloads reranker model weights; set PAMIN_EVAL_MODEL_CACHE"]
+    #[ignore = "downloads reranker model weights; set PAMIN_MEMORY_EVAL_MODEL_CACHE"]
     fn side_by_side_batches_are_each_batch_alone() {
         let cache = PathBuf::from(
-            std::env::var_os("PAMIN_EVAL_MODEL_CACHE").expect("set PAMIN_EVAL_MODEL_CACHE"),
+            std::env::var_os("PAMIN_MEMORY_EVAL_MODEL_CACHE")
+                .expect("set PAMIN_MEMORY_EVAL_MODEL_CACHE"),
         );
         let settings = crate::InferenceSettings::default();
         let long = "harbour migration rollback policy ".repeat(settings.rerank.max_tokens.get());
@@ -2676,12 +2677,13 @@ mod tests {
     /// A CPU of one pair a pass loads its copy's trimmed, unmasked graph, and
     /// one whose passes take more than one pair the masked graph it was
     /// written from. The model is read from, or downloaded into,
-    /// `PAMIN_EVAL_MODEL_CACHE`; the trimmed graph is written into its copy.
+    /// `PAMIN_MEMORY_EVAL_MODEL_CACHE`; the trimmed graph is written into its copy.
     #[test]
-    #[ignore = "downloads reranker model weights; set PAMIN_EVAL_MODEL_CACHE"]
+    #[ignore = "downloads reranker model weights; set PAMIN_MEMORY_EVAL_MODEL_CACHE"]
     fn a_cpu_of_one_pair_a_pass_loads_the_trimmed_graph() {
         let cache = PathBuf::from(
-            std::env::var_os("PAMIN_EVAL_MODEL_CACHE").expect("set PAMIN_EVAL_MODEL_CACHE"),
+            std::env::var_os("PAMIN_MEMORY_EVAL_MODEL_CACHE")
+                .expect("set PAMIN_MEMORY_EVAL_MODEL_CACHE"),
         );
         std::fs::create_dir_all(&cache).expect("create the model cache");
         let repository =

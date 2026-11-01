@@ -6,21 +6,21 @@ mod support;
 use memory_index::{Device, Embedder};
 
 #[test]
-#[ignore = "loads embedding models; PAMIN_EVAL_MODEL_CACHE reuses an existing cache"]
+#[ignore = "loads embedding models; PAMIN_MEMORY_EVAL_MODEL_CACHE reuses an existing cache"]
 fn accelerated_embeddings_preserve_the_embedding_space() {
-    if let Some(output) = std::env::var_os("PAMIN_EVAL_EMBEDDING_OUTPUT") {
+    if let Some(output) = std::env::var_os("PAMIN_MEMORY_EVAL_EMBEDDING_OUTPUT") {
         let _ = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
             .with_test_writer()
             .try_init();
         let models = std::path::PathBuf::from(
-            std::env::var_os("PAMIN_EVAL_MODEL_CACHE").expect("the parent supplies a cache"),
+            std::env::var_os("PAMIN_MEMORY_EVAL_MODEL_CACHE").expect("the parent supplies a cache"),
         );
         let mut model = Embedder::load(&models, &support::inference()).expect("embedding model");
-        if std::env::var("PAMIN_EVAL_DEVICE").as_deref() == Ok("cpu") {
+        if std::env::var("PAMIN_MEMORY_EVAL_DEVICE").as_deref() == Ok("cpu") {
             assert_eq!(model.device(), Device::Cpu);
         } else {
-            if let Ok(expected) = std::env::var("PAMIN_EVAL_EXPECT_DEVICE") {
+            if let Ok(expected) = std::env::var("PAMIN_MEMORY_EVAL_EXPECT_DEVICE") {
                 if expected == "accelerated" {
                     assert_ne!(
                         model.device(),
@@ -46,11 +46,11 @@ fn accelerated_embeddings_preserve_the_embedding_space() {
         return;
     }
     assert!(
-        std::env::var_os("PAMIN_EVAL_DEVICE").is_none(),
-        "unset PAMIN_EVAL_DEVICE for the accelerator arm"
+        std::env::var_os("PAMIN_MEMORY_EVAL_DEVICE").is_none(),
+        "unset PAMIN_MEMORY_EVAL_DEVICE for the accelerator arm"
     );
     let temporary = tempfile::tempdir().unwrap();
-    let models = std::env::var_os("PAMIN_EVAL_MODEL_CACHE")
+    let models = std::env::var_os("PAMIN_MEMORY_EVAL_MODEL_CACHE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| temporary.path().join("models"));
     let run = |arm: &str| {
@@ -63,12 +63,12 @@ fn accelerated_embeddings_preserve_the_embedding_space() {
                 "--ignored",
                 "--nocapture",
             ])
-            .env("PAMIN_EVAL_EMBEDDING_OUTPUT", &output)
-            .env("PAMIN_EVAL_MODEL_CACHE", &models);
+            .env("PAMIN_MEMORY_EVAL_EMBEDDING_OUTPUT", &output)
+            .env("PAMIN_MEMORY_EVAL_MODEL_CACHE", &models);
         if arm == "cpu" {
-            command.env("PAMIN_EVAL_DEVICE", "cpu");
+            command.env("PAMIN_MEMORY_EVAL_DEVICE", "cpu");
         } else {
-            command.env_remove("PAMIN_EVAL_DEVICE");
+            command.env_remove("PAMIN_MEMORY_EVAL_DEVICE");
         }
         assert!(command.status().unwrap().success(), "{arm} arm failed");
         let vectors: Vec<Vec<f32>> =

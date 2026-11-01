@@ -1,6 +1,6 @@
-//! Names the commit this crate is compiled from, as `PAMIN_ENGINE_COMMIT`,
+//! Names the commit this crate is compiled from, as `PAMIN_MEMORY_ENGINE_COMMIT`,
 //! and whether its checkout had tracked changes then, as
-//! `PAMIN_ENGINE_DIRTY`.
+//! `PAMIN_MEMORY_ENGINE_DIRTY`.
 //!
 //! Only the evaluation harnesses read it (`tests/harness/shape.rs`): a shape
 //! record names the evaluated commit, and a test binary built at one commit
@@ -25,7 +25,7 @@
 //! refs in the common one.
 //!
 //! It also names the build variables that choose the native libraries
-//! linked in, as `PAMIN_ENGINE_BUILD_ENVIRONMENT`, which memory-index's build
+//! linked in, as `PAMIN_MEMORY_ENGINE_BUILD_ENVIRONMENT`, which memory-index's build
 //! fingerprint does not hold; a record holds both.
 //!
 //! The flag errs one way only. A flag left at "dirty" by a rerun that did not
@@ -104,7 +104,7 @@ fn git(args: &[&str]) -> Option<String> {
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let commit = git(&["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into());
-    println!("cargo:rustc-env=PAMIN_ENGINE_COMMIT={commit}");
+    println!("cargo:rustc-env=PAMIN_MEMORY_ENGINE_COMMIT={commit}");
     // Without the optional lock, `status` does not refresh the index it
     // would otherwise rewrite, which is watched below.
     let tracked = git(&[
@@ -120,8 +120,11 @@ fn main() {
     let untracked = git(&args.iter().map(String::as_str).collect::<Vec<_>>())
         .is_none_or(|status| compiled::compiled_in(&status));
     let dirty = tracked || untracked;
-    println!("cargo:rustc-env=PAMIN_ENGINE_DIRTY={dirty}");
-    println!("cargo:rustc-env=PAMIN_ENGINE_SOURCES={}", SOURCES.join(":"));
+    println!("cargo:rustc-env=PAMIN_MEMORY_ENGINE_DIRTY={dirty}");
+    println!(
+        "cargo:rustc-env=PAMIN_MEMORY_ENGINE_SOURCES={}",
+        SOURCES.join(":")
+    );
     // The build environment that chooses the native libraries linked in and
     // how rustc is wrapped, as the restart-floor harness records it:
     // `NAME=value` for each one set, separated by 0x1f.
@@ -135,7 +138,7 @@ fn main() {
         })
         .collect();
     println!(
-        "cargo:rustc-env=PAMIN_ENGINE_BUILD_ENVIRONMENT={}",
+        "cargo:rustc-env=PAMIN_MEMORY_ENGINE_BUILD_ENVIRONMENT={}",
         build_environment.join("\x1f")
     );
 

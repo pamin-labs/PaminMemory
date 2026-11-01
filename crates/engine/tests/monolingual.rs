@@ -604,7 +604,7 @@ async fn search() {
     let named = profile();
 
     let home = eval_home();
-    let temporary = (std::env::var("PAMIN_EVAL_HOME").is_err())
+    let temporary = (std::env::var("PAMIN_MEMORY_EVAL_HOME").is_err())
         .then(|| tempfile::tempdir().expect("temp workspace"));
     let workspace = match &temporary {
         Some(dir) => Workspace::at(dir.path()),
@@ -1433,7 +1433,7 @@ async fn compare_efforts(engine: &Engine, corpus: &Corpus, efforts: &str) {
     ];
     // Each width is a pass's own: one the caller set would name the record
     // while no pass ran under it.
-    let _effort = harness::KnobSweep::claim("PAMIN_EVAL_SEARCH_EFFORT");
+    let _effort = harness::KnobSweep::claim("PAMIN_MEMORY_EVAL_SEARCH_EFFORT");
     // Every question is asked once at each width: one table each.
     let pass = |name: &str, effort: &str| format!("{name} width {effort}");
     harness::shape::tables(

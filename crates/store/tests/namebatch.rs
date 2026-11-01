@@ -93,7 +93,7 @@ async fn recorded(
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "provisions postgres"]
 async fn one_statement_records_each_name_against_its_topic() {
-    let home = std::env::var("PAMIN_EVAL_HOME").ok();
+    let home = std::env::var("PAMIN_MEMORY_EVAL_HOME").ok();
     let scratch = home
         .is_none()
         .then(|| tempfile::tempdir().expect("temp workspace"));

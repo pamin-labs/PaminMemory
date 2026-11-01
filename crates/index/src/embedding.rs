@@ -589,7 +589,8 @@ mod tests {
         let _ = tracing_subscriber::fmt()
             .with_writer(std::io::stdout)
             .try_init();
-        let cache = std::path::PathBuf::from(std::env::var("PAMIN_EVAL_MODEL_CACHE").unwrap());
+        let cache =
+            std::path::PathBuf::from(std::env::var("PAMIN_MEMORY_EVAL_MODEL_CACHE").unwrap());
         let repository = Repository::open(&cache, JOINT_REPOSITORY).unwrap();
         let threads = crate::InferenceSettings::default().budget().unwrap();
         let weights = repository.file(&cache, JOINT_FILE);
@@ -598,7 +599,7 @@ mod tests {
             "数据库迁移失败后如何回滚？",
         ];
         let run = |device, provider| {
-            let model = if let Some(path) = std::env::var_os("PAMIN_EVAL_JOINT_GRAPH") {
+            let model = if let Some(path) = std::env::var_os("PAMIN_MEMORY_EVAL_JOINT_GRAPH") {
                 Encoder::load(
                     threads,
                     || Ok(std::path::PathBuf::from(path)),
@@ -634,7 +635,7 @@ mod tests {
             pamin_runtime::device::Device::Cpu,
             pamin_runtime::device::cpu(),
         );
-        let path = std::env::var_os("PAMIN_EVAL_JOINT_GRAPH")
+        let path = std::env::var_os("PAMIN_MEMORY_EVAL_JOINT_GRAPH")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
                 // The graph a session loads alone: a split one takes its word
@@ -747,12 +748,13 @@ mod tests {
     /// as there are cores, all on one shared session of one thread, taking
     /// texts in whatever order they finish. Lengths from a few tokens to the
     /// 512-token cap, more texts than cores, so every thread runs several.
-    /// The model is read from, or downloaded into, `PAMIN_EVAL_MODEL_CACHE`.
+    /// The model is read from, or downloaded into, `PAMIN_MEMORY_EVAL_MODEL_CACHE`.
     #[test]
-    #[ignore = "downloads BGE-M3's int8 export; set PAMIN_EVAL_MODEL_CACHE"]
+    #[ignore = "downloads BGE-M3's int8 export; set PAMIN_MEMORY_EVAL_MODEL_CACHE"]
     fn bge_side_by_side_is_each_text_alone() {
         let cache = std::path::PathBuf::from(
-            std::env::var_os("PAMIN_EVAL_MODEL_CACHE").expect("set PAMIN_EVAL_MODEL_CACHE"),
+            std::env::var_os("PAMIN_MEMORY_EVAL_MODEL_CACHE")
+                .expect("set PAMIN_MEMORY_EVAL_MODEL_CACHE"),
         );
         let mut embedder =
             Embedder::load(&cache, &crate::InferenceSettings::default()).expect("load the model");

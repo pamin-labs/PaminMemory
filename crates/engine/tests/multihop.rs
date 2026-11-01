@@ -564,7 +564,7 @@ async fn search_answers_questions_that_take_several_steps() {
     let gated = asked.iter().all(|(group, questions)| {
         statistics::gate(&format!("MuSiQue {group}, the graph's worth"), *questions)
     });
-    let home = std::env::var("PAMIN_EVAL_HOME").ok();
+    let home = std::env::var("PAMIN_MEMORY_EVAL_HOME").ok();
     let scratch = home
         .is_none()
         .then(|| tempfile::tempdir().expect("temp workspace"));
