@@ -9,11 +9,8 @@ expression: "schema_for! (write::Args)"
   "type": "object",
   "properties": {
     "content": {
-      "description": "The memory content. Reads standard input when omitted.",
-      "type": [
-        "string",
-        "null"
-      ]
+      "description": "The memory content. The command line reads standard input when it is\nomitted.",
+      "type": "string"
     },
     "defer": {
       "description": "Record the memory without waiting for the index to catch up.\n\nThe work is queued rather than skipped. The server runs it once no\nrequest is being answered, and `pamin cascade drain` runs it at once.",
@@ -33,7 +30,8 @@ expression: "schema_for! (write::Args)"
     }
   },
   "required": [
-    "topic"
+    "topic",
+    "content"
   ],
   "$defs": {
     "Flags": {

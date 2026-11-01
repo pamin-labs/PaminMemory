@@ -13,7 +13,11 @@ pub struct Args {
     #[arg(long)]
     pub topic: String,
 
-    /// The memory content. Reads standard input when omitted.
+    /// The memory content. The command line reads standard input when it is
+    /// omitted.
+    // Required in the schema: only the command line has a standard input to
+    // read it from, and it fills this in before the request is sent.
+    #[schemars(required)]
     pub content: Option<String>,
 
     /// Record the memory without waiting for the index to catch up.
