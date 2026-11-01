@@ -2,9 +2,10 @@
 
 use std::path::PathBuf;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     /// Markdown or plain-text files, or directories to read them from.
     ///
@@ -26,7 +27,7 @@ pub struct Args {
     pub no_sync: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Ingested {
     /// Files ingested: read, or left unread because their record says they
     /// have not changed since they last were.
@@ -64,7 +65,7 @@ pub struct Ingested {
 }
 
 /// A memory renamed by an ingest.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Renamed {
     pub from: String,
     pub to: String,

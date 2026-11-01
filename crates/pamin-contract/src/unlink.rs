@@ -1,8 +1,9 @@
 //! `pamin unlink` — retract a relationship without erasing that it was claimed.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {
     /// The topic the relationship starts from.
     pub from: String,
@@ -23,7 +24,7 @@ pub struct Args {
     pub reason: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Unlinked {
     pub from: String,
     pub to: String,

@@ -1,17 +1,18 @@
 //! `pamin sync` — list the paths the server keeps in sync with their files.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Args {}
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Synced {
     pub paths: Vec<SyncedPath>,
 }
 
 /// A path an ingest was given, which the server keeps in sync.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct SyncedPath {
     pub path: String,
     /// How the server is following it: `watching`, `polling` when the

@@ -4,9 +4,10 @@
 //! not pay cluster startup on every call. That makes an explicit way to stop it
 //! part of the contract rather than an extra.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct Stopped {
     pub stopped: bool,
 }

@@ -14,6 +14,7 @@ use crate::id::TopicId;
 /// into several and left the redundancy penalty reasoning across all of them.
 /// Both are now expressed as modifiers and document-type filters instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Channel {
     /// BM25 over segmented text. Word-level recall in any language.

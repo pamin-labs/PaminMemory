@@ -5,6 +5,11 @@
 //! the Unix socket carries them to the server and its results back, and MCP
 //! serves them as tools. Computing a result is the server's, in `pamin-cli`.
 //!
+//! Every argument and result type also describes itself as JSON Schema
+//! 2020-12, which is what MCP tools are declared in. A field only a person
+//! tuning retrieval should set is left out of the schema, and keeps the
+//! default it has on the command line.
+//!
 //! Kept light for the reason `pamin-client` is: the `pamin` executable is
 //! built from it, and what it links every command pays for at start.
 

@@ -22,6 +22,7 @@ use crate::ledger::Validity;
 /// modifiers are: a typo in an edge type would otherwise become a silent
 /// second kind that nothing traverses and nothing reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum EdgeKind {
     /// One topic's content names another.
@@ -75,6 +76,7 @@ impl EdgeKind {
 /// a caller made and one the engine guessed at, and a result explaining itself
 /// should be able to say which.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Derivation {
     /// Asserted directly through the CLI or API.

@@ -6,11 +6,12 @@
 
 use anyhow::{Context, Result, bail};
 use pamin_core::Validity;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-#[derive(clap::Args, Serialize, Deserialize)]
+#[derive(clap::Args, Serialize, Deserialize, JsonSchema)]
 pub struct Flags {
     /// When the claim starts holding, as RFC 3339. Open by default.
     #[arg(long)]
