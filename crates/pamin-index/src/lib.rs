@@ -27,7 +27,6 @@ pub mod segmentation;
 pub mod settings;
 pub mod spans;
 mod tokenizer;
-mod vector_math;
 #[cfg(target_os = "windows")]
 mod winml;
 mod word_embeddings;

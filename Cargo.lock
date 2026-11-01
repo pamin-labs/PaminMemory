@@ -2055,13 +2055,13 @@ name = "pamin-index"
 version = "0.0.1"
 dependencies = [
  "fastembed",
- "half",
  "hf-hub",
  "icu_provider",
  "icu_segmenter",
  "libc",
  "ort",
  "pamin-core",
+ "pamin-runtime",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2075,6 +2075,18 @@ dependencies = [
  "windows-sys 0.61.2",
  "yada",
  "zvec-rust",
+]
+
+[[package]]
+name = "pamin-runtime"
+version = "0.1.0"
+dependencies = [
+ "half",
+ "ort",
+ "sha2 0.10.9",
+ "thiserror",
+ "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
