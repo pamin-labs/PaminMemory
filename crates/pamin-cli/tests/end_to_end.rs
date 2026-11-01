@@ -2373,3 +2373,205 @@ fn changing_the_vector_index_takes_a_reindex_and_reuses_every_vector() {
         "the default now has to be refused the other way: {refused}"
     );
 }
+
+/// Writes `text` to `path`, creating its directory.
+fn put(path: &Path, text: &str) {
+    std::fs::create_dir_all(path.parent().expect("a parent")).expect("creating the directory");
+    std::fs::write(path, text).expect("writing the file");
+}
+
+/// A file ingested is findable section by section, and ingesting it again
+/// records only what changed.
+///
+/// What only the binary shows: that the client resolves the paths before the
+/// server reads them, so a relative path from another directory names the same
+/// sections; and that a second ingest of an unchanged tree is a no-op rather
+/// than a second copy of it held as evidence.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn an_ingested_file_is_found_by_section_and_re_ingested_by_change() {
+    let cli = Cli::new();
+    let mut server = cli.serve();
+    cli.run(&["init"]);
+    // Written by hand, and named by the rollback section, so the section
+    // derives an edge to it that removing the section has to close.
+    cli.run(&[
+        "write",
+        "--topic",
+        "oncall_rota",
+        "the oncall rota rotates every monday morning",
+    ]);
+
+    let tree = tempfile::tempdir().expect("temp tree");
+    std::fs::create_dir_all(tree.path().join(".git")).expect("a repository root");
+    let ops = tree.path().join("docs/ops.md");
+    // Named from the repository's root, the root's own name first.
+    let rollback_section = format!(
+        "{}/docs/ops.md › Deploy › Rollback",
+        tree.path()
+            .file_name()
+            .expect("a name")
+            .to_str()
+            .expect("utf-8")
+    );
+    let deploy = "The deployment pipeline builds every commit on the main branch, runs \
+                  the integration suite against a staging cluster, and promotes the build \
+                  to production through argo cd once the canary has served traffic for \
+                  thirty minutes without raising its error budget alarm.";
+    let rollback = "A rollback reverts the deployment pipeline to the previous release tag. \
+                    Whoever is on the oncall_rota starts it from the release dashboard, and the \
+                    previous build is serving again within ten minutes because its image \
+                    is still cached on every node in the cluster.";
+    put(
+        &ops,
+        &format!("# Deploy\n\n{deploy}\n\n## Rollback\n\n{rollback}\n"),
+    );
+    put(&tree.path().join("docs/image.png"), "not text");
+
+    let docs = tree.path().join("docs");
+    let first = cli.json(&["ingest", docs.to_str().expect("a path")]);
+    assert_eq!(first["files"], 1, "{first}");
+    assert_eq!(first["sections"], 2, "{first}");
+    assert_eq!(first["written"], 2, "{first}");
+
+    let found = cli.json(&["search", "how do we roll back to the previous release"]);
+    assert_eq!(
+        found["hits"][0]["topic"],
+        rollback_section.as_str(),
+        "the rollback section was not the first hit: {found}"
+    );
+
+    // The same tree named relatively from inside it: the same sections,
+    // nothing to record.
+    let relative = Command::new(env!("CARGO_BIN_EXE_pamin"))
+        .args(["ingest", "docs", "--json"])
+        .current_dir(tree.path())
+        .env("PAMIN_HOME", cli.home())
+        .output()
+        .expect("running ingest");
+    assert!(relative.status.success(), "{relative:?}");
+    let again: Value = serde_json::from_slice(&relative.stdout).expect("json output");
+    assert_eq!(again["unchanged"], 2, "{again}");
+    assert_eq!(again["written"], 0, "{again}");
+    assert_eq!(
+        again["held"], 0,
+        "an unchanged section was recorded as held: {again}"
+    );
+
+    let rota_neighbors = |cli: &Cli| -> Vec<String> {
+        cli.json(&["neighbors", "oncall_rota", "--kind", "mentions"])["neighbors"]
+            .as_array()
+            .expect("neighbors")
+            .iter()
+            .map(|neighbor| neighbor["topic"].as_str().expect("a topic").to_string())
+            .collect()
+    };
+    assert_eq!(
+        rota_neighbors(&cli),
+        std::slice::from_ref(&rollback_section),
+        "the section's mention of oncall_rota derived no edge"
+    );
+
+    // One section edited, one removed: taken off the surface, its edge closed.
+    let without_rollback =
+        format!("# Deploy\n\n{deploy} Releases are cut every tuesday morning.\n");
+    put(&ops, &without_rollback);
+    let edited = cli.json(&["ingest", ops.to_str().expect("a path")]);
+    assert_eq!(edited["sections"], 1, "{edited}");
+    assert_eq!(edited["written"], 1, "{edited}");
+    assert_eq!(
+        edited["removed"],
+        serde_json::json!([rollback_section]),
+        "{edited}"
+    );
+    assert_eq!(edited["missing"], serde_json::json!([]), "{edited}");
+    let after = cli.json(&["search", "how do we roll back to the previous release"]);
+    assert!(
+        after["hits"]
+            .as_array()
+            .expect("hits")
+            .iter()
+            .all(|hit| hit["topic"] != rollback_section.as_str()),
+        "a removed section is still found: {after}"
+    );
+    assert!(
+        rota_neighbors(&cli).is_empty(),
+        "the removed section's edge was left open"
+    );
+
+    // Back in the file, back on the surface.
+    put(
+        &ops,
+        &format!("# Deploy\n\n{deploy}\n\n## Rollback\n\n{rollback}\n"),
+    );
+    let back = cli.json(&["ingest", docs.to_str().expect("a path")]);
+    assert_eq!(back["written"], 2, "{back}");
+    let found = cli.json(&["search", "how do we roll back to the previous release"]);
+    assert_eq!(
+        found["hits"][0]["topic"],
+        rollback_section.as_str(),
+        "{found}"
+    );
+
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
+}
+
+/// A section its file cut down to next to nothing -- below what the filter
+/// promotes -- is not left answering with the text the file no longer has. It
+/// is taken off the surface, and back on it once the file says something again.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn a_section_its_file_emptied_is_no_longer_found() {
+    let cli = Cli::new();
+    let mut server = cli.serve();
+    cli.run(&["init"]);
+
+    let tree = tempfile::tempdir().expect("temp tree");
+    let notes = tree.path().join("notes.md");
+    let text = "The staging cluster is rebuilt from scratch every friday evening, so \
+                anything deployed there by hand is gone by monday morning and has to \
+                go through the pipeline like every other change.";
+    put(&notes, text);
+    let path = notes.to_str().expect("a path");
+    let first = cli.json(&["ingest", path]);
+    assert_eq!(first["written"], 1, "{first}");
+    let query = "what happens to the staging cluster on friday";
+    let found = cli.json(&["search", query]);
+    let section = found["hits"][0]["topic"]
+        .as_str()
+        .expect("the section was found")
+        .to_string();
+
+    put(&notes, "TBD\n");
+    let emptied = cli.json(&["ingest", path]);
+    assert_eq!(emptied["held"], 1, "{emptied}");
+    assert_eq!(
+        emptied["removed"],
+        serde_json::json!([section]),
+        "{emptied}"
+    );
+    let after = cli.json(&["search", query]);
+    assert!(
+        after["hits"]
+            .as_array()
+            .expect("hits")
+            .iter()
+            .all(|hit| hit["topic"] != section.as_str()),
+        "an emptied section is still found by its old text: {after}"
+    );
+
+    // Held again, and nothing more to retire: no evidence copied, no work.
+    let again = cli.json(&["ingest", path]);
+    assert_eq!(again["unchanged"], 1, "{again}");
+    assert_eq!(again["removed"], serde_json::json!([]), "{again}");
+
+    put(&notes, text);
+    let back = cli.json(&["ingest", path]);
+    assert_eq!(back["written"], 1, "{back}");
+    let found = cli.json(&["search", query]);
+    assert_eq!(found["hits"][0]["topic"], section.as_str(), "{found}");
+
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
+}

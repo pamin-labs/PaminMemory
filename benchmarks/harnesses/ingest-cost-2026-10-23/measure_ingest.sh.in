@@ -1,0 +1,101 @@
+#!/bin/bash
+# Measures `pamin ingest` through the product entry point: the release `pamin`
+# client and the resident `pamin-server` it talks to, run as the unprivileged
+# `tester` user against the system PostgreSQL 16.
+#
+# Arms, in order, on one fresh PAMIN_HOME with models already cached in HF_HOME
+# and loaded by a warm-up search outside every arm:
+#   cold       first ingest of the corpus copy (every section embedded)
+#   againN     unchanged re-ingests (nothing should be recorded)
+#   editN      one section of one file edited, then the whole corpus ingested
+# Per arm: client wall time; server-process CPU user+sys delta from /proc
+# (PostgreSQL backends are separate processes and NOT included); server VmHWM
+# (peak RSS over the server's lifetime so far, so monotone across arms);
+# source_versions and topics counts; database size; index directory size.
+#
+# Usage: bash measure_ingest.sh.in <bin dir> <corpus dir> <out csv> [repeats]
+set -euo pipefail
+BIN="$1"; SRC="$2"; OUT="$3"; REPEATS="${4:-5}"
+HOME_DIR=/home/tester/measure-home
+CORPUS=/home/tester/measure-corpus
+rm -rf "$HOME_DIR" "$CORPUS"; mkdir -p "$HOME_DIR"
+cp -r "$SRC" "$CORPUS"
+printf '[serve]\npostgres_dir = "/usr/lib/postgresql/16"\n' > "$HOME_DIR/config.toml"
+chown -R tester "$HOME_DIR" "$CORPUS"
+
+as_tester() {
+  runuser -u tester -- env HOME=/home/tester PAMIN_HOME="$HOME_DIR" HF_HOME=/home/tester/hf \
+    LD_LIBRARY_PATH="$BIN" "$@"
+}
+sql() {
+  local port; port=$(sed -n 4p "$HOME_DIR/postgres/data/postmaster.pid")
+  PGPASSWORD=$(cat "$HOME_DIR/postgres/pgpass") psql -h 127.0.0.1 -p "$port" -U postgres -d pamin -tA -c "$1"
+}
+
+cd /home/tester
+as_tester "$BIN/pamin" init >/dev/null
+as_tester "$BIN/pamin" search "warm up the models" >/dev/null
+PID=$(pgrep -u tester -f "pamin-server" | head -1)
+TCK=$(getconf CLK_TCK)
+{
+  echo "# server pid $PID; corpus $SRC; $(nproc) cpus; load $(cut -d' ' -f1-3 /proc/loadavg)"
+  echo "arm,wall_s,server_cpu_s,server_hwm_mb,files,sections,written,unchanged,held,missing,versions,topics,db_mb,index_mb"
+} | tee "$OUT"
+
+arm() {
+  local name="$1" before after start end json
+  before=$(awk '{print $14+$15}' "/proc/$PID/stat")
+  start=$(date +%s.%N)
+  json=$(as_tester "$BIN/pamin" --json ingest "$CORPUS")
+  end=$(date +%s.%N)
+  after=$(awk '{print $14+$15}' "/proc/$PID/stat")
+  local hwm versions topics db idx
+  hwm=$(awk '/VmHWM/{print $2}' "/proc/$PID/status")
+  versions=$(sql "SELECT count(*) FROM source_versions")
+  topics=$(sql "SELECT count(*) FROM topics")
+  db=$(sql "SELECT pg_database_size('pamin')")
+  idx=$(du -sk "$HOME_DIR/index" | cut -f1)
+  python3 - "$name" "$start" "$end" "$before" "$after" "$TCK" "$hwm" "$versions" "$topics" "$db" "$idx" "$json" <<'EOF' | tee -a "$OUT"
+import json, sys
+name, start, end, before, after, tck, hwm, versions, topics, db, idx, out = sys.argv[1:]
+r = json.loads(out)
+print(",".join(str(x) for x in [
+    name, round(float(end) - float(start), 3),
+    round((int(after) - int(before)) / int(tck), 2),
+    round(int(hwm) / 1024, 1),
+    r["files"], r["sections"], r["written"], r["unchanged"], r["held"], len(r["missing"]),
+    versions, topics, round(int(db) / 2**20, 1), round(int(idx) / 1024, 1)]))
+EOF
+}
+
+arm cold
+for i in $(seq 1 "$REPEATS"); do
+  arm "again$i"
+  # A one-word edit to the first line of prose -- not a heading, a fence, a
+  # list item or front matter -- of a different file each round, so each edit
+  # arm is the ordinary edit: words added inside one section.
+  file=$(find "$CORPUS" -name '*.md' -not -path '*/.*' | sort | sed -n "${i}p")
+  python3 - "$file" "$i" <<'PY'
+import sys
+path, i = sys.argv[1], sys.argv[2]
+lines = open(path).read().split("\n")
+fence = False
+for n, line in enumerate(lines):
+    stripped = line.strip()
+    if stripped.startswith(("```", "~~~")):
+        fence = not fence
+        continue
+    if fence or n == 0 or not stripped or stripped[0] in "#-*|>[<!" or stripped[0].isdigit():
+        continue
+    lines[n] = f"Edited{i} " + line
+    break
+open(path, "w").write("\n".join(lines))
+PY
+  arm "edit$i"
+done
+
+# One heading renamed: every section under it is renamed with it, so this is
+# the expensive edit, and the one `missing` reports.
+file=$(find "$CORPUS" -name 'README.md' -maxdepth 1)
+sed -i '0,/^## /s/^## \(.*\)$/## \1 renamed/' "$file"
+arm rename
