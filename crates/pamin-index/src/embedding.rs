@@ -77,7 +77,7 @@ pub struct Embedder {
     /// What it was loaded with, and what a reload after a failure uses.
     settings: crate::InferenceSettings,
     model: Box<Encoder>,
-    device: crate::inference::Device,
+    device: pamin_runtime::device::Device,
     /// Query vectors already computed.
     ///
     /// Shared with every project, because the vector depends on
@@ -104,21 +104,21 @@ impl Embedder {
     }
 
     /// The provider selected for this model; graph assignment is logged separately.
-    pub fn device(&self) -> crate::inference::Device {
+    pub fn device(&self) -> pamin_runtime::device::Device {
         self.device
     }
 
     /// The execution target this model runs on, as its execution plans are
     /// keyed: `npu:<provider>:<id>` for an NPU, the device's name otherwise.
     pub fn target(&self) -> String {
-        crate::inference::target_key(&self.model, self.device)
+        pamin_runtime::plan::target_key(&self.model, self.device)
     }
 
     /// Every execution plan this model has run on in this process, oldest
     /// first, the current one last: more than one when a failure fell back
     /// or a revalidation moved it. See [`crate::PlanUse`].
     pub fn plans(&self) -> Vec<crate::PlanUse> {
-        crate::inference::plans_of(&self.model, self.device)
+        pamin_runtime::plan::plans_of(&self.model, self.device)
     }
 
     /// What produces the vectors this embeds now, for an index to record
@@ -133,9 +133,9 @@ impl Embedder {
     /// numbers, so nothing can be shown to match it -- and when a model runs
     /// on a plan that is not stable across processes, a DirectML adapter
     /// ordinal or an NPU id another process may give other hardware
-    /// ([`crate::inference::recorded_use`]).
+    /// ([`pamin_runtime::plan::recorded_use`]).
     pub fn encoding(&self) -> Option<String> {
-        self.encoding_by(crate::inference::recorded_use)
+        self.encoding_by(pamin_runtime::plan::recorded_use)
     }
 
     /// [`Embedder::encoding`], for a caller deciding whether a vector already
@@ -149,12 +149,12 @@ impl Embedder {
     /// nothing matches, the pass runs, and [`Embedder::encoding`] read after
     /// it names the plan that ran.
     pub fn reusable_encoding(&self) -> Option<String> {
-        self.encoding_by(crate::inference::reusable_use)
+        self.encoding_by(pamin_runtime::plan::reusable_use)
     }
 
     fn encoding_by(
         &self,
-        plan: impl Fn(&Encoder, crate::inference::Device) -> Option<crate::PlanUse>,
+        plan: impl Fn(&Encoder, pamin_runtime::device::Device) -> Option<crate::PlanUse>,
     ) -> Option<String> {
         let primary = plan(self.model.as_ref(), self.device)?;
         Some(format!("{}:{}", primary.target, primary.plan))
@@ -243,7 +243,7 @@ impl Embedder {
     /// flight beside it -- so `reindex` and the cascade agree, and the same
     /// corpus written twice indexes to the same thing.
     fn revalidate(&mut self) {
-        if crate::inference::needs_revalidation(&self.model) {
+        if pamin_runtime::plan::needs_revalidation(&self.model) {
             self.remembered = Queries::default();
         }
     }
@@ -252,7 +252,7 @@ impl Embedder {
         self.revalidate();
         let cache = &self.cache_dir;
         let settings = &self.settings;
-        let (vectors, replaced) = crate::inference::retry_model(
+        let (vectors, replaced) = pamin_runtime::plan::retry_model(
             &mut self.model,
             &mut self.device,
             cache,
@@ -269,11 +269,11 @@ impl Embedder {
 fn primary_model(
     cache_dir: &std::path::Path,
     settings: &crate::InferenceSettings,
-) -> Result<(Encoder, crate::inference::Device)> {
+) -> Result<(Encoder, pamin_runtime::device::Device)> {
     std::fs::create_dir_all(cache_dir)?;
     let repository = Repository::open_at(cache_dir, JOINT_REPOSITORY, "main")?;
     let identity = plan_key(MODEL_ID, &repository.identity(cache_dir));
-    let references = std::cell::RefCell::new(crate::inference::References::default());
+    let references = std::cell::RefCell::new(pamin_runtime::plan::References::default());
     let long = "migration ".repeat(600);
     let fixtures: Vec<String> = vec![
         "deployment rollback".into(),
@@ -285,7 +285,7 @@ fn primary_model(
         &identity,
         cache_dir,
         &references,
-        crate::inference::ReferenceShape {
+        pamin_runtime::plan::ReferenceShape {
             vectors: Some((fixtures.len(), DIMENSIONS as usize)),
             queries: Some((2, DIMENSIONS as usize)),
             scores: None,
@@ -295,7 +295,7 @@ fn primary_model(
             let mut reference = references.borrow_mut();
             // Reject an already incompatible short query before compiling
             // or allocating the much larger maximum-token/batch shape.
-            let elapsed = crate::inference::time_calls(|| {
+            let elapsed = pamin_runtime::plan::time_calls(|| {
                 let mut vectors = Vec::new();
                 for query in ["deployment rollback", "数据库迁移失败后如何回滚？"] {
                     vectors.extend(vectors_of(model, &[query.to_string()])?);
@@ -314,7 +314,7 @@ fn primary_model(
         },
     )?;
 
-    if device == crate::inference::Device::Cpu {
+    if device == pamin_runtime::device::Device::Cpu {
         pamin_runtime::prepared::release(
             &repository.file(cache_dir, JOINT_FILE),
             cache_dir,
@@ -401,8 +401,8 @@ fn load_on(
     repository: &Repository,
     cache_dir: &std::path::Path,
     settings: &crate::InferenceSettings,
-    device: crate::inference::Device,
-    target: crate::inference::Target,
+    device: pamin_runtime::device::Device,
+    target: pamin_runtime::device::Target,
 ) -> Result<Encoder> {
     let weights = repository.file(cache_dir, JOINT_FILE);
     joint_session(repository, &weights, cache_dir, settings, device, target)
@@ -479,12 +479,12 @@ fn joint_session(
     weights: &impl pamin_runtime::prepared::Download,
     cache_dir: &std::path::Path,
     settings: &crate::InferenceSettings,
-    device: crate::inference::Device,
-    providers: impl Into<crate::inference::Target>,
+    device: pamin_runtime::device::Device,
+    providers: impl Into<pamin_runtime::device::Target>,
 ) -> Result<Encoder> {
     let threads = settings.budget()?;
     let mut download = None;
-    if device == crate::inference::Device::Cpu {
+    if device == pamin_runtime::device::Device::Cpu {
         let path = pamin_runtime::prepared::load_path(
             weights,
             cache_dir,
@@ -630,7 +630,10 @@ mod tests {
                 .map(|text| embedder.embed_passage(text).unwrap())
                 .collect::<Vec<_>>()
         };
-        let cpu = run(crate::inference::Device::Cpu, crate::inference::cpu());
+        let cpu = run(
+            pamin_runtime::device::Device::Cpu,
+            pamin_runtime::device::cpu(),
+        );
         let path = std::env::var_os("PAMIN_EVAL_JOINT_GRAPH")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
@@ -648,7 +651,7 @@ mod tests {
                 )
                 .unwrap()
             });
-        let session = pamin_runtime::budget::options(threads, vec![crate::inference::cpu()])
+        let session = pamin_runtime::budget::options(threads, vec![pamin_runtime::device::cpu()])
             .unwrap()
             .with_disabled_optimizers("MatMulAddFusion")
             .unwrap()
@@ -659,7 +662,7 @@ mod tests {
             cache_dir: cache.clone(),
             settings: crate::InferenceSettings::default(),
             model: Box::new(model),
-            device: crate::inference::Device::Cpu,
+            device: pamin_runtime::device::Device::Cpu,
             remembered: Queries::default(),
         };
         for (index, text) in inputs.iter().enumerate() {
@@ -693,7 +696,7 @@ mod tests {
                 .with_compute_units(units)
                 .build()
                 .error_on_failure();
-            let actual = run(crate::inference::Device::CoreMl, provider);
+            let actual = run(pamin_runtime::device::Device::CoreMl, provider);
             for (index, (left, right)) in actual.iter().zip(&cpu).enumerate() {
                 let dot: f64 = left
                     .iter()
@@ -727,7 +730,7 @@ mod tests {
         let mut accepted = Embedder::load(&cache, &crate::InferenceSettings::default()).unwrap();
         assert_eq!(
             accepted.device(),
-            crate::inference::Device::Cpu,
+            pamin_runtime::device::Device::Cpu,
             "incompatible graph accepted"
         );
         for (index, text) in inputs.iter().enumerate() {
@@ -753,7 +756,7 @@ mod tests {
         );
         let mut embedder =
             Embedder::load(&cache, &crate::InferenceSettings::default()).expect("load the model");
-        assert_eq!(embedder.device(), crate::inference::Device::Cpu);
+        assert_eq!(embedder.device(), pamin_runtime::device::Device::Cpu);
         assert_eq!(
             embedder.model.side_by_side_passes(),
             (0, 0),

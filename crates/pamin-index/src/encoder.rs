@@ -38,7 +38,7 @@ pub(crate) struct Encoder {
     /// addresses. The first field, so that it is dropped -- and the ranges
     /// unregistered -- before any session is.
     resident: pamin_runtime::resident::Resident,
-    runtime_plan: crate::inference::RuntimePlan,
+    runtime_plan: pamin_runtime::plan::RuntimePlan,
     tokenizer: Tokenizer,
     session: Session,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -70,11 +70,11 @@ pub(crate) struct Encoder {
 /// A forward pass's outputs, by name, in the graph's order.
 pub(crate) type Outputs = Vec<(String, DynValue)>;
 
-impl crate::inference::RuntimeModel for Encoder {
-    fn runtime_plan(&self) -> &crate::inference::RuntimePlan {
+impl pamin_runtime::plan::RuntimeModel for Encoder {
+    fn runtime_plan(&self) -> &pamin_runtime::plan::RuntimePlan {
         &self.runtime_plan
     }
-    fn runtime_plan_mut(&mut self) -> &mut crate::inference::RuntimePlan {
+    fn runtime_plan_mut(&mut self) -> &mut pamin_runtime::plan::RuntimePlan {
         &mut self.runtime_plan
     }
     fn revision(&self) -> &str {
@@ -95,7 +95,7 @@ impl Encoder {
         model: impl FnOnce() -> Result<PathBuf>,
         repository: &Repository,
         max_length: usize,
-        providers: impl Into<crate::inference::Target>,
+        providers: impl Into<pamin_runtime::device::Target>,
     ) -> Result<Self> {
         let session = pamin_runtime::session::session(threads, providers, model)?;
         Self::from_session(session, repository, max_length)
@@ -116,7 +116,7 @@ impl Encoder {
             .iter()
             .any(|input| input.name() == "token_type_ids");
         Self {
-            runtime_plan: crate::inference::RuntimePlan::default(),
+            runtime_plan: pamin_runtime::plan::RuntimePlan::default(),
             tokenizer,
             session,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -194,7 +194,7 @@ impl Encoder {
         })?;
         let tokenizer = crate::tokenizer::load(repository, max_length)?;
         Ok(Self {
-            runtime_plan: crate::inference::RuntimePlan::default(),
+            runtime_plan: pamin_runtime::plan::RuntimePlan::default(),
             tokenizer,
             session,
             fixed: Some((short, long)),
@@ -210,8 +210,8 @@ impl Encoder {
     }
 
     /// Registration without assigned nodes is a CPU fallback, not acceleration.
-    pub(crate) fn require_accelerator(&self, device: crate::inference::Device) -> Result<()> {
-        use crate::inference::Device;
+    pub(crate) fn require_accelerator(&self, device: pamin_runtime::device::Device) -> Result<()> {
+        use pamin_runtime::device::Device;
         let provider = match device {
             // The explicit NPU target is checked by inference::session.
             Device::Cpu | Device::Npu => return Ok(()),
@@ -219,7 +219,7 @@ impl Encoder {
             Device::CoreMl => "CoreMLExecutionProvider",
             Device::DirectMl => "DmlExecutionProvider",
         };
-        let assigned = crate::inference::assigned_providers(&self.session)?;
+        let assigned = pamin_runtime::device::assigned_providers(&self.session)?;
         if assigned.get(provider).copied().unwrap_or(0) == 0 {
             return Err(crate::error::IndexError::Engine(format!(
                 "{provider} registered but was assigned no model nodes"
@@ -615,7 +615,7 @@ impl SharedCpuSession {
     /// created; see [`pamin_runtime::resident::loading`].
     fn load(model: &std::path::Path) -> Result<(Self, Vec<(usize, usize)>)> {
         let (session, mapped) = pamin_runtime::session::cpu_session(model, 1)?;
-        cpu_alone(&crate::inference::assigned_providers(&session)?)?;
+        cpu_alone(&pamin_runtime::device::assigned_providers(&session)?)?;
         Ok((Self(session), mapped))
     }
 }

@@ -240,7 +240,7 @@ use tokenizers::Encoding;
 use crate::encoder::Encoder;
 use crate::error::{IndexError, Result};
 use crate::hub::Repository;
-use crate::inference::Device;
+use pamin_runtime::device::Device;
 
 /// The reranker: bge-reranker-v2-m3 (XLM-RoBERTa-large), 570 MB. Worth more
 /// the less the corpus looks like a parallel sentence benchmark.
@@ -932,13 +932,13 @@ impl Reranker {
     /// The execution target its passes run on, as its execution plans are
     /// keyed: `npu:<provider>:<id>` for an NPU, the device's name otherwise.
     pub fn target(&self) -> String {
-        crate::inference::target_key(&self.model, self.device)
+        pamin_runtime::plan::target_key(&self.model, self.device)
     }
 
     /// Every execution plan this reranker has run on in this process,
     /// oldest first, the current one last. See [`crate::PlanUse`].
     pub fn plans(&self) -> Vec<crate::PlanUse> {
-        crate::inference::plans_of(&self.model, self.device)
+        pamin_runtime::plan::plans_of(&self.model, self.device)
     }
 
     /// Each (query, document) pair's encoded length in tokens, as
@@ -989,7 +989,7 @@ impl Reranker {
             .map(|document| pair_key(query, document))
             .collect();
         let scores = loop {
-            if crate::inference::needs_revalidation(&self.model) {
+            if pamin_runtime::plan::needs_revalidation(&self.model) {
                 self.scores.invalidate();
             }
             let limits = self.model.batch_limits(
@@ -1004,7 +1004,7 @@ impl Reranker {
             let cache_dir = &self.cache_dir;
             let settings = &self.settings;
             let cached = &self.scores;
-            let ((attempt, encode_us), replaced) = crate::inference::retry_model(
+            let ((attempt, encode_us), replaced) = pamin_runtime::plan::retry_model(
                 &mut self.model,
                 &mut self.device,
                 cache_dir,
@@ -1108,7 +1108,7 @@ fn cpu_model(
     repository: &Repository,
     cache_dir: &Path,
     settings: &crate::InferenceSettings,
-    providers: impl Into<crate::inference::Target>,
+    providers: impl Into<pamin_runtime::device::Target>,
 ) -> Result<Encoder> {
     let threads = settings.budget()?;
     let max_tokens = settings.rerank.max_tokens.get();
@@ -1171,13 +1171,13 @@ fn load_model(cache_dir: &Path, settings: &crate::InferenceSettings) -> Result<(
     };
 
     let (model, device) = {
-        let references = std::cell::RefCell::new(crate::inference::References::default());
+        let references = std::cell::RefCell::new(pamin_runtime::plan::References::default());
         crate::inference::measured(
             settings,
             &plan_key(&repository.identity(cache_dir), settings),
             cache_dir,
             &references,
-            crate::inference::ReferenceShape {
+            pamin_runtime::plan::ReferenceShape {
                 scores: Some(calibration_pairs("").len()),
                 ..Default::default()
             },
@@ -1198,7 +1198,7 @@ fn load_model(cache_dir: &Path, settings: &crate::InferenceSettings) -> Result<(
                         "maximum-token reranker fixture returned invalid output".into(),
                     ));
                 }
-                crate::inference::time_calls(|| {
+                pamin_runtime::plan::time_calls(|| {
                     let pairs = calibration_pairs(&long);
                     let count = pairs.len();
                     let encoded = model.encode(pairs)?;
@@ -2628,7 +2628,7 @@ mod tests {
             &repository,
             &cache,
             &settings,
-            vec![crate::inference::cpu()],
+            vec![pamin_runtime::device::cpu()],
         )
         .expect("load the reranker");
         let encodings = model
