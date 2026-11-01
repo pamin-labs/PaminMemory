@@ -102,6 +102,11 @@ fn migrations() -> Vec<Migration> {
             "file_source_root",
             include_str!("../migrations/V16__file_source_root.sql"),
         ),
+        migration(
+            17,
+            "topic_aliases",
+            include_str!("../migrations/V17__topic_aliases.sql"),
+        ),
     ]
 }
 
