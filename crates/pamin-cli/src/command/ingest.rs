@@ -37,6 +37,12 @@ const BETWEEN_CHECKS: usize = 1_000;
 /// `import::LEAST_AT_ONCE`.
 const LEAST_AT_ONCE: usize = 2;
 
+/// The most a file may hold to be read: 8 MiB, a choice and not a
+/// measurement, far above any document this is for. Every text read is held
+/// in the server until its sections are recorded, and a section is one memory
+/// however long, so a stray dump is skipped rather than read.
+const MOST_BYTES: u64 = 8 * 1024 * 1024;
+
 /// A file to ingest, and the name its sections go by.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct File {
@@ -430,8 +436,10 @@ fn look(
             if record.is_some_and(|record| trusted(record, &stat)) {
                 return Ok((stat, None));
             }
-            let text = String::from_utf8(std::fs::read(&file.path)?)
-                .map_err(|_| std::io::Error::other("not UTF-8"))?;
+            let bytes = read_at_most(&file.path, MOST_BYTES)?.ok_or_else(|| {
+                std::io::Error::other(format!("larger than {} MiB", MOST_BYTES / (1024 * 1024)))
+            })?;
+            let text = String::from_utf8(bytes).map_err(|_| std::io::Error::other("not UTF-8"))?;
             Ok((stat, Some(text)))
         }) {
             Ok(looked) => looked,
@@ -1125,6 +1133,18 @@ pub(crate) fn listed(directory: &Path) -> BTreeSet<PathBuf> {
         .collect()
 }
 
+/// The bytes of the file at `path`, or `None` when it holds more than `most`.
+/// Read no further than one byte past `most`, so a file that grows while it is
+/// read is caught too.
+fn read_at_most(path: &Path, most: u64) -> std::io::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(most + 1)
+        .read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= most).then_some(bytes))
+}
+
 /// Where an ingest looked.
 struct Looked<'a> {
     /// The files it read, by name and root.
@@ -1156,7 +1176,9 @@ struct Gone {
 /// The sections in `recorded` -- every section an ingest has put on the
 /// retrieval surface -- that are not among `cut` and that this ingest would
 /// have cut again: from a file it read, or from a file under a directory it
-/// walked that is no longer there -- deleted, moved, or ignored now.
+/// walked that is no longer on disk -- deleted, or moved. One the walk skipped
+/// but still on disk -- hidden, or ignored by git, now or when it was named on
+/// its own -- is listed but not retirable.
 ///
 /// Each from the root it was recorded from, so that another tree whose files
 /// are named alike -- another clone, another `notes` -- is not taken for this
@@ -1650,6 +1672,18 @@ mod tests {
         std::fs::rename(&next, &path).unwrap();
         let second = stat(&path).unwrap();
         assert!(!second.same_file(&record_of(&first)));
+    }
+
+    #[test]
+    fn a_file_over_the_limit_is_not_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("a.md");
+        std::fs::write(&path, "12345").expect("write");
+        assert_eq!(
+            read_at_most(&path, 5).expect("read"),
+            Some(b"12345".to_vec())
+        );
+        assert_eq!(read_at_most(&path, 4).expect("read"), None);
     }
 
     #[test]
