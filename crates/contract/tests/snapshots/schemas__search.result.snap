@@ -1,0 +1,294 @@
+---
+source: crates/contract/tests/schemas.rs
+expression: "schema_for! (search::Results)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Results",
+  "type": "object",
+  "properties": {
+    "hits": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Hit"
+      }
+    },
+    "query": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "query",
+    "hits"
+  ],
+  "$defs": {
+    "Channel": {
+      "description": "A source of candidates.\n\nThere are three, and the list is short on purpose. Earlier designs also\ntreated recency and explicit importance as channels while applying them\nagain as post-fusion modifiers, which counted the same signal twice. Notes\nand page nodes were channels too, although they live in the same projection\nindex as everything else, so querying them separately split one population\ninto several and left the redundancy penalty reasoning across all of them.\nBoth are now expressed as modifiers and document-type filters instead.",
+      "oneOf": [
+        {
+          "description": "BM25 over segmented text. Word-level recall in any language.",
+          "type": "string",
+          "const": "lexical_segmented"
+        },
+        {
+          "description": "BM25 over character n-grams. Substrings that segmentation destroys:\npaths, error codes, identifiers.",
+          "type": "string",
+          "const": "lexical_ngram"
+        },
+        {
+          "description": "Approximate nearest neighbours over dense embeddings.",
+          "type": "string",
+          "const": "vector"
+        },
+        {
+          "description": "Expansion through the relationship graph, which lives in PostgreSQL and\nis therefore invisible to the projection index.",
+          "type": "string",
+          "const": "graph"
+        }
+      ]
+    },
+    "Derivation": {
+      "description": "How an edge came to exist.\n\nRecorded rather than inferred, because it is the difference between a claim\na caller made and one the engine guessed at, and a result explaining itself\nshould be able to say which.",
+      "oneOf": [
+        {
+          "description": "Asserted directly through the CLI or API.",
+          "type": "string",
+          "const": "explicit"
+        },
+        {
+          "description": "Derived by a rule with no model in the path.",
+          "type": "string",
+          "const": "deterministic"
+        },
+        {
+          "description": "Extracted by a local model.",
+          "type": "string",
+          "const": "model"
+        },
+        {
+          "description": "Carried in from another system.",
+          "type": "string",
+          "const": "imported"
+        }
+      ]
+    },
+    "EdgeKind": {
+      "description": "What one topic asserts about another.\n\nA closed set rather than free strings, for the same reason the post-fusion\nmodifiers are: a typo in an edge type would otherwise become a silent\nsecond kind that nothing traverses and nothing reports.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "supports",
+            "contradicts",
+            "supersedes",
+            "related_to",
+            "part_of",
+            "derived_from",
+            "same_as",
+            "depends_on"
+          ]
+        },
+        {
+          "description": "One topic's content names another.",
+          "type": "string",
+          "const": "mentions"
+        }
+      ]
+    },
+    "Hit": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "parent": {
+          "description": "For a section of a file, the section it sits under, by name: what to\n`pamin-memory read` when the hit depends on the heading above it. Absent for a\nmemory that sits under nothing.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recorded_at": {
+          "description": "When this state was recorded, RFC 3339.\n\nRanking says how well a memory matches, not how current it is, and an\nagent assembling context needs both. Carried here so judging staleness\ndoes not cost a `read` per hit.",
+          "type": "string"
+        },
+        "score": {
+          "type": "number",
+          "format": "float"
+        },
+        "span": {
+          "description": "For a memory the index cut into spans, which of them `content` is: the\nspan the search matched best and what fits a budget of about 600 tokens\naround it, nearer neighbours first. Absent for a memory\nof one span, whose `content` is all of it. `pamin-memory read --span` reads\nmore of the memory around it.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Span"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "topic": {
+          "description": "What to pass to `pamin-memory read` to see this topic's other versions.\n\nThe name, and not the state's identifier. Search ranks topics and\nreturns the current state of each, and no command anywhere takes a\nstate id as an argument -- so one on every hit was two hundred and\neighty tokens of a context window that nothing could spend.",
+          "type": "string"
+        },
+        "valid_from": {
+          "description": "When the claim starts holding, RFC 3339, absent when open.\n\nThe other half of what `recorded_at` is here for, and the half that\nanswers the question actually asked of a memory: not when we were told\na thing, but when it was true. The two disagree whenever a source is\nbackdated, which is every import that carries `--valid-from`, and an\nagent handed only the recording time reads the import order instead of\nthe timeline.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "valid_to": {
+          "description": "When it stops holding, RFC 3339, absent when open.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "why": {
+          "description": "The rank this result held in each channel it appeared in, and every\nmodifier applied afterwards. An agent can audit its own retrieval from\nthis without trusting the ranking.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Trace"
+          }
+        }
+      },
+      "required": [
+        "topic",
+        "version",
+        "content",
+        "score",
+        "why",
+        "recorded_at"
+      ]
+    },
+    "Span": {
+      "description": "Where in a memory a span, or a run of them, lies.",
+      "type": "object",
+      "properties": {
+        "end": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "header": {
+          "description": "The memory's name, and the heading and turn the run continues -- what\nthe run lost by being cut out of it.",
+          "type": "string"
+        },
+        "of": {
+          "description": "How many spans the memory is cut into.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "ordinal": {
+          "description": "The span asked about, from 0.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "start": {
+          "description": "The run's bytes in the memory's content.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "ordinal",
+        "of",
+        "header",
+        "start",
+        "end"
+      ]
+    },
+    "Trace": {
+      "description": "One entry of the trace, as a caller sees it.\n\n[`Why`] also carries `score`, `weight` and `contribution`, and `docs/cli.md`\nprints the last two as things the reader works out: weight is a constant per\nchannel, and contribution is `weight / (10 + rank)`. Ten hits of them cost\nabout seven hundred tokens of somebody's context window to restate what they\nalready know, so the command layer leaves them out.\n\n`score` is left out for a different reason. It is the channel's own quantity\nin the channel's own units, so a reader comparing a BM25 score against a\nvector similarity would be comparing nothing. Fusion reads it to judge how\nconfident a channel is *against that channel's other candidates*, and that\njudgement already reaches the caller as the rank the fused list gives.\n\nA separate type rather than `#[serde(skip)]` on the core one. Skipping\nwould make the field deserialize as zero on the far side of the socket,\nand a number that is quietly wrong is a worse price than the tokens.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "channel": {
+              "$ref": "#/$defs/Channel"
+            },
+            "kind": {
+              "type": "string",
+              "const": "channel"
+            },
+            "rank": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "channel",
+            "rank"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "asserted_from": {
+              "type": "string"
+            },
+            "asserted_to": {
+              "type": "string"
+            },
+            "derivation": {
+              "$ref": "#/$defs/Derivation"
+            },
+            "edge": {
+              "$ref": "#/$defs/EdgeKind"
+            },
+            "from": {
+              "type": "string"
+            },
+            "hops": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "path"
+            },
+            "via": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "from",
+            "via",
+            "hops",
+            "asserted_from",
+            "asserted_to",
+            "edge",
+            "derivation"
+          ]
+        },
+        {
+          "description": "The cross-encoder scored this result, and its position blends that\nscore with fusion's.\n\nCarried without its score, for the reason the channel score is left out\nabove and one more. A cross-encoder's logit is calibrated against\nnothing, so it is comparable within one shortlist and meaningless\nbetween two -- and a number on the wire invites exactly the comparison\nit cannot support. What a reader can act on is the *fact*: a result\ncarrying this entry was scored by the model, whatever channel found\nit, and one without it holds the place fusion gave it: either fusion\nreturned fewer than two candidates, so nothing was reranked, or it sat\nbelow the reranker's head and was not among the strongest finds only\nthe graph made. That distinction costs about four tokens and is the\ndifference between auditing a ranking and guessing at it.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "reranked"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    }
+  }
+}

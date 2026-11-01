@@ -1,0 +1,31 @@
+---
+source: crates/contract/tests/schemas.rs
+expression: "schema_for! (grep::Args)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Args",
+  "description": "Find an exact string in everything ever written, including writes the\nfilter held back from memory. No ranking and no model.",
+  "type": "object",
+  "properties": {
+    "ignore_case": {
+      "description": "Ignore case.",
+      "type": "boolean",
+      "default": false
+    },
+    "limit": {
+      "description": "How many matches to return.",
+      "type": "integer",
+      "format": "uint32",
+      "default": 20,
+      "minimum": 0
+    },
+    "literal": {
+      "description": "The exact string to find. Not a pattern.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "literal"
+  ]
+}

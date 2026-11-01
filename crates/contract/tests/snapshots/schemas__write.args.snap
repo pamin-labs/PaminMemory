@@ -1,0 +1,57 @@
+---
+source: crates/contract/tests/schemas.rs
+expression: "schema_for! (write::Args)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Args",
+  "description": "Record a memory under a topic. Writing to an existing topic adds a version;\ncontent too short to carry a durable claim is kept as evidence only.",
+  "type": "object",
+  "properties": {
+    "content": {
+      "description": "The memory content. The command line reads standard input when it is\nomitted.",
+      "type": "string"
+    },
+    "defer": {
+      "description": "Record the memory without waiting for the index to catch up.\n\nThe work is queued rather than skipped. The server runs it once no\nrequest is being answered, and `pamin-memory cascade drain` runs it at once.",
+      "type": "boolean",
+      "default": false
+    },
+    "topic": {
+      "description": "The topic this memory belongs to.",
+      "type": "string"
+    },
+    "validity": {
+      "$ref": "#/$defs/Flags",
+      "default": {
+        "valid_from": null,
+        "valid_to": null
+      }
+    }
+  },
+  "required": [
+    "topic",
+    "content"
+  ],
+  "$defs": {
+    "Flags": {
+      "type": "object",
+      "properties": {
+        "valid_from": {
+          "description": "When the claim starts holding, as RFC 3339. Open by default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "valid_to": {
+          "description": "When it stops holding, as RFC 3339. Open by default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

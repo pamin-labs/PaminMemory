@@ -1,0 +1,43 @@
+---
+source: crates/contract/tests/schemas.rs
+expression: "schema_for! (cascade::Args)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Args",
+  "type": "object",
+  "properties": {
+    "command": {
+      "$ref": "#/$defs/Command"
+    }
+  },
+  "required": [
+    "command"
+  ],
+  "$defs": {
+    "Command": {
+      "oneOf": [
+        {
+          "description": "Run every job that is due, then stop.",
+          "type": "string",
+          "const": "Drain"
+        },
+        {
+          "description": "List the jobs that used their attempts, with the error that stopped them.",
+          "type": "string",
+          "const": "Failed"
+        },
+        {
+          "description": "Make the failed jobs due again, for when what broke them is fixed.",
+          "type": "string",
+          "const": "Replay"
+        },
+        {
+          "description": "Abandon the failed jobs.\n\nThe work is dropped, not the record: a later write to the same subject\nqueues it again rather than being coalesced onto a row nothing will run.",
+          "type": "string",
+          "const": "Discard"
+        }
+      ]
+    }
+  }
+}

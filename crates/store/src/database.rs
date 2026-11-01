@@ -1,0 +1,1029 @@
+//! Bringing up and connecting to the local PostgreSQL server.
+//!
+//! PostgreSQL is bundled rather than brought by the user. The CLI is meant to
+//! be a zero-integration path for any agent with a shell, and that promise does
+//! not survive a prerequisite that starts with installing a database.
+
+use std::collections::HashMap;
+use std::mem::ManuallyDrop;
+use std::time::Duration;
+
+use postgresql_embedded::{PostgreSQL, Settings, VersionReq};
+use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
+
+use crate::error::Result;
+use crate::workspace::{LocalServer, StartedWith, Workspace};
+pub use memory_core::settings::installation_missing;
+
+/// The database name created inside the embedded cluster.
+const DATABASE: &str = "pamin_memory";
+
+/// How many connections a process may hold against the cluster.
+///
+/// Not a property of the cluster but of how many processes are pointing at it.
+/// A pool sized for one process is the wrong size when there are thirty, and
+/// the size that survives thirty processes is a bottleneck when there is one.
+#[derive(Clone, Copy, Debug)]
+pub enum Connections {
+    /// One command among many, each with a pool of its own.
+    PerCommand,
+    /// The only process talking to this cluster, holding one pool for it all.
+    Resident,
+}
+
+impl Connections {
+    /// The pool size this calls for.
+    fn limit(self) -> u32 {
+        match self {
+            // Enough for the recall channels of one command to run at once,
+            // and small enough to multiply by however many commands there are.
+            Self::PerCommand => 4,
+            // Four per core, because a connection spends most of its life
+            // waiting on the server rather than on this process, capped
+            // because the cluster allows 300 and one process should not be
+            // able to take all of them.
+            Self::Resident => (4 * available_cores()).clamp(4, 64),
+        }
+    }
+}
+
+/// How many cores this machine will actually give us.
+fn available_cores() -> u32 {
+    std::thread::available_parallelism()
+        .map(|cores| cores.get() as u32)
+        .unwrap_or(1)
+}
+
+/// A connection pool against this workspace's cluster.
+///
+/// Cloning shares the pool rather than opening a second one: `PgPool` is a
+/// handle, and a resident server holding one for the machine is the whole
+/// reason the pool replaced a single client.
+/// What the caller decides about the cluster a workspace runs: passed in
+/// rather than read from the environment, so a test or a second caller in one
+/// process decides it for itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoreSettings {
+    /// Let PostgreSQL compile query expressions with LLVM; see [`jit`]. A
+    /// cluster setting, so it takes effect when the cluster next starts.
+    pub jit: bool,
+    /// A PostgreSQL installation prefix (holding `bin/initdb`) to use instead
+    /// of installing one into the workspace; see [`supplied_installation`].
+    pub postgres_dir: Option<std::path::PathBuf>,
+}
+
+impl Default for StoreSettings {
+    fn default() -> Self {
+        Self {
+            jit: memory_core::settings::JIT,
+            postgres_dir: None,
+        }
+    }
+}
+
+impl StoreSettings {
+    /// These settings with [`Self::postgres_dir`] made absolute against the
+    /// current directory, which is what a cluster is started from and what
+    /// its record is compared by. Recorded as given, `pg` from two
+    /// directories would be one prefix to the comparison and two to the
+    /// server, and a caller would reuse a cluster started from the other.
+    fn resolved(&self) -> Result<Self> {
+        Ok(Self {
+            jit: self.jit,
+            postgres_dir: self
+                .postgres_dir
+                .as_deref()
+                .map(std::path::absolute)
+                .transpose()?,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct Database {
+    pool: PgPool,
+}
+
+impl Database {
+    /// Ensures a server is running for this workspace, connects, and migrates.
+    ///
+    /// Safe to call repeatedly. The first call installs and initializes the
+    /// cluster; later calls reuse the running server.
+    ///
+    /// Whether the recorded server is up is asked of its port, and then the
+    /// pool this returns makes the first connection. It used to be asked by
+    /// opening a throwaway pool, which cost a connection on every command and,
+    /// when nothing was listening -- a record left behind by `pamin-memory stop` or a
+    /// reboot -- retried the refused connection for its whole thirty-second
+    /// acquire timeout before starting the server.
+    pub async fn open(
+        workspace: &Workspace,
+        connections: Connections,
+        settings: &StoreSettings,
+    ) -> Result<Self> {
+        let settings = &settings.resolved()?;
+        let running = match workspace.read_server()? {
+            Some(existing) if listening(existing.port) && !reusable(&existing, settings) => {
+                // Started with other store settings -- by an earlier run, or
+                // by a server that exited and left its cluster up -- which
+                // apply only when the cluster starts. Reusing it would run
+                // with what it has while this caller recorded what it asked,
+                // and restarting it would pull it from under whoever else
+                // holds a pool on it: the cluster is the workspace's, not
+                // this caller's. So the caller is told how to replace it.
+                return Err(other_settings(workspace, &existing, settings));
+            }
+            Some(existing) if listening(existing.port) => {
+                // Refused credentials or anything else that is not this
+                // workspace's cluster: start it, as before.
+                Self::connect(&existing, connections).await.ok()
+            }
+            _ => None,
+        };
+        let database = match running {
+            Some(database) => database,
+            None => Self::connect(&start_server(workspace, settings).await?, connections).await?,
+        };
+
+        crate::migrate::run(&database.pool).await?;
+        Ok(database)
+    }
+
+    /// Connects to an already running server without touching its lifecycle.
+    pub async fn connect(server: &LocalServer, connections: Connections) -> Result<Self> {
+        Ok(Self {
+            pool: pool(&server.url(), connections).await?,
+        })
+    }
+
+    /// The connection pool. Every query goes through this.
+    ///
+    /// Handed out rather than wrapped. A pool is already the right thing to
+    /// hand a query -- it lends a connection per statement and takes it back --
+    /// whereas the single client this replaced was one connection that every
+    /// query in the process queued behind, however many were ready to run.
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+}
+
+/// What a cluster started for `store` records it was started with.
+fn started_with(store: &StoreSettings) -> StartedWith {
+    StartedWith {
+        jit: store.jit,
+        postgres_dir: store
+            .postgres_dir
+            .as_ref()
+            .map(|path| path.as_os_str().to_owned()),
+    }
+}
+
+/// Whether the running cluster `server` records was started with `store`.
+fn reusable(server: &LocalServer, store: &StoreSettings) -> bool {
+    server.started_with.as_ref() == Some(&started_with(store))
+}
+
+/// Refuses `requested` against a running cluster `server` records was
+/// started with something else, naming both and how to replace it.
+fn other_settings(
+    workspace: &Workspace,
+    server: &LocalServer,
+    requested: &StoreSettings,
+) -> crate::StoreError {
+    fn described(started: Option<&StartedWith>) -> String {
+        let Some(started) = started else {
+            return "settings an older build did not record".to_string();
+        };
+        let prefix = started.postgres_dir.as_ref().map_or_else(
+            || "the bundled installation".to_string(),
+            |prefix| std::path::Path::new(prefix).display().to_string(),
+        );
+        format!(
+            "jit {} and {prefix}",
+            if started.jit { "on" } else { "off" }
+        )
+    }
+    crate::StoreError::OtherSettings(format!(
+        "the PostgreSQL of {} is running with {}, and this asked for {}; they apply \
+         only when it starts, so stop the workspace first (`pamin-memory --home {} stop`)",
+        workspace.root().display(),
+        described(server.started_with.as_ref()),
+        described(Some(&started_with(requested))),
+        workspace.root().display(),
+    ))
+}
+
+/// Opens a pool sized for one short-lived command.
+///
+/// Every `pamin-memory` invocation used to be its own process with its own pool, all
+/// pointing at one cluster, so the pool's size was multiplied by however many
+/// agents were running. The default of ten connections each meant thirty
+/// agents asked for three hundred, against a server that allows a hundred, and
+/// what they got was `too many clients` after a thirty-second wait. The CLI now
+/// reaches the cluster only through its resident server -- one pool for the
+/// machine, nothing to multiply by -- and a process opening the workspace for
+/// itself, as the evaluation harnesses do, is the other case, so
+/// [`Connections`] is the caller's to state.
+///
+/// `test_before_acquire` is off. It costs a full round trip on every acquire to
+/// detect connections dropped by a proxy or an idle timer, and there is neither
+/// between here and a cluster on this machine that this process just started.
+async fn pool(url: &str, connections: Connections) -> Result<PgPool> {
+    let pool = PgPoolOptions::new()
+        .max_connections(connections.limit())
+        .min_connections(1)
+        .test_before_acquire(false)
+        // A command outlives neither, so recycling connections underneath it
+        // only adds reconnects.
+        .idle_timeout(None)
+        .max_lifetime(None)
+        // Long enough to outlast a busy moment, short enough that a caller
+        // learns the server is unreachable rather than appearing to hang.
+        .acquire_timeout(Duration::from_secs(10))
+        .connect(url)
+        .await?;
+
+    Ok(pool)
+}
+
+/// What this cluster is started with.
+///
+/// Defaults chosen for a general-purpose server that somebody administers.
+/// Nobody administers this one -- it is started by a memory tool on a
+/// developer's machine and never configured -- so the few that are plainly
+/// wrong for that are set here, and the rest are left alone.
+///
+/// Nothing here reserves memory up front. `shared_buffers` and
+/// `maintenance_work_mem` are the two that usually head a tuning list and both
+/// are deliberately untouched: the usual advice sizes them as a fraction of a
+/// machine dedicated to the database, and this one is a laptop doing something
+/// else. Their defaults cost the operating system's page cache doing the work
+/// instead, which is the right trade for a background process.
+fn settings(store: &StoreSettings) -> HashMap<String, String> {
+    HashMap::from([
+        // PostgreSQL allows a hundred clients, and every process that opens
+        // the workspace without a server has its own pool pointing at this
+        // one cluster -- which used to include every `pamin-memory` command. A few
+        // dozen agents working at once exhausted that, and what they saw was
+        // a connection timeout rather than anything naming the limit.
+        ("max_connections".to_string(), "300".to_string()),
+        // Four megabytes is enough for a sort of a few thousand rows and is
+        // reached by a project long before it is large. Past it the sort goes
+        // to a temporary file, which is the same answer arriving after a disk
+        // round trip. Thirty-two is a bound on one sort of one connection, so
+        // the worst case is the pool's size times this and not this times
+        // `max_connections`.
+        ("work_mem".to_string(), "32MB".to_string()),
+        // The planner's default assumes a seek costs four times a sequential
+        // page. That was a spinning disk. Local storage makes the two nearly
+        // the same, and the default is what talks the planner out of index
+        // scans it should be choosing.
+        ("random_page_cost".to_string(), "1.1".to_string()),
+        ("jit".to_string(), jit(store).to_string()),
+        // Autovacuum waits for a fifth of a table to be dead rows. On a table
+        // of a hundred million states that is twenty million, and until then
+        // every scan reads them. Two per cent is still rare enough to be
+        // cheap and often enough to keep up.
+        (
+            "autovacuum_vacuum_scale_factor".to_string(),
+            "0.02".to_string(),
+        ),
+        // `postgresql_embedded` starts every cluster with `-F`, which is
+        // `fsync=off`: nothing the server writes is ever forced to disk, so a
+        // power cut can leave the data directory corrupt rather than merely
+        // behind -- the ledger this project calls the sole authority, lost to
+        // the one event it exists to survive. A `-c` given after `-F` wins
+        // (`postgres -F -c fsync=on -C fsync` prints `on`), and these are
+        // passed after it.
+        ("fsync".to_string(), "on".to_string()),
+        // What is given up instead is the last moments, not the cluster. A
+        // commit returns before its WAL is flushed and the WAL writer flushes
+        // within a few hundred milliseconds, so a crash can lose the writes
+        // of that window and never leaves the database inconsistent. Waiting
+        // for the flush on every commit is what `fsync` would otherwise cost a
+        // write; see the ADR for both figures.
+        ("synchronous_commit".to_string(), "off".to_string()),
+    ])
+}
+
+/// Whether the cluster compiles query expressions with LLVM.
+///
+/// Not a general optimisation switch, which is the first thing to know about
+/// it: PostgreSQL only reaches for JIT when a plan's cost exceeds
+/// `jit_above_cost`, 100000, and compiling below that makes a query slower
+/// rather than faster. Measured with EXPLAIN on PostgreSQL 17 against a
+/// 13,014-topic project, nothing here comes near it:
+///
+/// | query | plans at |
+/// | --- | --- |
+/// | the read path's hydration of 150 candidates' current states | 84 |
+/// | every topic joined to its current state, the widest this schema states | 1313 |
+/// | `pamin-memory grep`, whose top node a matching `LIMIT` caps | 56 |
+///
+/// The first is bounded by `channel_depth` rather than by the project, so it
+/// does not grow at all, and the third is capped because the `ORDER BY`
+/// matches an index and the scan stops early. **One shape does grow**: a
+/// `grep` for something the project barely contains has to walk the whole
+/// recency index, and that cost is linear -- 995 at 15,224 source versions,
+/// about 65 for every thousand, which crosses 100000 somewhere around a
+/// million and a half. A workspace an agent has written to for a year is
+/// exactly the workspace that reaches it.
+///
+/// So this is a setting with a measured default rather than a constant, the
+/// same shape and the same reasoning as [`crate`]'s sibling knobs: the default
+/// is what is right for every size measured here, and a workspace large enough
+/// to have left that range can say so with [`StoreSettings::jit`] without
+/// waiting for this project to pick a threshold on its behalf.
+///
+/// Turning it on also keeps `lib/bitcode` in a bundled installation, which
+/// inlining is the only reader of -- see [`UNREAD_WITHOUT_JIT`].
+fn jit(store: &StoreSettings) -> &'static str {
+    if store.jit { "on" } else { "off" }
+}
+
+/// A PostgreSQL installation the caller is supplying, if there is one.
+///
+/// Without this the store always installs its own copy into the workspace,
+/// which is several hundred megabytes a workspace pays even on a machine that
+/// already has the right PostgreSQL. It is also the only way in: the archive
+/// is fetched from a GitHub release, so a network that cannot reach that
+/// release cannot run anything in this crate -- including every `--ignored`
+/// test, which is the only check this project has on its SQL.
+///
+/// Supplying one means the version requirement below is not consulted, so the
+/// caller owns that choice: `trust_installation_dir` is the engine's own word
+/// for it. A build other than the one the product ships with is fine for a
+/// pass-or-fail test and is **not** fine for a published figure -- a timing
+/// taken against a differently-compiled server is a timing of that server.
+/// Say which one was used beside any number taken this way.
+///
+/// The path is a prefix holding `bin/initdb` and `bin/pg_ctl`, which is what a
+/// distribution package installs (`/usr/lib/postgresql/17` on Debian and
+/// Ubuntu).
+///
+/// A prefix that is not one is refused rather than ignored: falling back to
+/// the bundled installation would download it -- on the network this exists
+/// to avoid -- and run a server other than the one the caller named.
+fn supplied_installation(store: &StoreSettings) -> Result<Option<std::path::PathBuf>> {
+    let Some(path) = store.postgres_dir.clone() else {
+        return Ok(None);
+    };
+    match installation_missing(&path) {
+        Some(missing) => Err(crate::StoreError::Installation(format!(
+            "the PostgreSQL installation {} has no {missing}",
+            path.display()
+        ))),
+        None => Ok(Some(path)),
+    }
+}
+
+/// What a bundled installation carries that nothing here will ever read.
+///
+/// `share/man` and `share/doc` are documentation for the client programs.
+/// Nothing on any path here shells out to one, and `man` does not read a page
+/// out of a workspace directory in any case. 1.2 MB in PostgreSQL 17's Debian
+/// build.
+const UNREAD: &[&str] = &["share/man", "share/doc"];
+
+/// What a bundled installation carries that only JIT inlining reads.
+///
+/// LLVM bitcode for every core extension, and PostgreSQL opens it in one
+/// situation: inlining an extension's functions into a JIT-compiled plan,
+/// which needs a plan costing `jit_inline_above_cost`, 500000. With [`jit`]
+/// off nothing compiles at all, so it is unreachable twice over -- and 25 MB
+/// in PostgreSQL 17's Debian build, which is a fifth of what a 13,014-document
+/// workspace's own data comes to.
+///
+/// Kept when [`StoreSettings::jit`] is on, because a workspace that asked for JIT asked for
+/// the fast form of it, and inlining with the bitcode missing is a silent
+/// downgrade rather than an error: PostgreSQL logs at `DEBUG1` and compiles
+/// without it. A silent downgrade is the worst of the three outcomes, so the
+/// choice is tied to the setting instead.
+///
+/// The 25 MB is `du` on the build reachable from here. The archive this
+/// project unpacks is built elsewhere and may carry a different amount, or
+/// none at all if it was built without LLVM, so the removal reports what it
+/// reclaimed rather than claiming a figure.
+const UNREAD_WITHOUT_JIT: &[&str] = &["lib/bitcode"];
+
+/// Removes what a bundled installation will never read, and says how much.
+///
+/// `bundled` is the whole of the safety here. A caller who supplies
+/// [`StoreSettings::postgres_dir`] is pointing at an installation shared with everything
+/// else on the machine, and a workspace deleting from it would be a workspace
+/// reaching outside itself -- so this does nothing at all in that case, and
+/// the flag is a parameter rather than a read of the environment so that the
+/// two cases can be written down as tests.
+///
+/// Best effort otherwise: a directory that will not go is logged and left,
+/// because the alternative is refusing to open a workspace over disk it did
+/// not need. Called after every `setup`, which makes it idempotent by way of
+/// `NotFound` on the second call; `setup` decides whether it has an install by
+/// the directory's name and its existence, never by its contents, so removing
+/// from inside one does not provoke a re-download.
+fn trim_unread(install: &std::path::Path, bundled: bool, store: &StoreSettings) -> u64 {
+    if !bundled {
+        return 0;
+    }
+
+    let mut reclaimed = 0;
+    let conditional: &[&str] = if !store.jit { UNREAD_WITHOUT_JIT } else { &[] };
+    let unread = UNREAD.iter().chain(conditional);
+    for relative in unread {
+        let path = install.join(relative);
+        let bytes = tree_bytes(&path);
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => reclaimed += bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => tracing::debug!(
+                path = %path.display(),
+                %error,
+                "leaving part of the installation this project does not read"
+            ),
+        }
+    }
+    reclaimed
+}
+
+/// How many bytes a directory tree holds, counting regular files only.
+///
+/// Zero for a path that is not there, which is the same answer as a path that
+/// is empty and is the answer [`trim_unread`] wants for both.
+fn tree_bytes(path: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+
+    entries
+        .filter_map(std::result::Result::ok)
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => tree_bytes(&entry.path()),
+            Ok(kind) if kind.is_file() => entry.metadata().map(|data| data.len()).unwrap_or(0),
+            // A symlink is counted as nothing: its target is either inside this
+            // tree and counted there, or outside it and not this tree's bytes.
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Installs if needed, starts the server, and leaves it running.
+async fn start_server(workspace: &Workspace, store: &StoreSettings) -> Result<LocalServer> {
+    std::fs::create_dir_all(workspace.root())?;
+
+    let supplied = supplied_installation(store)?;
+    let bundled = supplied.is_none();
+
+    // The password file and the data directory share a parent, and until a
+    // supplied installation was possible nothing had to say so: unpacking the
+    // archive into `postgres/install` created `postgres/` on the way past, and
+    // writing the password file next to it worked by that accident. Skipping
+    // the install removes the accident, and what surfaces is `initdb` failing
+    // with `No such file or directory` and nothing naming the directory.
+    std::fs::create_dir_all(workspace.postgres_data_dir())?;
+
+    let mut settings = Settings {
+        version: VersionReq::parse("=17.6.0").expect("valid version requirement"),
+        trust_installation_dir: supplied.is_some(),
+        installation_dir: supplied.unwrap_or_else(|| workspace.postgres_install_dir()),
+        data_dir: workspace.postgres_data_dir(),
+        password_file: workspace.postgres_password_file(),
+        // Not temporary: the cluster outlives the process that created it, so a
+        // workspace survives between commands.
+        temporary: false,
+        // A hard limit on `initdb` and `pg_ctl start`, not a poll interval. The
+        // default is five seconds, which a first `initdb` on a cold filesystem
+        // exceeds routinely -- and the failure lands on whoever is setting the
+        // project up for the first time, which is the worst audience for it.
+        timeout: Some(Duration::from_secs(60)),
+        // Passed to the server as it starts, so an already-initialised
+        // workspace keeps whatever it was started with until `pamin-memory stop`.
+        configuration: {
+            let mut configuration = settings(store);
+            // A distribution compiles in its own socket directory --
+            // `/var/run/postgresql` on Debian and Ubuntu -- which belongs to
+            // that distribution's `postgres` user and not to whoever is
+            // running this. The server then starts, binds its port, and dies
+            // on `could not create lock file ... Permission denied`, which
+            // `pg_ctl` reports as the unhelpful "could not start server".
+            // Every connection here is over TCP, and `pg_ctl` waits on the
+            // data directory's `postmaster.pid`, so no socket is wanted: an
+            // empty list makes none, where any directory would be one more
+            // path to own, and one PostgreSQL limits to 107 characters.
+            //
+            // Only for a supplied installation: the bundled archive's
+            // compiled-in default is one this project has always relied on.
+            if store.postgres_dir.is_some() {
+                configuration.insert("unix_socket_directories".to_string(), String::new());
+            }
+            configuration
+        },
+        ..Settings::default()
+    };
+
+    // Reuse the credentials and port from a previous run when the cluster was
+    // already initialized, since initdb fixed the superuser password then.
+    if let Some(existing) = workspace.read_server()? {
+        settings.username = existing.username.clone();
+        settings.password = existing.password.clone();
+        settings.port = existing.port;
+    }
+
+    let mut postgres = PostgreSQL::new(settings);
+    postgres.setup().await?;
+
+    // After `setup`, because that is what resolves the installation directory
+    // and unpacks the archive into it, and before `start`, because a server
+    // reading one of these would be a server this deleted something under.
+    let reclaimed = trim_unread(&postgres.settings().installation_dir, bundled, store);
+    if reclaimed > 0 {
+        tracing::info!(
+            bytes = reclaimed,
+            "removed the parts of the installation this project does not read"
+        );
+    }
+
+    postgres.start().await?;
+
+    if !postgres.database_exists(DATABASE).await? {
+        postgres.create_database(DATABASE).await?;
+    }
+
+    let settings = postgres.settings();
+    let server = LocalServer {
+        host: settings.host.clone(),
+        port: settings.port,
+        username: settings.username.clone(),
+        password: settings.password.clone(),
+        database: DATABASE.to_string(),
+        // setup() qualifies the install directory with the resolved version, so
+        // record what it settled on rather than what we asked for.
+        installation_dir: settings.installation_dir.clone(),
+        started_with: Some(started_with(store)),
+    };
+    workspace.write_server(&server)?;
+
+    // Suppress the handle's Drop, which would stop the server we just started.
+    // Leaving it running is the point: an agent invoking the CLI repeatedly
+    // should not pay cluster startup on every call.
+    let _ = ManuallyDrop::new(postgres);
+
+    Ok(server)
+}
+
+/// Stops the server for this workspace, if one is running.
+///
+/// "If one is running" is the whole of the difficulty. A cluster that was
+/// killed rather than stopped -- the machine lost power, the container was
+/// reclaimed -- leaves its `postmaster.pid` behind, and `pg_ctl` believes it:
+/// it reads the recorded process id and signals it. On a machine that has
+/// rebooted since, that number belongs to whatever started early enough to
+/// claim it, so stopping a cluster that is already gone either fails loudly
+/// against a process we are not allowed to signal, or succeeds against one we
+/// had no business signalling. Both were reachable here.
+///
+/// So the file is checked against something that cannot be recycled: whether
+/// anything is listening on the port the file itself records. A postmaster
+/// binds its port before it writes that line and holds it until it exits, and
+/// it holds it while starting up and while refusing connections, so the
+/// listener answers the question a connection attempt would answer less
+/// reliably. Nothing listening means the file outlived its cluster.
+pub async fn stop(workspace: &Workspace) -> Result<()> {
+    let Some(server) = workspace.read_server()? else {
+        return Ok(());
+    };
+
+    if let Some(stale) = stale_pid_file(&workspace.postgres_data_dir()) {
+        std::fs::remove_file(&stale)?;
+        return Ok(());
+    }
+
+    let settings = Settings {
+        installation_dir: server.installation_dir,
+        data_dir: workspace.postgres_data_dir(),
+        password_file: workspace.postgres_password_file(),
+        username: server.username,
+        password: server.password,
+        port: server.port,
+        temporary: false,
+        // Same reason as starting: this is a hard limit on `pg_ctl stop`, and
+        // a shutdown that waits for a long checkpoint is not a hung one.
+        timeout: Some(Duration::from_secs(60)),
+        ..Settings::default()
+    };
+
+    PostgreSQL::new(settings).stop().await?;
+    Ok(())
+}
+
+/// The cluster's lock file, if it is one no cluster is behind.
+///
+/// Returns the path to remove; `None` means either that there is no lock file
+/// -- nothing to stop, and `pg_ctl` will say so -- or that something is
+/// listening on the port it names, which is the case where the file is telling
+/// the truth and must be left alone.
+///
+/// Unreadable or malformed files are left alone too. A file we cannot parse is
+/// not evidence that a cluster is gone, and deleting the lock of a cluster that
+/// is running is how two postmasters end up on one data directory.
+fn stale_pid_file(data_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let path = data_dir.join("postmaster.pid");
+    let contents = std::fs::read_to_string(&path).ok()?;
+    // Line four, counting from one: the port. The format is PostgreSQL's and
+    // has carried the port in that position since 9.1.
+    let port: u16 = contents.lines().nth(3)?.trim().parse().ok()?;
+    (!listening(port)).then_some(path)
+}
+
+/// Whether anything accepts connections on this loopback port.
+fn listening(port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], port)), PROBE)
+        .is_ok()
+}
+
+/// How long to wait for a loopback port to answer.
+///
+/// The connection is to the loopback interface of this machine, where a
+/// listener answers immediately and an unused port is refused immediately.
+/// The timeout is for the case neither happens, and a second of it is already
+/// far longer than either.
+const PROBE: Duration = Duration::from_secs(1);
+
+#[cfg(test)]
+mod tests {
+    use std::net::TcpListener;
+
+    use super::{StoreSettings, UNREAD, UNREAD_WITHOUT_JIT, stale_pid_file, trim_unread};
+
+    /// A running cluster is reused only by a caller asking for the store
+    /// settings it was started with; a changed `jit` or PostgreSQL prefix,
+    /// or a record from before settings were kept, is refused, naming both
+    /// and how to stop the workspace rather than stopping it.
+    #[test]
+    fn a_cluster_is_reused_only_with_the_settings_it_started_with() {
+        let started = StoreSettings {
+            jit: false,
+            postgres_dir: Some("/usr/lib/postgresql/17".into()),
+        };
+        let mut server = read_started(&started);
+        assert!(super::reusable(&server, &started));
+        let jit = StoreSettings {
+            jit: true,
+            ..started.clone()
+        };
+        assert!(!super::reusable(&server, &jit));
+        let elsewhere = StoreSettings {
+            postgres_dir: Some("/opt/postgresql/17".into()),
+            ..started.clone()
+        };
+        assert!(!super::reusable(&server, &elsewhere));
+        let bundled = StoreSettings {
+            postgres_dir: None,
+            ..started.clone()
+        };
+        assert!(!super::reusable(&server, &bundled));
+
+        // Through the record on disk, as the next process reads it.
+        let json = serde_json::to_vec(&server).unwrap();
+        let read: crate::LocalServer = serde_json::from_slice(&json).unwrap();
+        assert!(super::reusable(&read, &started));
+        server.started_with = None;
+        let old: serde_json::Value = serde_json::to_value(&server).unwrap();
+        let mut old = old.as_object().unwrap().clone();
+        old.remove("started_with");
+        let read: crate::LocalServer = serde_json::from_value(old.into()).unwrap();
+        assert!(!super::reusable(&read, &StoreSettings::default()));
+
+        let workspace = crate::Workspace::at("/home/agent/.pamin-memory");
+        let message = super::other_settings(&workspace, &read_started(&started), &jit).to_string();
+        for named in [
+            "running with jit off and /usr/lib/postgresql/17",
+            "asked for jit on and /usr/lib/postgresql/17",
+            "`pamin-memory --home /home/agent/.pamin-memory stop`",
+        ] {
+            assert!(message.contains(named), "{message}");
+        }
+        let message = super::other_settings(&workspace, &read, &bundled).to_string();
+        assert!(
+            message.contains("an older build did not record"),
+            "{message}"
+        );
+        assert!(message.contains("the bundled installation"), "{message}");
+    }
+
+    /// A record of a cluster started with `store`.
+    fn read_started(store: &StoreSettings) -> crate::LocalServer {
+        crate::LocalServer {
+            host: "localhost".into(),
+            port: 5432,
+            username: "postgres".into(),
+            password: "secret".into(),
+            database: "pamin_memory".into(),
+            installation_dir: "/usr/lib/postgresql/17".into(),
+            started_with: Some(super::started_with(store)),
+        }
+    }
+
+    /// A relative prefix is recorded as the absolute path it names from here,
+    /// so the same spelling from another directory is another prefix.
+    #[test]
+    fn a_relative_prefix_is_resolved_before_it_is_recorded() {
+        let here = std::env::current_dir().unwrap();
+        let relative = StoreSettings {
+            jit: false,
+            postgres_dir: Some("pg".into()),
+        };
+        let resolved = relative.resolved().unwrap();
+        assert_eq!(resolved.postgres_dir, Some(here.join("pg")));
+        assert_eq!(resolved.resolved().unwrap(), resolved);
+        assert_ne!(
+            super::started_with(&resolved),
+            super::started_with(&relative)
+        );
+        assert_eq!(
+            StoreSettings::default().resolved().unwrap(),
+            StoreSettings::default()
+        );
+    }
+
+    /// Two prefixes that differ only in bytes that are not UTF-8 are recorded
+    /// as two prefixes.
+    #[cfg(unix)]
+    #[test]
+    fn a_prefix_that_is_not_utf8_is_recorded_byte_for_byte() {
+        use std::os::unix::ffi::OsStrExt;
+        let prefix = |byte: u8| StoreSettings {
+            jit: false,
+            postgres_dir: Some(std::ffi::OsStr::from_bytes(&[b'/', b'p', byte]).into()),
+        };
+        let recorded = super::started_with(&prefix(0x80));
+        let json = serde_json::to_vec(&recorded).unwrap();
+        let read: crate::workspace::StartedWith = serde_json::from_slice(&json).unwrap();
+        assert_eq!(read, super::started_with(&prefix(0x80)));
+        assert_ne!(read, super::started_with(&prefix(0x81)));
+    }
+
+    /// An installation tree shaped the way a PostgreSQL install is shaped.
+    ///
+    /// Every path this project does read is in it as well as every path it
+    /// does not, because the assertion worth making is not that the removal
+    /// removes -- it is that it leaves the server, the client and the
+    /// extensions the migrations create.
+    fn installation(root: &std::path::Path) -> u64 {
+        let mut unread = 0;
+        for (relative, bytes) in [
+            ("bin/postgres", 4096),
+            ("bin/initdb", 2048),
+            ("lib/libpq.so.5", 1024),
+            ("lib/postgresql/dict_snowball.so", 512),
+            ("share/extension/plpgsql.control", 256),
+            ("share/postgres.bki", 128),
+            ("share/timezonesets/Default", 64),
+        ] {
+            write(root, relative, bytes);
+        }
+        for relative in [
+            "lib/bitcode/postgres/utils/adt/numeric.bc",
+            "lib/bitcode/postgres/index.bc",
+            "share/man/man1/psql.1",
+            "share/doc/postgresql/html/index.html",
+        ] {
+            unread += write(root, relative, 8192);
+        }
+        unread
+    }
+
+    fn write(root: &std::path::Path, relative: &str, bytes: u64) -> u64 {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().expect("a file has a parent"))
+            .expect("create the directory");
+        std::fs::write(&path, vec![0u8; bytes as usize]).expect("write the file");
+        bytes
+    }
+
+    /// The bytes every regular file under a path adds up to.
+    fn bytes_under(path: &std::path::Path) -> u64 {
+        super::tree_bytes(path)
+    }
+
+    /// What it removes, and -- the half that matters -- what it does not.
+    #[test]
+    fn trimming_takes_the_unread_directories_and_leaves_the_server() {
+        let root = tempfile::tempdir().expect("temp install dir");
+        let unread = installation(root.path());
+        let before = bytes_under(root.path());
+
+        let reclaimed = trim_unread(root.path(), true, &StoreSettings::default());
+
+        assert_eq!(
+            reclaimed, unread,
+            "the removal reported {reclaimed} bytes and the unread directories held {unread}"
+        );
+        assert_eq!(
+            bytes_under(root.path()),
+            before - unread,
+            "the tree lost something other than the unread directories"
+        );
+        for relative in UNREAD.iter().chain(UNREAD_WITHOUT_JIT) {
+            assert!(
+                !root.path().join(relative).exists(),
+                "{relative} survived the removal"
+            );
+        }
+        for relative in [
+            "bin/postgres",
+            "bin/initdb",
+            "lib/libpq.so.5",
+            "lib/postgresql/dict_snowball.so",
+            "share/extension/plpgsql.control",
+            "share/postgres.bki",
+            "share/timezonesets/Default",
+        ] {
+            assert!(
+                root.path().join(relative).exists(),
+                "{relative} was removed, and the server needs it"
+            );
+        }
+    }
+
+    /// Asking for JIT keeps the bitcode inlining is the only reader of.
+    ///
+    /// The case this guards is not a crash: PostgreSQL logs at `DEBUG1` and
+    /// compiles without inlining, so a workspace that asked for JIT would
+    /// quietly get the slow form of it.
+    #[test]
+    fn asking_for_jit_keeps_the_bitcode_inlining_reads() {
+        let root = tempfile::tempdir().expect("temp install dir");
+        installation(root.path());
+
+        let jit = StoreSettings {
+            jit: true,
+            ..StoreSettings::default()
+        };
+        let reclaimed = trim_unread(root.path(), true, &jit);
+
+        for relative in UNREAD_WITHOUT_JIT {
+            assert!(
+                root.path().join(relative).exists(),
+                "{relative} was removed from a cluster that asked for JIT"
+            );
+        }
+        for relative in UNREAD {
+            assert!(
+                !root.path().join(relative).exists(),
+                "{relative} survived, and JIT has nothing to do with it"
+            );
+        }
+        assert!(
+            reclaimed > 0,
+            "the documentation was removed but nothing was reported"
+        );
+    }
+
+    /// A second call has nothing to do and says so rather than failing.
+    ///
+    /// `setup` runs on every command, so this runs on every command too, and
+    /// the first one is the only one with anything to remove.
+    #[test]
+    fn trimming_twice_reclaims_nothing_the_second_time() {
+        let root = tempfile::tempdir().expect("temp install dir");
+        let unread = installation(root.path());
+
+        assert_eq!(
+            trim_unread(root.path(), true, &StoreSettings::default()),
+            unread
+        );
+        assert_eq!(trim_unread(root.path(), true, &StoreSettings::default()), 0);
+    }
+
+    /// A supplied prefix that is not an installation is refused, naming what
+    /// it lacks, rather than replaced by the bundled one.
+    #[test]
+    fn a_supplied_prefix_without_an_installation_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let store = |path: &std::path::Path| StoreSettings {
+            postgres_dir: Some(path.to_path_buf()),
+            ..StoreSettings::default()
+        };
+        assert!(matches!(
+            super::supplied_installation(&StoreSettings::default()),
+            Ok(None)
+        ));
+
+        let missing = root.path().join("absent");
+        let error = super::supplied_installation(&store(&missing)).unwrap_err();
+        assert!(error.to_string().contains("bin/initdb"), "{error}");
+
+        installation(root.path());
+        std::fs::write(root.path().join("bin/pg_ctl"), b"").unwrap();
+        assert_eq!(super::installation_missing(root.path()), None);
+        assert_eq!(
+            super::supplied_installation(&store(root.path())).unwrap(),
+            Some(root.path().to_path_buf())
+        );
+        std::fs::remove_file(root.path().join("bin/pg_ctl")).unwrap();
+        assert_eq!(
+            super::installation_missing(root.path()).as_deref(),
+            Some("bin/pg_ctl")
+        );
+    }
+
+    /// An installation the caller supplied is left exactly as it was found.
+    ///
+    /// This is the assertion the whole guard exists for: a supplied directory
+    /// points at a system installation that other programs share, and a
+    /// workspace has no business deleting out of it.
+    #[test]
+    fn a_supplied_installation_is_not_trimmed() {
+        let root = tempfile::tempdir().expect("temp install dir");
+        installation(root.path());
+        let before = bytes_under(root.path());
+
+        assert_eq!(
+            trim_unread(root.path(), false, &StoreSettings::default()),
+            0
+        );
+
+        assert_eq!(
+            bytes_under(root.path()),
+            before,
+            "a supplied installation lost bytes"
+        );
+        for relative in UNREAD.iter().chain(UNREAD_WITHOUT_JIT) {
+            assert!(
+                root.path().join(relative).exists(),
+                "{relative} was removed from an installation this project does not own"
+            );
+        }
+    }
+
+    /// Writes a lock file shaped the way PostgreSQL writes one.
+    ///
+    /// The process id is deliberately one that is always running and that this
+    /// test could never legitimately signal, because that is the case the
+    /// check exists to stop reaching `pg_ctl` at all.
+    fn lock_file(dir: &std::path::Path, port: &str) {
+        let contents = format!(
+            "1\n{}\n1789118516\n{port}\n/tmp\nlocalhost\n  2024230         4\nready\n",
+            dir.display()
+        );
+        std::fs::write(dir.join("postmaster.pid"), contents).expect("write the lock file");
+    }
+
+    /// A cluster that is running keeps its lock file.
+    ///
+    /// Deleting this one is the failure that matters: a second postmaster on
+    /// one data directory is corruption, where the other direction is only a
+    /// command that reports an error.
+    #[test]
+    fn a_lock_file_whose_port_answers_is_left_alone() {
+        let dir = tempfile::tempdir().expect("temp data dir");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind a port");
+        let port = listener.local_addr().expect("the bound address").port();
+
+        lock_file(dir.path(), &port.to_string());
+
+        assert_eq!(stale_pid_file(dir.path()), None);
+    }
+
+    /// A lock file whose port answers nothing outlived its cluster.
+    #[test]
+    fn a_lock_file_no_cluster_is_behind_is_named_for_removal() {
+        let dir = tempfile::tempdir().expect("temp data dir");
+        // Bound and released, so the number is one the operating system was
+        // willing to give out and nothing is behind it now.
+        let port = {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind a port");
+            listener.local_addr().expect("the bound address").port()
+        };
+
+        lock_file(dir.path(), &port.to_string());
+
+        assert_eq!(
+            stale_pid_file(dir.path()),
+            Some(dir.path().join("postmaster.pid"))
+        );
+    }
+
+    /// A lock file that cannot be read for a port says nothing either way.
+    ///
+    /// Which is the reading that leaves it alone: a file we cannot parse is
+    /// not evidence that a cluster has gone.
+    #[test]
+    fn a_lock_file_that_does_not_parse_is_left_alone() {
+        let dir = tempfile::tempdir().expect("temp data dir");
+        lock_file(dir.path(), "not a port");
+
+        assert_eq!(stale_pid_file(dir.path()), None);
+
+        std::fs::write(dir.path().join("postmaster.pid"), "1\n").expect("a truncated lock file");
+        assert_eq!(stale_pid_file(dir.path()), None);
+    }
+
+    /// No lock file is not a stale one.
+    #[test]
+    fn a_data_directory_without_a_lock_file_has_nothing_to_remove() {
+        let dir = tempfile::tempdir().expect("temp data dir");
+        assert_eq!(stale_pid_file(dir.path()), None);
+    }
+}

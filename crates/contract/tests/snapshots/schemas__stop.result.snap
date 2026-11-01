@@ -1,0 +1,17 @@
+---
+source: crates/contract/tests/schemas.rs
+expression: "schema_for! (stop::Stopped)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Stopped",
+  "type": "object",
+  "properties": {
+    "stopped": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "stopped"
+  ]
+}

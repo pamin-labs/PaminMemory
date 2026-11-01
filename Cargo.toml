@@ -1,13 +1,13 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/pamin-core",
-    "crates/pamin-store",
-    "crates/pamin-index",
-    "crates/pamin-engine",
-    "crates/pamin-contract",
-    "crates/pamin-client",
-    "crates/pamin-cli",
+    "crates/core",
+    "crates/store",
+    "crates/index",
+    "crates/engine",
+    "crates/contract",
+    "crates/client",
+    "crates/cli",
 ]
 
 [workspace.package]
@@ -18,12 +18,12 @@ license = "Apache-2.0"
 repository = "https://github.com/pamin-labs/pamin-memory"
 
 [workspace.dependencies]
-pamin-client = { path = "crates/pamin-client" }
-pamin-contract = { path = "crates/pamin-contract" }
-pamin-core = { path = "crates/pamin-core" }
-pamin-engine = { path = "crates/pamin-engine" }
-pamin-index = { path = "crates/pamin-index" }
-pamin-store = { path = "crates/pamin-store" }
+memory-client = { path = "crates/client" }
+memory-contract = { path = "crates/contract" }
+memory-core = { path = "crates/core" }
+memory-engine = { path = "crates/engine" }
+memory-index = { path = "crates/index" }
+memory-store = { path = "crates/store" }
 # Instruction-set kernels, ONNX Runtime devices, thread budgets and prepared-
 # model keys, shared by every Pamin module that runs models locally.
 pamin-runtime = "0.1.1"
@@ -57,7 +57,7 @@ tokio = { version = "1", features = [
 # stops the build depending on that staying true.
 tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
-# The directory walk `pamin ingest` reads a tree with, honouring `.gitignore`,
+# The directory walk `pamin-memory ingest` reads a tree with, honouring `.gitignore`,
 # `.git/info/exclude` and the global excludes the way git does, nested
 # repositories included. ripgrep's, under `MIT OR Unlicense`; it adds `globset`,
 # `walkdir`, `same-file`, `bstr` and, on Windows, `winapi-util` to the tree.
@@ -70,10 +70,10 @@ notify = "8"
 # Already compiled -- it is under tokio and sqlx both -- so declaring it adds
 # nothing to the tree.
 libc = "0.2"
-# `$PAMIN_HOME/config.toml`, the server's settings file. Nothing in the tree
+# `$PAMIN_MEMORY_HOME/config.toml`, the server's settings file. Nothing in the tree
 # parsed TOML before; parsing and serde only, no writer.
 toml = { version = "0.9", default-features = false, features = ["std", "parse", "serde"] }
-# Test-only: `pamin-index`'s `shared_vocabulary` test compares the encoder with
+# Test-only: `memory-index`'s `shared_vocabulary` test compares the encoder with
 # what `fastembed` computed before the encoder replaced it. No product code
 # calls it. image-models is on by default and pulls a full image codec stack,
 # including an AVIF encoder, for models we do not use.
@@ -83,14 +83,14 @@ fastembed = { version = "6", default-features = false, features = [
 ] }
 # The tokenizer the models' sessions are fed through. Named directly so a
 # reranker and an embedder that share a vocabulary can share one loaded copy
-# of it; see `pamin-index`'s `tokenizer.rs`.
+# of it; see `memory-index`'s `tokenizer.rs`.
 tokenizers = { version = "0.23.2", default-features = false, features = ["onig"] }
 # The double-array trie a Unigram vocabulary is held in, in place of the hash
 # map per trie node `tokenizers` builds: 280 MiB for BGE-M3's vocabulary. Pure
-# Rust with no dependencies of its own; see `pamin-index`'s `tokenizer.rs`.
+# Rust with no dependencies of its own; see `memory-index`'s `tokenizer.rs`.
 yada = "0.7"
 # The inference runtime the reranker and BGE-M3 run their sessions on (see
-# `pamin-index`'s `encoder.rs`), and what is asked for a GPU execution
+# `memory-index`'s `encoder.rs`), and what is asked for a GPU execution
 # provider. Pinned exactly because it is a release candidate. `std` is what
 # loading a session from a file needs; `download-binaries` fetches the
 # prebuilt ONNX Runtime at build time, over the platform's native TLS.

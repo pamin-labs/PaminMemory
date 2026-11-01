@@ -50,7 +50,7 @@ outright.
 transaction that stores the evidence, what the projection now owes it. A
 cascade worker settles that debt afterwards. The index can therefore lag, fail
 or be thrown away entirely without the authority ever being wrong — and
-`pamin reindex` rebuilds it from PostgreSQL, which is also what keeps the
+`pamin-memory reindex` rebuilds it from PostgreSQL, which is also what keeps the
 retrieval engine a replaceable component rather than a permanent commitment.
 
 **Four recall channels, fused above the index rather than inside it.**
@@ -62,7 +62,7 @@ the rank each held in each channel. Fusing once, above both, is what makes the
 result explainable:
 
 ```bash
-$ pamin search "deployment pipeline" --json | jq -c '.hits[0].why[]'
+$ pamin-memory search "deployment pipeline" --json | jq -c '.hits[0].why[]'
 {"kind":"channel","channel":"lexical_segmented","rank":1}
 {"kind":"channel","channel":"lexical_ngram","rank":1}
 {"kind":"channel","channel":"vector","rank":1}
@@ -93,13 +93,13 @@ from (see [cli.md](cli.md)).
 
 | crate | responsibility |
 | --- | --- |
-| `pamin-core` | domain model, ledger semantics, fusion, and the settings, search depths and workspace layout the client and the libraries share. No heavy dependencies, because it is edited most and its rebuild cost sets the development loop. |
-| `pamin-store` | the PostgreSQL authority: evidence, ledger, graph, outbox. |
-| `pamin-index` | the projection: multilingual segmentation, lexical and vector channels. |
-| `pamin-engine` | where the two are composed, and where their drift is supposed to be visible. Sits above `pamin-core` so index types never reach the domain layer. It is **not** the only crate holding both, and the exception is named rather than left to be discovered: see below. |
-| `pamin-contract` | the operation contract: every operation's arguments and result types, with their JSON Schema (snapshotted in its tests) and text rendering. The CLI, the socket and MCP all use it. Light for the same reason as `pamin-client`, and not published. |
-| `pamin-client` | the command surface: the wire protocol, reaching or starting the server, and rendering. Depends on `pamin-core` and `pamin-contract` alone, and a test fails if it reaches the inference runtime, the vector engine, TLS or the database driver. |
-| `pamin-cli` | two executables. `pamin` is built from `pamin-client` alone; `pamin-server` is the resident server, which runs each command against the engine and answers with `pamin-contract`'s result types. |
+| `memory-core` | domain model, ledger semantics, fusion, and the settings, search depths and workspace layout the client and the libraries share. No heavy dependencies, because it is edited most and its rebuild cost sets the development loop. |
+| `memory-store` | the PostgreSQL authority: evidence, ledger, graph, outbox. |
+| `memory-index` | the projection: multilingual segmentation, lexical and vector channels. |
+| `memory-engine` | where the two are composed, and where their drift is supposed to be visible. Sits above `memory-core` so index types never reach the domain layer. It is **not** the only crate holding both, and the exception is named rather than left to be discovered: see below. |
+| `memory-contract` | the operation contract: every operation's arguments and result types, with their JSON Schema (snapshotted in its tests) and text rendering. The CLI, the socket and MCP all use it. Light for the same reason as `memory-client`, and not published. |
+| `memory-client` | the command surface: the wire protocol, reaching or starting the server, and rendering. Depends on `memory-core` and `memory-contract` alone, and a test fails if it reaches the inference runtime, the vector engine, TLS or the database driver. |
+| `memory-cli` | two executables. `pamin-memory` is built from `memory-client` alone; `pamin-memory-server` is the resident server, which runs each command against the engine and answers with `memory-contract`'s result types. |
 
 Two executables rather than one because what a process links is what it pays
 for at every start. The inference runtime is a static library, and the `ort`
@@ -110,13 +110,13 @@ loader maps and relocates. A single binary charged each short-lived command for
 all three. Features cannot split one package's binaries -- they are unified per
 build -- so the client lives in its own crate, which the heavy crates never
 reach. What both halves must agree on -- the settings, the search depths and
-the workspace layout -- is defined once in `pamin-core`.
+the workspace layout -- is defined once in `memory-core`.
 
-`pamin-cli` reaches `pamin-store` directly for six commands -- `read`, `grep`,
+`memory-cli` reaches `memory-store` directly for six commands -- `read`, `grep`,
 `topics` without a query, `link`, `unlink` and `neighbors` -- and the reason is
 cost. Opening an engine opens the projection index, measured at 489 MB resident
 and about 600 ms on a 13,014-document project, and none of those six touches
-the index. Going through the engine would make `pamin link` thirteen times
+the index. Going through the engine would make `pamin-memory link` thirteen times
 slower than the store call it replaced.
 
 Half of that cost has been removed: the embedding model used to load when an
@@ -128,7 +128,7 @@ comments record wedging it for thirty-five minutes, which is not a change to
 make on the strength of a tidier diagram.
 
 Until then the reach-through lives in one module,
-`pamin-cli/src/command/resolve.rs`, which is where the two questions those
+`cli/src/command/resolve.rs`, which is where the two questions those
 commands ask -- a topic by name, a relationship kind by name -- are answered
 once. They had four and three copies respectively, which was four and three
 chances for one of them to start saying something else.
