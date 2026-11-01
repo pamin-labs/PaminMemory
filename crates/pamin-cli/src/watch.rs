@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use notify::Watcher as _;
 use pamin_index::{ProjectionIndex, VectorIndex};
-use pamin_store::repository::SyncedPath;
+use pamin_store::repository::{FileRecord, SyncedPath};
 use time::OffsetDateTime;
 use tokio::sync::mpsc;
 
@@ -958,6 +958,12 @@ fn sort_by(
 /// Only a file under a path kept in sync, as that path's ingest would, and
 /// not one whose synced path is not there, whose sections the watcher keeps.
 /// Behind another ingest of the project for at most [`WAIT`].
+///
+/// A hit whose file has no record may be one an ingest is writing right now:
+/// an ingest forgets a file's records before it writes its sections, and
+/// counts what it changed only once it is done. So the search waits behind the
+/// project's ingest then too, for at most [`WAIT`], and the count it compares
+/// next has moved if that ingest changed anything.
 pub async fn freshen(
     session: &Session,
     project: &str,
@@ -980,37 +986,13 @@ pub async fn freshen(
             ingest::files_of(topic).map(move |file| (root.clone(), file.to_string()))
         })
         .collect();
-    let (roots, files): (Vec<String>, Vec<String>) = candidates.into_iter().unzip();
+    let (candidate_roots, files): (Vec<String>, Vec<String>) = candidates.into_iter().unzip();
     let records =
-        pamin_store::repository::file_records_of(pool, project_id, &roots, &files).await?;
-    if records.is_empty() {
-        return Ok(());
-    }
-
-    // What changed under a synced path that is there. A file gone is left to
-    // the watcher, which holds a deletion for the other half of a move: a
-    // search retiring it here would cost the moved section its history.
-    let stale = tokio::task::spawn_blocking(move || {
-        records
-            .into_iter()
-            .filter_map(|record| {
-                let path = ingest::on_disk(&record.root, &record.file);
-                let synced = synced.iter().any(|synced| {
-                    path.starts_with(&synced.path) && Path::new(&synced.path).exists()
-                });
-                if !synced || ingest::trusted(&record, &ingest::stat(&path).ok()?) {
-                    return None;
-                }
-                Some(File {
-                    name: record.file,
-                    path,
-                    root: record.root,
-                })
-            })
-            .collect::<Vec<File>>()
-    })
-    .await?;
-    if stale.is_empty() {
+        pamin_store::repository::file_records_of(pool, project_id, &candidate_roots, &files)
+            .await?;
+    let unrecorded = unrecorded(&roots, &records);
+    let stale = tokio::task::spawn_blocking(move || stale(records, &synced)).await?;
+    if stale.is_empty() && !unrecorded {
         return Ok(());
     }
 
@@ -1021,6 +1003,9 @@ pub async fn freshen(
     let Ok(_ingesting) = tokio::time::timeout(WAIT, ingesting.lock()).await else {
         return Ok(());
     };
+    if stale.is_empty() {
+        return Ok(());
+    }
     let found = Found {
         files: stale,
         skipped: Vec::new(),
@@ -1029,6 +1014,42 @@ pub async fn freshen(
     };
     ingest::ingest(session, project, vector_index, found, Vec::new()).await?;
     Ok(())
+}
+
+/// Whether any of these hits, as `(topic, root)`, is a section of a file that
+/// has no record under its root.
+fn unrecorded(hits: &[(String, String)], records: &[FileRecord]) -> bool {
+    hits.iter().any(|(topic, root)| {
+        !ingest::files_of(topic).any(|file| {
+            records
+                .iter()
+                .any(|record| &record.root == root && record.file == file)
+        })
+    })
+}
+
+/// The files of these records that changed under a synced path that is there.
+/// A file gone is left to the watcher, which holds a deletion for the other
+/// half of a move: a search retiring it here would cost the moved section its
+/// history.
+fn stale(records: Vec<FileRecord>, synced: &[SyncedPath]) -> Vec<File> {
+    records
+        .into_iter()
+        .filter_map(|record| {
+            let path = ingest::on_disk(&record.root, &record.file);
+            let synced = synced
+                .iter()
+                .any(|synced| path.starts_with(&synced.path) && Path::new(&synced.path).exists());
+            if !synced || ingest::trusted(&record, &ingest::stat(&path).ok()?) {
+                return None;
+            }
+            Some(File {
+                name: record.file,
+                path,
+                root: record.root,
+            })
+        })
+        .collect()
 }
 
 /// What a walk of `path` finds, walked off the runtime.
@@ -1201,5 +1222,65 @@ mod tests {
         assert!(file.file);
         assert!(file.covers(&docs.join("a.md")));
         assert!(!file.covers(&docs.join("b.md")));
+    }
+
+    /// The record an ingest would leave of the file at `path`, read long
+    /// enough after it last changed to be trusted.
+    fn record(path: &Path, root: &Path, name: &str) -> FileRecord {
+        let file = File {
+            name: name.to_string(),
+            path: path.to_path_buf(),
+            root: root.display().to_string(),
+        };
+        let mut record = ingest::stat(path).unwrap().recorded(&file, String::new());
+        record.read_ns = record.modified_ns.max(record.changed_ns) + 10_000_000_000;
+        record
+    }
+
+    fn synced(path: &Path) -> SyncedPath {
+        SyncedPath {
+            project: "p".into(),
+            path: path.display().to_string(),
+            vector_index: "memory".into(),
+        }
+    }
+
+    /// A hit is unrecorded when no file its name could be cut from has a
+    /// record under its root -- as while an ingest is rewriting it, between
+    /// forgetting its records and counting what it changed.
+    #[test]
+    fn a_hit_without_a_record_is_unrecorded() {
+        let (_tree, root, _) = tree();
+        let at = root.display().to_string();
+        let records = [record(&root.join("docs/a.md"), &root, "repo/docs/a.md")];
+        let hit = |topic: &str, root: &str| vec![(topic.to_string(), root.to_string())];
+        assert!(!unrecorded(&hit("repo/docs/a.md › A", &at), &records));
+        assert!(!unrecorded(&hit("repo/docs/a.md #2 › A", &at), &records));
+        assert!(unrecorded(&hit("repo/docs/b.md › B", &at), &records));
+        assert!(unrecorded(
+            &hit("repo/docs/a.md › A", "/elsewhere"),
+            &records
+        ));
+        assert!(unrecorded(&hit("repo/docs/a.md › A", &at), &[]));
+    }
+
+    /// A file is stale when its stat moved under a synced path that is there;
+    /// one unchanged, gone, or not synced is not.
+    #[test]
+    fn a_changed_file_under_a_synced_path_is_stale() {
+        let (_tree, root, _) = tree();
+        let a = root.join("docs/a.md");
+        put(&root.join("docs/b.md"), "# B");
+        let fresh = record(&a, &root, "repo/docs/a.md");
+        let mut changed = record(&root.join("docs/b.md"), &root, "repo/docs/b.md");
+        changed.size += 1;
+        let mut gone = record(&a, &root, "repo/docs/gone.md");
+        gone.size += 1;
+        let records = vec![fresh, changed, gone];
+
+        let stale_files = stale(records.clone(), &[synced(&root)]);
+        assert_eq!(names(&stale_files), ["repo/docs/b.md"]);
+        assert!(stale(records.clone(), &[synced(&root.join("guides"))]).is_empty());
+        assert!(stale(records, &[synced(&root.join("missing"))]).is_empty());
     }
 }
