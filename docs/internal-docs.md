@@ -10,7 +10,7 @@ Clone InternalDocs next to this repository:
 git clone git@github.com:pamin-labs/internal-docs.git ../internal-docs
 ```
 
-Tools and agents read it from `$PAMIN_LABS_DEV_INTERNAL_DOCS`, which defaults to `../internal-docs`. Pull it before reading; the latest `main` is the current truth. The PaminMemory notes live under `pamin-memory/`.
+Tools and agents read it from `$PAMIN_LABS_DEV_INTERNAL_DOCS`, which defaults to `../internal-docs`. Pull it before reading; the latest `main` is the current truth. The pamin-memory notes live under `pamin-memory/`.
 
 Change InternalDocs through its own pull requests. Nothing in this repository needs to change when it does.
 

@@ -1,4 +1,4 @@
-//! Domain model, version ledger semantics, and retrieval fusion for PaminMemory.
+//! Domain model, version ledger semantics, and retrieval fusion for pamin-memory.
 //!
 //! This crate holds the parts that must stay stable regardless of which store or
 //! index sits behind them, and it deliberately carries no heavy dependencies:

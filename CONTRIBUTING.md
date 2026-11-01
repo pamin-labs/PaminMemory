@@ -1,6 +1,6 @@
 # Contributing
 
-Thank you for helping with PaminMemory. Several people and their coding agents work here at the same
+Thank you for helping with pamin-memory. Several people and their coding agents work here at the same
 time, so changes are coordinated before code is written.
 
 ## External contributors
