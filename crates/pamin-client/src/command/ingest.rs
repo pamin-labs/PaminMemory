@@ -38,12 +38,23 @@ pub struct Ingested {
     /// those somebody also wrote by hand, and those of a file it could not
     /// read or a directory whose walk met an error.
     pub missing: Vec<String>,
+    /// Sections found under a new name -- their file moved, or a heading above
+    /// them renamed -- whose memory was renamed rather than recorded afresh,
+    /// keeping its history. The old name still finds it.
+    pub renamed: Vec<Renamed>,
     /// Files skipped, with why: not UTF-8, or unreadable.
     pub skipped: Vec<String>,
     /// Whether the projection caught up before this returned.
     pub cascade: String,
     /// Set when the projection was behind at any point during the ingest.
     pub cascade_lagging: bool,
+}
+
+/// A memory renamed by an ingest.
+#[derive(Serialize, Deserialize)]
+pub struct Renamed {
+    pub from: String,
+    pub to: String,
 }
 
 /// Renders the result for a person reading it.
@@ -65,6 +76,15 @@ pub fn render(result: &Ingested) -> String {
         ));
         for name in names {
             out.push_str(&format!("\n  {name}"));
+        }
+    }
+    if !result.renamed.is_empty() {
+        out.push_str(&format!(
+            "\n{} sections were found under a new name and renamed, keeping their history:",
+            result.renamed.len()
+        ));
+        for renamed in &result.renamed {
+            out.push_str(&format!("\n  {} -> {}", renamed.from, renamed.to));
         }
     }
     for skipped in &result.skipped {
