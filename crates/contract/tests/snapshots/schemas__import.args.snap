@@ -1,0 +1,43 @@
+---
+source: crates/contract/tests/schemas.rs
+expression: "schema_for! (import::Args)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Args",
+  "type": "object",
+  "properties": {
+    "from": {
+      "description": "A file of memories, one JSON object per line: `{\"topic\": …, \"content\": …}`.\n\nRead by whichever process holds the workspace, which is the server when\none is running. Both are on this machine and run as you.",
+      "type": "string"
+    },
+    "validity": {
+      "$ref": "#/$defs/Flags"
+    }
+  },
+  "required": [
+    "from",
+    "validity"
+  ],
+  "$defs": {
+    "Flags": {
+      "type": "object",
+      "properties": {
+        "valid_from": {
+          "description": "When the claim starts holding, as RFC 3339. Open by default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "valid_to": {
+          "description": "When it stops holding, as RFC 3339. Open by default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}
