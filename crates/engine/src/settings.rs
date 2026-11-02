@@ -32,6 +32,9 @@ pub struct Settings {
     /// How a memory is cut into documents in an index this process creates
     /// or rebuilds; one that exists keeps its own. See [`memory_index::Grain`].
     pub grain: memory_index::Grain,
+    /// Where models are downloaded, prepared and compiled; by default the
+    /// machine's one, [`memory_core::settings::models_dir`].
+    pub models_dir: std::path::PathBuf,
 }
 
 impl Settings {
@@ -50,6 +53,7 @@ impl Default for Settings {
                 .expect("a model may sit idle for at least a second"),
             unindexed_budget: memory_index::projection::UNINDEXED_BUDGET,
             grain: memory_index::Grain::default(),
+            models_dir: memory_core::settings::models_dir(),
         }
     }
 }

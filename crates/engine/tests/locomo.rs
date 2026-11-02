@@ -705,7 +705,7 @@ async fn locomo_evidence_with_and_without_links() {
     let database = Database::open(&workspace, Connections::PerCommand, &settings.store)
         .await
         .expect("open the database");
-    let models = Models::new(&workspace, settings);
+    let models = Models::new(settings);
     let by = embedded_by(&database, &models, &workspace, &named).await;
 
     // [without the graph, with it], by category; each question in the same

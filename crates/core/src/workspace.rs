@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use crate::ProjectId;
 use serde::{Deserialize, Serialize};
 
-/// Where pamin-memory keeps its database, indexes, and models.
+/// Where pamin-memory keeps its database and indexes. Models are the
+/// machine's, in [`crate::settings::models_dir`].
 ///
 /// Defaults to `~/.pamin-memory`. The binary takes another with `--home` (or
 /// `PAMIN_MEMORY_HOME`) so a test or a second checkout can run against its own state;
@@ -44,11 +45,6 @@ impl Workspace {
     /// Where the embedded PostgreSQL cluster keeps its data.
     pub fn postgres_data_dir(&self) -> PathBuf {
         self.root.join("postgres").join("data")
-    }
-
-    /// Where model weights and tokenizers are cached.
-    pub fn models_dir(&self) -> PathBuf {
-        self.root.join("models")
     }
 
     pub fn postgres_password_file(&self) -> PathBuf {
