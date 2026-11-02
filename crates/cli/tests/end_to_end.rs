@@ -3093,3 +3093,38 @@ fn an_ingested_tree_is_kept_in_sync_without_ingesting_again() {
     server.kill().expect("stopping the server");
     server.wait().expect("reaping the server");
 }
+
+/// A server that finds a project's index gone answers from PostgreSQL anyway.
+///
+/// A hosted shard loses its disk when it sleeps and keeps its memories in
+/// PostgreSQL. Without the rebuild, the fresh server opens an empty index and
+/// every search answers nothing until someone runs `reindex`.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn a_server_without_its_index_rebuilds_it_on_first_use() {
+    let cli = Cli::new();
+    let mut server = cli.serve();
+    cli.run(&["init"]);
+    cli.run(&[
+        "write",
+        "--topic",
+        "launch_date",
+        "the rocket skates launch on the fourteenth of november",
+    ]);
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
+
+    std::fs::remove_dir_all(cli.home().join("index")).expect("delete the index");
+
+    let mut server = cli.serve();
+    let found =
+        contents(&cli.json(&["search", "when do the rocket skates launch", "--limit", "1"]));
+    assert!(
+        found
+            .iter()
+            .any(|content| content.contains("fourteenth of november")),
+        "a memory postgres holds was not found after the index was lost: {found:?}"
+    );
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
+}

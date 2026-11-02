@@ -4,6 +4,7 @@
 //! codebase; this is the one place that holds both, so it is also the only
 //! place where the two can drift out of step.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLockReadGuard, RwLockWriteGuard, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -336,6 +337,14 @@ pub struct Engine {
     pub(crate) access: Access,
     /// What a rebuild holds until [`reindex`](Self::reindex) has finished.
     rebuilding: Arc<Mutex<Option<Rebuilding>>>,
+    /// Whether the index directory was missing at open while the ledger held
+    /// memories, which [`take_missing_index`](Self::take_missing_index) hands
+    /// to one caller.
+    ///
+    /// A hosted shard loses its disk when it sleeps; PostgreSQL keeps every
+    /// memory. Opening finds no directory and creates an empty index, and
+    /// every search would then answer nothing for memories the ledger holds.
+    missing_index: Arc<AtomicBool>,
     /// Index writes that are applied but not yet on disk, with their claims.
     ///
     /// The projection buffers a write in memory and a query reads that buffer,
@@ -937,6 +946,12 @@ impl Engine {
         .await
     }
 
+    /// Whether this engine opened an empty index for a project whose ledger
+    /// holds memories, answered yes once so one caller rebuilds it.
+    pub fn take_missing_index(&self) -> bool {
+        self.missing_index.swap(false, Ordering::SeqCst)
+    }
+
     async fn assemble(
         database: Database,
         models: &Models,
@@ -979,6 +994,9 @@ impl Engine {
         }
         // Only a rebuild keeps it past the open.
         let exclusive = exclusive.filter(|_| discard);
+
+        // Read before the open, which creates the directory.
+        let missing_index = !discard && documents > 0 && !dir.exists() && !legacy.exists();
 
         let (index, previous) = off_the_runtime(|| {
             // Set aside rather than deleted, so the rebuild can take the
@@ -1030,6 +1048,7 @@ impl Engine {
                 previous,
                 _exclusive: exclusive,
             }))),
+            missing_index: Arc::new(AtomicBool::new(missing_index)),
             embedder: std::sync::OnceLock::new(),
             vector_index,
             models: models.clone(),

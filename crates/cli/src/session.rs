@@ -319,6 +319,15 @@ impl Session {
             }
             .into());
         }
+        if engine.take_missing_index() {
+            // ponytail: callers arriving during the rebuild get the empty index and may
+            // miss older memories for that long; make them wait on it if that matters.
+            // Dropped first: it holds the empty index's lock, which the rebuild moves.
+            drop(engine);
+            let engine = self.rebuilding(project, vector_index).await?;
+            engine.reindex().await?;
+            return Ok(engine);
+        }
         Ok(engine)
     }
 
