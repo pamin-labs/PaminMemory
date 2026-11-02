@@ -240,6 +240,24 @@ pub fn installation_missing(prefix: &std::path::Path) -> Option<String> {
         .find(|relative| !prefix.join(relative).is_file())
 }
 
+/// Where models are cached unless a caller says otherwise: `pamin/models` in
+/// the platform's cache directory (`~/Library/Caches` on macOS,
+/// `$XDG_CACHE_HOME` or `~/.cache` on Linux, `%LOCALAPPDATA%` on Windows).
+///
+/// One directory for the machine rather than one per workspace, because the
+/// weights are the same in every workspace and each copy costs more than its
+/// download: Core ML compiles a model once per path it is loaded from and
+/// keeps each compilation, so every new workspace added about a gigabyte to
+/// its cache. Writers to it lock and rename, so processes share it safely.
+pub fn models_dir() -> PathBuf {
+    // A machine with no home has no cache directory; the temporary directory
+    // is still one the user may write and the system may clear.
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("pamin")
+        .join("models")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

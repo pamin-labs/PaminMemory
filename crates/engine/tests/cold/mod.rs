@@ -133,7 +133,7 @@ impl Samples {
 /// report a cold search without its most expensive step.
 pub async fn report(database: &Database, workspace: &Workspace, project: &str, queries: &[&str]) {
     let tier = Rerank::default();
-    let models = workspace.root().join("models");
+    let models = crate::harness::models_dir();
 
     // Untimed: the first load on a machine writes each model's prepared copy,
     // which is a one-off and not what a released server pays.
@@ -231,7 +231,7 @@ async fn open(database: &Database, workspace: &Workspace, project: &str) -> (Eng
     let started = Instant::now();
     let engine = Engine::attached(
         database.clone(),
-        &Models::new(workspace, crate::harness::settings()),
+        &Models::new(crate::harness::settings()),
         workspace,
         project,
         VectorIndex::default(),
@@ -310,7 +310,7 @@ async fn warmed(
     [query, other]: [&str; 2],
 ) -> (Duration, Duration, Duration) {
     let first = {
-        let models = Models::new(workspace, crate::harness::settings());
+        let models = Models::new(crate::harness::settings());
         let started = Instant::now();
         let warming = {
             let models = models.clone();
@@ -323,7 +323,7 @@ async fn warmed(
         took
     };
 
-    let models = Models::new(workspace, crate::harness::settings());
+    let models = Models::new(crate::harness::settings());
     let started = Instant::now();
     let warming = {
         let models = models.clone();

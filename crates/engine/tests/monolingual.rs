@@ -873,7 +873,7 @@ async fn search() {
     // `CONTEXT`: the shipped tier shown each candidate's name and seed. See
     // `reranking::in_context`.
     if std::env::var("CONTEXT").is_ok() {
-        context(&engine, &mut shape, &workspace, &corpus, &named).await;
+        context(&engine, &mut shape, &corpus, &named).await;
         return;
     }
 
@@ -1075,20 +1075,14 @@ async fn rerank_rules(engine: &Engine, corpus: &Corpus, named: &str) {
 /// This corpus's names are MIRACL's own document ids behind a prefix, so the
 /// named renderings ask what a name that carries nothing costs; it has no
 /// edges, so the seeded renderings equal their unseeded counterparts.
-async fn context(
-    engine: &Engine,
-    shape: &mut harness::shape::Shape,
-    workspace: &Workspace,
-    corpus: &Corpus,
-    named: &str,
-) {
+async fn context(engine: &Engine, shape: &mut harness::shape::Shape, corpus: &Corpus, named: &str) {
     use std::collections::BTreeMap;
 
     const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
     let tier = Rerank::default();
     let model = harness::shape::owned(
         memory_index::Reranker::load(
-            &workspace.root().join("models"),
+            &crate::harness::models_dir(),
             &crate::harness::support::inference(),
         )
         .expect("load the reranker"),

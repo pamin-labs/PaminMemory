@@ -1769,10 +1769,10 @@ async fn search_reaches_across_languages() {
         (None, None) => unreachable!("one of the two is always set"),
     };
 
-    let reranker_id = pinned_model_id(&workspace.root().join("models"), "reranker");
+    let reranker_id = pinned_model_id(&crate::harness::models_dir(), "reranker");
     println!("  pinned reranker identity: {reranker_id}");
 
-    let embedding_id = pinned_embedding_id(&workspace.root().join("models"));
+    let embedding_id = pinned_embedding_id(&crate::harness::models_dir());
     println!("  index embedding identity: {embedding_id}");
     let project = xquad_project_name(&named, &corpus.fingerprint(), &embedding_id);
     println!("  index project: {project}");
@@ -1960,7 +1960,7 @@ async fn search_reaches_across_languages() {
     // `CONTEXT`: the shipped tier shown each candidate's name and seed. See
     // `reranking::in_context`.
     if std::env::var("CONTEXT").is_ok() {
-        context(&engine, &mut shape, &workspace, &queries, &named).await;
+        context(&engine, &mut shape, &queries, &named).await;
         return;
     }
 
@@ -3287,18 +3287,12 @@ async fn rerank_rules(engine: &Engine, queries: &[Query<'_>], named: &str) {
 /// This corpus's names are keys chosen to be unlike any text, so the named
 /// renderings ask what a name that carries nothing costs; it has no edges, so
 /// the seeded renderings equal their unseeded counterparts.
-async fn context(
-    engine: &Engine,
-    shape: &mut Shape,
-    workspace: &Workspace,
-    queries: &[Query<'_>],
-    named: &str,
-) {
+async fn context(engine: &Engine, shape: &mut Shape, queries: &[Query<'_>], named: &str) {
     const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
     let tier = Rerank::default();
     let model = harness::shape::owned(
         memory_index::Reranker::load(
-            &workspace.root().join("models"),
+            &crate::harness::models_dir(),
             &crate::harness::support::inference(),
         )
         .expect("load the reranker"),

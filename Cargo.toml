@@ -32,6 +32,9 @@ pamin-runtime = "0.1.2"
 pamin-kit = "0.1.0"
 
 anyhow = "1"
+# The platform's cache directory, where models are kept for every workspace.
+# Already compiled for `hf-hub`.
+dirs = "6"
 clap = { version = "4", features = ["derive", "env"] }
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }

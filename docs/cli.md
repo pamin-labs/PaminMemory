@@ -13,7 +13,7 @@ The examples below are real output from a workspace built by the writes in
 
 | Option | Environment | Default | Meaning |
 | --- | --- | --- | --- |
-| `--home <path>` | `PAMIN_MEMORY_HOME` | `~/.pamin-memory` | Where the database, index, and downloaded models live |
+| `--home <path>` | `PAMIN_MEMORY_HOME` | `~/.pamin-memory` | Where the database and index live; models are the machine's, in `models_dir` (below) |
 | `--project <name>` | `PAMIN_MEMORY_PROJECT` | `default` | The memory namespace to operate on |
 | `--vector-index <name>` | `PAMIN_MEMORY_VECTOR_INDEX` | `memory` | Vector index a project is built with: `disk` or `memory` |
 | `--json` | | off | Emit JSON instead of text, on one line |
@@ -45,6 +45,7 @@ default.
 | `--open-indexes <n>` | `open_indexes` | `16` | How many project indexes a server keeps open at once |
 | `--jit <true\|false>` | `jit` | `false` | Let PostgreSQL compile query expressions with LLVM |
 | `--postgres-dir <path>` | `postgres_dir` | unset | Use a PostgreSQL already on this machine instead of installing one |
+| `--models-dir <path>` | `models_dir` | `pamin/models` in the platform's cache directory | Where models are downloaded, prepared and compiled. Also read from `PAMIN_MEMORY_MODELS_DIR` |
 
 ```toml
 # $PAMIN_MEMORY_HOME/config.toml
@@ -62,7 +63,7 @@ against the directory the command ran in; in the file, against the workspace
 A key the file does not know, or a value a flag would refuse, stops every
 command with the file's path and the offending line, rather than leaving the
 setting at its default. `pamin-memory config` prints what a command would run with and
-where each value came from -- `flag`, `env` (`PAMIN_MEMORY_DEVICE`), `config` or
+where each value came from -- `flag`, `env` (`PAMIN_MEMORY_DEVICE`, `PAMIN_MEMORY_MODELS_DIR`), `config` or
 `default` -- without starting anything; `--json` gives the same as an object.
 
 **Settings are fixed when the server starts.** A command sends the settings it
@@ -244,18 +245,18 @@ stop every Påmin server and CLI process using this model directory, then list
 the exact v1 packages and their logical bytes:
 
 ```sh
-python3 maintenance/retire_coreml_v1.py ~/.pamin-memory/models
+python3 maintenance/retire_coreml_v1.py ~/Library/Caches/pamin/models
 ```
 
 After verifying the list and that those processes remain stopped, remove only
 that obsolete namespace:
 
 ```sh
-python3 maintenance/retire_coreml_v1.py ~/.pamin-memory/models --apply --all-processes-stopped
+python3 maintenance/retire_coreml_v1.py ~/Library/Caches/pamin/models --apply --all-processes-stopped
 ```
 
-Use your configured `PAMIN_MEMORY_HOME/models` in place of `~/.pamin-memory/models` when it
-differs. The script refuses an arbitrary parent path, skips linked prepared
+Use your `models_dir`, as `pamin-memory config` prints it, in place of
+`~/Library/Caches/pamin/models` when it differs. The script refuses an arbitrary parent path, skips linked prepared
 entries and preserves v2 packages and mapped CPU models. Logical bytes are
 not a measure of unique APFS allocation; the actual free-space change may
 differ.
@@ -341,7 +342,7 @@ records the model it was built with and refuses to open under another, naming
 
 ### Upgrading from settings variables
 
-Settings other than the five above were environment variables. Each is now a
+Settings other than the six above were environment variables. Each is now a
 flag (and, for a server setting, a `config.toml` key), or gone, and setting one
 -- to any value -- fails with a message naming what replaced it, rather than
 being ignored by a server that would then run with settings its operator did
@@ -362,6 +363,21 @@ not intend. Unset it, and use the replacement:
 | `PAMIN_MEMORY_RERANK_BATCH`, `PAMIN_MEMORY_RERANK_BATCH_TOKENS`, `PAMIN_MEMORY_RERANK_MAX_TOKENS`, `PAMIN_MEMORY_UNINDEXED_BUDGET`, `PAMIN_MEMORY_CATCH_UP_BATCH` | removed: fixed at their measured values |
 
 `PAMIN_MEMORY_DEVICE` is still read, as the fallback for `--device`.
+
+### Upgrading to the machine's model directory
+
+Models were kept in each workspace, in `$PAMIN_MEMORY_HOME/models`. They are
+now kept once for the machine, by default in `pamin/models` under the
+platform's cache directory: `~/Library/Caches/pamin/models` on macOS,
+`$XDG_CACHE_HOME/pamin/models` or `~/.cache/pamin/models` on Linux. Every
+workspace shares them, so a new workspace downloads nothing and, on macOS,
+Core ML does not compile each model again for a new path. `--models-dir`,
+`PAMIN_MEMORY_MODELS_DIR` or `models_dir` in `config.toml` puts them
+elsewhere; `pamin-memory config` prints where they are.
+
+A workspace's old `models` directory is no longer read. With every
+`pamin-memory` process stopped, move it to the new place to keep what it
+downloaded and prepared, or delete it and let the next load fetch again.
 
 ### Upgrading from profiles and tiers
 

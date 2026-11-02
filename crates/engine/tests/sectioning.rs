@@ -599,7 +599,7 @@ async fn a_sections_size_against_retrieval() {
     let home = harness::eval_home();
     std::fs::create_dir_all(&home).expect("eval home");
     let workspace = Workspace::at(&home);
-    let counter = SpanTokens::load(&workspace.models_dir()).expect("BGE-M3's tokenizer");
+    let counter = SpanTokens::load(&harness::models_dir()).expect("BGE-M3's tokenizer");
     let fingerprint = {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();

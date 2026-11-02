@@ -1918,6 +1918,7 @@ dependencies = [
 name = "memory-core"
 version = "0.0.1"
 dependencies = [
+ "dirs",
  "schemars",
  "serde",
  "serde_json",
