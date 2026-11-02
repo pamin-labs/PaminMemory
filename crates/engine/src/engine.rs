@@ -952,6 +952,11 @@ impl Engine {
         self.needs_rebuild
     }
 
+    /// Whether a rebuild in this index directory started and never finished.
+    pub fn rebuild_unfinished(dir: &std::path::Path) -> bool {
+        dir.join(UNFINISHED_REBUILD).exists()
+    }
+
     async fn assemble(
         database: Database,
         models: &Models,
@@ -997,9 +1002,8 @@ impl Engine {
 
         let (index, previous, needs_rebuild) = off_the_runtime(|| {
             // Read before the open, which creates the directory.
-            let needs_rebuild = !discard
-                && documents > 0
-                && (!dir.exists() || dir.join(UNFINISHED_REBUILD).exists());
+            let needs_rebuild =
+                !discard && documents > 0 && (!dir.exists() || Self::rebuild_unfinished(&dir));
             // Set aside rather than deleted, so the rebuild can take the
             // vectors it still holds instead of embedding every memory again.
             let previous = if discard {
