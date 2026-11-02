@@ -94,9 +94,108 @@ async fn the_ledger_holds_its_promises() {
     a_promoted_write_is_one_statement_after_its_locks(&database).await;
     an_edge_reads_the_same_direction_from_either_end(&database).await;
     a_version_is_numbered_and_read_from_its_own_key(&database, &workspace).await;
+    purging_a_project_leaves_none_of_its_rows(&database).await;
 
     drop(database);
     a_stopped_server_is_started_again_without_waiting(&workspace).await;
+}
+
+/// Purging a project deletes every row it owns and nothing of any other.
+///
+/// Two halves. The catalogue says every table with a `project_id` cascades
+/// from `projects`, so a table added later without `ON DELETE CASCADE` fails
+/// here instead of keeping a purged project's rows. Then the project the
+/// checks above filled most widely is purged for real, last before the
+/// cluster stops so their rows are all there.
+async fn purging_a_project_leaves_none_of_its_rows(database: &Database) {
+    type Rows = Vec<(String, i64)>;
+    let tables: Vec<(String, bool)> = sqlx::query_as(
+        "SELECT c.table_name::text,
+                EXISTS (SELECT 1 FROM pg_constraint k
+                         WHERE k.conrelid = (quote_ident(c.table_name))::regclass
+                           AND k.contype = 'f'
+                           AND k.confrelid = 'projects'::regclass
+                           AND k.confdeltype = 'c')
+           FROM information_schema.columns c
+          WHERE c.table_schema = current_schema() AND c.column_name = 'project_id'
+          ORDER BY c.table_name",
+    )
+    .fetch_all(database.pool())
+    .await
+    .expect("list the tables");
+    assert!(tables.len() > 10, "the premise: tables found {tables:?}");
+    let loose: Vec<_> = tables.iter().filter(|(_, cascades)| !cascades).collect();
+    assert!(
+        loose.is_empty(),
+        "not deleted with their project: {loose:?}"
+    );
+
+    let projects: Vec<(uuid::Uuid, String)> =
+        sqlx::query_as("SELECT id, name FROM projects ORDER BY name")
+            .fetch_all(database.pool())
+            .await
+            .expect("list the projects");
+    let rows = |project: uuid::Uuid, other: bool| {
+        let tables = &tables;
+        async move {
+            let mut rows = Vec::new();
+            for (table, _) in tables {
+                let (count,): (i64,) = sqlx::query_as(AssertSqlSafe(format!(
+                    "SELECT count(*) FROM {table} WHERE project_id {} $1",
+                    if other { "<>" } else { "=" }
+                )))
+                .bind(project)
+                .fetch_one(database.pool())
+                .await
+                .unwrap_or_else(|error| panic!("counting {table}: {error}"));
+                rows.push((table.clone(), count));
+            }
+            rows
+        }
+    };
+    let filled = |rows: &[(String, i64)]| rows.iter().filter(|(_, count)| *count > 0).count();
+    let mut widest: Option<(uuid::Uuid, String, Rows)> = None;
+    for (id, name) in &projects {
+        let before = rows(*id, false).await;
+        if widest
+            .as_ref()
+            .is_none_or(|(_, _, best)| filled(&before) > filled(best))
+        {
+            widest = Some((*id, name.clone(), before));
+        }
+    }
+    let (id, name, before) = widest.expect("the checks above made projects");
+    assert!(
+        filled(&before) >= 6,
+        "the premise: {name} has rows in {before:?}"
+    );
+    let others = rows(id, true).await;
+
+    let purged = repository::purge_project(database.pool(), &name)
+        .await
+        .expect("purge")
+        .expect("the project existed");
+    assert_eq!(purged.id.0, id);
+    assert!(purged.topics > 0, "{purged:?}");
+
+    let after = rows(id, false).await;
+    assert_eq!(
+        filled(&after),
+        0,
+        "rows of the purged project remain: {after:?}"
+    );
+    assert_eq!(
+        rows(id, true).await,
+        others,
+        "another project's rows changed"
+    );
+    assert_eq!(
+        repository::purge_project(database.pool(), &name)
+            .await
+            .expect("purge again"),
+        None,
+        "a second purge finds nothing"
+    );
 }
 
 /// Opening a workspace whose server was stopped starts it, promptly.
