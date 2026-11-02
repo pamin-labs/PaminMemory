@@ -144,7 +144,6 @@ pub(crate) async fn ingest(
 ) -> Result<Ingested> {
     let project_id = session.project(project).await?;
     let database = session.database();
-    let pool = database.pool();
     let started = time::OffsetDateTime::now_utc();
 
     // What each file looked like when it was last read, so one that has not
@@ -155,8 +154,14 @@ pub(crate) async fn ingest(
         .map(|file| (file.root.clone(), file.name.clone()))
         .unzip();
     let mut records: std::collections::HashMap<String, Vec<FileRecord>> = Default::default();
-    for record in
-        memory_store::repository::file_records_of(pool, project_id, &roots, &names).await?
+    for record in database
+        .within(project_id, async |connection| {
+            anyhow::Ok(
+                memory_store::repository::file_records_of(connection, project_id, &roots, &names)
+                    .await?,
+            )
+        })
+        .await?
     {
         records.entry(record.file.clone()).or_default().push(record);
     }
@@ -196,7 +201,14 @@ pub(crate) async fn ingest(
     // it changed while being read, is read again next time rather than judged
     // by a record of text it no longer holds.
     let names: Vec<String> = cut.iter().map(|(file, _, _)| file.name.clone()).collect();
-    memory_store::repository::forget_records_of_files(pool, project_id, &names).await?;
+    database
+        .within(project_id, async |connection| {
+            anyhow::Ok(
+                memory_store::repository::forget_records_of_files(connection, project_id, &names)
+                    .await?,
+            )
+        })
+        .await?;
 
     // Only the sections of the files in play: those read, and those of files
     // under a directory walked that the walk no longer found. Those are the
@@ -225,7 +237,16 @@ pub(crate) async fn ingest(
         let unknown = unrecorded
             .iter()
             .any(|(name, root)| root == &tree.root && under(name, &tree.name))
-            || memory_store::repository::count_file_topics_under(pool, project_id, &prefix).await?
+            || database
+                .within(project_id, async |connection| {
+                    anyhow::Ok(
+                        memory_store::repository::count_file_topics_under(
+                            connection, project_id, &prefix,
+                        )
+                        .await?,
+                    )
+                })
+                .await?
                 > *accounted;
         if unknown {
             prefixes.push(prefix);
@@ -234,7 +255,14 @@ pub(crate) async fn ingest(
         }
     }
     let recorded = in_play(
-        memory_store::repository::file_topics_under(pool, project_id, &prefixes).await?,
+        database
+            .within(project_id, async |connection| {
+                anyhow::Ok(
+                    memory_store::repository::file_topics_under(connection, project_id, &prefixes)
+                        .await?,
+                )
+            })
+            .await?,
         &cut.iter()
             .map(|(file, _, _)| file.name.as_str())
             .collect::<Vec<_>>(),
@@ -354,15 +382,21 @@ pub(crate) async fn ingest(
     // record that did not exist yet, and the one just written would trust the
     // file over it. Asked of every hand write since a minute before this
     // ingest began, the margin covering a write whose clock started first.
-    memory_store::repository::forget_file_records_written_since(
-        pool,
-        project_id,
-        &roots,
-        &names,
-        &topics,
-        started - time::Duration::minutes(1),
-    )
-    .await?;
+    database
+        .within(project_id, async |connection| {
+            anyhow::Ok(
+                memory_store::repository::forget_file_records_written_since(
+                    connection,
+                    project_id,
+                    &roots,
+                    &names,
+                    &topics,
+                    started - time::Duration::minutes(1),
+                )
+                .await?,
+            )
+        })
+        .await?;
     if outcome.written + outcome.removed.len() + outcome.renamed.len() > 0 {
         session.changed_by_ingest(project);
     }
@@ -653,13 +687,20 @@ async fn record(
     }
 
     for (root, locators) in &kept_at {
-        memory_store::repository::set_roots_at(
-            engine.database.pool(),
-            engine.project,
-            locators,
-            root,
-        )
-        .await?;
+        engine
+            .database
+            .within(engine.project, async |connection| {
+                anyhow::Ok(
+                    memory_store::repository::set_roots_at(
+                        connection,
+                        engine.project,
+                        locators,
+                        root,
+                    )
+                    .await?,
+                )
+            })
+            .await?;
     }
 
     // After the sections are recorded, so each has the state its edge cites,
@@ -734,13 +775,16 @@ async fn left_trees(
     let mut left = Vec::with_capacity(trees.len());
     for tree in trees {
         let prefix = format!("{}/", tree.name);
-        let records = memory_store::repository::file_records_under(
-            database.pool(),
-            project,
-            &tree.root,
-            &prefix,
-        )
-        .await?;
+        let records = database
+            .within(project, async |connection| {
+                anyhow::Ok(
+                    memory_store::repository::file_records_under(
+                        connection, project, &tree.root, &prefix,
+                    )
+                    .await?,
+                )
+            })
+            .await?;
         let accounted = records
             .iter()
             .map(|record| i64::from(record.sections))
@@ -769,8 +813,21 @@ async fn write_records(
     left: &[(String, String)],
 ) -> Result<()> {
     let (roots, files): (Vec<String>, Vec<String>) = left.iter().cloned().unzip();
-    memory_store::repository::forget_file_records(database.pool(), project, &roots, &files).await?;
-    memory_store::repository::put_file_records(database.pool(), project, records).await?;
+    database
+        .within(project, async |connection| {
+            anyhow::Ok(
+                memory_store::repository::forget_file_records(connection, project, &roots, &files)
+                    .await?,
+            )
+        })
+        .await?;
+    database
+        .within(project, async |connection| {
+            anyhow::Ok(
+                memory_store::repository::put_file_records(connection, project, records).await?,
+            )
+        })
+        .await?;
     Ok(())
 }
 
@@ -823,12 +880,17 @@ async fn renamed(
         return Ok(Vec::new());
     }
     let names: Vec<String> = candidates.iter().map(|gone| gone.name.clone()).collect();
-    let said: std::collections::HashMap<String, String> =
-        memory_store::repository::current_named(engine.database.pool(), engine.project, &names)
-            .await?
-            .into_iter()
-            .map(|named| (named.name, named.content))
-            .collect();
+    let said: std::collections::HashMap<String, String> = engine
+        .database
+        .within(engine.project, async |connection| {
+            anyhow::Ok(
+                memory_store::repository::current_named(connection, engine.project, &names).await?,
+            )
+        })
+        .await?
+        .into_iter()
+        .map(|named| (named.name, named.content))
+        .collect();
     let candidates: Vec<(&Gone, &str)> = candidates
         .into_iter()
         .filter_map(|gone| Some((gone, said.get(&gone.name)?.as_str())))
@@ -891,12 +953,14 @@ async fn numbered(
         })
         .collect();
     let names: Vec<String> = wanted.iter().flatten().cloned().collect();
-    let contents: std::collections::HashMap<String, String> =
-        memory_store::repository::current_named(database.pool(), project, &names)
-            .await?
-            .into_iter()
-            .map(|named| (named.name, named.content))
-            .collect();
+    let contents: std::collections::HashMap<String, String> = database
+        .within(project, async |connection| {
+            anyhow::Ok(memory_store::repository::current_named(connection, project, &names).await?)
+        })
+        .await?
+        .into_iter()
+        .map(|named| (named.name, named.content))
+        .collect();
     let mut edges = Vec::new();
     let files = cut
         .into_iter()

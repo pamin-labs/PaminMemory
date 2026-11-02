@@ -23,7 +23,8 @@ pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Nei
 
     let at = validity::parse(args.at.as_deref(), "--at")?;
     let neighbors = graph::expand(
-        &mut *database.pool().acquire().await?,
+        // Read only: dropped at the end of the walk, which rolls it back.
+        &mut *database.scoped(project).await?,
         project,
         &[topic.id],
         &Expansion {
@@ -37,7 +38,10 @@ pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Nei
 
     // Names are resolved in one pass rather than per neighbour, since the walk
     // can return every topic in a well-connected project.
-    let names: std::collections::HashMap<_, _> = repository::all_topics(database.pool(), project)
+    let names: std::collections::HashMap<_, _> = database
+        .within(project, async |connection| {
+            anyhow::Ok(repository::all_topics(connection, project).await?)
+        })
         .await?
         .into_iter()
         .map(|topic| (topic.id, topic.name))

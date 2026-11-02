@@ -1136,7 +1136,10 @@ pub async fn retire_topic(
 ///
 /// This is that route, and `reindex` is where it belongs -- the command whose
 /// whole promise is that everything outside the ledger can be rebuilt from it.
-pub async fn repair_current_state_pointers(pool: &PgPool, project: ProjectId) -> Result<u64> {
+pub async fn repair_current_state_pointers(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+) -> Result<u64> {
     let repaired = sqlx::query(
         "UPDATE topics t
             SET current_state_id = latest.id,
@@ -1156,7 +1159,7 @@ pub async fn repair_current_state_pointers(pool: &PgPool, project: ProjectId) ->
                 IS DISTINCT FROM (latest.id, latest.version)",
     )
     .bind(project.0)
-    .execute(pool)
+    .execute(executor)
     .await?;
 
     Ok(repaired.rows_affected())
