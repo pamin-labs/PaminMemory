@@ -203,6 +203,31 @@ async fn a_scoped_transaction_reaches_only_its_project(database: &Database) {
         .execute(&mut *connection)
         .await
         .expect("roll back");
+
+    // Hosted, the connection owns the tables and is no superuser. Played here
+    // by a role made owner inside a transaction that is rolled back.
+    for statement in [
+        "BEGIN; CREATE ROLE owner_probe NOLOGIN NOSUPERUSER NOBYPASSRLS",
+        "ALTER TABLE topics OWNER TO owner_probe",
+        "SET LOCAL ROLE owner_probe",
+    ] {
+        sqlx::raw_sql(statement)
+            .execute(&mut *connection)
+            .await
+            .unwrap_or_else(|error| panic!("{statement}: {error}"));
+    }
+    let (as_owner,): (i64,) = sqlx::query_as("SELECT count(*) FROM topics")
+        .fetch_one(&mut *connection)
+        .await
+        .expect("count as the owner");
+    assert_eq!(
+        as_owner, 0,
+        "an owner outside a scoped transaction sees no guarded row"
+    );
+    sqlx::raw_sql("ROLLBACK")
+        .execute(&mut *connection)
+        .await
+        .expect("roll back");
 }
 
 /// Purging a project deletes every row it owns and nothing of any other.
