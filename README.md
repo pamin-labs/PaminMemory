@@ -7,7 +7,7 @@ AI agents, coding assistants, research tools, and knowledge-heavy applications.
 
 It is designed to turn durable evidence into versioned knowledge that agents can retrieve through structure, meaning, relationships, and time. Instead of treating memory as a pile of extracted snippets, Påmin Memory keeps the source trail intact, tracks how facts evolve, and explains why each piece of context was selected.
 
-> **Early, and measured.** Retrieval, the version ledger, the relationship graph and the resident server all work and are benchmarked below. Source ingestion, page trees, curated notes and the MCP surface are not built. See [Scope](#scope).
+> **Early, and measured.** Retrieval, the version ledger, the relationship graph and the resident server all work and are benchmarked below, and Markdown and text files can be ingested a section at a time. Agents reach it through the CLI or as MCP tools over stdio (`pamin-memory mcp`). Ingestion of other sources, page trees and curated notes are not built. See [Scope](#scope).
 
 ## What It Does
 
@@ -147,58 +147,70 @@ a bill.
 No Docker. No API key. No configuration. `init` provisions a local PostgreSQL and starts the server, which begins fetching the embedding model in the background; a write that arrives before it is ready waits for it. The reranker downloads on the first search.
 
 ```bash
-cargo install --path crates/pamin-cli
+cargo install --path crates/cli
 
-pamin init
-pamin write --topic deployment_pipeline "deploys through the ci pipeline"
-pamin search "how does deployment work"
+pamin-memory init
+pamin-memory write --topic deployment_pipeline "deploys through the ci pipeline"
+pamin-memory search "how does deployment work"
 ```
 
-That installs two executables side by side: `pamin`, the command you run, and
-`pamin-server`, the resident server it starts. `pamin` itself links none of the
+That installs two executables side by side: `pamin-memory`, the command you run, and
+`pamin-memory-server`, the resident server it starts. `pamin-memory` itself links none of the
 inference runtime, the vector engine or the database driver, so each command
 costs a socket round trip rather than loading them; keep the two in one
-directory, because `pamin` starts the `pamin-server` beside it.
+directory, because `pamin-memory` starts the `pamin-memory-server` beside it.
 
 Reading a topic's history, and what it looked like before:
 
 ```bash
-pamin read deployment_pipeline
-pamin read deployment_pipeline --version-offset 1
+pamin-memory read deployment_pipeline
+pamin-memory read deployment_pipeline --version-offset 1
 ```
 
 Every command takes `--json`, because the usual caller is an agent parsing output rather than a person reading it:
 
 ```bash
-pamin search "deployment" --json
+pamin-memory search "deployment" --json
 ```
 
-`pamin stop` shuts down the local database and the resident server. Both are deliberately left running between commands so an agent invoking the CLI repeatedly does not pay startup each time.
+`pamin-memory stop` shuts down the local database and the resident server. Both are deliberately left running between commands so an agent invoking the CLI repeatedly does not pay startup each time.
 
-`pamin grep` searches the evidence itself — verbatim, unranked, and including content the filter held and no index ever saw.
+`pamin-memory grep` searches the evidence itself — verbatim, unranked, and including content the filter held and no index ever saw.
+
+`pamin-memory ingest docs` records Markdown and text files as memories, one per section, named by the file's path and its headings; running it again records only the sections that changed, and takes the ones a file no longer has off the retrieval surface.
 
 Every command, its options, and its JSON shape are in [docs/cli.md](docs/cli.md).
 
 ## Teaching An Agent To Use It
 
-The CLI is the whole interface, so an agent needs to know when reaching for it
-beats answering from what it already has. That judgement ships as a skill:
+An agent reaches memory through the CLI or, in a host that loads tools, as MCP
+tools: `pamin-memory mcp` serves `memory_search`, `memory_write` and the rest over
+stdio, with the same arguments and results as the commands ([CLI
+reference](docs/cli.md#pamin-memory-mcp)). For Claude Code:
 
 ```bash
-npx skills add pamin-labs/PaminMemory --skill pamin-memory
+claude mcp add pamin-memory -- pamin-memory mcp --project my_project
+```
+
+Either way, the agent needs to know when reaching for memory beats answering
+from what it already has. That judgement ships as a skill:
+
+```bash
+npx skills add pamin-labs/pamin-memory --skill pamin-memory
 ```
 
 It installs to `./.agents/skills/pamin-memory` and symlinks into the paths the
 individual agents read, so one install covers Claude Code, Codex, Cline, Amp and
-the rest. `npx skills add pamin-labs/PaminMemory --list` shows what is there
+the rest. `npx skills add pamin-labs/pamin-memory --list` shows what is there
 before you take it.
 
 The skill is about judgement rather than syntax — which of `search`, `read`,
 `grep` and `neighbors` answers which kind of question, how to read the `why`
-trace on a result, and the traps around the evidence filter. It is the only
-skill this repository publishes. There is a second one for people working on
-Påmin Memory itself, about measurement discipline, and it is marked internal so
-it stays out of the way; `INSTALL_INTERNAL_SKILLS=1` reveals it.
+trace on a result, and the traps around the evidence filter. Its twin,
+`pamin-memory-mcp`, says the same for the MCP tools and names every one of
+them; install it with `--skill pamin-memory-mcp`. There is another for people
+working on Påmin Memory itself, about measurement discipline, and it is marked
+internal so it stays out of the way; `INSTALL_INTERNAL_SKILLS=1` reveals it.
 
 ## Any Language
 
@@ -207,8 +219,8 @@ Evidence is stored exactly as it arrives and is never translated. Translation wo
 Cross-language recall is handled by retrieval instead. Text is segmented with ICU before indexing, which covers languages that write without spaces, and a multilingual embedding model lets a query in one language reach a memory written in another.
 
 ```bash
-pamin write --topic deploy "部署流水线运行在持续集成上面"
-pamin search "how is the code deployed"   # finds it
+pamin-memory write --topic deploy "部署流水线运行在持续集成上面"
+pamin-memory search "how is the code deployed"   # finds it
 ```
 
 ## Architecture
@@ -230,14 +242,14 @@ measured, are in [docs/adr/](docs/adr/).
 Memories are connected as well as ranked. Writing a memory that names another topic derives an edge to it, with no model in the path and nothing to configure:
 
 ```bash
-pamin write --topic rollback_plan "a rollback reverts the deployment pipeline to the previous tag"
-pamin neighbors rollback_plan          # finds deployment_pipeline
+pamin-memory write --topic rollback_plan "a rollback reverts the deployment pipeline to the previous tag"
+pamin-memory neighbors rollback_plan          # finds deployment_pipeline
 ```
 
 Derivation only finds relationships the text states, so anything else is asserted directly:
 
 ```bash
-pamin link oncall_rota deployment_pipeline --kind depends_on
+pamin-memory link oncall_rota deployment_pipeline --kind depends_on
 ```
 
 Edges are versioned the way memories are. Changing one closes the old version and appends a new one, `unlink` retracts a claim without erasing that it was made, and every edge carries its own validity interval — so "what did we think depended on this, back then" has an answer.
@@ -245,8 +257,8 @@ Edges are versioned the way memories are. Changing one closes the old version an
 ## Measured
 
 The current retrieval accuracy below runs through `Engine::search_reranked`;
-the historical CLI latency and write figures came from `pamin search` and
-`pamin write` on a four-core machine. **The numbers and conditions are in
+the historical CLI latency and write figures came from `pamin-memory search` and
+`pamin-memory write` on a four-core machine. **The numbers and conditions are in
 [docs/measured.md](docs/measured.md)**; the comparison against other memory
 systems, and what it holds fixed, is in
 [docs/benchmarks.md](docs/benchmarks.md); the committed evidence behind both is
@@ -256,7 +268,7 @@ A new or reindexed index embeds `name: content` with BGE-M3, and the reranker
 (bge-reranker-v2-m3) scores the whole fused head, blending model and fusion
 scores. Both were the defaults, `accuracy` and `accurate`, while there were
 profiles and tiers; they are now the only model and reranker. Older
-indexes retain content-only vectors until `pamin reindex`. Through the product
+indexes retain content-only vectors until `pamin-memory reindex`. Through the product
 `search_reranked` path, the complete revision-bound XQuAD-R run records:
 
 | retrieval group | CPU int8 control | Optimized CoreML ALL | recall@50 (both) |
@@ -280,7 +292,7 @@ found no significant quality loss for ARM INT8 CPU versus CoreML FP32, and
 CPU was faster on all 1,190 paired searches. The reranker above still uses its
 measured CoreML route.
 
-On the CPU, `pamin search` through a resident server over 3,230 memories, on a
+On the CPU, `pamin-memory search` through a resident server over 3,230 memories, on a
 four-core 2.8 GHz Xeon with no other measurement running, had a p50 of
 2,675 ms and a p95 of 4,359 ms with the reranker's passes side by side, one
 pair each, as ships on a multi-core CPU. Three rotated runs of 120 warm
@@ -298,9 +310,9 @@ cannot be carried over to the current retrieval rows.
 | historical measurement | result | condition |
 | --- | --- | --- |
 | MIRACL Swahili dev, one language | nDCG@10 0.7654 | 131,924 passages, earlier `accurate` path |
-| one `pamin search` over a socket | 25.7 ms | LOCOMO, since-removed `fast` tier, earlier build |
-| one `pamin search` as a whole CLI invocation | 1241 ms | XQuAD-R, earlier `accurate` path |
-| one `pamin write` | 30.1 ms | 2,400 memories, earlier build |
+| one `pamin-memory search` over a socket | 25.7 ms | LOCOMO, since-removed `fast` tier, earlier build |
+| one `pamin-memory search` as a whole CLI invocation | 1241 ms | XQuAD-R, earlier `accurate` path |
+| one `pamin-memory write` | 30.1 ms | 2,400 memories, earlier build |
 | resident, one project | 2,088 MB | earlier model and index inside the server |
 
 Latency is a corpus, a path and a machine before it is a number; the full
@@ -371,7 +383,7 @@ question returned the same p.
 than the fusion this now ships.** Every other figure on this page is produced by
 a test in this repository. That one was not: four pages quoted it and nothing in
 the tree could run it, because it came from a program that was never committed.
-The harness now exists — `cargo test -p pamin-engine --test monolingual --
+The harness now exists — `cargo test -p memory-engine --test monolingual --
 --ignored` — and the first thing it found was that on that corpus the four
 channels fused scored *below* the embedding model on its own. The fusion weight
 has been halved since, which puts fusion ahead there and takes the XQuAD-R row
@@ -386,9 +398,13 @@ untested.
 ## Scope
 
 Everything the architecture above describes is built; what has been measured,
-and what has not, is stated in [Measured](#measured). Not built yet: source
-ingestion and page trees; curated notes and the session brief; passive
-optimization and forgetting; the MCP surface.
+and what has not, is stated in [Measured](#measured). Source ingestion is
+built for Markdown and plain-text files: `pamin-memory ingest` cuts each one into a
+memory per heading section, leaving size to the index's spans, records only the
+sections that changed when it is run again, and takes a section a file no
+longer has off the retrieval surface. Not built yet: ingestion of code, chat
+logs and other formats, and page trees; curated notes and the session brief;
+passive optimization and forgetting. `pamin-memory mcp` serves memory as MCP tools over stdio; MCP over HTTP waits for the hosted service.
 
 ### Known and not done
 
@@ -427,7 +443,7 @@ nothing here runs one.
 
 **Write latency has not been attributed.** Retrieval is divided into four
 stages and published. The write path has two unrelated figures: a historical
-30.1 ms for a whole `pamin write`, taken on an earlier build, and a component
+30.1 ms for a whole `pamin-memory write`, taken on an earlier build, and a component
 figure of about 1.9 ms for one `Engine::remember` driven by a scratch harness
 ([measured.md](docs/measured.md)). They come from different builds and layers,
 so they are not a breakdown of each other, and nothing here says which part of
@@ -457,8 +473,8 @@ cargo deny check licenses               # the crate graph against deny.toml
 Apache-2.0, in [LICENSE](LICENSE).
 
 **No model weights are redistributed.** Nothing in this repository is a
-`.onnx`, `.safetensors` or `.bin`, and a release artifact is the `pamin`
-and `pamin-server` binaries plus the native libraries the server links — the
+`.onnx`, `.safetensors` or `.bin`, and a release artifact is the `pamin-memory`
+and `pamin-memory-server` binaries plus the native libraries the server links — the
 size budget counts exactly that. Weights are fetched from the Hugging Face hub by the user's own machine
 the first time a command asks for one.
 

@@ -1,0 +1,40 @@
+---
+source: crates/contract/tests/schemas.rs
+expression: "schema_for! (purge::Purged)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Purged",
+  "type": "object",
+  "properties": {
+    "existed": {
+      "description": "Whether there was a project of that name to purge.",
+      "type": "boolean"
+    },
+    "sources": {
+      "description": "Sources it held, with all of their evidence.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "topics": {
+      "description": "Topics it held, every version of each now gone.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "unsynced": {
+      "description": "Paths that were kept in sync and are no longer watched.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "existed",
+    "topics",
+    "sources",
+    "unsynced"
+  ]
+}

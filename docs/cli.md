@@ -13,9 +13,9 @@ The examples below are real output from a workspace built by the writes in
 
 | Option | Environment | Default | Meaning |
 | --- | --- | --- | --- |
-| `--home <path>` | `PAMIN_HOME` | `~/.pamin` | Where the database, index, and downloaded models live |
-| `--project <name>` | `PAMIN_PROJECT` | `default` | The memory namespace to operate on |
-| `--vector-index <name>` | `PAMIN_VECTOR_INDEX` | `memory` | Vector index a project is built with: `disk` or `memory` |
+| `--home <path>` | `PAMIN_MEMORY_HOME` | `~/.pamin-memory` | Where the database and index live; models are the machine's, in `models_dir` (below) |
+| `--project <name>` | `PAMIN_MEMORY_PROJECT` | `default` | The memory namespace to operate on |
+| `--vector-index <name>` | `PAMIN_MEMORY_VECTOR_INDEX` | `memory` | Vector index a project is built with: `disk` or `memory` |
 | `--json` | | off | Emit JSON instead of text, on one line |
 | `--pretty` | | off | Indent that JSON. Requires `--json` |
 
@@ -23,7 +23,7 @@ The JSON is compact because the usual caller pays for every token of it, and
 indenting a ten-hit search costs about a thousand of them. `--pretty` is for
 the person who has piped it to a terminal.
 
-`PAMIN_LOG` sets the log filter (`PAMIN_LOG=debug`). Logs go to stderr, so they
+`PAMIN_MEMORY_LOG` sets the log filter (`PAMIN_MEMORY_LOG=debug`). Logs go to stderr, so they
 never contaminate the JSON on stdout.
 
 ### Server settings
@@ -31,13 +31,13 @@ never contaminate the JSON on stdout.
 These govern the server process -- which device, how many threads, how long a
 model stays loaded -- so they are fixed when the server starts. Every command
 takes them, because any command may be the one that starts the server, and
-each can also be set in the `[serve]` table of `$PAMIN_HOME/config.toml`, by
+each can also be set in the `[serve]` table of `$PAMIN_MEMORY_HOME/config.toml`, by
 the key in the second column. A flag wins over the file, and the file over the
 default.
 
 | Flag | `config.toml` key | Default | Meaning |
 | --- | --- | --- | --- |
-| `--device <auto\|cpu>` | `device` | `auto` | `auto` measures every viable accelerator and CPU plan and picks the fastest; `cpu` forces optimized CPU. Also read from `PAMIN_DEVICE` |
+| `--device <auto\|cpu>` | `device` | `auto` | `auto` measures every viable accelerator and CPU plan and picks the fastest; `cpu` forces optimized CPU. Also read from `PAMIN_MEMORY_DEVICE` |
 | `--inference-threads <n>` | `inference_threads` | one per core | Threads one forward pass may use, or on the CPU, for the batches of a rerank and stored texts of the embedding model (BGE-M3), how many single-threaded passes run at once |
 | `--ep-library <path>` | `ep_libraries` | none | A path to an installed, ABI-compatible NPU plugin EP library; repeat the flag, or list them in the file. Only discovered NPU devices participate in automatic plugin routing. Unavailable/incompatible libraries retain ordinary GPU/CPU fallback |
 | `--prepared <true\|false>` | `prepared` | `true` | `false` loads a model from its download rather than from a mapped copy, fetching the download again if it was removed |
@@ -45,9 +45,10 @@ default.
 | `--open-indexes <n>` | `open_indexes` | `16` | How many project indexes a server keeps open at once |
 | `--jit <true\|false>` | `jit` | `false` | Let PostgreSQL compile query expressions with LLVM |
 | `--postgres-dir <path>` | `postgres_dir` | unset | Use a PostgreSQL already on this machine instead of installing one |
+| `--models-dir <path>` | `models_dir` | `pamin/models` in the platform's cache directory | Where models are downloaded, prepared and compiled. Also read from `PAMIN_MEMORY_MODELS_DIR` |
 
 ```toml
-# $PAMIN_HOME/config.toml
+# $PAMIN_MEMORY_HOME/config.toml
 [serve]
 device = "cpu"
 model_idle = 600
@@ -57,12 +58,12 @@ ep_libraries = ["/opt/vendor/lib/libnpu_ep.so"]
 
 A relative path is made absolute when settings are resolved: in a flag,
 against the directory the command ran in; in the file, against the workspace
-(`$PAMIN_HOME`).
+(`$PAMIN_MEMORY_HOME`).
 
 A key the file does not know, or a value a flag would refuse, stops every
 command with the file's path and the offending line, rather than leaving the
-setting at its default. `pamin config` prints what a command would run with and
-where each value came from -- `flag`, `env` (`PAMIN_DEVICE`), `config` or
+setting at its default. `pamin-memory config` prints what a command would run with and
+where each value came from -- `flag`, `env` (`PAMIN_MEMORY_DEVICE`, `PAMIN_MEMORY_MODELS_DIR`), `config` or
 `default` -- without starting anything; `--json` gives the same as an object.
 
 **Settings are fixed when the server starts.** A command sends the settings it
@@ -73,13 +74,13 @@ settings nobody asked for or replacing a server another agent may be using. To
 change them, stop the server and run the command again:
 
 ```console
-$ pamin stop
-$ pamin search "deployment" --device cpu    # starts a server with --device cpu
+$ pamin-memory stop
+$ pamin-memory search "deployment" --device cpu    # starts a server with --device cpu
 ```
 
 A command forwards the flags it was given to the server it starts. A setting a
 command leaves to the default does not conflict with one a server was started
-with as a flag, so `pamin serve --model-idle 60` answers commands that name no
+with as a flag, so `pamin-memory serve --model-idle 60` answers commands that name no
 idle window; one it took from `config.toml` does, so edit the file and stop
 the server together.
 
@@ -88,7 +89,7 @@ the server together.
 postgresql@17)` on macOS. A prefix without them is refused, naming the flag or
 the file and what is missing, rather than replaced by a downloaded copy.
 Unset, a workspace installs its own copy, which is
-the default because it is what makes `pamin` work with nothing else installed;
+the default because it is what makes `pamin-memory` work with nothing else installed;
 set, that copy is not downloaded and not stored, which is several hundred
 megabytes a workspace does not spend. Two things to know before setting it.
 The version requirement is not checked -- you are vouching for the server, and
@@ -102,7 +103,7 @@ It is off by default because it is measurably unreachable at every size
 measured here, not because compiling is disliked: PostgreSQL only reaches for
 it above a plan cost of 100000, and on a 13,014-topic project the read path's
 hydration of fifty candidates plans at 84, the widest query the schema can
-state plans at 1313, and `pamin grep` plans at 56 because its `ORDER BY`
+state plans at 1313, and `pamin-memory grep` plans at 56 because its `ORDER BY`
 matches an index and the scan stops early. The first of those does not grow
 with the project at all -- it is bounded by `--channel-depth`.
 
@@ -111,11 +112,11 @@ walk its whole recency index, and that cost is linear: 995 at 15,224 stored
 versions, so roughly 65 for every thousand, reaching 100000 somewhere around a
 million and a half. A workspace an agent has been writing to for a year is
 exactly the one that gets there, which is why this is a switch and not a
-constant. Two notes: it applies at `pamin stop` and the next start, like every
+constant. Two notes: it applies at `pamin-memory stop` and the next start, like every
 cluster-level setting here; and with it off, a workspace it installed itself
 does not keep the 25 MB of LLVM bitcode that only inlining reads.
 
-`--model-idle` is how long `pamin serve` keeps a model and the indexes
+`--model-idle` is how long `pamin-memory serve` keeps a model and the indexes
 pinning it after nothing has asked for them. It is a memory setting and the
 trade is measured on both sides: on a 13,014-document project a server holding
 the embedder and the since-removed `fast` reranker was 2,263 MB resident and 88-101 MB once it
@@ -155,7 +156,7 @@ embedder 272 rather than 824, with scores and vectors bit-identical (see
 [measured.md](measured.md)). Those are a model as loaded: the passes it runs
 side by side (above), and the session they share, hold memory of their own on
 top, and for the `accurate`
-reranker that is the larger part. Measured through `pamin search` on four
+reranker that is the larger part. Measured through `pamin-memory search` on four
 cores over 3,230 memories, when each pass still had a session of its own
 rather than one shared session, running a rerank's batches side by side took the
 search server from 2,117 MB peak resident to 4,677, and from 855 MB of
@@ -244,18 +245,18 @@ stop every Påmin server and CLI process using this model directory, then list
 the exact v1 packages and their logical bytes:
 
 ```sh
-python3 maintenance/retire_coreml_v1.py ~/.pamin/models
+python3 maintenance/retire_coreml_v1.py ~/Library/Caches/pamin/models
 ```
 
 After verifying the list and that those processes remain stopped, remove only
 that obsolete namespace:
 
 ```sh
-python3 maintenance/retire_coreml_v1.py ~/.pamin/models --apply --all-processes-stopped
+python3 maintenance/retire_coreml_v1.py ~/Library/Caches/pamin/models --apply --all-processes-stopped
 ```
 
-Use your configured `PAMIN_HOME/models` in place of `~/.pamin/models` when it
-differs. The script refuses an arbitrary parent path, skips linked prepared
+Use your `models_dir`, as `pamin-memory config` prints it, in place of
+`~/Library/Caches/pamin/models` when it differs. The script refuses an arbitrary parent path, skips linked prepared
 entries and preserves v2 packages and mapped CPU models. Logical bytes are
 not a measure of unique APFS allocation; the actual free-space change may
 differ.
@@ -274,7 +275,7 @@ retrieval certification. With automatic dispatch, a bounded complete model-call
 query fixture compares viable plans against interleaved optimized-CPU controls.
 Maximum batch/length conformance is checked separately from singleton query
 timing, so bulk ingest throughput does not decide the search plan. Its
-validated winner is reused for idle reloads. Identified CUDA and Apple CoreML choices can also persist across fresh CLI processes for up to one day; numerical rejects are retried after five minutes. Keys include model snapshot, actual application source/compiler configuration and mapped running-image identity, device inventory and runtime settings. Opaque DirectML/NPU choices remain process-local until stable hardware/driver identity is available. Cache-hit sessions are output-checked, not retimed; starting a new process alone does not establish a cold calibration arm. This estimates the fastest
+validated winner is reused for idle reloads. Identified CUDA and Apple CoreML choices can also persist across fresh CLI processes for up to one day, including a CPU choice made because an accelerator failed its numerical check; runtime failures are retried after five minutes. Keys include model snapshot, actual application source/compiler configuration and mapped running-image identity, device inventory and runtime settings. Opaque DirectML/NPU choices remain process-local until stable hardware/driver identity is available. Cache-hit sessions are output-checked, not retimed; starting a new process alone does not establish a cold calibration arm. This estimates the fastest
 plan for that fixture; it is not universal per-query autotuning.
 Broader retrieval and resource validation remain under review. Changing a model/export or encoding contract needs paired quality
 and reindex validation.
@@ -283,7 +284,7 @@ On Linux the CUDA path has two requirements the program cannot meet for you.
 The machine needs the NVIDIA driver, CUDA 13 and cuDNN 9. And the runtime's
 provider libraries -- `libonnxruntime_providers_shared.so` and
 `libonnxruntime_providers_cuda.so`, 79 MB, built into `target/release` beside
-the binary -- have to sit in the same directory as `pamin-server`, which
+the binary -- have to sit in the same directory as `pamin-memory-server`, which
 `cargo install` does not arrange: copy them next to the installed binary. Missing
 either, the reranker runs on the CPU exactly as before. Where there is no sign
 of an NVIDIA driver or GPU -- no `/dev/nvidiactl`, no `/dev/dxg` (WSL 2), no
@@ -292,7 +293,7 @@ CPU-only machine does not pay a failed provider registration on each server
 start.
 
 On Windows the same holds for one file, `DirectML.dll` (18.5 MB), built beside
-`pamin-server.exe`. Without it the program still starts -- Windows 10 and later carry
+`pamin-memory-server.exe`. Without it the program still starts -- Windows 10 and later carry
 their own copy in System32 -- but that copy can be older than the runtime
 needs, in which case the reranker quietly stays on the CPU. On Apple silicon
 nothing needs copying: Core ML is linked into the binary from the system.
@@ -302,17 +303,17 @@ the reranker with static buckets on this machine. (It lost to optimized CPU for
 the since-removed `fast` reranker: [conditions and rows](../benchmarks/results/inference/fast-apple-backend-2026-09-30.md).)
 CUDA and DirectML still require their own device-specific timing and precision
 checks. The `every_device_orders_like_the_cpu` test in
-`crates/pamin-index/tests/reranking.rs` checks clearly separated pairs; it is
+`crates/index/tests/reranking.rs` checks clearly separated pairs; it is
 not a replacement for a corpus-level accuracy result.
 
 A few measured values have no flag and no `config.toml` key: the reranker's
 batch and the longest candidate it reads, and how many documents may sit
 outside the vector graph before it is built. They are fixed where they were
-measured; the evaluation harnesses set them as `PAMIN_EVAL_*` variables, which
-`pamin` itself never reads. `pamin search` has two hidden flags of the same
-kind; see [`pamin search`](#pamin-search). The only variables `pamin` reads are
-`PAMIN_HOME`, `PAMIN_PROJECT`, `PAMIN_VECTOR_INDEX`, `PAMIN_DEVICE` and
-`PAMIN_LOG`; the ones that used to configure anything else are refused, as
+measured; the evaluation harnesses set them as `PAMIN_MEMORY_EVAL_*` variables, which
+`pamin-memory` itself never reads. `pamin-memory search` has two hidden flags of the same
+kind; see [`pamin-memory search`](#pamin-memory-search). The only variables `pamin-memory` reads are
+`PAMIN_MEMORY_HOME`, `PAMIN_MEMORY_PROJECT`, `PAMIN_MEMORY_VECTOR_INDEX`, `PAMIN_MEMORY_DEVICE` and
+`PAMIN_MEMORY_LOG`; the ones that used to configure anything else are refused, as
 [Upgrading from settings variables](#upgrading-from-settings-variables)
 lists, and a unit test checks this page against what the binary reads.
 
@@ -322,7 +323,7 @@ reranker. There is nothing to choose between:
 | Role | Model | Width | Resident | Per query |
 | --- | --- | --- | --- | --- |
 | Embedding | BGE-M3, int8 weights (`gpahal/bge-m3-onnx-int8`) | 1024 | 272 MiB live | 37.7 ms idle, 46–47 ms under load |
-| Reranking | bge-reranker-v2-m3, int8 weights (`pamin-labs/bge-reranker-v2-m3-sq-int8-onnx`) | | 271 MiB live | see [`pamin search`](#pamin-search) |
+| Reranking | bge-reranker-v2-m3, int8 weights (`pamin-labs/bge-reranker-v2-m3-sq-int8-onnx`) | | 271 MiB live | see [`pamin-memory search`](#pamin-memory-search) |
 
 Resident is live anonymous memory with the model loaded from its mapped copy,
 taken before the vocabulary was shared and compacted and without the session
@@ -341,7 +342,7 @@ records the model it was built with and refuses to open under another, naming
 
 ### Upgrading from settings variables
 
-Settings other than the five above were environment variables. Each is now a
+Settings other than the six above were environment variables. Each is now a
 flag (and, for a server setting, a `config.toml` key), or gone, and setting one
 -- to any value -- fails with a message naming what replaced it, rather than
 being ignored by a server that would then run with settings its operator did
@@ -349,39 +350,54 @@ not intend. Unset it, and use the replacement:
 
 | Variable | Now |
 | --- | --- |
-| `PAMIN_INFERENCE_THREADS` | `--inference-threads`, `inference_threads` |
-| `PAMIN_EP_LIBRARIES` | `--ep-library`, once per library; `ep_libraries` |
-| `PAMIN_PREPARED` | `--prepared <true\|false>`, `prepared` |
-| `PAMIN_FUSED_ATTENTION` | `--fused-attention <true\|false>` (hidden) |
-| `PAMIN_MODEL_IDLE` | `--model-idle`, `model_idle` |
-| `PAMIN_OPEN_INDEXES` | `--open-indexes`, `open_indexes` |
-| `PAMIN_JIT` | `--jit <true\|false>`, `jit` |
-| `PAMIN_POSTGRES_DIR` | `--postgres-dir`, `postgres_dir` |
-| `PAMIN_CHANNEL_DEPTH`, `PAMIN_GRAPH_DEPTH` | `pamin search --channel-depth`, `--graph-depth` |
-| `PAMIN_RERANK_DEPTH`, `PAMIN_SEARCH_EFFORT` | `pamin search --rerank-depth`, `--search-effort` (hidden) |
-| `PAMIN_RERANK_BATCH`, `PAMIN_RERANK_BATCH_TOKENS`, `PAMIN_RERANK_MAX_TOKENS`, `PAMIN_UNINDEXED_BUDGET`, `PAMIN_CATCH_UP_BATCH` | removed: fixed at their measured values |
+| `PAMIN_MEMORY_INFERENCE_THREADS` | `--inference-threads`, `inference_threads` |
+| `PAMIN_MEMORY_EP_LIBRARIES` | `--ep-library`, once per library; `ep_libraries` |
+| `PAMIN_MEMORY_PREPARED` | `--prepared <true\|false>`, `prepared` |
+| `PAMIN_MEMORY_FUSED_ATTENTION` | `--fused-attention <true\|false>` (hidden) |
+| `PAMIN_MEMORY_MODEL_IDLE` | `--model-idle`, `model_idle` |
+| `PAMIN_MEMORY_OPEN_INDEXES` | `--open-indexes`, `open_indexes` |
+| `PAMIN_MEMORY_JIT` | `--jit <true\|false>`, `jit` |
+| `PAMIN_MEMORY_POSTGRES_DIR` | `--postgres-dir`, `postgres_dir` |
+| `PAMIN_MEMORY_CHANNEL_DEPTH`, `PAMIN_MEMORY_GRAPH_DEPTH` | `pamin-memory search --channel-depth`, `--graph-depth` |
+| `PAMIN_MEMORY_RERANK_DEPTH`, `PAMIN_MEMORY_SEARCH_EFFORT` | `pamin-memory search --rerank-depth`, `--search-effort` (hidden) |
+| `PAMIN_MEMORY_RERANK_BATCH`, `PAMIN_MEMORY_RERANK_BATCH_TOKENS`, `PAMIN_MEMORY_RERANK_MAX_TOKENS`, `PAMIN_MEMORY_UNINDEXED_BUDGET`, `PAMIN_MEMORY_CATCH_UP_BATCH` | removed: fixed at their measured values |
 
-`PAMIN_DEVICE` is still read, as the fallback for `--device`.
+`PAMIN_MEMORY_DEVICE` is still read, as the fallback for `--device`.
+
+### Upgrading to the machine's model directory
+
+Models were kept in each workspace, in `$PAMIN_MEMORY_HOME/models`. They are
+now kept once for the machine, by default in `pamin/models` under the
+platform's cache directory: `~/Library/Caches/pamin/models` on macOS,
+`$XDG_CACHE_HOME/pamin/models` or `~/.cache/pamin/models` on Linux. Every
+workspace shares them, so a new workspace downloads nothing and, on macOS,
+Core ML does not compile each model again for a new path. `--models-dir`,
+`PAMIN_MEMORY_MODELS_DIR` or `models_dir` in `config.toml` puts them
+elsewhere; `pamin-memory config` prints where they are.
+
+A workspace's old `models` directory is no longer read. With every
+`pamin-memory` process stopped, move it to the new place to keep what it
+downloaded and prepared, or delete it and let the next load fetch again.
 
 ### Upgrading from profiles and tiers
 
-Earlier versions had embedding profiles (`--profile`, `PAMIN_PROFILE`:
+Earlier versions had embedding profiles (`--profile`, `PAMIN_MEMORY_PROFILE`:
 `speed`, `balanced`, `accuracy`, `dual_accuracy`) and reranking tiers
-(`--rerank`, `PAMIN_RERANK`: `off`, `fast`, `accurate`). What shipped as
+(`--rerank`, `PAMIN_MEMORY_RERANK`: `off`, `fast`, `accurate`). What shipped as
 `accuracy` and `accurate` is what every project now uses, so a workspace that
 kept the defaults needs nothing: its indexes open as they are, and the
 embedder's measured plans are reused. The reranker's are measured again once,
 because a CPU pass now takes one pair and its plan key changed with that.
 
-- `--profile` and `--rerank` are unknown arguments. Setting `PAMIN_PROFILE` or
-  `PAMIN_RERANK`, to any value, fails with a message naming the setting, as
-  `PAMIN_NO_SERVER` does; unset it.
+- `--profile` and `--rerank` are unknown arguments. Setting `PAMIN_MEMORY_PROFILE` or
+  `PAMIN_MEMORY_RERANK`, to any value, fails with a message naming the setting, as
+  `PAMIN_MEMORY_NO_SERVER` does; unset it.
 - A project indexed under `speed`, `balanced` or `dual_accuracy` no longer
-  opens. The error names the profile it was built with and `pamin reindex`,
+  opens. The error names the profile it was built with and `pamin-memory reindex`,
   which rebuilds it with BGE-M3 from PostgreSQL. Until then the server does not
   catch up that project's owed work, and says so in its log.
 - The retired models' downloads are not deleted, because the model directory
-  may be shared. Once no older version of `pamin` uses this model directory,
+  may be shared. Once no older version of `pamin-memory` uses this model directory,
   you can remove them by hand from `models/` (or `HF_HOME`, if set), as
   whichever of these exist: `models--intfloat--multilingual-e5-small` and
   `models--intfloat--multilingual-e5-base` (`speed`, `balanced`),
@@ -397,7 +413,7 @@ because a CPU pass now takes one pair and its plan key changed with that.
   reranks on an accelerator also fetches the fp16 file, about 1.1 GB, which
   is upstream's unchanged but now comes from the new repository. The previous download,
   `models--onnx-community--bge-reranker-v2-m3-ONNX`, is not deleted, for the
-  same reason; remove it by hand once no older `pamin` uses the directory. Its
+  same reason; remove it by hand once no older `pamin-memory` uses the directory. Its
   prepared copy is not removed either, because its record still names it as
   that model's current copy; deleting `models/prepared/` as a whole, as above,
   removes it.
@@ -423,7 +439,7 @@ why it holds almost nothing resident; it is for a project whose memory is
 scarce, and it pays for that with minutes on each `optimize` upkeep runs after
 writes (about a second under `memory`). `memory`, the default, holds them
 resident, and is the faster and smaller choice everywhere else. A search spends most of a second or more in
-the reranker, so the query column is a small share of a `pamin search`; the
+the reranker, so the query column is a small share of a `pamin-memory search`; the
 build column is not small, and `disk` also pays minutes for an `optimize` after
 a few writes where `memory` pays about a second (see
 [measured.md](measured.md)). Choose `memory` for a project that is written to
@@ -431,7 +447,7 @@ all the time, and wherever resident memory is not what is scarce.
 
 The index records which one it was built with, and changing the setting
 changes nothing about an index that exists: opening it as the other one is
-refused, naming `reindex`. `pamin reindex` rebuilds it
+refused, naming `reindex`. `pamin-memory reindex` rebuilds it
 the new way and reuses every vector it holds. An index built before this
 choice existed stored full-precision vectors under an in-memory graph; it is
 refused the same way and moved the same way.
@@ -442,20 +458,20 @@ crosses between them and a rebuild of one leaves the others alone.
 Every command exits non-zero on failure with the reason on stderr:
 
 ```console
-$ pamin link nope deployment_pipeline --kind depends_on
+$ pamin-memory link nope deployment_pipeline --kind depends_on
 Error: no topic named nope
 ```
 
 ## Getting started
 
 ```console
-$ pamin init
-Initialized project default in /home/you/.pamin
+$ pamin-memory init
+Initialized project default in /home/you/.pamin-memory
 ```
 
 `init` provisions a local PostgreSQL and applies migrations. No Docker, no
 configuration. The server is left running between commands so an agent invoking
-the CLI repeatedly does not pay startup each time; `pamin stop` shuts it down.
+the CLI repeatedly does not pay startup each time; `pamin-memory stop` shuts it down.
 
 **It will not run as root.** That is PostgreSQL's rule, not Påmin Memory's:
 `initdb` refuses, so the bundled cluster cannot be created or started by a root
@@ -465,36 +481,36 @@ A root process can still be a *client* of a server an unprivileged user
 started, which is what makes `docker exec` into a running workspace work.
 
 ```console
-$ pamin write --topic deployment_pipeline "the deployment pipeline runs on continuous integration and publishes artifacts"
+$ pamin-memory write --topic deployment_pipeline "the deployment pipeline runs on continuous integration and publishes artifacts"
 Wrote deployment_pipeline v1
-$ pamin write --topic rollback_plan "a rollback reverts the deployment pipeline to the previous tag"
+$ pamin-memory write --topic rollback_plan "a rollback reverts the deployment pipeline to the previous tag"
 Wrote rollback_plan v1
-$ pamin write --topic oncall_rota "the oncall rota rotates every monday morning"
+$ pamin-memory write --topic oncall_rota "the oncall rota rotates every monday morning"
 Wrote oncall_rota v1
-$ pamin write --topic deployment_pipeline "the deployment pipeline now runs on argo cd"
+$ pamin-memory write --topic deployment_pipeline "the deployment pipeline now runs on argo cd"
 Wrote deployment_pipeline v2
 ```
 
-## `pamin write`
+## `pamin-memory write`
 
 Records a memory. Content comes from the argument, or from standard input when
 it is omitted:
 
 ```console
-$ git log -1 --format=%B | pamin write --topic release_notes
+$ git log -1 --format=%B | pamin-memory write --topic release_notes
 ```
 
 Evidence is stored before anything judges it, so a write that is not promoted to
 a topic state is still recorded and still recoverable:
 
 ```console
-$ pamin write --topic oncall_rota "ok"
+$ pamin-memory write --topic oncall_rota "ok"
 Held in evidence only: content was too short to carry a durable claim
 Stored as oncall_rota source version 2
 ```
 
 ```console
-$ pamin write --topic oncall_rota "ok" --json
+$ pamin-memory write --topic oncall_rota "ok" --json
 {
   "topic": "oncall_rota",
   "version": null,
@@ -520,7 +536,7 @@ is promoted under it.
 RFC 3339. Both are open by default:
 
 ```console
-$ pamin write --topic winter_timetable "adds two evening departures" \
+$ pamin-memory write --topic winter_timetable "adds two evening departures" \
     --valid-from 2025-11-01T00:00:00Z --valid-to 2026-03-01T00:00:00Z
 ```
 
@@ -535,24 +551,24 @@ the projection is owed, all in one transaction that touches only PostgreSQL;
 the index is brought up to date afterwards. `applied` means that happened here.
 `queued` means some of it is still owed, and the server runs it once it has no
 request to answer — the memory is recorded either way. See
-[`pamin cascade`](#pamin-cascade).
+[`pamin-memory cascade`](#pamin-memory-cascade).
 
 `--defer` records the memory and leaves the index to catch up later, so the
 command returns without embedding anything:
 
 ```console
-$ pamin write --defer --topic release_notes "cut 1.4.0 from main"
+$ pamin-memory write --defer --topic release_notes "cut 1.4.0 from main"
 Wrote release_notes v1
 ```
 
-The memory is committed exactly as it would be otherwise — `pamin read` and
-`pamin grep` see it immediately — and only `search` waits for the queue. The
+The memory is committed exactly as it would be otherwise — `pamin-memory read` and
+`pamin-memory grep` see it immediately — and only `search` waits for the queue. The
 server works through the queue on its own, between requests, so the memory
 becomes searchable with nothing else run once the server's five-second upkeep
 has come round once or twice: 5.8 to 11.6 seconds in five measured runs. Run
-`pamin cascade drain` to make the index catch up at once instead, for instance
+`pamin-memory cascade drain` to make the index catch up at once instead, for instance
 at the end of a loop of deferred writes; to record a file of memories, use
-[`pamin import`](#pamin-import).
+[`pamin-memory import`](#pamin-memory-import).
 
 `cascade_lagging` is set once the queue passes ten thousand owed jobs, and it
 reports what the queue owed when the write looked at it rather than what is left
@@ -568,12 +584,12 @@ the import by at least what paying costs and bound nothing. A new memory
 queues three jobs, so an import pays for a batch about every three thousand of
 them and never carries more than ten thousand.
 
-## `pamin import`
+## `pamin-memory import`
 
 Records many memories in one call, from a file of one JSON object per line.
 
 ```console
-$ pamin import --from memories.ndjson
+$ pamin-memory import --from memories.ndjson
 Imported 2400 memories: 2400 written, 0 held in evidence only
 ```
 
@@ -583,11 +599,11 @@ Imported 2400 memories: 2400 written, 0 held in evidence only
 ```
 
 Each memory goes through the same filter, the same language detection and the
-same transaction as `pamin write`; what changes is everything around them. One
+same transaction as `pamin-memory write`; what changes is everything around them. One
 invocation instead of one per memory, one open engine instead of one per
 memory, and the projection catching up in rounds of sixty-four rather than
 after each one. Measured on 2,400 memories, getting one into the ledger costs
-**3.2 ms here against 30.1 ms** through `pamin write`, and a whole import of
+**3.2 ms here against 30.1 ms** through `pamin-memory write`, and a whole import of
 2,400 previously-unseen memories takes 55 s against 119 s — the rest of which
 is embedding them, which costs the same either way.
 
@@ -607,19 +623,284 @@ says whether that happened.
 
 `--valid-from` and `--valid-to` apply to every memory in the file.
 
-## `pamin read`
+## `pamin-memory ingest`
+
+Records Markdown and text files as memories, one per section. Here, in a git
+repository `handbook` whose `docs/ops.md` holds a `# Deploy` section with a
+`## Rollback` under it:
+
+```console
+$ pamin-memory ingest docs
+Ingested 1 files as 2 sections: 2 written, 0 unchanged, 0 held in evidence only
+```
+
+A path is a file or a directory. A directory is read recursively for `.md`,
+`.markdown` and `.txt` files, skipping hidden entries — `.git` among them —
+symbolic links, and, inside a git repository, whatever git ignores: its
+`.gitignore` files, including any above the directory named,
+`.git/info/exclude` and the global excludes of the user the server runs as. A file named on the command line is read whatever it is called
+and wherever a link it is leads, and is cut as Markdown whatever it holds, so
+`# ` at the start of a line of code is a heading to it. A file larger than
+8 MiB, a limit chosen rather than measured, is not read: it is listed under
+`skipped`, and sections an earlier ingest cut from it stay. The paths are made
+absolute by the client before the request leaves, because the server reading
+them may have been started from another directory.
+
+**A file is cut where its headings are.** A heading outside a fenced block —
+`#` to `######`, or a paragraph underlined with `===` or `---` — opens a
+section, and the section's topic is the file's path and the headings above it,
+each cut to 80 characters, joined by ` › `:
+
+```console
+$ pamin-memory search "how do we roll back a release" --limit 2    # second hit trimmed
+0.1136  handbook/docs/ops.md › Deploy › Rollback v1  ## Rollback
+
+A rollback reverts the deployment pipeline to the previous release tag. The
+oncall engineer starts it from the release dashboard, and the previous build is
+serving again within ten minutes because its image is still cached on every
+node in the cluster.
+        lexical_segmented#1 lexical_ngram#1 vector#1 reranked
+0.1042  handbook/docs/ops.md › Deploy v1  # Deploy
+…
+```
+
+The path runs from the root of the git repository the file is in — a
+submodule's being its superproject's — the root's own name first, so ingesting a tree and ingesting one file of it name that file
+alike, and two repositories' `README.md` are two files. Outside a repository it
+runs from the directory named, or for a file named on its own, from the
+directory it is in. Two files that would still go by one name are refused
+rather than recorded under one topic.
+
+The topic is also what each section is embedded and reranked under, as
+`{topic}: {content}`, so a section about "Rollback" in `docs/ops.md` is read
+with both. The heading line stays in the section's content too, which is what
+the two lexical channels index.
+
+**A section is one memory however long it is.** Its size is left to the index,
+which cuts every memory into spans and ranks a topic by its best span, so a
+long section is found by any part of it and a hit shows the part that matched.
+A section of fewer than 48 tokens joins a neighbour — a heading with nothing
+under it the section after it, a short opening at the top of the file the
+section after it, anything else the one before. Two sections under the same
+headings are numbered `#2`, `#3`, and keep their numbers from one ingest to the
+next: each is matched to the section it was by its text — the same text first,
+then at least 80% of its three-word runs in common — and only the rest take
+free numbers, in file order. So a section inserted above its twin is `#2`,
+rather than taking the twin's name and making the twin's text a new version of
+somebody else's section. YAML front matter is left out when its first line is
+a `key:` and it holds no blank line.
+
+```console
+$ sed -i 's/ten minutes/fifteen minutes/' docs/ops.md
+$ pamin-memory ingest docs
+Ingested 1 files as 2 sections: 1 written, 1 unchanged, 0 held in evidence only
+$ sed -i 's/## Rollback/## Rolling back/' docs/ops.md
+$ pamin-memory ingest docs
+Ingested 1 files as 2 sections: 1 written, 1 unchanged, 0 held in evidence only
+1 sections were found under a new name and renamed, keeping their history:
+  handbook/docs/ops.md › Deploy › Rollback -> handbook/docs/ops.md › Deploy › Rolling back
+```
+
+**Ingesting again records only what changed.** A section that says what its
+topic already does is left as it is, with nothing written; a changed section is
+a new version of its topic, as any write is, and only it is embedded again. An
+edit to a section's text changes that section alone.
+
+**A section found under a new name is renamed, not recorded afresh.** Renaming
+a heading changes the name of every section under it, and moving a file or a
+folder within a tree changes every name in it. A section an ingest finds gone
+from one name is matched to one appearing under a new name — the same text
+first, then at least 80% of its three-word runs in common, one to one — and its
+topic takes the new name, keeping its versions, its evidence and the edges to
+it; its new text, if it changed, is a new version. The old name stays as an
+alias: `pamin-memory read`, `pamin-memory link` and `pamin-memory neighbors` still find the topic by
+it, and `read` answers with the name it goes by now. A renamed section is
+owed to the index again, because its name is read into the header of every
+span, and a span is re-embedded when its header changes. Only a section the
+ingest could otherwise have taken off the retrieval surface is renamed, and
+only to a name no topic already holds: a file moved out of the tree the command
+walked is still `removed`, and one moved onto an old section's name is recorded
+as new. Listed under `renamed`.
+
+**A file that has not changed is not read again.** Each file an ingest reads
+leaves a record of its size, its modification and change times, its inode and
+a hash of its text, and the next ingest compares the file's metadata with it
+before opening the file, the way git's index tells a clean file from a stat.
+The same metadata means the same file, and its sections are counted under
+`unchanged` without being read; different metadata means it is read, and if
+its text hashes the same it is counted unchanged all the same, its record
+taking the new metadata. A file modified within two seconds of being read is
+read and hashed next time whatever its metadata says, since a second change
+inside one timestamp would not show. A section written by hand with `pamin-memory
+write` makes its file's record untrue, and so does an ingest of another tree
+whose file of the same name rewrote its sections: either way the record goes,
+and the next ingest reads the file. A record also names the build that cut the
+file, so a new `pamin-memory` reads every file once, in case it cuts them differently.
+An ingest that finds every file unchanged opens no index and loads no model.
+
+On this repository's own 112 Markdown and text files, an unchanged re-ingest
+took a median 0.017 s against 0.484 s when every file was read, and one edited
+file 0.301 s against 0.790 s, five runs each; the time a first ingest takes is
+the embedding of every section, and did not move
+([measured](../benchmarks/results/ingest/ingest-sync-2026-10-27.md)).
+
+**A section that is no longer there is taken off the retrieval surface**, and
+listed under `removed`: its heading removed, or renamed with its text rewritten past matching, or its file deleted
+from a directory the command walked, or moved out of it.
+Every version of its topic is soft deleted, so search no longer returns it, and
+the edges its content derived are closed. Nothing is lost: the ledger keeps
+every version and its evidence, `pamin-memory grep` still finds the text, and
+ingesting the section again brings it back as a new version — though until
+then `pamin-memory read` reports the topic has no live version, and `pamin-memory topics`
+still lists its name.
+
+Only what the command could see is retired. A file it found and could not read
+is not where a section went missing, and its sections stay. Under a directory
+whose walk met an error — a subdirectory it could not open — a file it did not
+find may only have been out of reach, so its sections are listed under
+`missing` and stay; so are those of a file the walk skipped that is still on
+disk: hidden, or ignored by git, whether since it was last ingested or because
+it was named on its own some earlier time. A section is retired only from the tree it was last
+ingested from: each file's sections record that directory, so another tree
+whose files are named alike, another clone or another `notes`, is not taken
+for this one. And a section another ingest wrote again after this one looked —
+found back in its file with new text — is left as it now is; one found back
+unchanged is retired, and the next ingest brings it back.
+
+A section somebody also wrote by hand with `pamin-memory write` is only listed, under
+`missing`, and left searchable: it is theirs as well as the file's. A file with
+a section left this way is read again by the next ingest rather than trusted to
+its record.
+
+**A section its file cut down to next to nothing is taken off too.** Text
+below the filter's eight characters — a `TBD` where a paragraph was — is held,
+counted under `held`, and would leave the section answering with the text the
+file no longer has. So it is retired as a section the file lost is, and listed
+under `removed`. Ingesting it again while it says the same writes
+nothing, and once the file says something again the section is back. One
+somebody also wrote by hand stays, held on every ingest and its evidence
+recorded again each time.
+
+Nothing outside what the command named is looked at. A repository whose
+directory was renamed or checked out under another name is recorded afresh
+under its new names, and its old sections stay searchable and are listed
+nowhere. And two directories of the same name ingested by separate commands
+name their files alike, so where both have a file of the same name, each
+records that file's sections as new versions of the other's wherever the two
+differ, and the sections remember whichever tree was ingested last.
+
+Ingested topics are kept out of the name index the graph channel matches
+memories against. A path and its headings are a name no memory spells out in
+full, and a wide name makes every later write compare longer runs of its text.
+A memory naming an ingested section therefore derives no edge to it, while a
+section naming a topic written by hand does. A topic written by hand keeps its
+name if it is later ingested, and one ingested first is named the first time
+somebody writes it by hand.
+
+**Each section is `part_of` the section above it**: the first section of the
+nearest heading above its own that has one, or the file's first section for one
+with none. Search follows these edges, so a section whose meaning depends on
+the section above it — a rule's conditions stated under the heading it sits
+under — brings that section along; `pamin-memory neighbors` walks a file by them too.
+They are derived, restated on every ingest, and closed when a section moves or
+leaves its file. On ConditionalQA they raised how often every evidence sentence
+of a question needing a section and the one above it was read in the first
+1,000 tokens from 0.506 to 0.618, and over all questions from 0.755 to 0.792
+([measured](../benchmarks/results/ingest/conditionalqa-sections-2026-10-26.md)).
+
+A search hit on a section carries the name of the section it sits under, as
+`"parent"` in `--json` and a `part of` line in plain output, for a caller to
+`pamin-memory read` when the hit depends on the heading above it. Its text is not
+returned with the hit: shown before every hit it put a question's context
+nearer the top, but only by returning 40% more to read, and read to the same
+1,000 tokens it found no more.
+
+`--json` carries every count, the `removed`, `missing`, `renamed` and `skipped` lists, and
+the same `cascade` and `cascade_lagging` as `import`.
+
+### Keeping files in sync
+
+**Every path an ingest is given is kept in sync** unless it is given
+`--no-sync`. The server watches it and ingests what changes under it one
+second after the last change — an edit, an editor's save by renaming a new
+file over the old, a new file or folder, a deletion, a move — so a search finds
+what a file says now without anybody ingesting it again. It is the ingest a
+person runs, so what it records is what `pamin-memory ingest` would have. A file gone with nothing new beside it is held one
+second more before its sections are retired, in case it is half of a move
+whose other half is on its way: both reach one ingest, and the section keeps
+its history under its new name.
+
+What is watched is exactly what an ingest walks: each folder the walk goes into
+has a watch of its own, and a folder it skips — hidden, ignored by git, behind
+a link — has none, so a change under `node_modules/` or `target/` is never
+heard of. A change to a `.gitignore` walks the path again. On macOS, where file
+events come from one stream for the whole synced folder, a change in a folder
+the walk skips is heard of and dropped. A file named on its own is watched
+through its folder, since an editor's save replaces the file being watched.
+The workspace's own folder is never watched.
+
+**A server that was not running catches up when it starts**, in the
+background: it walks every synced path again and ingests what changed, which
+for a file that has not changed is a stat against its record. Where the
+operating system refuses a watch — Linux's `fs.inotify.max_user_watches` — the
+path is looked at every 30 seconds instead; where it lost events, every path is
+caught up. A synced path that is not there keeps its sections and is looked
+for every minute; a folder it was ingested from that has moved is not
+followed.
+
+**A search does not wait for the watcher.** Before it answers, it compares the
+files its hits were cut from with their records, a stat each, and ingests any
+that changed under a synced path, then searches again if that or the watcher
+changed what pamin-memory holds while it ranked. A hit from a file with no record —
+one an ingest may be rewriting at that moment — makes the search wait behind
+that ingest the same way before it compares. A search issued in the second after
+an edit, or while a server that was stopped is still catching up, answers with
+what the file says now. Two limits: a file that is gone is left to the watcher,
+which holds a deletion a second in case it is half of a move; and behind an
+ingest of the project already running a search waits a second at most, then
+answers as it found it.
+
+`--no-sync` ingests the paths once and stops keeping those exact paths in sync
+if an earlier ingest asked for it; a file under a directory that is itself
+kept in sync is still kept by it. Paths ingested before sync existed are kept
+in sync from their next ingest.
+
+## `pamin-memory sync`
+
+Lists the paths the server keeps in sync for the project, how it follows each
+— `watching`, `polling`, `missing`, or `starting` until it has caught up — when
+it last ingested what changed under one, and why that last ingest failed if it
+did:
+
+```console
+$ pamin-memory sync
+1 paths kept in sync:
+  /home/me/handbook (watching, synced 2026-10-27T01:36:02Z)
+```
+
+## `pamin-memory unsync`
+
+Stops keeping paths in sync, matching each as given and as it resolves. Their
+sections stay as they are; ingesting a path again keeps it in sync again.
+
+```console
+$ pamin-memory unsync docs
+No longer kept in sync: /home/me/handbook/docs
+```
+
+## `pamin-memory read`
 
 Reads a topic at a version. `--version-offset` counts back from the current one.
 
 ```console
-$ pamin read deployment_pipeline
+$ pamin-memory read deployment_pipeline
 deployment_pipeline v2 (current, 0 of 2 versions, recorded 2026-10-17T02:23:17.362349Z)
 
 the deployment pipeline now runs on argo cd
 ```
 
 ```console
-$ pamin read deployment_pipeline --version-offset 1 --json
+$ pamin-memory read deployment_pipeline --version-offset 1 --json
 {
   "topic": "deployment_pipeline",
   "version": 1,
@@ -637,16 +918,16 @@ $ pamin read deployment_pipeline --version-offset 1 --json
 
 `valid_from` and `valid_to` are absent here rather than null: a memory written
 without an interval carries none, and the fields appear only when it has one.
-`source_span` is the evidence this version was promoted from, and `pamin grep`
+`source_span` is the evidence this version was promoted from, and `pamin-memory grep`
 is what reads it.
 
 A long memory is indexed as spans (see [Long memories](#long-memories-spans)),
-and `--span` reads one of them, numbered from 0 the way `pamin search` reports
+and `--span` reads one of them, numbered from 0 the way `pamin-memory search` reports
 them; `--around N` adds N spans either side. The `content` is then that run of
 the memory and a `span` field says where it lies:
 
 ```console
-$ pamin read incident_2026_03 --span 4 --around 1 --json
+$ pamin-memory read incident_2026_03 --span 4 --around 1 --json
 {
   "topic": "incident_2026_03",
   "version": 1,
@@ -670,18 +951,18 @@ guessing at the depth first.
 [Two kinds of time](#two-kinds-of-time), and comparing `recorded_at` across
 versions is how "when did this change" is answered — the question a version
 list on its own raises and cannot settle. `valid_from` and `valid_to` are the
-asserted truth interval, open unless a writer bounded them. `pamin search`
+asserted truth interval, open unless a writer bounded them. `pamin-memory search`
 carries `recorded_at` on each hit for the same reason: ranking says how well a
 memory matches, not how current it is.
 
-## `pamin search`
+## `pamin-memory search`
 
 Retrieves across every recall channel and explains the result.
 
 Results are topics, at what each says now. A topic rewritten fourteen times is
 one result and not fourteen, and the `version` a hit reports is its current
-one. Earlier versions are read rather than ranked: `pamin read
---version-offset` reaches them, and `pamin grep` reaches the evidence behind
+one. Earlier versions are read rather than ranked: `pamin-memory read
+--version-offset` reaches them, and `pamin-memory grep` reaches the evidence behind
 them, including what the filter never promoted.
 
 `--channel-depth` sets how many candidates each channel contributes before
@@ -704,14 +985,14 @@ PaminLabs' SmoothQuant re-export of `onnx-community`'s int8 file, which
 moves activation outliers into the weights before they are quantized; see
 [measured.md](measured.md) for what it changed. There is no
 setting for it. Earlier versions chose a tier with `--rerank` and
-`PAMIN_RERANK` -- `off`, `fast` (a 119 MB MiniLM cross-encoder) or `accurate`,
+`PAMIN_MEMORY_RERANK` -- `off`, `fast` (a 119 MB MiniLM cross-encoder) or `accurate`,
 which is the one kept; see
 [Upgrading from profiles and tiers](#upgrading-from-profiles-and-tiers).
 
 The comparison that chose it is below. It is historical, measured before the
 corrected XQuAD-R same-language key and the current full-head pass, and its
 same-language and latency figures do not describe the current path. The
-current comparison is tracked in [#121](https://github.com/pamin-labs/PaminMemory/pull/121).
+current comparison is tracked in [#121](https://github.com/pamin-labs/pamin-memory/pull/121).
 
 | | what it loads | a search costs | cross-lingual nDCG@10 | same-language |
 |---|---|---|---|---|
@@ -722,7 +1003,7 @@ current comparison is tracked in [#121](https://github.com/pamin-labs/PaminMemor
 All three rows are one run over the same 1,190 queries, taken when a tier
 reranked twenty candidates; the reranker now sees thirty, which turned into
 +0.0063 more cross-lingual (`p = 0.0001`) for half again as many model pairs.
-At thirty, `pamin search` against a resident server over 3,230 memories, on a
+At thirty, `pamin-memory search` against a resident server over 3,230 memories, on a
 four-core 2.8 GHz Xeon with no other measurement running, had a median of
 3,207 ms (p95 5,128) when a pass took up to four pairs, and 2,675 ms (p95
 4,359) with the one pair a pass that now ships on a multi-core CPU -- 0.834 of
@@ -772,7 +1053,7 @@ and one search with the since-removed 130 MB `fast` model took it to 2,007 or
 the weights. `accurate`'s model is 571 MB against 119. Its own resident cost
 has since been taken: 271 MiB of live memory loaded from its mapped copy and
 822 MiB from the download, and on MIRACL, loading it from the download added
-911 MB of anonymous memory to a server (see [measured.md](measured.md)). `pamin serve` gives it back after
+911 MB of anonymous memory to a server (see [measured.md](measured.md)). `pamin-memory serve` gives it back after
 `--model-idle` seconds with nothing asking for it; the arena growth above that
 stays.
 
@@ -816,7 +1097,7 @@ one. The walk also starts from at most 64 seeds, keeping the topics the query
 named by name ahead of the ones the lexical and vector channels supplied.
 
 ```console
-$ pamin search "how do we deploy" --limit 3
+$ pamin-memory search "how do we deploy" --limit 3
 0.1289  deployment_pipeline v2  the deployment pipeline now runs on argo cd
         lexical_ngram#1 vector#1 graph#2 oncall_rota --depends_on-> deployment_pipeline (1hop) reranked
 0.1214  rollback_plan v1  a rollback reverts the deployment pipeline to the previous tag
@@ -831,7 +1112,7 @@ read by a person. Without it the same result is one line of 551 bytes against
 off, and more on a fuller result because the saving is per line:
 
 ```console
-$ pamin search "how do we deploy" --limit 1 --json --pretty
+$ pamin-memory search "how do we deploy" --limit 1 --json --pretty
 {
   "query": "how do we deploy",
   "hits": [
@@ -895,8 +1176,8 @@ memory, and says which spans it is:
 ```
 
 The window is the best span and the neighbours, nearer first, that fit a
-budget of 600 tokens with it, `start` and `end` its bytes in the memory. `pamin read <topic> --span 4 --around 2` reads further around
-it, and `pamin read <topic>` reads all of it. A hit with no `span` field is a
+budget of 600 tokens with it, `start` and `end` its bytes in the memory. `pamin-memory read <topic> --span 4 --around 2` reads further around
+it, and `pamin-memory read <topic>` reads all of it. A hit with no `span` field is a
 memory of one span, and its `content` is the whole memory.
 
 Measured against whole-memory indexing, spans rank the right memory higher on
@@ -906,7 +1187,7 @@ the window can miss the turn that answers the question when that turn is not
 next to the best span; read around the hit when the answer is not in it.
 
 An index keeps the grain it was built with. One built before spans holds one
-document per memory and searches as it always did; `pamin reindex` rebuilds it
+document per memory and searches as it always did; `pamin-memory reindex` rebuilds it
 into spans.
 
 ### Reading the `why` trace
@@ -938,7 +1219,7 @@ turns out to cost 0.2794 nDCG@10 on a cross-lingual group at 1.0, against the
 0.1673 it earns on queries whose answers are only reachable across an edge.
 1.0 and 0.5 are significantly worse on the cross-lingual group once the whole
 sweep is priced as one family, and 0.15 and 0.30 cannot be told apart; 0.30 is
-kept because nothing supports moving it. `pamin_core::fusion` carries the sweep.
+kept because nothing supports moving it. `memory_core::fusion` carries the sweep.
 
 Its scores are also the only ones fusion does *not* rescale, and for the reason
 this table's own note gives about comparability. A path strength is
@@ -1070,7 +1351,7 @@ Writing a memory that names another topic derives an edge to it. No command is
 involved:
 
 ```console
-$ pamin neighbors rollback_plan --depth 1
+$ pamin-memory neighbors rollback_plan --depth 1
 deployment_pipeline  1 hop  rollback_plan --mentions--> deployment_pipeline (deterministic, 0.50)
 ```
 
@@ -1089,9 +1370,9 @@ Derivation only finds relationships the text states. For anything else — a
 dependency, a contradiction, a supersession that nobody wrote down — assert it:
 
 ```console
-$ pamin link oncall_rota deployment_pipeline --kind depends_on
+$ pamin-memory link oncall_rota deployment_pipeline --kind depends_on
 oncall_rota --depends_on--> deployment_pipeline (v1)
-$ pamin link oncall_rota deployment_pipeline --kind depends_on
+$ pamin-memory link oncall_rota deployment_pipeline --kind depends_on
 Already linked: oncall_rota --depends_on--> deployment_pipeline (v1)
 ```
 
@@ -1105,7 +1386,7 @@ exist; linking a name that does not is a typo far more often than it is intent.
 as RFC 3339. Both are open by default, which is how most relationships are
 stated. This is separate from when we recorded the claim.
 
-### `pamin unlink`
+### `pamin-memory unlink`
 
 Retracts a claim. Every row stays, and `--reason` says what the retraction means:
 
@@ -1115,9 +1396,9 @@ Retracts a claim. Every row stays, and `--reason` says what the retraction means
 | `deleted` | The claim was wrong | No instant finds it; it never held |
 
 ```console
-$ pamin unlink oncall_rota deployment_pipeline --kind depends_on
+$ pamin-memory unlink oncall_rota deployment_pipeline --kind depends_on
 Retracted oncall_rota --depends_on--> deployment_pipeline (closed)
-$ pamin unlink oncall_rota deployment_pipeline --kind depends_on --json
+$ pamin-memory unlink oncall_rota deployment_pipeline --kind depends_on --json
 {
   "from": "oncall_rota",
   "to": "deployment_pipeline",
@@ -1135,12 +1416,12 @@ open `--valid-to` means the claim still holds, so using it to mean "it ended at
 some unknown point" asserts the opposite. See
 [Two kinds of time](#two-kinds-of-time).
 
-### `pamin neighbors`
+### `pamin-memory neighbors`
 
 Walks the graph with no ranking anywhere in the path.
 
 ```console
-$ pamin neighbors rollback_plan --depth 1 --json
+$ pamin-memory neighbors rollback_plan --depth 1 --json
 {
   "topic": "rollback_plan",
   "depth": 1,
@@ -1170,15 +1451,15 @@ reads one way walked from one end and the opposite way walked from the other,
 which for a question like "what depends on this" is the whole answer. `--kind` restricts it, repeatably. `--at <rfc3339>` follows only edges
 asserted to hold at that instant, which is how a question about the past avoids
 relationships that were only claimed later. `--depth` accepts 0 to 4, for the
-reason given under [`pamin search`](#pamin-search).
+reason given under [`pamin-memory search`](#pamin-memory-search).
 
-## `pamin topics`
+## `pamin-memory topics`
 
 Every other read command needs a topic name to start from. This is how you get
 one.
 
 ```console
-$ pamin topics --limit 4
+$ pamin-memory topics --limit 4
 recent    secret_rotation
 recent    build_cache
 recent    access_review
@@ -1195,7 +1476,7 @@ With a query it answers twice over and says which route found what, because the
 two fail differently:
 
 ```console
-$ pamin topics "deployment pipeline" --limit 4
+$ pamin-memory topics "deployment pipeline" --limit 4
 both      deployment_pipeline
 content   oncall_rota
 content   secret_rotation
@@ -1219,33 +1500,33 @@ Reach for this before writing to a name you invented. `deployment_pipeline` and
 `deploy_pipeline` are two memories that never meet again, and nothing will ever
 tell you that happened.
 
-## `pamin grep`
+## `pamin-memory grep`
 
 Finds an exact string in the evidence. No pattern matching, no tokenizer, no
 ranking model anywhere in the path.
 
 ```console
-$ pamin write --topic incident_log "the checkout service returned E5521 during the tuesday outage"
+$ pamin-memory write --topic incident_log "the checkout service returned E5521 during the tuesday outage"
 Wrote incident_log v1
-$ pamin write --topic incident_log "E5521"
+$ pamin-memory write --topic incident_log "E5521"
 Held in evidence only: content was too short to carry a durable claim
 Stored as incident_log source version 2
 ```
 
 ```console
-$ pamin grep E5521
+$ pamin-memory grep E5521
 manual:incident_log v2 (filtered)
         E5521
 manual:incident_log v1 (promoted)
         the checkout service returned E5521 during the tuesday outage
 ```
 
-The second write never became a memory, so `pamin search` cannot see it — which
+The second write never became a memory, so `pamin-memory search` cannot see it — which
 is the filter working correctly. It is still evidence, and this is the route to
 it:
 
 ```console
-$ pamin grep E5521 --json
+$ pamin-memory grep E5521 --json
 {
   "literal": "E5521",
   "matches": [
@@ -1288,12 +1569,12 @@ Use `search` when you want relevance, and `grep` when you want certainty.
 Every claim carries two independent timelines, and confusing them is the usual
 way a versioned store starts lying.
 
-**When it is true** — `--valid-from` and `--valid-to` on `pamin write` and
-`pamin link`. This is about the world. Both bounds are open by default, which is
+**When it is true** — `--valid-from` and `--valid-to` on `pamin-memory write` and
+`pamin-memory link`. This is about the world. Both bounds are open by default, which is
 how most claims are actually stated: a fact is asserted to hold, not asserted to
 hold between two dates.
 
-**When we believed it** — recorded automatically, and changed by `pamin unlink`
+**When we believed it** — recorded automatically, and changed by `pamin-memory unlink`
 or by writing a new version. This is about us.
 
 `neighbors --at <rfc3339>` asks the first question; `neighbors` with no `--at`
@@ -1302,7 +1583,7 @@ asks the second.
 `search --json` carries both on every hit, as `valid_from`/`valid_to` and
 `recorded_at`, so an agent deciding which of two contradicting memories to
 believe does not pay a `read` per result. Reach for the first pair. Recording
-time is almost never the answer: everything written in one `pamin import`
+time is almost never the answer: everything written in one `pamin-memory import`
 shares it to within milliseconds, so ordering by it recovers the order the file
 was fed in rather than the order the facts became true. The bounds are `null`
 when the writer stated none, which is the ordinary case and is not the same as
@@ -1315,15 +1596,15 @@ Two cases look like they need a third kind of end date, and do not:
   separate way to say it would give the same answer at every instant.
 - *It has stopped, and nobody knows when.* Recording that as an open
   `--valid-to` asserts the opposite. It is a statement about what we still stand
-  behind, so it belongs on the other timeline: `pamin unlink`, which by default
+  behind, so it belongs on the other timeline: `pamin-memory unlink`, which by default
   means the relationship ended rather than that the claim was wrong.
 
-## `pamin reindex`
+## `pamin-memory reindex`
 
 Discards the projection index and rebuilds it from PostgreSQL.
 
 ```console
-$ pamin reindex
+$ pamin-memory reindex
 Rebuilt the index from postgres: 4 states
 ```
 
@@ -1356,13 +1637,36 @@ shape in the background — reading it a batch at a time while it goes on
 answering searches and writes, and building the copy's vector graph with the
 index free — then swaps the copy in. Writes made during the copy are carried
 over before the swap. Nothing is embedded, and for the length of the copy the
-disk holds the index twice. `pamin cascade drain` reports a badly shaped index.
+disk holds the index twice. `pamin-memory cascade drain` reports a badly shaped index.
 
 A workspace created before projects had separate indexes holds a single shared
 one. Opening it would search another project's memories, and ignoring it would
-search nothing, so commands report it and `pamin reindex` migrates it.
+search nothing, so commands report it and `pamin-memory reindex` migrates it.
 
-## `pamin cascade`
+## `pamin-memory purge`
+
+Deletes the project named by `--project` and everything it holds, for good.
+
+```console
+$ pamin-memory --project customer_42 purge --yes
+Purged the project: 118 topics and 40 sources deleted, with their index
+```
+
+This is for privacy requests. Every other way of removing something keeps
+history: a newer version supersedes an older one, and `unlink --reason deleted`
+still records that the claim was made. A purge keeps nothing: the project's
+evidence, versions, relationships, queued work and synced paths are deleted
+from PostgreSQL, and its index directory is removed. No query at any instant
+finds them afterwards. Other projects are untouched.
+
+It is refused without `--yes`. It is not an MCP tool, so a model cannot reach
+it. The server waits for requests already working on the project's index, up
+to two minutes, before deleting it; past that the purge is refused and can be
+asked for again. A workspace that still holds the index shared by every
+project is refused until `pamin-memory reindex` has split it. A later command
+naming the same project starts a new, empty one.
+
+## `pamin-memory cascade`
 
 Runs the work a write left for the projection.
 
@@ -1373,13 +1677,13 @@ transaction, so a memory is never recorded without its follow-up work also
 being recorded — and a process that dies between the two leaves the work owed
 rather than lost.
 
-`pamin write` runs the queue before it returns, and the server runs whatever
+`pamin-memory write` runs the queue before it returns, and the server runs whatever
 is left, so ordinarily there is nothing here to do. These commands are for
 making the index catch up at once rather than about ten seconds later, and for
 jobs that failed often enough to be set aside.
 
 ```console
-$ pamin cascade drain
+$ pamin-memory cascade drain
 Ran 3 jobs, 0 failed, 0 still owed
 ```
 
@@ -1390,7 +1694,7 @@ called while other commands are running.
 
 Without it the server gets there on its own. Every five seconds, if it is not
 answering a request, it looks for projects owed work that changes what a search
-finds — writes made with [`--defer`](#pamin-write), and work a server that was
+finds — writes made with [`--defer`](#pamin-memory-write), and work a server that was
 killed left behind — and runs it in rounds of sixteen jobs, for up to five
 seconds, stopping between rounds as soon as a request arrives. A search that
 arrives during a round waits for the rest of it. It also opens a
@@ -1408,40 +1712,40 @@ A job that fails is tried again an hour later, up to eight times. After that it
 is set aside with the error that stopped it, rather than retried forever:
 
 ```console
-$ pamin cascade failed
+$ pamin-memory cascade failed
 Nothing has failed
 ```
 
 ```console
-$ pamin cascade failed --json
+$ pamin-memory cascade failed --json
 {
   "failed": []
 }
 ```
 
-`pamin cascade replay` makes those jobs due again, for when whatever broke them
-is fixed. `pamin cascade discard` abandons them. Both report how many they
+`pamin-memory cascade replay` makes those jobs due again, for when whatever broke them
+is fixed. `pamin-memory cascade discard` abandons them. Both report how many they
 moved:
 
 ```console
-$ pamin cascade replay
+$ pamin-memory cascade replay
 Queued 0 failed jobs to run again
 ```
 
 Nothing here can lose a memory. The queue drives the index, and the index holds
-nothing PostgreSQL cannot reproduce — `pamin reindex` rebuilds it outright.
+nothing PostgreSQL cannot reproduce — `pamin-memory reindex` rebuilds it outright.
 
-## `pamin serve`
+## `pamin-memory serve`
 
 Holds the database, the index and the model, and answers commands over a socket
-at `$PAMIN_HOME/pamin.sock`.
+at `$PAMIN_MEMORY_HOME/pamin.sock`.
 
 You do not normally run it. Any command that needs a server starts one and
-connects, the same way `pamin init` leaves PostgreSQL running so the next
+connects, the same way `pamin-memory init` leaves PostgreSQL running so the next
 command does not pay for it:
 
 ```console
-$ pamin read deployment_pipeline    # first call, starts a server
+$ pamin-memory read deployment_pipeline    # first call, starts a server
 deployment_pipeline v2 (current, 0 of 2 versions, recorded 2026-10-17T02:23:17.362349Z)
 
 the deployment pipeline now runs on argo cd
@@ -1451,21 +1755,21 @@ What that buys is everything a short-lived process used to rebuild. Before, each
 command connected to PostgreSQL, checked migrations, opened the index, and
 loaded an embedding model before it did any work of its own.
 
-`pamin serve` runs it in the foreground instead, which is useful when you want
+`pamin-memory serve` runs it in the foreground instead, which is useful when you want
 to watch it. It takes the [server settings](#server-settings) as flags, reads
 the rest from `config.toml`, logs each setting and where it came from at the
 `info` level, and keeps them until it stops: a command asking for others is
 refused with how to restart it, never answered with these. A server started in the background writes to
-`$PAMIN_HOME/serve.log`; `PAMIN_LOG` sets its level, as everywhere else.
+`$PAMIN_MEMORY_HOME/serve.log`; `PAMIN_MEMORY_LOG` sets its level, as everywhere else.
 
 Between requests it brings indexes up to date with work a deferred write or a
-killed server left owed, as [`pamin cascade`](#pamin-cascade) describes, and
+killed server left owed, as [`pamin-memory cascade`](#pamin-memory-cascade) describes, and
 looks after the indexes it holds open: it makes applied writes durable,
 compacts an index spread over too many files, and reshapes one spread over too
-many segments, as `pamin reindex` describes. A reshape logs
+many segments, as `pamin-memory reindex` describes. A reshape logs
 `reshaping the index` when it starts and `reshaped the index` with the segment
 counts and its duration when it finishes, at the `info` level that
-`PAMIN_LOG=info` shows; a reshape that fails logs a warning, which shows by
+`PAMIN_MEMORY_LOG=info` shows; a reshape that fails logs a warning, which shows by
 default, and leaves the index it was copying in service.
 
 One server serves many projects, and it keeps the sixteen most recently used
@@ -1481,24 +1785,24 @@ Every command goes through the server except three. `serve` is the server,
 database itself rather than starting a server to do it -- and `config` only
 reads the settings a server would start with, so it starts none to show them.
 There is no way to run a command
-in the calling process instead: `PAMIN_NO_SERVER`, which used to, was removed,
+in the calling process instead: `PAMIN_MEMORY_NO_SERVER`, which used to, was removed,
 and a command run with it set fails and says so rather than quietly going
 through the server it was set to avoid.
 
-The server is its own executable, `pamin-server`, installed beside `pamin`.
-`pamin` is only the client: it parses the command, sends it, and prints the
+The server is its own executable, `pamin-memory-server`, installed beside `pamin-memory`.
+`pamin-memory` is only the client: it parses the command, sends it, and prints the
 answer, and it links none of the inference runtime, the vector engine, TLS or
 the database driver, so a command does not pay to load them. It starts the
-`pamin-server` in its own directory, after following a symlink to where `pamin`
+`pamin-memory-server` in its own directory, after following a symlink to where `pamin-memory`
 really is, and fails with the path it looked for when that file is missing.
-`pamin serve`, and `pamin stop` with no server running, hand over to that
-`pamin-server`, which takes every command `pamin` does.
+`pamin-memory serve`, and `pamin-memory stop` with no server running, hand over to that
+`pamin-memory-server`, which takes every command `pamin-memory` does.
 
 A client checks that the running server is the one it would start: the same
-`pamin-server` file, by size and modification time, built from the same
+`pamin-memory-server` file, by size and modification time, built from the same
 protocol. A server from another build -- after a rebuild, or an upgrade -- is
-stopped and replaced before the command is answered. Install `pamin` and
-`pamin-server` together: a `pamin` from another build than the `pamin-server`
+stopped and replaced before the command is answered. Install `pamin-memory` and
+`pamin-memory-server` together: a `pamin-memory` from another build than the `pamin-memory-server`
 beside it fails, saying so, rather than replacing one server with another just
 like it.
 
@@ -1512,10 +1816,49 @@ The socket is a file, so it inherits the workspace's permissions and cannot be
 reached from another machine. There is no authentication, for the same reason:
 anyone who can open the socket can already read the workspace.
 
-## `pamin stop`
+## `pamin-memory mcp`
+
+Serves one project's memory as MCP tools over standard input and output, for an
+agent host that loads tools rather than running commands. The host starts it;
+for Claude Code:
+
+```bash
+claude mcp add pamin-memory -- pamin-memory mcp --project my_project
+```
+
+| Tool | Command |
+| --- | --- |
+| `memory_search` | [`pamin-memory search`](#pamin-memory-search) |
+| `memory_read` | [`pamin-memory read`](#pamin-memory-read) |
+| `memory_grep` | [`pamin-memory grep`](#pamin-memory-grep) |
+| `memory_neighbors` | [`pamin-memory neighbors`](#pamin-memory-neighbors) |
+| `memory_topics` | [`pamin-memory topics`](#pamin-memory-topics) |
+| `memory_write` | [`pamin-memory write`](#pamin-memory-write) |
+| `memory_link` | [`pamin-memory link`](#asserted-explicitly) |
+| `memory_unlink` | [`pamin-memory unlink`](#pamin-memory-unlink) |
+
+A tool takes the command's arguments as JSON, with the same names (flags in
+`snake_case`, and `--valid-from` and `--valid-to` inside a `validity` object)
+and the same defaults, and returns the command's `--json` result.
+Both come from one definition, so they cannot drift: the tool schemas are what
+`memory-contract` derives, and its tests snapshot them. A tool has no project
+argument: every call works on the project `pamin-memory mcp` was started with,
+`--project` or `PAMIN_MEMORY_PROJECT`, and a host that needs two projects starts two.
+
+Each tool call goes through the workspace's server exactly as the command does,
+starting one on the first call, so the [server settings](#server-settings) given
+to `pamin-memory mcp` are the ones a server it starts runs with. A failed call comes
+back as a tool result marked as an error, with the same message the command
+prints. `memory_write` needs `content`: there is no standard input to read it
+from, since that carries the protocol.
+
+The skill at `.agents/skills/pamin-memory-mcp/SKILL.md` tells an agent when to
+use which tool.
+
+## `pamin-memory stop`
 
 ```console
-$ pamin stop
+$ pamin-memory stop
 Stopped the local database server
 ```
 
@@ -1537,7 +1880,7 @@ row and paying startup once.
 - Results are stable for stable inputs. Ties break on identifier, so an
   assembled context can be reused rather than rebuilt.
 - Evidence is never translated and never rewritten. Anything a memory lost in
-  summarizing is still in the source it came from, and `pamin grep` reaches it.
+  summarizing is still in the source it came from, and `pamin-memory grep` reaches it.
 
 ### Accelerator plan recovery
 

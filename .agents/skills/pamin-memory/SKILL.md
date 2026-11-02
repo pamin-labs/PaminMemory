@@ -1,11 +1,11 @@
 ---
 name: pamin-memory
-description: "Use the `pamin` CLI as durable memory — record what you learn, retrieve it later, and follow the relationships between facts. Use this skill whenever `pamin` is available and you need to remember something across turns or sessions, recall what was decided or observed earlier, look up a fact you were told before, trace how a fact changed, or find the exact text behind a claim. Reach for it whenever the user says remember this, what did we decide, what do we know about X, look it up, or refers to earlier work you cannot see in the current context — even when they never name pamin. Also use it before answering from assumption on a project that has a pamin workspace: check memory first."
+description: "Use the `pamin-memory` CLI as durable memory — record what you learn, retrieve it later, and follow the relationships between facts. Use this skill whenever `pamin-memory` is available and you need to remember something across turns or sessions, recall what was decided or observed earlier, look up a fact you were told before, trace how a fact changed, or find the exact text behind a claim. Reach for it whenever the user says remember this, what did we decide, what do we know about X, look it up, or refers to earlier work you cannot see in the current context — even when they never name pamin-memory. Also use it before answering from assumption on a project that has a pamin-memory workspace: check memory first."
 ---
 
 # Using Påmin Memory
 
-`pamin` is a local memory store. It keeps what you write as evidence, promotes
+`pamin-memory` is a local memory store. It keeps what you write as evidence, promotes
 what is durable into versioned memories, indexes them three ways, connects
 them through a graph, and can explain why any result came back.
 
@@ -17,16 +17,16 @@ everything and leaves it running.
 Three layers, and confusing them causes almost every wrong answer:
 
 ```
-evidence    everything ever written, verbatim, never altered  →  pamin grep
-memories    the durable claims promoted out of evidence       →  pamin read
-index       those memories, findable three ways plus a graph  →  pamin search
+evidence    everything ever written, verbatim, never altered  →  pamin-memory grep
+memories    the durable claims promoted out of evidence       →  pamin-memory read
+index       those memories, findable three ways plus a graph  →  pamin-memory search
 ```
 
 A write always reaches evidence. It reaches the other two **only if the filter
 promotes it**. So "I wrote it and `search` cannot find it" is usually not a bug:
 
 ```console
-$ pamin write --topic oncall "ok"
+$ pamin-memory write --topic oncall "ok"
 Held in evidence only: content was too short to carry a durable claim
 Stored as oncall source version 1
 ```
@@ -35,7 +35,7 @@ That content is still recoverable with `grep`. It is not a memory.
 
 Two consequences worth holding onto:
 
-**Before writing to a name you invented, ask what is already here.** `pamin
+**Before writing to a name you invented, ask what is already here.** `pamin-memory
 topics <what it is about>` answers by name and by content and says which found
 what. `deployment_pipeline` and `deploy_pipeline` are two memories that never
 meet again, and nothing will ever tell you it happened. With no query it lists
@@ -65,14 +65,14 @@ ranking is what you doubt, those are the ones that answer.
 
 A concrete case: you are looking for error `E5521`. `search` may or may not
 rank it first, and if someone wrote only `E5521` the filter held it and `search`
-cannot see it at all. `pamin grep E5521` finds both the promoted memory and the
+cannot see it at all. `pamin-memory grep E5521` finds both the promoted memory and the
 held fragment, and tells you which is which.
 
 ## Writing
 
 ```bash
-pamin write --topic deployment_pipeline "deploys through the ci pipeline"
-git log -1 --format=%B | pamin write --topic release_notes   # content from stdin
+pamin-memory write --topic deployment_pipeline "deploys through the ci pipeline"
+git log -1 --format=%B | pamin-memory write --topic release_notes   # content from stdin
 ```
 
 Topics are names you choose. Writing to an existing name appends a version; the
@@ -89,11 +89,11 @@ identifiers never become memories. Write the sentence a future reader would need
 **Bulk loading: use `import`, not a loop.** One JSON object per line:
 
 ```bash
-pamin import --from memories.ndjson
+pamin-memory import --from memories.ndjson
 ```
 
 Getting a memory into the ledger cost about **3.2 ms this way against 30.1 ms
-through repeated `pamin write`**, measured on an earlier build — one process, one open engine, and the index
+through repeated `pamin-memory write`**, measured on an earlier build — one process, one open engine, and the index
 catching up in rounds instead of after each memory. The file is parsed in full
 before anything is recorded, so a malformed last line refuses the import rather
 than leaving it half done. Re-importing the same file is safe: unchanged
@@ -102,8 +102,8 @@ memories are held rather than duplicated.
 If you must loop, use `--defer` and drain once at the end:
 
 ```bash
-for f in *.md; do pamin write --defer --topic "$(basename "$f" .md)" "$(cat "$f")"; done
-pamin cascade drain
+for f in *.md; do pamin-memory write --defer --topic "$(basename "$f" .md)" "$(cat "$f")"; done
+pamin-memory cascade drain
 ```
 
 `--defer` returns without embedding anything. The memory is committed — `read`
@@ -114,7 +114,7 @@ makes it catch up at once.
 ## Searching
 
 ```bash
-pamin search "how does deployment work" --json
+pamin-memory search "how does deployment work" --json
 ```
 
 Results are **topics at what each says now**. A topic rewritten fourteen times
@@ -129,8 +129,8 @@ and the neighbours that fit about 600 tokens with it, with a `span` field (`ordi
 around it rather than searching again:
 
 ```bash
-pamin read incident_2026_03 --span 4 --around 2   # spans 2..6
-pamin read incident_2026_03                       # the whole memory
+pamin-memory read incident_2026_03 --span 4 --around 2   # spans 2..6
+pamin-memory read incident_2026_03                       # the whole memory
 ```
 
 A hit with no `span` field is a memory short enough to be one span, and its
@@ -194,7 +194,7 @@ measure from outside. If you want more control over retrieval, use `grep`,
 Every uncached `search` costs two to three seconds on four cores and a page of results
 in your context. The reranker reads the top thirty fused results, and up to
 four more that only the graph found; `docs/measured.md` records a median of
-about 2.7 s at `pamin search` over 3,230 memories on a four-core machine. On
+about 2.7 s at `pamin-memory search` over 3,230 memories on a four-core machine. On
 Apple silicon, where the reranker runs on CoreML, `docs/measured.md` records a
 whole-search p50 of 0.48 s and p95 of 0.81 s. A second search pays off only when
 it can find something the first could not. The rules below are a heuristic for
@@ -290,7 +290,7 @@ it works in any language and will not find `db` inside `debt`.
 For a relationship the text does not state, assert it:
 
 ```bash
-pamin link oncall_rota deployment_pipeline --kind depends_on
+pamin-memory link oncall_rota deployment_pipeline --kind depends_on
 ```
 
 Kinds: `mentions`, `supports`, `contradicts`, `supersedes`, `related_to`,
@@ -299,14 +299,14 @@ exist** — linking an unknown name is a typo far more often than intent.
 Asserting twice is idempotent.
 
 ```bash
-pamin neighbors rollback_plan --depth 1 --json
+pamin-memory neighbors rollback_plan --depth 1 --json
 ```
 
 This is the way to see a derived edge that never ranked high enough to surface
 in a search. `--kind` restricts it, repeatably, and `--at <rfc3339>` follows
 only edges asserted to hold at that instant.
 
-`pamin unlink` retracts a claim without erasing that it was made. Read
+`pamin-memory unlink` retracts a claim without erasing that it was made. Read
 `closed: false` in the output carefully — it means **nothing was open to
 retract**, which is not the same as having retracted something.
 
@@ -322,7 +322,7 @@ Getting these backwards is the usual way a versioned store starts lying.
 
 The case that trips people: *it has stopped being true and nobody knows when*.
 Do **not** express that as an open `--valid-to`, which asserts the opposite.
-Use `pamin unlink`, whose default reason means the relationship ended rather
+Use `pamin-memory unlink`, whose default reason means the relationship ended rather
 than that the claim was wrong.
 
 ## Operational notes
@@ -331,7 +331,7 @@ than that the claim was wrong.
   to stderr, failures exit non-zero with the reason on stderr. Parse stdout.
 - **The first command is slow and the rest are not.** It starts a server holding
   the database, the index and the model. You do not need to start or stop it;
-  `pamin stop` exists but running it between commands throws away the thing that
+  `pamin-memory stop` exists but running it between commands throws away the thing that
   makes the rest fast. It also starts loading BGE-M3 in the background --
   downloading it and writing its mapped copy on a fresh cache -- whatever the
   command is, so the first write may wait on that. A few later commands are slow
@@ -342,9 +342,9 @@ than that the claim was wrong.
 - **Server settings are fixed when the server starts.** Flags such as
   `--device` or `--model-idle`, and `$PAMIN_HOME/config.toml`, decide them. A
   command asking for settings the running server does not have fails and says
-  so; run `pamin stop` only if you mean to restart it with them.
+  so; run `pamin-memory stop` only if you mean to restart it with them.
 - **Projects are namespaces, not tags.** `--project` (or `PAMIN_PROJECT`, one
-  of the few variables `pamin` still reads) picks one; nothing crosses between
+  of the few variables `pamin-memory` still reads) picks one; nothing crosses between
   them.
 - **Results are stable for stable inputs** on one machine and execution plan,
   ties broken on identifier, so an assembled context can be cached rather than
@@ -352,16 +352,16 @@ than that the claim was wrong.
   results.
 - **`cascade` in a write's JSON** says whether the index caught up before the
   command returned. `applied` means yes; `queued` means the index still owes
-  work, which the server runs within seconds and `pamin cascade drain` runs at
+  work, which the server runs within seconds and `pamin-memory cascade drain` runs at
   once. The memory is recorded either way.
 - **There is one embedding model.** `--profile` and `PAMIN_PROFILE` were
   removed, and setting `PAMIN_PROFILE` is an error. A project indexed under a
-  retired profile refuses to open, naming it, until `pamin reindex` rebuilds
+  retired profile refuses to open, naming it, until `pamin-memory reindex` rebuilds
   it.
 
 ## Why this rather than a notes file
 
-The obvious alternative to `pamin write` is appending to `CLAUDE.md`, a
+The obvious alternative to `pamin-memory write` is appending to `CLAUDE.md`, a
 `NOTES.md`, or whatever the project already has, and for one fact it is
 genuinely simpler. It stops working for the same reason a pile of snippets
 stops working:
@@ -378,7 +378,7 @@ stops working:
   Retrieval exists precisely so recall costs the size of the answer rather than
   the size of the history.
 - **Rewriting loses what was there before.** Editing a line in a notes file
-  destroys the previous claim, when it was decided, and why. `pamin write`
+  destroys the previous claim, when it was decided, and why. `pamin-memory write`
   appends a version; `read --version-offset` still reaches the old one and
   `grep` still reaches the evidence behind it.
 
@@ -394,9 +394,9 @@ A pattern that works well: search before you assume, write once you have
 concluded something durable.
 
 ```bash
-pamin search "postgres connection pool sizing" --json    # before deciding
+pamin-memory search "postgres connection pool sizing" --json    # before deciding
 # ... do the work ...
-pamin write --topic pg_pool_sizing \
+pamin-memory write --topic pg_pool_sizing \
   "the pool is sized at 2x cores because the cascade worker holds one connection per job"
 ```
 

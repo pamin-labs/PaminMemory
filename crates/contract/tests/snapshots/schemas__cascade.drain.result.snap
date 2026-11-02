@@ -1,0 +1,63 @@
+---
+source: crates/contract/tests/schemas.rs
+expression: "schema_for! (cascade::Drained)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Drained",
+  "type": "object",
+  "properties": {
+    "completed": {
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "failed": {
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "pending": {
+      "description": "Jobs still owed, including any not yet due.",
+      "type": "integer",
+      "format": "int64"
+    },
+    "segments": {
+      "description": "Segments the index holds, and how many its own policy wants, when the\ntwo differ enough to be worth a rebuild.\n\nAbsent otherwise, so a healthy index says nothing. Here rather than in\na command of its own because whoever has just drained the cascade is\nwhoever cares what shape the index is in, and this is the only place\nthe answer was reachable from: a collection records its segment size\nwhen it is created, a workspace is created empty, and nothing has ever\ntold anyone what that left them with.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Segments"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "completed",
+    "failed",
+    "pending"
+  ],
+  "$defs": {
+    "Segments": {
+      "type": "object",
+      "properties": {
+        "holds": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "wants": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "holds",
+        "wants"
+      ]
+    }
+  }
+}

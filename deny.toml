@@ -22,6 +22,10 @@ allow = [
     "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
+    # `borrow-or-share`, under jsonschema in pamin-kit's conformance feature,
+    # which only the MCP tests turn on. MIT without the notice requirement;
+    # pamin-kit allows it for the same crate.
+    "MIT-0",
     # The PostgreSQL licence, from the `postgres` family. BSD-style.
     "PostgreSQL",
     "Unicode-3.0",
@@ -44,6 +48,13 @@ allow = [
 [[licenses.exceptions]]
 name = "option-ext"
 allow = ["MPL-2.0"]
+
+# CC0-1.0 for exactly one crate as well: `notify`, the file watcher, dedicates
+# itself to the public domain, which asks nothing of whoever links it. Allowed
+# for it alone so that another crate arriving under CC0 is still a decision.
+[[licenses.exceptions]]
+name = "notify"
+allow = ["CC0-1.0"]
 
 [bans]
 # Not gated. Duplicate versions are a build-time cost this project measures

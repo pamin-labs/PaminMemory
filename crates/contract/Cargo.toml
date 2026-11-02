@@ -1,0 +1,22 @@
+[package]
+name = "memory-contract"
+description = "pamin-memory's operation contract: request and result types shared by the CLI, the socket and MCP."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# Used by this workspace and the platform through git, never from crates.io.
+publish = false
+
+[dependencies]
+memory-core = { workspace = true, features = ["schemars"] }
+anyhow = { workspace = true }
+clap = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+time = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+insta = { workspace = true }
