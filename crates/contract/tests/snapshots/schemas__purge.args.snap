@@ -1,0 +1,17 @@
+---
+source: crates/contract/tests/schemas.rs
+expression: "schema_for! (purge::Args)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Args",
+  "description": "Delete the project and everything it holds. It cannot be undone.",
+  "type": "object",
+  "properties": {
+    "yes": {
+      "description": "Confirm that the project is to be deleted for good. Refused without it.",
+      "type": "boolean",
+      "default": false
+    }
+  }
+}

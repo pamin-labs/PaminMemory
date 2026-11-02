@@ -1405,6 +1405,68 @@ fn one_project_cannot_crowd_another_out_of_its_own_index() {
 
 #[test]
 #[ignore = "provisions postgres and downloads model weights"]
+fn a_purged_project_leaves_nothing_behind() {
+    let cli = Cli::new();
+    cli.run(&["init"]);
+    for (topic, note) in [
+        ("leaving_one", "the vendor contract ends in March"),
+        ("leaving_two", "the vendor contract was signed by Dana"),
+    ] {
+        cli.run(&["--project", "leaving", "write", "--topic", topic, note]);
+    }
+    cli.run(&[
+        "--project",
+        "staying",
+        "write",
+        "--topic",
+        "staying_one",
+        "the vendor contract here is month to month",
+    ]);
+    let indexes = || -> std::collections::BTreeSet<_> {
+        std::fs::read_dir(cli.home().join("index"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect()
+    };
+    let before = indexes();
+
+    let refused = cli.fails(&["--project", "leaving", "purge"]);
+    assert!(refused.contains("--yes"), "{refused}");
+    assert_eq!(indexes(), before, "a refused purge deletes nothing");
+
+    let purged = cli.json(&["--project", "leaving", "purge", "--yes"]);
+    assert_eq!(purged["existed"], true, "{purged}");
+    assert_eq!(purged["topics"], 2, "{purged}");
+    let after = indexes();
+    assert_eq!(
+        before.difference(&after).count(),
+        1,
+        "the purged project's index directory is gone, and only it: {before:?} {after:?}"
+    );
+    assert!(after.is_subset(&before));
+
+    // Asking again finds a new, empty project of that name: neither the index
+    // nor the evidence under it kept anything.
+    assert!(contents(&cli.json(&["--project", "leaving", "search", "vendor contract"])).is_empty());
+    assert!(
+        cli.json(&["--project", "leaving", "grep", "vendor"])["matches"]
+            .as_array()
+            .expect("matches")
+            .is_empty(),
+        "evidence of a purged project is gone"
+    );
+    let staying = contents(&cli.json(&["--project", "staying", "search", "vendor contract"]));
+    assert!(
+        staying.iter().any(|hit| hit.contains("month to month")),
+        "another project is untouched: {staying:?}"
+    );
+
+    let again = cli.json(&["--project", "nowhere", "purge", "--yes"]);
+    assert_eq!(again["existed"], false, "{again}");
+}
+
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
 fn a_pre_split_workspace_is_migrated_by_reindexing() {
     // Every workspace that existed before projects had their own directory
     // takes this path exactly once, so it is worth more than a unit test on

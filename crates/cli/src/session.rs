@@ -23,6 +23,12 @@ use memory_store::{Connections, Database, Workspace, repository};
 use crate::registry::Registry;
 use tokio::sync::Mutex;
 
+/// How long a purge waits for requests already inside the project's index.
+///
+/// A reshape copies the whole index and can take a while; past this the
+/// purge is refused and can be asked for again.
+const PURGE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// The database, and whatever has been opened against it so far.
 pub struct Session {
     workspace: Workspace,
@@ -355,6 +361,48 @@ impl Session {
     /// project open that nothing is using.
     pub fn holds(&self, project: &str) -> bool {
         self.engines.holds(&project.to_string())
+    }
+
+    /// Deletes this project and everything it holds, for good.
+    ///
+    /// Holds the project's slot throughout, after waiting for every request
+    /// already inside its engine, so nothing writes to the index while it is
+    /// removed. The rows are deleted in a transaction that commits only once
+    /// the index directory is gone: a directory that cannot be removed leaves
+    /// the project as it was, and a failed commit leaves rows `reindex` can
+    /// rebuild an index from. `None` when there is no such project.
+    ///
+    /// ponytail: a synced file whose change the watcher picked up before the
+    /// purge can still be ingested after it, into a new project of the same
+    /// name; hosted projects sync no files.
+    pub async fn purge(&self, project: &str) -> Result<Option<repository::PurgedProject>> {
+        anyhow::ensure!(
+            !self.workspace.legacy_index_dir().exists(),
+            "this workspace still has the index shared by every project; \
+             run `pamin-memory reindex` first so a purge can remove one project's index"
+        );
+        self.engines
+            .take_then(project.to_string(), PURGE_PATIENCE, || async {
+                let mut transaction = self.database.pool().begin().await?;
+                let purged = repository::purge_project(&mut *transaction, project).await?;
+                if let Some(purged) = &purged {
+                    match tokio::fs::remove_dir_all(self.workspace.index_dir(purged.id)).await {
+                        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                            return Err(error.into());
+                        }
+                        _ => {}
+                    }
+                }
+                transaction.commit().await?;
+                self.projects.lock().await.remove(project);
+                if let (Some(purged), Some(syncing)) = (&purged, self.syncing()) {
+                    for path in &purged.synced {
+                        syncing.remove(project, path);
+                    }
+                }
+                Ok(purged)
+            })
+            .await
     }
 
     /// An engine with this project's index discarded first, for a rebuild.

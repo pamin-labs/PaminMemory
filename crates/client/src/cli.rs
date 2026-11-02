@@ -111,6 +111,9 @@ pub enum Command {
     /// Rebuild the projection index from PostgreSQL.
     Reindex(memory_contract::reindex::Args),
 
+    /// Delete the project and everything it holds, for good. It cannot be undone.
+    Purge(memory_contract::purge::Args),
+
     /// Run and inspect the work a write left for the projection.
     Cascade(memory_contract::cascade::Args),
 
@@ -250,6 +253,7 @@ pub async fn run(cli: Cli, matches: clap::ArgMatches) -> Result<Option<Unserved>
         Command::Sync(args) => protocol::Call::Sync(args),
         Command::Unsync(args) => protocol::Call::Unsync(args),
         Command::Reindex(args) => protocol::Call::Reindex(args),
+        Command::Purge(args) => protocol::Call::Purge(args),
         Command::Cascade(args) => protocol::Call::Cascade(args),
     };
 
@@ -515,6 +519,10 @@ fn render(
         protocol::Call::Reindex(_) => {
             let result: memory_contract::reindex::Reindexed = parse(value, "reindex")?;
             format.emit(&result, || memory_contract::reindex::render(&result));
+        }
+        protocol::Call::Purge(_) => {
+            let result: memory_contract::purge::Purged = parse(value, "purge")?;
+            format.emit(&result, || memory_contract::purge::render(&result));
         }
         protocol::Call::Stop => {
             let result: memory_contract::stop::Stopped = parse(value, "stop")?;

@@ -100,40 +100,40 @@ impl<K: Eq + Hash + Clone, T> Registry<K, T> {
         self.fill(key, open, true).await
     }
 
+    /// Empties this key's slot and runs `then` once nothing else holds what
+    /// was in it, holding the slot throughout.
+    ///
+    /// For deleting what the value points at. A caller already inside the
+    /// value is waited for; one arriving meanwhile queues on the slot and
+    /// opens afresh after `then`. Waiting gives up after `patience` and puts
+    /// the value back, rather than deleting under a caller still working.
+    pub async fn take_then<F, Fut, R>(&self, key: K, patience: Duration, then: F) -> Result<R>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<R>>,
+    {
+        let slot = self.slot(key);
+        let mut held = slot.lock().await;
+        if let Some(value) = held.take() {
+            let deadline = Instant::now() + patience;
+            // ponytail: polls the count; notify on drop if purges ever wait often.
+            while Arc::strong_count(&value) > 1 {
+                if Instant::now() >= deadline {
+                    *held = Some(value);
+                    anyhow::bail!("still in use after {patience:?}; try again");
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        then().await
+    }
+
     async fn fill<F, Fut>(&self, key: K, open: F, discard: bool) -> Result<Arc<T>>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        // Everything touching the map happens here, with no `.await` in it, so
-        // the map is never locked while something is being opened.
-        let slot = {
-            let mut registry = self.open.lock().expect("the registry lock is poisoned");
-            registry.uses += 1;
-            let now = registry.uses;
-
-            if let Some(entry) = registry.slots.get_mut(&key) {
-                entry.used = now;
-                entry.at = Instant::now();
-                Arc::clone(&entry.slot)
-            } else {
-                let evicted = registry.make_room(self.capacity);
-                self.evicted.fetch_add(evicted, Ordering::Relaxed);
-                let slot = Slot::default();
-                registry.slots.insert(
-                    key,
-                    Entry {
-                        // Cloned before the lock goes, so there is no moment
-                        // when a slot being opened looks idle to `make_room`.
-                        slot: Arc::clone(&slot),
-                        used: now,
-                        at: Instant::now(),
-                    },
-                );
-                slot
-            }
-        };
-
+        let slot = self.slot(key);
         let mut held = slot.lock().await;
         if discard {
             *held = None;
@@ -149,6 +149,37 @@ impl<K: Eq + Hash + Clone, T> Registry<K, T> {
         Ok(value)
         // The guard drops here, before the caller uses the value: two requests
         // for one key share it rather than queueing on the registry.
+    }
+
+    /// This key's slot, made if it has none, counted as a use.
+    ///
+    /// Everything touching the map happens here, with no `.await` in it, so
+    /// the map is never locked while something is being opened.
+    fn slot(&self, key: K) -> Slot<T> {
+        let mut registry = self.open.lock().expect("the registry lock is poisoned");
+        registry.uses += 1;
+        let now = registry.uses;
+
+        if let Some(entry) = registry.slots.get_mut(&key) {
+            entry.used = now;
+            entry.at = Instant::now();
+            Arc::clone(&entry.slot)
+        } else {
+            let evicted = registry.make_room(self.capacity);
+            self.evicted.fetch_add(evicted, Ordering::Relaxed);
+            let slot = Slot::default();
+            registry.slots.insert(
+                key,
+                Entry {
+                    // Cloned before the lock goes, so there is no moment
+                    // when a slot being opened looks idle to `make_room`.
+                    slot: Arc::clone(&slot),
+                    used: now,
+                    at: Instant::now(),
+                },
+            );
+            slot
+        }
     }
 
     /// Whether this key has a place here, open or being opened.
@@ -330,6 +361,75 @@ mod tests {
     /// With a `std::sync::Mutex` the same revert does not compile at all: the
     /// guard is not `Send` and these futures are spawned. That is the stronger
     /// half of the fix and the reason for the choice of mutex.
+    /// A purge runs only once the request inside the value lets go of it.
+    ///
+    /// Deleting an index a request is still writing would let the write put
+    /// the purged directory back. Reverting the wait in `take_then` makes
+    /// `then` run while `inside` is held, and the first assertion fails.
+    #[tokio::test]
+    async fn taking_a_value_waits_for_the_caller_inside_it() {
+        let registry: Arc<Registry<&str, u32>> = Arc::new(Registry::with_capacity(16));
+        let inside = registry
+            .get_or_open("busy", || async { Ok(1) })
+            .await
+            .unwrap();
+        let ran = Arc::new(AtomicUsize::new(0));
+
+        let taking = {
+            let registry = Arc::clone(&registry);
+            let ran = Arc::clone(&ran);
+            tokio::spawn(async move {
+                registry
+                    .take_then("busy", Duration::from_secs(10), || async move {
+                        ran.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    })
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            0,
+            "ran while a caller was inside"
+        );
+
+        drop(inside);
+        taking
+            .await
+            .unwrap()
+            .expect("the take succeeds once released");
+        assert_eq!(ran.load(Ordering::SeqCst), 1);
+        let reopened = registry
+            .get_or_open("busy", || async { Ok(2) })
+            .await
+            .unwrap();
+        assert_eq!(*reopened, 2, "the next caller opens afresh");
+    }
+
+    /// Waiting too long gives the value back rather than running anyway.
+    #[tokio::test]
+    async fn taking_a_value_still_in_use_gives_up_and_keeps_it() {
+        let registry: Registry<&str, u32> = Registry::with_capacity(16);
+        let inside = registry
+            .get_or_open("busy", || async { Ok(1) })
+            .await
+            .unwrap();
+
+        let taken: anyhow::Result<()> = registry
+            .take_then("busy", Duration::from_millis(30), || async {
+                panic!("ran while a caller was inside")
+            })
+            .await;
+        assert!(taken.is_err());
+
+        let again = registry
+            .get_or_open("busy", || async { panic!("opened again") })
+            .await
+            .unwrap();
+        assert!(Arc::ptr_eq(&again, &inside), "the value was put back");
+    }
+
     #[tokio::test]
     async fn a_cold_key_does_not_hold_up_another_one() {
         let registry: Arc<Registry<&str, u32>> = Arc::new(Registry::with_capacity(16));
