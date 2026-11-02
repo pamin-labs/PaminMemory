@@ -637,7 +637,7 @@ async fn edges_are_versioned_rather_than_overwritten(database: &Database) {
     let (project, service, db, _) = graph_fixture(database).await;
 
     let first = graph::assert_edge(
-        database.pool(),
+        database,
         project,
         service,
         db,
@@ -652,7 +652,7 @@ async fn edges_are_versioned_rather_than_overwritten(database: &Database) {
     // Asserting the same claim again must not stack a version, or every
     // rewrite of unchanged content would grow the ledger without limit.
     let again = graph::assert_edge(
-        database.pool(),
+        database,
         project,
         service,
         db,
@@ -666,7 +666,7 @@ async fn edges_are_versioned_rather_than_overwritten(database: &Database) {
     // A changed claim closes the live version and appends a successor.
     let mut narrowed = EdgeClaim::explicit(EdgeKind::DependsOn);
     narrowed.validity = Validity::new(Some(OffsetDateTime::UNIX_EPOCH), None);
-    let second = graph::assert_edge(database.pool(), project, service, db, &narrowed)
+    let second = graph::assert_edge(database, project, service, db, &narrowed)
         .await
         .expect("assert changed edge");
     assert!(second.is_new());
@@ -739,7 +739,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) 
     // service and is only reachable by following the second edge backwards.
     let service_state = current_state(database, project, service).await;
     graph::assert_edge(
-        database.pool(),
+        database,
         project,
         service,
         db,
@@ -748,7 +748,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) 
     .await
     .expect("service -> database");
     graph::assert_edge(
-        database.pool(),
+        database,
         project,
         backup,
         db,
@@ -825,7 +825,7 @@ async fn expansion_is_bounded_undirected_and_time_filtered(database: &Database) 
         Some(OffsetDateTime::UNIX_EPOCH),
         Some(OffsetDateTime::UNIX_EPOCH + time::Duration::days(1)),
     );
-    graph::assert_edge(database.pool(), project, backup, db, &expired)
+    graph::assert_edge(database, project, backup, db, &expired)
         .await
         .expect("bound the edge to the past");
 
@@ -1027,7 +1027,7 @@ async fn a_retraction_reason_decides_what_history_keeps(database: &Database) {
 
     for target in [ended, wrong] {
         graph::assert_edge(
-            database.pool(),
+            database,
             project.id,
             root,
             target,
@@ -1135,7 +1135,7 @@ async fn a_seed_never_reaches_itself_however_deep_the_walk(database: &Database) 
     // reachable from every other, and from itself.
     for (from, to) in [(a, b), (b, c), (c, a)] {
         graph::assert_edge(
-            database.pool(),
+            database,
             project.id,
             from,
             to,
@@ -1421,7 +1421,7 @@ async fn concurrent_batches_of_edges_form_one_chain_each(
         .iter()
         .map(|(from, to)| (*from, *to, EdgeClaim::explicit(EdgeKind::RelatedTo)))
         .collect();
-    graph::assert_edges(database.pool(), project.id, &existing)
+    graph::assert_edges(database, project.id, &existing)
         .await
         .expect("assert the edges that exist before the race");
 
@@ -1449,7 +1449,7 @@ async fn concurrent_batches_of_edges_form_one_chain_each(
                     let database = Database::connect(&server, Connections::PerCommand)
                         .await
                         .expect("connect");
-                    let asserted = graph::assert_edges(database.pool(), project.id, &edges)
+                    let asserted = graph::assert_edges(&database, project.id, &edges)
                         .await
                         .expect("every writer keeps its edges");
                     (edges, asserted)
@@ -1583,7 +1583,7 @@ async fn retraction_racing_assertion_leaves_one_chain_each(
     for race in 0..RACES {
         // Every edge live before each race, so both sides have it to close.
         let named: Vec<_> = targets.iter().map(|to| (hub, *to, derived(1.0))).collect();
-        graph::assert_edges(database.pool(), project.id, &named)
+        graph::assert_edges(database, project.id, &named)
             .await
             .expect("assert the edges before the race");
 
@@ -1605,7 +1605,7 @@ async fn retraction_racing_assertion_leaves_one_chain_each(
                         .await
                         .expect("connect");
                     if racer % 2 == 0 {
-                        graph::assert_edges(database.pool(), project.id, &edges)
+                        graph::assert_edges(&database, project.id, &edges)
                             .await
                             .map(|_| ())
                     } else {
@@ -1704,7 +1704,7 @@ async fn ensuring_a_row_that_exists_does_not_rewrite_it(database: &Database) {
         committed!(database, common::ensure_topic, project.id, "from").expect("ensure topic");
     let to = committed!(database, common::ensure_topic, project.id, "to").expect("ensure topic");
     graph::assert_edge(
-        database.pool(),
+        database,
         project.id,
         from.id,
         to.id,
@@ -1746,7 +1746,7 @@ async fn ensuring_a_row_that_exists_does_not_rewrite_it(database: &Database) {
     transaction.commit().await.expect("commit");
     assert_eq!((found.topic.id, raced.topic.id), (from.id, from.id));
     graph::assert_edge(
-        database.pool(),
+        database,
         project.id,
         from.id,
         to.id,
@@ -1819,7 +1819,7 @@ async fn derived_edges_are_asserted_together_or_not_at_all(database: &Database) 
         ),
     ];
 
-    graph::assert_edges(database.pool(), project.id, &doomed)
+    graph::assert_edges(database, project.id, &doomed)
         .await
         .expect_err("a self edge should be refused");
 
@@ -1837,7 +1837,7 @@ async fn derived_edges_are_asserted_together_or_not_at_all(database: &Database) 
     // asserting it a second time writes none: a batch is as idempotent as the
     // single assertion it is built from.
     let sound = &doomed[..2];
-    let appended = graph::assert_edges(database.pool(), project.id, sound)
+    let appended = graph::assert_edges(database, project.id, sound)
         .await
         .expect("assert edges");
     assert_eq!(
@@ -1846,7 +1846,7 @@ async fn derived_edges_are_asserted_together_or_not_at_all(database: &Database) 
         "every edge in a batch should be appended"
     );
 
-    let again = graph::assert_edges(database.pool(), project.id, sound)
+    let again = graph::assert_edges(database, project.id, sound)
         .await
         .expect("re-assert edges");
     assert_eq!(
@@ -1880,7 +1880,7 @@ async fn a_batch_answers_each_edge_where_it_was_asked(database: &Database) {
     let (hub, kept, changed, added) = (topics[0], topics[1], topics[2], topics[3]);
     let explicit = EdgeClaim::explicit(EdgeKind::RelatedTo);
     let before = graph::assert_edges(
-        database.pool(),
+        database,
         project.id,
         &[
             (hub, kept, explicit.clone()),
@@ -1895,7 +1895,7 @@ async fn a_batch_answers_each_edge_where_it_was_asked(database: &Database) {
         ..explicit.clone()
     };
     let asserted = graph::assert_edges(
-        database.pool(),
+        database,
         project.id,
         &[
             (hub, kept, explicit.clone()),
@@ -2730,7 +2730,7 @@ async fn every_column_holds_what_was_written_to_it(database: &Database) {
         },
         caused_by_topic_state: Some(state.id),
     };
-    graph::assert_edge(database.pool(), project.id, topic.id, other.id, &claim)
+    graph::assert_edge(database, project.id, topic.id, other.id, &claim)
         .await
         .expect("assert edge");
 
@@ -3223,7 +3223,7 @@ async fn two_adjacent_hubs_do_not_multiply(database: &Database) {
         edges.push((right, on_right, EdgeClaim::explicit(EdgeKind::RelatedTo)));
     }
 
-    graph::assert_edges(database.pool(), project.id, &edges)
+    graph::assert_edges(database, project.id, &edges)
         .await
         .expect("build the hubs");
 
@@ -4059,7 +4059,7 @@ async fn several_topics_restate_their_mentions_at_once(database: &Database) {
             ));
         }
     }
-    graph::assert_edges(database.pool(), project.id, &edges)
+    graph::assert_edges(database, project.id, &edges)
         .await
         .expect("assert the derived edges");
 
@@ -4130,12 +4130,12 @@ async fn a_derived_edge_the_content_stopped_making_is_closed(database: &Database
         )
     };
 
-    graph::assert_edges(database.pool(), project.id, &[derived(argo), derived(flux)])
+    graph::assert_edges(database, project.id, &[derived(argo), derived(flux)])
         .await
         .expect("assert the derived edges");
     // Somebody's own claim, of the same kind and out of the same topic.
     graph::assert_edge(
-        database.pool(),
+        database,
         project.id,
         deploy,
         runbook,
@@ -4277,7 +4277,7 @@ async fn an_edge_reads_the_same_direction_from_either_end(database: &Database) {
     ];
     for (from, to, kind) in edges {
         graph::assert_edge(
-            database.pool(),
+            database,
             project.id,
             id[from],
             id[to],
@@ -4415,7 +4415,7 @@ async fn a_version_is_numbered_and_read_from_its_own_key(
     let first = write_state(database, crowd.id, crowded.id, "crowd-source", "v1").await;
     write_state(database, crowd.id, other.id, "crowd-other", "v1").await;
     graph::assert_edge(
-        database.pool(),
+        database,
         crowd.id,
         crowded.id,
         other.id,
@@ -4482,6 +4482,7 @@ async fn a_version_is_numbered_and_read_from_its_own_key(
         .connect(&server.url())
         .await
         .expect("a one-connection pool");
+    let probed = Database::with_pool(probe.clone());
 
     // At most this many pages of a table and its indexes for any one call
     // below. Each touches a leaf or two of its own key, the pages it writes,
@@ -4590,7 +4591,7 @@ async fn a_version_is_numbered_and_read_from_its_own_key(
         let asserted = reads_its_own_key!(
             "relationship_versions",
             "assert_edge",
-            graph::assert_edge(&probe, project, topic.id, target.id, &claim)
+            graph::assert_edge(&probed, project, topic.id, target.id, &claim)
                 .await
                 .expect("assert edge")
         );

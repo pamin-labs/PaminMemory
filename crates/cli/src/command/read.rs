@@ -28,13 +28,22 @@ pub async fn execute(
 
     let topic = resolve::topic(database, project, &args.topic).await?;
 
-    let versions = repository::topic_versions(database.pool(), topic.id).await?;
+    let versions = database
+        .within(project, async |connection| {
+            anyhow::Ok(repository::topic_versions(connection, topic.id).await?)
+        })
+        .await?;
     let Some(resolved) = memory_core::resolve(&versions, VersionOffset(args.version_offset)) else {
         bail!("topic {} has no live versions", args.topic);
     };
 
-    let Some(state) =
-        repository::topic_state(database.pool(), project, topic.id, resolved.version).await?
+    let Some(state) = database
+        .within(project, async |connection| {
+            anyhow::Ok(
+                repository::topic_state(connection, project, topic.id, resolved.version).await?,
+            )
+        })
+        .await?
     else {
         bail!("version {} of {} is missing", resolved.version, args.topic);
     };

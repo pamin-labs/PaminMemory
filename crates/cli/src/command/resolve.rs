@@ -26,7 +26,12 @@ use memory_store::{Database, repository};
 /// creating one silently would leave a name pointing at an empty identity that
 /// nothing can ever resolve to a state.
 pub async fn topic(database: &Database, project: ProjectId, name: &str) -> Result<Topic> {
-    match repository::find_topic(database.pool(), project, name).await? {
+    match database
+        .within(project, async |connection| {
+            anyhow::Ok(repository::find_topic(connection, project, name).await?)
+        })
+        .await?
+    {
         Some(topic) => Ok(topic),
         None => bail!("no topic named {name}"),
     }

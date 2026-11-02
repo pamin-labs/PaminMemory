@@ -15,9 +15,10 @@ use memory_core::{
 use std::collections::{HashMap, HashSet};
 
 use sqlx::postgres::PgRow;
-use sqlx::{PgExecutor, PgPool, Row};
+use sqlx::{PgExecutor, Row};
 use time::OffsetDateTime;
 
+use crate::database::Database;
 use crate::error::Result;
 use crate::sql::SqlLabel;
 
@@ -204,7 +205,7 @@ pub async fn edge_history(
 /// loses on the unique constraint and its claim is dropped rather than queued.
 /// This is the same protocol topic states use, for the same reason.
 pub async fn assert_edge(
-    pool: &PgPool,
+    database: &Database,
     project: ProjectId,
     from: TopicId,
     to: TopicId,
@@ -214,10 +215,12 @@ pub async fn assert_edge(
     // edge each have one implementation. Deciding had two once, and the one on
     // this path was the one no test measured. One edge costs the same
     // statements either way.
-    Ok(assert_edges(pool, project, &[(from, to, claim.clone())])
-        .await?
-        .pop()
-        .expect("one edge asked about, one answered"))
+    Ok(
+        assert_edges(database, project, &[(from, to, claim.clone())])
+            .await?
+            .pop()
+            .expect("one edge asked about, one answered"),
+    )
 }
 
 /// Asserts several edges in one transaction.
@@ -232,7 +235,7 @@ pub async fn assert_edge(
 /// derived edges are one statement about what it says, and a crash partway
 /// through used to leave that statement half told.
 pub async fn assert_edges(
-    pool: &PgPool,
+    database: &Database,
     project: ProjectId,
     edges: &[(TopicId, TopicId, EdgeClaim)],
 ) -> Result<Vec<Assertion>> {
@@ -246,7 +249,9 @@ pub async fn assert_edges(
     // questions to find out that the answer to all of them was "nothing to
     // do". That is the case the transaction below is skipped for, so it was
     // the cheap path paying the most.
-    let live = live_versions_of(pool, project, edges).await?;
+    let mut reading = database.scoped(project).await?;
+    let live = live_versions_of(&mut *reading, project, edges).await?;
+    reading.commit().await?;
     let mut asserted: Vec<Option<Assertion>> = Vec::with_capacity(edges.len());
     let mut pending = Vec::new();
     for (index, (from, to, claim)) in edges.iter().enumerate() {
@@ -260,7 +265,7 @@ pub async fn assert_edges(
     }
 
     if !pending.is_empty() {
-        let mut transaction = pool.begin().await?;
+        let mut transaction = database.scoped(project).await?;
         for round in repeats_apart(edges, pending) {
             let written = assert_within(&mut transaction, project, edges, &round).await?;
             for (index, assertion) in round.into_iter().zip(written) {

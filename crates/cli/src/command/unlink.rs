@@ -30,7 +30,11 @@ pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Unl
 
     // The rows stay either way, so what was believed and when stays
     // answerable, and the truth interval is untouched.
-    let closed = graph::close_edge(database.pool(), project, from, to, kind, reason).await?;
+    let closed = database
+        .within(project, async |connection| {
+            anyhow::Ok(graph::close_edge(connection, project, from, to, kind, reason).await?)
+        })
+        .await?;
 
     let result = Unlinked {
         from: args.from,

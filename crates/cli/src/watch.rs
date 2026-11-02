@@ -746,17 +746,36 @@ impl Watcher {
             .session
             .project(&self.followed[at].synced.project)
             .await?;
-        let pool = self.session.database().pool();
         let prefix = format!("{}/", named.name);
-        let records =
-            memory_store::repository::file_records_under(pool, project, &named.root, &prefix)
-                .await?;
-        let sections = memory_store::repository::file_topics_under(
-            pool,
-            project,
-            std::slice::from_ref(&prefix),
-        )
-        .await?;
+        let records = self
+            .session
+            .database()
+            .within(project, async |connection| {
+                anyhow::Ok(
+                    memory_store::repository::file_records_under(
+                        connection,
+                        project,
+                        &named.root,
+                        &prefix,
+                    )
+                    .await?,
+                )
+            })
+            .await?;
+        let sections = self
+            .session
+            .database()
+            .within(project, async |connection| {
+                anyhow::Ok(
+                    memory_store::repository::file_topics_under(
+                        connection,
+                        project,
+                        std::slice::from_ref(&prefix),
+                    )
+                    .await?,
+                )
+            })
+            .await?;
         let mut files: BTreeSet<String> = records.into_iter().map(|record| record.file).collect();
         files.extend(
             sections
@@ -976,7 +995,14 @@ pub async fn freshen(
     if synced.is_empty() {
         return Ok(());
     }
-    let roots = memory_store::repository::file_roots_of(pool, project_id, topics).await?;
+    let roots = session
+        .database()
+        .within(project_id, async |connection| {
+            anyhow::Ok(
+                memory_store::repository::file_roots_of(connection, project_id, topics).await?,
+            )
+        })
+        .await?;
     if roots.is_empty() {
         return Ok(());
     }
@@ -987,9 +1013,20 @@ pub async fn freshen(
         })
         .collect();
     let (candidate_roots, files): (Vec<String>, Vec<String>) = candidates.into_iter().unzip();
-    let records =
-        memory_store::repository::file_records_of(pool, project_id, &candidate_roots, &files)
-            .await?;
+    let records = session
+        .database()
+        .within(project_id, async |connection| {
+            anyhow::Ok(
+                memory_store::repository::file_records_of(
+                    connection,
+                    project_id,
+                    &candidate_roots,
+                    &files,
+                )
+                .await?,
+            )
+        })
+        .await?;
     let unrecorded = unrecorded(&roots, &records);
     let stale = tokio::task::spawn_blocking(move || stale(records, &synced)).await?;
     if stale.is_empty() && !unrecorded {
