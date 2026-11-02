@@ -1,0 +1,8 @@
+# pamin-labs-dev coordinates the coding agents of Pamin Labs engineers in this
+# repository. Without the Pamin Labs plugin this file has no effect.
+product = "pamin-memory"
+server = "https://dev.paminlabs.com"
+# Paths and symbols whose changes always count as `replace` and escalate.
+# Empty for now: start permissive and tighten after a week of use.
+protected = []
+protected_symbols = []

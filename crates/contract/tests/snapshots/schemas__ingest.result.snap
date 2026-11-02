@@ -1,0 +1,108 @@
+---
+source: crates/contract/tests/schemas.rs
+expression: "schema_for! (ingest::Ingested)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Ingested",
+  "type": "object",
+  "properties": {
+    "cascade": {
+      "description": "Whether the projection caught up before this returned.",
+      "type": "string"
+    },
+    "cascade_lagging": {
+      "description": "Set when the projection was behind at any point during the ingest.",
+      "type": "boolean"
+    },
+    "files": {
+      "description": "Files ingested: read, or left unread because their record says they\nhave not changed since they last were.",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "held": {
+      "description": "The ones the filter held in the evidence layer.",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "missing": {
+      "description": "The same, left searchable because this ingest cannot take them off:\nthose somebody also wrote by hand, and those of a file it could not\nread or a directory whose walk met an error.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "removed": {
+      "description": "Memories an earlier ingest recorded from these files whose section is\nno longer in them, or from files under these directories that are no\nlonger there, which this ingest took off the retrieval surface. Their\nhistory stays, and ingesting the section again brings it back.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "renamed": {
+      "description": "Sections found under a new name -- their file moved, or a heading above\nthem renamed -- whose memory was renamed rather than recorded afresh,\nkeeping its history. The old name still finds it.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Renamed"
+      }
+    },
+    "sections": {
+      "description": "Sections in them, each one memory: cut out of the files read, and\ncounted from the record of those left unread.",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "skipped": {
+      "description": "Files skipped, with why: not UTF-8, or unreadable.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unchanged": {
+      "description": "The ones that said what their memory already did, which were left as\nthey were rather than recorded again -- every section of a file left\nunread among them.",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "written": {
+      "description": "Of those, the ones written as a new version of their memory.",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "files",
+    "sections",
+    "written",
+    "unchanged",
+    "held",
+    "removed",
+    "missing",
+    "renamed",
+    "skipped",
+    "cascade",
+    "cascade_lagging"
+  ],
+  "$defs": {
+    "Renamed": {
+      "description": "A memory renamed by an ingest.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ]
+    }
+  }
+}

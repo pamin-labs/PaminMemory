@@ -1,0 +1,34 @@
+---
+source: crates/contract/tests/schemas.rs
+expression: "schema_for! (search::Args)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Args",
+  "description": "Search memories by meaning and wording. Returns each matching topic at its\ncurrent state, with a `why` trace of the channels and graph paths that found\nit. Ranked, so use grep, read or neighbors when you need certainty.",
+  "type": "object",
+  "properties": {
+    "graph_depth": {
+      "description": "How many edges the graph channel walks out from its seeds.",
+      "type": "integer",
+      "format": "uint8",
+      "default": 2,
+      "maximum": 4,
+      "minimum": 0
+    },
+    "limit": {
+      "description": "How many results to return.",
+      "type": "integer",
+      "format": "uint32",
+      "default": 5,
+      "minimum": 0
+    },
+    "query": {
+      "description": "What to search for, in any language.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "query"
+  ]
+}
