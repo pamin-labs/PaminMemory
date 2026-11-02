@@ -24,7 +24,7 @@ pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Lin
     let mut claim = EdgeClaim::explicit(kind);
     claim.validity = args.validity.parse()?;
 
-    let assertion = graph::assert_edge(database.pool(), project, from, to, &claim).await?;
+    let assertion = graph::assert_edge(database, project, from, to, &claim).await?;
 
     let result = Linked {
         from: args.from,

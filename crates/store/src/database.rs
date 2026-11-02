@@ -158,6 +158,12 @@ impl Database {
         })
     }
 
+    /// Wraps a pool the caller built, for a caller that needs a particular
+    /// one: a test that reads a single backend's statistics.
+    pub fn with_pool(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
     /// The connection pool. Every query goes through this.
     ///
     /// Handed out rather than wrapped. A pool is already the right thing to
@@ -182,6 +188,27 @@ impl Database {
             project.0
         );
         Ok(self.pool.begin_with(sqlx::AssertSqlSafe(begin)).await?)
+    }
+}
+
+impl Database {
+    /// Runs `work` in a [`scoped`](Self::scoped) transaction and commits it.
+    ///
+    /// For a read or write that is one statement, or several that need no
+    /// lock held between them; a write that numbers under a lock opens its own
+    /// transaction with [`Database::scoped`].
+    pub async fn within<R, E: From<crate::StoreError>>(
+        &self,
+        project: ProjectId,
+        work: impl AsyncFnOnce(&mut sqlx::PgConnection) -> std::result::Result<R, E>,
+    ) -> std::result::Result<R, E> {
+        let mut transaction = self.scoped(project).await?;
+        let result = work(&mut transaction).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(crate::StoreError::from)?;
+        Ok(result)
     }
 }
 

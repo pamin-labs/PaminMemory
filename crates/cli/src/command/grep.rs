@@ -18,14 +18,20 @@ pub async fn execute(session: &Session, project: &str, args: Args) -> Result<Mat
     let database = session.database();
     let project = session.project(project).await?;
 
-    let hits = repository::grep_evidence(
-        database.pool(),
-        project,
-        &args.literal,
-        !args.ignore_case,
-        args.limit,
-    )
-    .await?;
+    let hits = database
+        .within(project, async |connection| {
+            anyhow::Ok(
+                repository::grep_evidence(
+                    connection,
+                    project,
+                    &args.literal,
+                    !args.ignore_case,
+                    args.limit,
+                )
+                .await?,
+            )
+        })
+        .await?;
 
     let result = Matches {
         literal: args.literal,

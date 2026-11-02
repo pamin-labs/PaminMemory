@@ -964,7 +964,11 @@ impl Engine {
         // How large a segment should be follows how much there is to hold, and
         // a collection records the answer when it is created, so the count has
         // to be in hand before the index is opened.
-        let documents = repository::topic_count(database.pool(), project.id).await?;
+        let documents = database
+            .within(project.id, async |connection| {
+                anyhow::Ok(repository::topic_count(connection, project.id).await?)
+            })
+            .await?;
 
         // A rebuild waits out a reshape of this index, and holds it off until
         // `reindex` finishes: both move the directory. Every open first puts
@@ -1147,9 +1151,21 @@ impl Engine {
             return Ok(known);
         }
 
-        let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
+        let widest = self
+            .scoped(async |connection| {
+                Ok(repository::widest_topic_name(connection, self.project).await?)
+            })
+            .await?;
         self.remember_widest_name(widest);
         Ok(widest)
+    }
+
+    /// [`Database::within`] this engine's project.
+    pub(crate) async fn scoped<R>(
+        &self,
+        work: impl AsyncFnOnce(&mut PgConnection) -> Result<R>,
+    ) -> Result<R> {
+        self.database.within(self.project, work).await
     }
 
     /// Raises what this process believes the widest name to be.
@@ -1281,11 +1297,13 @@ impl Engine {
                 std::collections::HashMap::new()
             } else {
                 let ids: Vec<TopicId> = states.iter().map(|state| state.topic_id).collect();
-                repository::topics_by_id(self.database.pool(), self.project, &ids)
-                    .await?
-                    .into_iter()
-                    .map(|(topic, name, _)| (topic, name))
-                    .collect()
+                self.scoped(async |connection| {
+                    Ok(repository::topics_by_id(connection, self.project, &ids).await?)
+                })
+                .await?
+                .into_iter()
+                .map(|(topic, name, _)| (topic, name))
+                .collect()
             };
         // What a memory is cut into here is what a search shows a window of,
         // so the cut is kept for the searches that follow (see `Cuts`).
@@ -1416,8 +1434,11 @@ impl Engine {
         // Looked up rather than created: a write the filter holds should leave
         // no trace on the retrieval surface, and an empty topic is a trace.
         // Promotion is what creates one, inside the write transaction.
-        let current =
-            repository::current_content(self.database.pool(), self.project, topic).await?;
+        let current = self
+            .scoped(async |connection| {
+                Ok(repository::current_content(connection, self.project, topic).await?)
+            })
+            .await?;
         let verdict = memory_core::SensoryFilter::default().judge(content, current.as_deref());
         let recorded = self
             .record(topic, content, validity, verdict, SourceKind::Manual, None)
@@ -1449,8 +1470,11 @@ impl Engine {
         validity: memory_core::Validity,
         root: &str,
     ) -> Result<Option<(memory_core::Verdict, Recorded)>> {
-        let current =
-            repository::current_content(self.database.pool(), self.project, topic).await?;
+        let current = self
+            .scoped(async |connection| {
+                Ok(repository::current_content(connection, self.project, topic).await?)
+            })
+            .await?;
         let verdict = memory_core::SensoryFilter::default().judge(content, current.as_deref());
         if verdict.rejection == Some(memory_core::Rejection::Restatement) {
             return Ok(None);
@@ -1462,12 +1486,16 @@ impl Engine {
         // a section cut down below the filter's minimum is held over it, and
         // the ingest retires it, after which it has none and this applies.
         if !verdict.is_promoted() && current.is_none() {
-            let last = repository::latest_hash_at(
-                self.database.pool(),
-                self.project,
-                &locator(SourceKind::File, topic),
-            )
-            .await?;
+            let last = self
+                .scoped(async |connection| {
+                    Ok(repository::latest_hash_at(
+                        connection,
+                        self.project,
+                        &locator(SourceKind::File, topic),
+                    )
+                    .await?)
+                })
+                .await?;
             if last.as_deref() == Some(content_hash(content).as_str()) {
                 return Ok(None);
             }
@@ -1499,7 +1527,7 @@ impl Engine {
     /// that found the section back in its file among them, is newer than the
     /// question this answers.
     pub async fn retire_section(&self, topic: &str, seen: TopicStateId) -> Result<Retired> {
-        let mut transaction = self.database.pool().begin().await?;
+        let mut transaction = self.database.scoped(self.project).await?;
 
         let Some(locked) = repository::lock_topic(&mut transaction, self.project, topic).await?
         else {
@@ -1542,7 +1570,7 @@ impl Engine {
     /// already under the new name -- nothing changed, and the section is
     /// recorded under its new name as a new one would be.
     pub async fn rename_section(&self, from: &str, to: &str, seen: TopicStateId) -> Result<bool> {
-        let mut transaction = self.database.pool().begin().await?;
+        let mut transaction = self.database.scoped(self.project).await?;
         let Some(locked) = repository::lock_topic(&mut transaction, self.project, from).await?
         else {
             return Ok(false);
@@ -1641,7 +1669,7 @@ impl Engine {
         kind: SourceKind,
         root: Option<&str>,
     ) -> Result<Recorded> {
-        let mut transaction = self.database.pool().begin().await?;
+        let mut transaction = self.database.scoped(self.project).await?;
 
         // Writes to one topic share a source, so their evidence forms a single
         // chain rather than a new source per write. Per topic for a file's
@@ -1823,9 +1851,7 @@ impl Engine {
     /// unchanged and written nowhere, and only then is the rest closed, so
     /// re-deriving an unaltered memory still touches no row.
     pub async fn derive_mentions(&self, state: &TopicState) -> Result<usize> {
-        let mut connection = self.database.pool().acquire().await?;
-        self.restate_mentions(&mut connection, std::slice::from_ref(state))
-            .await
+        self.restate_mentions(std::slice::from_ref(state)).await
     }
 
     /// Restates which section each of `sections` sits under, as `parents`
@@ -1847,12 +1873,14 @@ impl Engine {
         names.extend(parents.iter().map(|(_, parent)| parent.clone()));
         names.sort_unstable();
         names.dedup();
-        let found: std::collections::HashMap<String, repository::Named> =
-            repository::current_named(self.database.pool(), self.project, &names)
-                .await?
-                .into_iter()
-                .map(|named| (named.name.clone(), named))
-                .collect();
+        let found: std::collections::HashMap<String, repository::Named> = self
+            .scoped(async |connection| {
+                Ok(repository::current_named(connection, self.project, &names).await?)
+            })
+            .await?
+            .into_iter()
+            .map(|named| (named.name.clone(), named))
+            .collect();
 
         let mut kept: std::collections::BTreeMap<TopicId, Vec<TopicId>> = sections
             .iter()
@@ -1871,10 +1899,15 @@ impl Engine {
             kept.entry(from.topic).or_default().push(to.topic);
         }
 
-        let asserted = graph::assert_edges(self.database.pool(), self.project, &claims).await?;
+        let asserted = graph::assert_edges(&self.database, self.project, &claims).await?;
         let keep: Vec<(TopicId, Vec<TopicId>)> = kept.into_iter().collect();
-        graph::retract_derived_all(self.database.pool(), self.project, EdgeKind::PartOf, &keep)
-            .await?;
+        self.scoped(async |connection| {
+            Ok(
+                graph::retract_derived_all(connection, self.project, EdgeKind::PartOf, &keep)
+                    .await?,
+            )
+        })
+        .await?;
         Ok(asserted
             .iter()
             .filter(|assertion| assertion.is_new())
@@ -1891,11 +1924,7 @@ impl Engine {
     /// arguments. So the runs of every memory go into one lookup, the edges
     /// into one assertion and the retractions into one statement, and the run
     /// each name matched is what says which memory it belongs to.
-    pub(crate) async fn restate_mentions(
-        &self,
-        connection: &mut PgConnection,
-        states: &[TopicState],
-    ) -> Result<usize> {
+    pub(crate) async fn restate_mentions(&self, states: &[TopicState]) -> Result<usize> {
         if states.is_empty() {
             return Ok(0);
         }
@@ -1910,7 +1939,11 @@ impl Engine {
         // value can only be too low, and too low here does not mean a missed
         // edge -- what is not found below is closed as no longer named. See
         // [`Engine::widest_name`].
-        let widest = repository::widest_topic_name(&mut *connection, self.project).await?;
+        let widest = self
+            .scoped(async |connection| {
+                Ok(repository::widest_topic_name(connection, self.project).await?)
+            })
+            .await?;
         let runs: Vec<Vec<String>> = off_the_runtime(|| {
             states
                 .iter()
@@ -1922,8 +1955,11 @@ impl Engine {
         asked.dedup();
         let mut naming: std::collections::HashMap<String, Vec<TopicId>> =
             std::collections::HashMap::new();
-        for (run, topic) in
-            repository::names_matching(&mut *connection, self.project, &asked).await?
+        for (run, topic) in self
+            .scoped(async |connection| {
+                Ok(repository::names_matching(connection, self.project, &asked).await?)
+            })
+            .await?
         {
             naming.entry(run).or_default().push(topic);
         }
@@ -1955,14 +1991,19 @@ impl Engine {
         // One transaction: the edges a memory derives are one statement about
         // what it says, and asserting them separately both cost a commit each
         // and let a crash tell half of it.
-        let asserted = graph::assert_edges(self.database.pool(), self.project, &edges).await?;
+        let asserted = graph::assert_edges(&self.database, self.project, &edges).await?;
 
-        graph::retract_derived_all(
-            &mut *connection,
-            self.project,
-            EdgeKind::Mentions,
-            &named_now,
-        )
+        self.scoped(async |connection| {
+            Ok(
+                graph::retract_derived_all(
+                    connection,
+                    self.project,
+                    EdgeKind::Mentions,
+                    &named_now,
+                )
+                .await?,
+            )
+        })
         .await?;
 
         Ok(asserted
@@ -1985,17 +2026,26 @@ impl Engine {
     /// index, and it is deliberately the strict half of this pair -- the
     /// forgiving half is the content search beside it.
     pub async fn topics_named_like(&self, text: &str, limit: u32) -> Result<Vec<String>> {
-        let widest = repository::widest_topic_name(self.database.pool(), self.project).await?;
+        let widest = self
+            .scoped(async |connection| {
+                Ok(repository::widest_topic_name(connection, self.project).await?)
+            })
+            .await?;
         let runs = off_the_runtime(|| runs_of_tokens(&self.segmenter.name_sequence(text), widest));
-        let candidates =
-            repository::topics_named_by(self.database.pool(), self.project, &runs).await?;
-        let mut named: Vec<String> =
-            repository::topics_by_id(self.database.pool(), self.project, &candidates)
-                .await?
-                .into_iter()
-                .map(|(_, name, _)| name)
-                .take(limit as usize)
-                .collect();
+        let candidates = self
+            .scoped(async |connection| {
+                Ok(repository::topics_named_by(connection, self.project, &runs).await?)
+            })
+            .await?;
+        let mut named: Vec<String> = self
+            .scoped(async |connection| {
+                Ok(repository::topics_by_id(connection, self.project, &candidates).await?)
+            })
+            .await?
+            .into_iter()
+            .map(|(_, name, _)| name)
+            .take(limit as usize)
+            .collect();
         named.sort_unstable();
         named.dedup();
         Ok(named)
@@ -2021,9 +2071,7 @@ impl Engine {
     /// edge retractable -- and an edge derived from a superseded version would
     /// be a claim nothing later revisits.
     pub(crate) async fn backfill_mentions(&self, topic: TopicId, name: &str) -> Result<usize> {
-        let mut connection = self.database.pool().acquire().await?;
-        self.backfill_all(&mut connection, &[(topic, name.to_string())])
-            .await
+        self.backfill_all(&[(topic, name.to_string())]).await
     }
 
     /// [`backfill_mentions`](Self::backfill_mentions) for many new topics,
@@ -2035,11 +2083,7 @@ impl Engine {
     /// the same answer bar a write landing in between. That write queues its
     /// own restatement, which is what decides the edges of the content it
     /// wrote.
-    pub(crate) async fn backfill_all(
-        &self,
-        connection: &mut PgConnection,
-        topics: &[(TopicId, String)],
-    ) -> Result<usize> {
+    pub(crate) async fn backfill_all(&self, topics: &[(TopicId, String)]) -> Result<usize> {
         if topics.is_empty() {
             return Ok(0);
         }
@@ -2056,7 +2100,11 @@ impl Engine {
 
         // Only current states are considered: the probe returns topics, and
         // only the state a topic stands for now can support an edge.
-        let states = repository::current_states_of(&mut *connection, self.project, &wanted).await?;
+        let states = self
+            .scoped(async |connection| {
+                Ok(repository::current_states_of(connection, self.project, &wanted).await?)
+            })
+            .await?;
         let found: std::collections::HashMap<TopicId, &TopicState> =
             states.iter().map(|state| (state.topic_id, state)).collect();
 
@@ -2102,7 +2150,7 @@ impl Engine {
             })
             .collect();
 
-        let asserted = graph::assert_edges(self.database.pool(), self.project, &edges).await?;
+        let asserted = graph::assert_edges(&self.database, self.project, &edges).await?;
 
         Ok(asserted
             .iter()
@@ -2277,25 +2325,25 @@ impl Engine {
     /// one.
     async fn with_parents(&self, mut hits: Vec<SearchHit>) -> Result<Vec<SearchHit>> {
         let topics: Vec<TopicId> = hits.iter().map(|hit| hit.state.topic_id).collect();
-        let edges = graph::targets(
-            self.database.pool(),
-            self.project,
-            &topics,
-            EdgeKind::PartOf,
-        )
-        .await?;
+        let edges = self
+            .scoped(async |connection| {
+                Ok(graph::targets(connection, self.project, &topics, EdgeKind::PartOf).await?)
+            })
+            .await?;
         if edges.is_empty() {
             return Ok(hits);
         }
         let mut parents: Vec<TopicId> = edges.iter().map(|(_, parent)| *parent).collect();
         parents.sort_unstable();
         parents.dedup();
-        let names: std::collections::HashMap<TopicId, String> =
-            repository::topics_by_id(self.database.pool(), self.project, &parents)
-                .await?
-                .into_iter()
-                .map(|(topic, name, _)| (topic, name))
-                .collect();
+        let names: std::collections::HashMap<TopicId, String> = self
+            .scoped(async |connection| {
+                Ok(repository::topics_by_id(connection, self.project, &parents).await?)
+            })
+            .await?
+            .into_iter()
+            .map(|(topic, name, _)| (topic, name))
+            .collect();
         let parent_of: std::collections::HashMap<TopicId, TopicId> = edges.into_iter().collect();
         for hit in &mut hits {
             hit.parent = parent_of
@@ -2517,7 +2565,9 @@ impl Engine {
         // answered rather than held through the embedding: each statement run
         // on the pool returns its connection afterwards, and sqlx checks a
         // returned connection with a round trip of its own.
-        let mut connection = self.database.pool().acquire().await?;
+        // Read only, so it holds no locks; dropped rather than committed, which
+        // rolls back on the connection's way back to the pool.
+        let mut connection = self.database.scoped(self.project).await?;
         let mut working = WorkingSet::default();
         working.add(
             repository::current_states_named(&mut *connection, self.project, &candidates).await?,
@@ -2747,8 +2797,11 @@ impl Engine {
         // Before the states are read: the pointer decides which state a topic
         // resolves to, so a rebuild that trusted a stale one would index the
         // wrong content and look like it had worked.
-        let repaired_pointers =
-            repository::repair_current_state_pointers(self.database.pool(), self.project).await?;
+        let repaired_pointers = self
+            .scoped(async |connection| {
+                Ok(repository::repair_current_state_pointers(connection, self.project).await?)
+            })
+            .await?;
 
         // Rebuilt with the projection because it is the same kind of thing: a
         // derived index of what the ledger already says, which the ledger can
@@ -2761,8 +2814,11 @@ impl Engine {
         // Current states, one per topic: the projection holds one document per
         // topic, so every live state would write a topic's whole history onto
         // one key and leave whichever row the scan reached last.
-        let states =
-            repository::all_current_topic_states(self.database.pool(), self.project).await?;
+        let states = self
+            .scoped(async |connection| {
+                Ok(repository::all_current_topic_states(connection, self.project).await?)
+            })
+            .await?;
         let spans = self.spans(&states).await?;
 
         // Held to the end of this function, so a reshape cannot start on the
@@ -2889,7 +2945,11 @@ impl Engine {
     /// still walks every topic in a project, and it is the right one to: a
     /// rebuild is by definition proportional to what it rebuilds.
     async fn rebuild_name_index(&self) -> Result<usize> {
-        let topics = repository::topics_to_name(self.database.pool(), self.project).await?;
+        let topics = self
+            .scoped(async |connection| {
+                Ok(repository::topics_to_name(connection, self.project).await?)
+            })
+            .await?;
 
         let keys: Vec<(TopicId, String, usize)> = off_the_runtime(|| {
             let segmenter = &self.segmenter;
@@ -2906,7 +2966,10 @@ impl Engine {
         // topic in the project, so the row-at-a-time form was a round trip per
         // topic -- thirteen thousand of them on the corpora this project
         // measures, for a table with no more rows than that.
-        repository::record_topic_names(self.database.pool(), self.project, &keys).await?;
+        self.scoped(async |connection| {
+            Ok(repository::record_topic_names(connection, self.project, &keys).await?)
+        })
+        .await?;
 
         Ok(keys.len())
     }
