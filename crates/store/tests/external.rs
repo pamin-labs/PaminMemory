@@ -77,4 +77,14 @@ async fn an_external_server_is_used_and_never_started() {
     // The URL carries credentials and never prints.
     let printed = format!("{settings:?}");
     assert!(!printed.contains(&url), "{printed}");
+
+    // A node's pool is capped, so nodes sharing the server fit its limit.
+    let capped = StoreSettings {
+        database_connections: Some(2),
+        ..settings.clone()
+    };
+    let database = Database::open(&node, Connections::Resident, &capped)
+        .await
+        .expect("open with a cap");
+    assert_eq!(database.pool().options().get_max_connections(), 2);
 }
