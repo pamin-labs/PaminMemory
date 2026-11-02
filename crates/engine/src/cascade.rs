@@ -783,21 +783,33 @@ impl Engine {
         Ok(memory_index::is_fragmented(files, floor))
     }
 
-    /// Whether enough documents sit outside the vector graph to build one.
+    /// Whether enough documents sit outside the last `optimize` to run one.
     ///
-    /// The graph's own condition, which it went a release without. Both
-    /// conditions queue the same job -- `optimize` compacts *and* builds -- so
-    /// this adds a reason to run it, not a second kind of maintenance.
+    /// The graph's own condition, which it went a release without, and the
+    /// lexical channels': the same remainder that a query scans for vectors
+    /// holds full-text postings no `optimize` has compacted, and those cost
+    /// far more. The budget is the index's own (`memory_index::unindexed_budget`),
+    /// unless a test has lowered it further. Both conditions queue the same
+    /// job -- `optimize` compacts *and* builds -- so this adds a reason to run
+    /// it, not a second kind of maintenance.
     fn vector_index_lags(&self) -> Result<bool> {
-        let (documents, completeness) =
-            crate::engine::off_the_runtime(|| -> Result<(u64, f32)> {
+        let (documents, completeness, budget) =
+            crate::engine::off_the_runtime(|| -> Result<(u64, f32, std::num::NonZeroU64)> {
                 let index = self.index();
-                Ok((index.document_count()?, index.vector_index_completeness()?))
+                let budget = memory_index::unindexed_budget(
+                    index.vector_index(),
+                    index.segmentation()?.recorded,
+                );
+                Ok((
+                    index.document_count()?,
+                    index.vector_index_completeness()?,
+                    budget,
+                ))
             })?;
         Ok(memory_index::vector_index_lags(
             documents,
             completeness,
-            self.models.settings().unindexed_budget,
+            budget.min(self.models.settings().unindexed_budget),
         ))
     }
 
