@@ -276,7 +276,7 @@ async fn purging_a_project_leaves_none_of_its_rows(database: &Database) {
     );
     let others = rows(id, true).await;
 
-    let purged = repository::purge_project(database.pool(), &name)
+    let purged = repository::purge_project(database.pool(), id.into())
         .await
         .expect("purge")
         .expect("the project existed");
@@ -295,7 +295,7 @@ async fn purging_a_project_leaves_none_of_its_rows(database: &Database) {
         "another project's rows changed"
     );
     assert_eq!(
-        repository::purge_project(database.pool(), &name)
+        repository::purge_project(database.pool(), id.into())
             .await
             .expect("purge again"),
         None,

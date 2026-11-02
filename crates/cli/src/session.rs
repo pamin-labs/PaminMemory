@@ -392,8 +392,12 @@ impl Session {
         );
         self.engines
             .take_then(project.to_string(), PURGE_PATIENCE, || async {
-                let mut transaction = self.database.pool().begin().await?;
-                let purged = repository::purge_project(&mut *transaction, project).await?;
+                let Some(id) = repository::find_project(self.database.pool(), project).await?
+                else {
+                    return Ok(None);
+                };
+                let mut transaction = self.database.scoped(id).await?;
+                let purged = repository::purge_project(&mut *transaction, id).await?;
                 if let Some(purged) = &purged {
                     match tokio::fs::remove_dir_all(self.workspace.index_dir(purged.id)).await {
                         Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
