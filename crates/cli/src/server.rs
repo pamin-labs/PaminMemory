@@ -48,7 +48,7 @@ pub async fn run(workspace: &Workspace, server: Server) -> Result<()> {
     let session = Arc::new(
         Session::open(
             workspace,
-            crate::settings::engine(&server),
+            crate::settings::engine(&server)?,
             server.open_indexes,
         )
         .await?,

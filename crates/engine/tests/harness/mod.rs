@@ -247,6 +247,7 @@ pub fn store() -> memory_store::StoreSettings {
         jit: eval::switch("PAMIN_MEMORY_EVAL_JIT").unwrap_or(default.jit),
         postgres_dir: eval::absolute_path("PAMIN_MEMORY_EVAL_POSTGRES_DIR")
             .or(default.postgres_dir),
+        database_url: None,
     }
 }
 

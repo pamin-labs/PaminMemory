@@ -72,6 +72,21 @@ pub struct StoreSettings {
     /// A PostgreSQL installation prefix (holding `bin/initdb`) to use instead
     /// of installing one into the workspace; see [`supplied_installation`].
     pub postgres_dir: Option<std::path::PathBuf>,
+    /// A PostgreSQL server to use instead of the workspace's own cluster, for
+    /// a hosted deployment whose disk is not where its data lives. Nothing is
+    /// installed, started or recorded for it; the store only connects and
+    /// migrates. `jit` and `postgres_dir` do not apply.
+    pub database_url: Option<DatabaseUrl>,
+}
+
+/// A `postgres://` URL. It carries credentials, so it never prints.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DatabaseUrl(pub String);
+
+impl std::fmt::Debug for DatabaseUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DatabaseUrl(..)")
+    }
 }
 
 impl Default for StoreSettings {
@@ -79,6 +94,7 @@ impl Default for StoreSettings {
         Self {
             jit: memory_core::settings::JIT,
             postgres_dir: None,
+            database_url: None,
         }
     }
 }
@@ -92,6 +108,7 @@ impl StoreSettings {
     fn resolved(&self) -> Result<Self> {
         Ok(Self {
             jit: self.jit,
+            database_url: self.database_url.clone(),
             postgres_dir: self
                 .postgres_dir
                 .as_deref()
@@ -107,7 +124,9 @@ pub struct Database {
 }
 
 impl Database {
-    /// Ensures a server is running for this workspace, connects, and migrates.
+    /// Ensures a server is running for this workspace, connects, and migrates;
+    /// or, given [`StoreSettings::database_url`], connects to that server and
+    /// migrates, leaving the workspace's own cluster alone.
     ///
     /// Safe to call repeatedly. The first call installs and initializes the
     /// cluster; later calls reuse the running server.
@@ -123,6 +142,13 @@ impl Database {
         connections: Connections,
         settings: &StoreSettings,
     ) -> Result<Self> {
+        if let Some(url) = &settings.database_url {
+            let database = Self {
+                pool: pool(&url.0, connections, Reach::Remote).await?,
+            };
+            database.migrate_shared().await?;
+            return Ok(database);
+        }
         let settings = &settings.resolved()?;
         let running = match workspace.read_server()? {
             Some(existing) if listening(existing.port) && !reusable(&existing, settings) => {
@@ -154,8 +180,29 @@ impl Database {
     /// Connects to an already running server without touching its lifecycle.
     pub async fn connect(server: &LocalServer, connections: Connections) -> Result<Self> {
         Ok(Self {
-            pool: pool(&server.url(), connections).await?,
+            pool: pool(&server.url(), connections, Reach::Local).await?,
         })
+    }
+
+    /// Migrates a database other servers may be migrating at the same moment,
+    /// as several nodes sharing an external database do when they start after
+    /// an upgrade. Migrations take no advisory lock (see `migrate::run`), so
+    /// the losers of a race fail; the next pass finds the winner's work done
+    /// and applies only what is left.
+    async fn migrate_shared(&self) -> Result<()> {
+        const ATTEMPTS: u32 = 3;
+        let mut attempt = 1;
+        loop {
+            match crate::migrate::run(&self.pool).await {
+                Ok(()) => return Ok(()),
+                Err(error) if attempt < ATTEMPTS => {
+                    tracing::warn!(%error, attempt, "migrating a shared database; trying again");
+                    tokio::time::sleep(Duration::from_secs(u64::from(attempt))).await;
+                    attempt += 1;
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     /// Wraps a pool the caller built, for a caller that needs a particular
@@ -273,18 +320,24 @@ fn other_settings(
 /// itself, as the evaluation harnesses do, is the other case, so
 /// [`Connections`] is the caller's to state.
 ///
-/// `test_before_acquire` is off. It costs a full round trip on every acquire to
-/// detect connections dropped by a proxy or an idle timer, and there is neither
-/// between here and a cluster on this machine that this process just started.
-async fn pool(url: &str, connections: Connections) -> Result<PgPool> {
+/// For a cluster on this machine, `test_before_acquire` is off. It costs a full
+/// round trip on every acquire to detect connections dropped by a proxy or an
+/// idle timer, and there is neither between here and a cluster this process
+/// just started. An external server is reached through both, and its server
+/// may sleep and wake between calls, so there each connection is tested and
+/// recycled. Every node sharing it holds a pool of its own, so the server's
+/// connection limit is divided among them.
+async fn pool(url: &str, connections: Connections, reach: Reach) -> Result<PgPool> {
+    let remote = reach == Reach::Remote;
     let pool = PgPoolOptions::new()
         .max_connections(connections.limit())
         .min_connections(1)
-        .test_before_acquire(false)
-        // A command outlives neither, so recycling connections underneath it
-        // only adds reconnects.
-        .idle_timeout(None)
-        .max_lifetime(None)
+        .test_before_acquire(remote)
+        // Locally a command outlives neither, so recycling connections
+        // underneath it only adds reconnects; a remote server's proxy closes
+        // idle ones first.
+        .idle_timeout(remote.then_some(Duration::from_secs(5 * 60)))
+        .max_lifetime(remote.then_some(Duration::from_secs(30 * 60)))
         // Long enough to outlast a busy moment, short enough that a caller
         // learns the server is unreachable rather than appearing to hang.
         .acquire_timeout(Duration::from_secs(10))
@@ -292,6 +345,15 @@ async fn pool(url: &str, connections: Connections) -> Result<PgPool> {
         .await?;
 
     Ok(pool)
+}
+
+/// Where a pool's server is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// The workspace's own cluster, on this machine.
+    Local,
+    /// An external server, through the network and its proxy.
+    Remote,
 }
 
 /// What this cluster is started with.
@@ -711,6 +773,7 @@ mod tests {
         let started = StoreSettings {
             jit: false,
             postgres_dir: Some("/usr/lib/postgresql/17".into()),
+            database_url: None,
         };
         let mut server = read_started(&started);
         assert!(super::reusable(&server, &started));
@@ -779,6 +842,7 @@ mod tests {
         let relative = StoreSettings {
             jit: false,
             postgres_dir: Some("pg".into()),
+            database_url: None,
         };
         let resolved = relative.resolved().unwrap();
         assert_eq!(resolved.postgres_dir, Some(here.join("pg")));
@@ -802,6 +866,7 @@ mod tests {
         let prefix = |byte: u8| StoreSettings {
             jit: false,
             postgres_dir: Some(std::ffi::OsStr::from_bytes(&[b'/', b'p', byte]).into()),
+            database_url: None,
         };
         let recorded = super::started_with(&prefix(0x80));
         let json = serde_json::to_vec(&recorded).unwrap();

@@ -165,8 +165,9 @@ pub async fn run(pool: &PgPool) -> Result<()> {
     // to migrate. Without it they still cannot both succeed: each migration is
     // applied in the same transaction that records it and the version column is
     // a primary key, so the loser fails rather than applying anything twice.
-    // That is the exposure this already had under `refinery`, and it goes away
-    // once a server owns startup.
+    // That is the exposure this already had under `refinery`. A resident server
+    // owns startup for one workspace; nodes sharing an external database race
+    // instead, and retry (`Database::open`).
     migrator.set_locking(false);
     migrator.run(pool).await?;
 

@@ -27,6 +27,7 @@ fn settings() -> memory_engine::Settings {
         store: memory_store::StoreSettings {
             jit: support::eval::switch("PAMIN_MEMORY_EVAL_JIT").unwrap_or_default(),
             postgres_dir: support::eval::path("PAMIN_MEMORY_EVAL_POSTGRES_DIR"),
+            database_url: None,
         },
         ..memory_engine::Settings::default()
     }

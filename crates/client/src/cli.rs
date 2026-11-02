@@ -314,8 +314,9 @@ fn refuse_removed_settings() -> Result<()> {
 
 /// The settings [`refuse_removed_settings`] turns away, and what became of
 /// each. Since only `PAMIN_MEMORY_HOME`, `PAMIN_MEMORY_PROJECT`, `PAMIN_MEMORY_VECTOR_INDEX`,
-/// `PAMIN_MEMORY_DEVICE`, `PAMIN_MEMORY_MODELS_DIR` and `PAMIN_MEMORY_LOG` are read,
-/// every other setting that was a variable is a flag, a `config.toml` key, or gone.
+/// `PAMIN_MEMORY_DEVICE`, `PAMIN_MEMORY_MODELS_DIR`, `PAMIN_MEMORY_LOG` and the server's
+/// `PAMIN_MEMORY_DATABASE_URL` are read, every other setting that was a variable is a
+/// flag, a `config.toml` key, or gone.
 const REMOVED: &[(&str, &str)] = &[
     (
         "PAMIN_MEMORY_NO_SERVER",
@@ -581,8 +582,10 @@ mod tests {
 
     /// The variables the binary still reads: where its state is, which
     /// project and vector index, which device, where models are, and what to
-    /// log.
+    /// log; and the server's external database, which holds credentials and
+    /// so is no flag or `config.toml` key.
     const READ: &[&str] = &[
+        "PAMIN_MEMORY_DATABASE_URL",
         "PAMIN_MEMORY_HOME",
         "PAMIN_MEMORY_PROJECT",
         "PAMIN_MEMORY_VECTOR_INDEX",
@@ -623,6 +626,8 @@ mod tests {
         }
         envs(&Cli::command(), &mut read);
         read.push("PAMIN_MEMORY_LOG".to_string());
+        // Read by the server when it opens the store, in `memory-cli`.
+        read.push("PAMIN_MEMORY_DATABASE_URL".to_string());
         read.sort();
         read.dedup();
         let mut expected: Vec<String> = READ.iter().map(|name| name.to_string()).collect();

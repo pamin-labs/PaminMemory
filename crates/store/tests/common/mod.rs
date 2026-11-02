@@ -14,6 +14,7 @@ pub fn store() -> memory_store::StoreSettings {
     memory_store::StoreSettings {
         jit: eval::switch("PAMIN_MEMORY_EVAL_JIT").unwrap_or_default(),
         postgres_dir: eval::path("PAMIN_MEMORY_EVAL_POSTGRES_DIR"),
+        database_url: None,
     }
 }
 
