@@ -1,14 +1,14 @@
 //! Fetching a model's files from the hub.
 //!
 //! Both kinds of model in this crate are downloaded on first use into the
-//! workspace's model directory and read from there afterwards. One place does
+//! model directory and read from there afterwards. One place does
 //! that, so the two cannot disagree about where the weights live.
 
 use std::path::{Path, PathBuf};
 
 use crate::error::{IndexError, Result};
 
-/// One model repository on the hub, cached under a workspace's model directory.
+/// One model repository on the hub, cached under a model directory.
 ///
 /// Pinned to one commit for its whole life: the one the requested revision's
 /// ref names when it is opened, or, before anything is cached, the one the
@@ -23,7 +23,7 @@ pub(crate) struct Repository {
     /// The commit every file is read at, once known.
     pinned: std::sync::OnceLock<String>,
     cache_dir: PathBuf,
-    /// The workspace's model directory it was opened under, which `HF_HOME`
+    /// The model directory it was opened under, which `HF_HOME`
     /// does not move: where what this program derives from a model is kept.
     models: PathBuf,
 }
@@ -68,7 +68,7 @@ impl Repository {
         Ok(repository)
     }
 
-    /// The workspace's model directory, even under `HF_HOME`.
+    /// The model directory, even under `HF_HOME`.
     pub(crate) fn models(&self) -> &Path {
         &self.models
     }
@@ -445,7 +445,7 @@ fn referenced_elsewhere(directory: &Path, own: &Path, blob: &Path) -> std::io::R
 }
 
 /// Where the hub's files are cached: `hub` under `HF_HOME` when it is set,
-/// as [`Repository::open`] reads it, and the workspace's model directory
+/// as [`Repository::open`] reads it, and the model directory
 /// otherwise.
 ///
 /// `hub` because that is where the hub client's own `Cache::from_env` and

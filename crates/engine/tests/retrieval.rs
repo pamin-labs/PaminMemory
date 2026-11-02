@@ -376,7 +376,7 @@ async fn retrieval_quality_by_group() {
     // candidate a candidate: its topic's name, and the memory whose edge
     // reached it. See `context`.
     if std::env::var("CONTEXT").is_ok() {
-        context(&engine, &workspace, &queries).await;
+        context(&engine, &queries).await;
         return;
     }
 
@@ -604,11 +604,11 @@ async fn report_tiers(engine: &Engine, queries: &[Query]) {
 /// the engine's own scores or the rest is a reconstruction error; the topic's
 /// name before it; the memory the graph walked from after it, for a candidate
 /// the graph reached; and both.
-async fn context(engine: &Engine, workspace: &Workspace, queries: &[Query]) {
+async fn context(engine: &Engine, queries: &[Query]) {
     const WIDE: u32 = 4 * DEPTHS.channel.get() + 4 * DEPTHS.channel.get() / 2;
     let tier = Rerank::default();
     let mut model = memory_index::Reranker::load(
-        &workspace.root().join("models"),
+        &crate::harness::models_dir(),
         &crate::harness::support::inference(),
     )
     .expect("load the reranker");

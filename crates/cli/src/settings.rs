@@ -26,6 +26,7 @@ pub fn engine(server: &Server) -> memory_engine::Settings {
             postgres_dir: server.postgres_dir.clone(),
         },
         model_idle: server.model_idle,
+        models_dir: server.models_dir.clone(),
         ..default
     }
 }

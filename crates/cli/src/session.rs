@@ -85,7 +85,7 @@ impl Session {
         Ok(Self {
             workspace: workspace.clone(),
             database: Database::open(workspace, Connections::Resident, &settings.store).await?,
-            models: Models::new(workspace, settings),
+            models: Models::new(settings),
             projects: Mutex::default(),
             engines: Registry::with_capacity(open_indexes),
             warming: std::sync::Mutex::default(),

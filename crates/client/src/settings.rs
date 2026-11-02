@@ -181,6 +181,18 @@ pub struct ServerArgs {
         help_heading = "Server settings"
     )]
     pub postgres_dir: Option<PathBuf>,
+
+    /// Where models are downloaded, prepared and compiled, relative to the
+    /// current directory if not absolute. Default: `pamin/models` in the
+    /// platform's cache directory, shared by every workspace.
+    #[arg(
+        long,
+        value_name = "PATH",
+        env = "PAMIN_MEMORY_MODELS_DIR",
+        global = true,
+        help_heading = "Server settings"
+    )]
+    pub models_dir: Option<PathBuf>,
 }
 
 fn parse_device(name: &str) -> std::result::Result<DeviceChoice, String> {
@@ -214,6 +226,7 @@ struct Serve {
     open_indexes: Option<NonZeroUsize>,
     jit: Option<bool>,
     postgres_dir: Option<PathBuf>,
+    models_dir: Option<PathBuf>,
 }
 
 /// Where a setting's value came from.
@@ -269,6 +282,7 @@ pub struct Server {
     pub open_indexes: usize,
     pub jit: bool,
     pub postgres_dir: Option<PathBuf>,
+    pub models_dir: PathBuf,
     pub entries: Vec<Entry>,
 }
 
@@ -450,6 +464,21 @@ impl Server {
             file_postgres.as_deref().map(spelled_path),
             "none (installs its own)".to_string(),
         );
+
+        let flag_models = args.models_dir.as_ref().map(from_flag).transpose()?;
+        let file_models = serve.models_dir.as_ref().map(from_file).transpose()?;
+        let default_models = defaults::models_dir();
+        let models_dir = flag_models
+            .clone()
+            .or(file_models.clone())
+            .unwrap_or_else(|| default_models.clone());
+        pick(
+            "models_dir",
+            flag_models.as_deref().map(spelled_path),
+            given("models_dir"),
+            file_models.as_deref().map(spelled_path),
+            spelled_path(&default_models),
+        );
         // Paths are compared by their spelling, which doubles a backslash, and
         // shown as written.
         for entry in &mut entries {
@@ -465,6 +494,7 @@ impl Server {
                         entry.value = shown_path(prefix);
                     }
                 }
+                "models_dir" => entry.value = shown_path(&models_dir),
                 _ => {}
             }
         }
@@ -480,6 +510,7 @@ impl Server {
             open_indexes,
             jit,
             postgres_dir,
+            models_dir,
             entries,
         })
     }

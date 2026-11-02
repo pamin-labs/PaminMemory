@@ -10,6 +10,8 @@ repository.workspace = true
 # memory-core stays free of heavy dependencies on purpose: it is the crate that is
 # edited most often, so its rebuild cost sets the daily development loop.
 [dependencies]
+# The machine-wide model directory's default.
+dirs = { workspace = true }
 serde = { workspace = true }
 # The workspace's server record, and a list of paths spelled as one value.
 serde_json = { workspace = true }

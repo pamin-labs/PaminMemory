@@ -799,7 +799,7 @@ async fn search_answers_questions_that_take_several_steps() {
     if std::env::var("CONTEXT").is_ok() {
         let model = harness::shape::owned(
             memory_index::Reranker::load(
-                &workspace.root().join("models"),
+                &crate::harness::models_dir(),
                 &crate::harness::support::inference(),
             )
             .expect("load the reranker"),

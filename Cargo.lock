@@ -1918,6 +1918,7 @@ dependencies = [
 name = "memory-core"
 version = "0.0.1"
 dependencies = [
+ "dirs",
  "schemars",
  "serde",
  "serde_json",
@@ -2399,9 +2400,9 @@ dependencies = [
 
 [[package]]
 name = "pamin-runtime"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "769b06d5da8923f0139bf932378e38f0781ba5c888e4b6a97922504ae15223f5"
+checksum = "e919b5cf27ad373d524e2d2e630d4d195e89affbab553136744360801dab2e2d"
 dependencies = [
  "half",
  "libc",
