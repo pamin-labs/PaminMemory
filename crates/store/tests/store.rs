@@ -276,10 +276,13 @@ async fn purging_a_project_leaves_none_of_its_rows(database: &Database) {
     );
     let others = rows(id, true).await;
 
-    let purged = repository::purge_project(database.pool(), &name)
+    // In the project's scoped transaction, as the server purges.
+    let mut scoped = database.scoped(id.into()).await.expect("scoped");
+    let purged = repository::purge_project(&mut *scoped, id.into())
         .await
         .expect("purge")
         .expect("the project existed");
+    scoped.commit().await.expect("commit the purge");
     assert_eq!(purged.id.0, id);
     assert!(purged.topics > 0, "{purged:?}");
 
@@ -295,9 +298,12 @@ async fn purging_a_project_leaves_none_of_its_rows(database: &Database) {
         "another project's rows changed"
     );
     assert_eq!(
-        repository::purge_project(database.pool(), &name)
-            .await
-            .expect("purge again"),
+        repository::purge_project(
+            &mut *database.scoped(id.into()).await.expect("scoped"),
+            id.into()
+        )
+        .await
+        .expect("purge again"),
         None,
         "a second purge finds nothing"
     );
