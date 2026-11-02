@@ -657,7 +657,7 @@ async fn link(engine: &Engine, conversation: &Conversation) -> usize {
             )
         })
         .collect();
-    graph::assert_edges(pool, engine.project, &edges)
+    graph::assert_edges(&engine.database, engine.project, &edges)
         .await
         .expect("link consecutive turns");
     edges.len()

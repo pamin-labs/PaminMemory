@@ -29,11 +29,20 @@ pub async fn execute(
     args: Args,
 ) -> Result<Topics> {
     let project_id = session.project(project).await?;
-    let total = repository::topic_count(session.database().pool(), project_id).await?;
+    let total = session
+        .database()
+        .within(project_id, async |connection| {
+            anyhow::Ok(repository::topic_count(connection, project_id).await?)
+        })
+        .await?;
 
     let Some(query) = args.query else {
-        let recent =
-            repository::recent_topics(session.database().pool(), project_id, args.limit).await?;
+        let recent = session
+            .database()
+            .within(project_id, async |connection| {
+                anyhow::Ok(repository::recent_topics(connection, project_id, args.limit).await?)
+            })
+            .await?;
         return Ok(Topics {
             query: None,
             total,

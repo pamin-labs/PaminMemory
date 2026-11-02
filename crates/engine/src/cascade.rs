@@ -428,12 +428,14 @@ impl Engine {
         // read the ledger earlier cannot write after this one.
         let _syncing = self.syncing.lock().await;
         let wanted: Vec<TopicId> = topics.iter().map(|(_, topic)| *topic).collect();
-        let states = match memory_store::repository::current_states_of(
-            self.database.pool(),
-            self.project,
-            &wanted,
-        )
-        .await
+        let states = match self
+            .scoped(async |connection| {
+                Ok(
+                    memory_store::repository::current_states_of(connection, self.project, &wanted)
+                        .await?,
+                )
+            })
+            .await
         {
             Ok(states) => states,
             // The read failed for all of them, so it failed for all of them.
@@ -539,18 +541,21 @@ impl Engine {
                 .collect()
         };
         let batched = async {
-            let mut connection = self.database.pool().acquire().await?;
             // A topic that resolves to nothing implies no edges, so the ones
             // its content derived are closed; one that does not exist has no
             // name to backfill. As one at a time.
             let deriving = of_kind(JobKind::DeriveMentions);
-            let states = memory_store::repository::current_states_of(
-                &mut *connection,
-                self.project,
-                &deriving,
-            )
-            .await?;
-            self.restate_mentions(&mut connection, &states).await?;
+            let states = self
+                .scoped(async |connection| {
+                    Ok(memory_store::repository::current_states_of(
+                        connection,
+                        self.project,
+                        &deriving,
+                    )
+                    .await?)
+                })
+                .await?;
+            self.restate_mentions(&states).await?;
             let resolved: std::collections::HashSet<TopicId> =
                 states.iter().map(|state| state.topic_id).collect();
             let gone: Vec<(TopicId, Vec<TopicId>)> = deriving
@@ -559,24 +564,31 @@ impl Engine {
                 .map(|topic| (topic, Vec::new()))
                 .collect();
             for kind in crate::engine::DERIVED {
-                memory_store::graph::retract_derived_all(
-                    &mut *connection,
-                    self.project,
-                    kind,
-                    &gone,
-                )
+                self.scoped(async |connection| {
+                    Ok(memory_store::graph::retract_derived_all(
+                        connection,
+                        self.project,
+                        kind,
+                        &gone,
+                    )
+                    .await?)
+                })
                 .await?;
             }
-            let named: Vec<(TopicId, String)> = memory_store::repository::topics_by_id(
-                &mut *connection,
-                self.project,
-                &of_kind(JobKind::BackfillMentions),
-            )
-            .await?
-            .into_iter()
-            .map(|(topic, name, _)| (topic, name))
-            .collect();
-            self.backfill_all(&mut connection, &named).await?;
+            let named: Vec<(TopicId, String)> = self
+                .scoped(async |connection| {
+                    Ok(memory_store::repository::topics_by_id(
+                        connection,
+                        self.project,
+                        &of_kind(JobKind::BackfillMentions),
+                    )
+                    .await?)
+                })
+                .await?
+                .into_iter()
+                .map(|(topic, name, _)| (topic, name))
+                .collect();
+            self.backfill_all(&named).await?;
             Ok::<(), anyhow::Error>(())
         }
         .await;
@@ -608,12 +620,14 @@ impl Engine {
     async fn sync_topic_index(&self, topic: TopicId) -> Result<()> {
         // As in `sync_indexes`, from the read to the write.
         let _syncing = self.syncing.lock().await;
-        let states = memory_store::repository::current_states_of(
-            self.database.pool(),
-            self.project,
-            &[topic],
-        )
-        .await?;
+        let states = self
+            .scoped(async |connection| {
+                Ok(
+                    memory_store::repository::current_states_of(connection, self.project, &[topic])
+                        .await?,
+                )
+            })
+            .await?;
 
         let Some(state) = states.first() else {
             return crate::engine::off_the_runtime(|| self.index().delete(&[topic]))
@@ -629,21 +643,26 @@ impl Engine {
     /// content derived is closed -- the edges a retired section of a file
     /// named, which would otherwise outlive the content that claimed them.
     async fn derive_topic_mentions(&self, topic: TopicId) -> Result<()> {
-        let states = memory_store::repository::current_states_of(
-            self.database.pool(),
-            self.project,
-            &[topic],
-        )
-        .await?;
+        let states = self
+            .scoped(async |connection| {
+                Ok(
+                    memory_store::repository::current_states_of(connection, self.project, &[topic])
+                        .await?,
+                )
+            })
+            .await?;
 
         let Some(state) = states.first().cloned() else {
             for kind in crate::engine::DERIVED {
-                memory_store::graph::retract_derived_all(
-                    self.database.pool(),
-                    self.project,
-                    kind,
-                    &[(topic, Vec::new())],
-                )
+                self.scoped(async |connection| {
+                    Ok(memory_store::graph::retract_derived_all(
+                        connection,
+                        self.project,
+                        kind,
+                        &[(topic, Vec::new())],
+                    )
+                    .await?)
+                })
                 .await?;
             }
             return Ok(());
@@ -655,9 +674,14 @@ impl Engine {
 
     /// Links a topic to memories written before it existed that already name it.
     async fn backfill_topic(&self, topic: TopicId) -> Result<()> {
-        let topics =
-            memory_store::repository::topics_by_id(self.database.pool(), self.project, &[topic])
-                .await?;
+        let topics = self
+            .scoped(async |connection| {
+                Ok(
+                    memory_store::repository::topics_by_id(connection, self.project, &[topic])
+                        .await?,
+                )
+            })
+            .await?;
 
         let Some((_, name, _)) = topics.first() else {
             return Ok(());

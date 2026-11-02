@@ -69,7 +69,11 @@ impl Engine {
             return Ok(None);
         };
 
-        let listed = repository::current_topic_ids(self.database.pool(), self.project).await;
+        let listed = self
+            .scoped(async |connection| {
+                Ok(repository::current_topic_ids(connection, self.project).await?)
+            })
+            .await;
         // Everything from here to the swap, including dropping the reshape if
         // a step fails -- which deletes the copy -- is blocking work.
         let reshaped = off_the_runtime(move || -> Result<Reshaped> {

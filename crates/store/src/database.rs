@@ -8,9 +8,10 @@ use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::time::Duration;
 
+use memory_core::ProjectId;
 use postgresql_embedded::{PostgreSQL, Settings, VersionReq};
-use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
+use sqlx::{PgPool, Postgres};
 
 use crate::error::Result;
 use crate::workspace::{LocalServer, StartedWith, Workspace};
@@ -157,6 +158,12 @@ impl Database {
         })
     }
 
+    /// Wraps a pool the caller built, for a caller that needs a particular
+    /// one: a test that reads a single backend's statistics.
+    pub fn with_pool(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
     /// The connection pool. Every query goes through this.
     ///
     /// Handed out rather than wrapped. A pool is already the right thing to
@@ -166,7 +173,47 @@ impl Database {
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
+
+    /// A transaction that reads and writes only `project`'s rows.
+    ///
+    /// Takes on the role row-level security guards (see migration V20) and
+    /// names the project, in the statement that begins it, so it costs no
+    /// round trip beyond the `BEGIN`. Whatever a query inside it names, the
+    /// guarded tables show it this project's rows alone and refuse a row of
+    /// another. Commit it to keep what it wrote.
+    pub async fn scoped(&self, project: ProjectId) -> Result<sqlx::Transaction<'static, Postgres>> {
+        // A UUID formatted from its type, so splicing it in is safe.
+        let begin = format!(
+            "BEGIN; SET LOCAL ROLE {APP_ROLE}; SET LOCAL app.project_id = '{}'",
+            project.0
+        );
+        Ok(self.pool.begin_with(sqlx::AssertSqlSafe(begin)).await?)
+    }
 }
+
+impl Database {
+    /// Runs `work` in a [`scoped`](Self::scoped) transaction and commits it.
+    ///
+    /// For a read or write that is one statement, or several that need no
+    /// lock held between them; a write that numbers under a lock opens its own
+    /// transaction with [`Database::scoped`].
+    pub async fn within<R, E: From<crate::StoreError>>(
+        &self,
+        project: ProjectId,
+        work: impl AsyncFnOnce(&mut sqlx::PgConnection) -> std::result::Result<R, E>,
+    ) -> std::result::Result<R, E> {
+        let mut transaction = self.scoped(project).await?;
+        let result = work(&mut transaction).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(crate::StoreError::from)?;
+        Ok(result)
+    }
+}
+
+/// The role a [`Database::scoped`] transaction runs as.
+const APP_ROLE: &str = "pamin_memory_app";
 
 /// What a cluster started for `store` records it was started with.
 fn started_with(store: &StoreSettings) -> StartedWith {

@@ -1105,7 +1105,7 @@ async fn entities(
         .collect();
     edges.sort_by_key(|(left, right, _)| (left.0, right.0));
     for chunk in edges.chunks(1_000) {
-        assert_edges(engine.database.pool(), engine.project, chunk)
+        assert_edges(&engine.database, engine.project, chunk)
             .await
             .expect("assert the entity edges");
     }
