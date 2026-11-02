@@ -8,7 +8,7 @@ Model weights
 
 This product does not redistribute model weights. No `.onnx`, `.safetensors`
 or `.bin` file is in this repository, and `ci/budget.py` counts only the
-`pamin` binary and the native libraries it links, so a release artifact
+`pamin-memory` binary and the native libraries it links, so a release artifact
 contains no model. Weights are fetched from the Hugging Face hub the first
 time a command asks for one, into a cache under the workspace, by the user's
 own machine.

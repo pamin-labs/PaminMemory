@@ -1,0 +1,57 @@
+---
+source: crates/contract/tests/schemas.rs
+expression: "schema_for! (link::Args)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Args",
+  "description": "Assert a relationship between two existing topics that their text does not\nstate.",
+  "type": "object",
+  "properties": {
+    "from": {
+      "description": "The topic the relationship starts from.",
+      "type": "string"
+    },
+    "kind": {
+      "description": "What the relationship is: mentions, supports, contradicts, supersedes,\nrelated_to, part_of, derived_from, same_as, or depends_on.",
+      "type": "string",
+      "default": "related_to"
+    },
+    "to": {
+      "description": "The topic it points at.",
+      "type": "string"
+    },
+    "validity": {
+      "$ref": "#/$defs/Flags",
+      "default": {
+        "valid_from": null,
+        "valid_to": null
+      }
+    }
+  },
+  "required": [
+    "from",
+    "to"
+  ],
+  "$defs": {
+    "Flags": {
+      "type": "object",
+      "properties": {
+        "valid_from": {
+          "description": "When the claim starts holding, as RFC 3339. Open by default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "valid_to": {
+          "description": "When it stops holding, as RFC 3339. Open by default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

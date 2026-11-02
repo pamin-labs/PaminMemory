@@ -13,7 +13,7 @@
     "refinery: 388 dependencies, target/ 2.7 GB. The gated limits are unchanged,",
     "because a limit that follows every measurement down stops being a limit.",
     "",
-    "binary_bytes is the executables alone: `pamin` and `pamin-server`, which",
+    "binary_bytes is the executables alone: `pamin-memory` and `pamin-memory-server`, which",
     "`cargo install` puts side by side. distribution_bytes adds the native",
     "libraries that ship beside it -- today the retrieval engine, 38.1 MB",
     "(38,067,280 bytes at zvec-rust 0.7.2), which is linked dynamically and",
@@ -37,10 +37,15 @@
     "and can delete them, and because 79 MB inside that budget would leave it",
     "unable to notice the next heavyweight dependency. Zero on platforms whose",
     "accelerator is linked in (Core ML) or a single system-backed DLL counted",
-    "with the rest (DirectML)."
+    "with the rest (DirectML).",
+    "",
+    "binary_bytes rose from 48 MB to 50 MB on 2026-11-02 for `pamin mcp`: the",
+    "client links pamin-kit and rmcp to serve MCP over stdio, about 1.6 MB, which",
+    "took the two executables to 48.03 MB. pamin-kit's HTTP, OpenTelemetry and",
+    "conformance features stay off in the binaries."
   ],
   "gated": {
-    "binary_bytes": 48000000,
+    "binary_bytes": 50000000,
     "total_dependencies": 470,
     "distribution_bytes": 92000000,
     "accelerator_bytes": 98000000

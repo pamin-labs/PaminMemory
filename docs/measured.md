@@ -17,7 +17,7 @@ other profiles (`speed`, `balanced`, `dual_accuracy`) and the `fast` tier were
 removed, and rows measured under them are kept as history; they describe no
 path a current build runs. An `off` row is fusion alone, what
 `Engine::search_fused` returns, which the evaluations still measure as the
-comparison for what reranking is worth; `pamin search` no longer offers it.
+comparison for what reranking is worth; `pamin-memory search` no longer offers it.
 
 **Complete XQuAD-R product-path comparison (2026-09-30)**: all 1,190 queries
 through `search_reranked`, accuracy profile, accurate reranker, head 30, limit
@@ -94,20 +94,20 @@ Both corpora are fetched rather than vendored. For XQuAD-R, prepare a fresh
 persistent cache, then run only the search test:
 
 ```sh
-env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home cargo test -p pamin-engine --test crosslingual prepare_pinned_xquad_models -- --exact --ignored
-env -u HF_HOME PAMIN_EVAL_HOME=/path/to/eval-home PAMIN_EVAL_DEVICE=cpu cargo test -p pamin-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
+env -u HF_HOME PAMIN_MEMORY_EVAL_HOME=/path/to/eval-home cargo test -p memory-engine --test crosslingual prepare_pinned_xquad_models -- --exact --ignored
+env -u HF_HOME PAMIN_MEMORY_EVAL_HOME=/path/to/eval-home PAMIN_MEMORY_EVAL_DEVICE=cpu cargo test -p memory-engine --test crosslingual search_reaches_across_languages -- --exact --ignored --nocapture > xquad-run.log 2>&1
 python3 benchmarks/results/retrieval/verify_xquad_models.py /path/to/eval-home/models xquad-run.log
 ```
 
-The harness reads its settings from `PAMIN_EVAL_*` variables, never the
-product's `PAMIN_*` names, and refuses a `PAMIN_*` variable it would ignore.
-The search also refuses every `PAMIN_EVAL_*` setting except
-`PAMIN_EVAL_DEVICE=cpu` and `PAMIN_EVAL_POSTGRES_DIR`, so the baseline runs the
+The harness reads its settings from `PAMIN_MEMORY_EVAL_*` variables, never the
+product's `PAMIN_MEMORY_*` names, and refuses a `PAMIN_MEMORY_*` variable it would ignore.
+The search also refuses every `PAMIN_MEMORY_EVAL_*` setting except
+`PAMIN_MEMORY_EVAL_DEVICE=cpu` and `PAMIN_MEMORY_EVAL_POSTGRES_DIR`, so the baseline runs the
 shipped settings whatever the shell exports. The PostgreSQL directory is
 allowed because a host without a downloadable PostgreSQL needs it, and no
 ranking reads it. Another installation can still move the timings, so a run
 that sets it records the path, absolute, among its settings; leave it unset to
-use the installation `pamin` downloads. That includes `PAMIN_EVAL_INFERENCE_THREADS`: the thread count
+use the installation `pamin` downloads. That includes `PAMIN_MEMORY_EVAL_INFERENCE_THREADS`: the thread count
 decides how many pairs a CPU reranker pass takes (one where passes run side by
 side, up to four at one thread), and so the rankings.
 
@@ -137,7 +137,7 @@ one query moving a great deal. That matters at the sizes being reported: the
 fusion weight moved on +0.0056 and the reranker is priced at −0.0152, and both
 are small enough that a handful of queries decides them. The harnesses now
 report per-query wins, losses and a paired randomisation p beside every mean — see
-`crates/pamin-engine/tests/statistics/mod.rs` and the section in
+`crates/engine/tests/statistics/mod.rs` and the section in
 [ADR 0001](adr/0001-tech-selection.md). Until a figure below carries a win/loss
 count, read it as a difference of means and nothing stronger.
 
@@ -275,7 +275,7 @@ on the twenty queries built to need it.
 The weight was never chosen: every unnamed channel defaults to 1.0 and this one
 was never named. It is three tenths now -- 1.0 and 0.5 are significantly worse
 once the sweep is priced as one family, and 0.15 cannot be told apart -- and every
-floor clears. The sweep is in `pamin_core::fusion`.
+floor clears. The sweep is in `memory_core::fusion`.
 
 **Twenty queries written by the mechanism's authors are not evidence on their
 own, so the graph was then measured on a corpus nobody here wrote.** MuSiQue's
@@ -296,7 +296,7 @@ shown the graph's ten strongest finds below its head: of 153 supporting titles
 the graph alone found, none had reached the head (median fused rank 99, taken
 while a support rule, since measured as a no-op on these questions and
 removed, also held them down). The
-harness is `pamin-engine/tests/multihop.rs`, and it asserts the graph keeps
+harness is `engine/tests/multihop.rs`, and it asserts the graph keeps
 paying.
 
 **Showing more graph finds buys nothing, and the first attempt to choose them
@@ -370,7 +370,7 @@ recomputation from the trace on every search.
 
 No group is worse; the own corpus's one loss is a cross-lingual query that
 drops by 0.0078. Every clause holds, so the threshold ships
-(`GRAPH_SHOWN_FROM` and `GRAPH_SHOWN_AT_MOST` in `pamin-engine`). Times are
+(`GRAPH_SHOWN_FROM` and `GRAPH_SHOWN_AT_MOST` in `memory-engine`). Times are
 geometric means of per-question ratios on four cores that other evaluations
 were sharing. The 0.6834 and 0.7131 above were measured with ten.
 
@@ -426,7 +426,7 @@ topic, and shows the strongest four. Replayed on recorded searches first,
 against the cap of thirty: MuSiQue 2-hop (600) −0.0005 (7 better, 7 worse;
 p_fw = 0.79 in a four-arm replay, 1.0 in an eight-arm one), every LoCoMo category level or better (multi-hop +0.0055,
 p_fw = 0.066), XQuAD identical (no edges). Then at the product entry point
-(`pamin serve` and one `pamin search --limit 10` process a query, CPU
+(`pamin-memory serve` and one `pamin-memory search --limit 10` process a query, CPU
 execution provider, four Xeon cores at 2.8 GHz with AVX-512 VNNI, ONNX
 Runtime 1.28, `gpahal/bge-m3-onnx-int8` @ `2b34e84` and
 `onnx-community/bge-reranker-v2-m3-ONNX` (`onnx/model_int8.onnx`) @
@@ -708,8 +708,8 @@ arms cannot be re-run from the repository. With no arm eligible, the rule did
 not re-sweep the n-gram weight, and it stays at an eighth.
 
 **A learned fusion head was fitted and does not generalise.** The `FEATURES`
-arm (`pamin-engine/tests/features`, since replaced by the `REPLAY_OUT` record
-in `pamin-engine/tests/reranking/record.rs`, which holds the same per-candidate
+arm (`engine/tests/features`, since replaced by the `REPLAY_OUT` record
+in `engine/tests/reranking/record.rs`, which holds the same per-candidate
 channel ranks and scores and, for the superset it scores, the model's) dumped every fused candidate with each
 channel's rank and score, and the shipped combiner rebuilt from the dump alone
 matches the engine bit for bit on all 3,537 question-groups of the own corpus,
@@ -856,7 +856,7 @@ product calibration metrics are N/A. The [ADR validity correction](adr/0001-tech
 records the incomparable scoring procedure, retained observations and complete
 product-batch requirements. No corrected experiment was run; valid product-calibration metrics remain N/A.
 
-**Latency**, what one `pamin search` costs against a warm resident server at
+**Latency**, what one `pamin-memory search` costs against a warm resident server at
 the default `accuracy` profile. Each figure is a whole CLI invocation — fork,
 exec, connect to the socket, and back — run serially over forty distinct
 queries, reported as the median of them:
@@ -867,7 +867,7 @@ queries, reported as the median of them:
 | MIRACL Swahili dev, 131,924 documents | 142 ms | 472 ms | 1675 ms |
 
 Seventeen to nineteen of those milliseconds are the invocation rather than the
-search — `pamin --help` against the same workspace costs that much — and it is
+search — `pamin-memory --help` against the same workspace costs that much — and it is
 measured rather than subtracted, because a caller pays it either way.
 
 **What the rest of an `off` search is spent on is not retrieval either**, and
@@ -918,7 +918,7 @@ nDCG@10 moved significantly in no group: XQuAD-R cross-lingual −0.0004,
 same-language −0.0002, MIRACL −0.0011, MuSiQue +0.0005, every p above 0.4.
 The rule the batching was chosen by, written down before anything was timed,
 and the pilot of seven candidates are at `BATCH_TOKENS` in
-`crates/pamin-index/src/reranking.rs`.
+`crates/index/src/reranking.rs`.
 
 Both columns run a call's passes one after another, each pass with every core
 and up to four pairs. On a multi-core CPU the passes of one rerank now run
@@ -928,7 +928,7 @@ two batchings still stands. The entry-point figures for what ships are below.
 
 **On the CPU, one pair a pass.** Once the passes of one rerank ran side by
 side, one thread each, on one shared session, grouping pairs into a pass only
-padded them. Against four pairs on the same build, `pamin search` through a
+padded them. Against four pairs on the same build, `pamin-memory search` through a
 resident server (4 vCPU Xeon, three rotated runs of 120 warm queries an arm)
 took a p50 of 0.834 [0.757, 0.931] and a p95 of 0.850 [0.715, 0.997] as long,
 and through `Engine::search_reranked` over copies of one index no significant
@@ -936,7 +936,7 @@ nDCG@10 change was detected in any group (Holm-corrected p = 1.00 in each):
 XQuAD-R cross-lingual −0.0001 [−0.0020, +0.0016], same-language −0.0012
 [−0.0037, +0.0011], single-target −0.0013 [−0.0052, +0.0026] (1,190 queries
 each), MuSiQue 2-hop +0.0040 [−0.0029, +0.0113] (its first 200 questions). The table is at `CPU_BATCH` in
-`crates/pamin-index/src/reranking.rs`. Accelerators, and a CPU with an
+`crates/index/src/reranking.rs`. Accelerators, and a CPU with an
 inference budget of one thread, where passes cannot overlap, still group up to
 four pairs within 512 padded tokens. The write-ups, raw rows, per-query dumps
 and harnesses are retained for maintainers in the private InternalDocs repository (see
@@ -961,8 +961,8 @@ predecessor on the same machine, in the same rotated runs:
   statically linked, CPU execution provider, four inference threads.
 - **Models.** `gpahal/bge-m3-onnx-int8` @ `2b34e84d` and the int8
   bge-reranker-v2-m3 @ `6f5ff652`, both loaded from their mapped copies.
-- **Workload.** `pamin import` of the same 3,230 texts in a fixed order, then
-  20 warm-up and 120 timed `pamin search` queries, against a fresh home and
+- **Workload.** `pamin-memory import` of the same 3,230 texts in a fixed order, then
+  20 warm-up and 120 timed `pamin-memory search` queries, against a fresh home and
   server for each phase.
 - **Runs.** Twelve counted runs, three an arm, in rotated order (A S SB AB,
   SB AB A S, S A AB SB, where A is before the shared session, S the shared
@@ -971,7 +971,7 @@ predecessor on the same machine, in the same rotated runs:
   environment, execution provider, session counts, and that no model or plan
   changed; two runs that failed one of those, and one with load from another
   process, were left out.
-- **Scope.** Memory is the `pamin serve` process alone: no PostgreSQL, no
+- **Scope.** Memory is the `pamin-memory serve` process alone: no PostgreSQL, no
   accelerator service. Disk is the project's index directory and the model
   cache the server loaded. CIs are 95% bootstrap over runs.
 - **Known exposure.** This host has the CUDA provider built in but cannot
@@ -1000,7 +1000,7 @@ The shared session, before `ddf0800` and after `710ceec`:
 **For the shared session, no significant latency change was detected; its
 measured gain is memory.** The p50 ratio was 1.044 [0.937, 1.157] and the p95
 0.999 [0.880, 1.191], both including 1.0. A component measurement of the same change, a rerank timed alone, had
-come out at 0.81 of its predecessor; at `pamin search` that did not carry
+come out at 0.81 of its predecessor; at `pamin-memory search` that did not carry
 over. What it does carry is memory: one session per model in place of one a
 pass took the search server's peak from 5.7 GB to 3.0 GB.
 
@@ -1029,7 +1029,7 @@ Against `ddf0800`, the two steps together took the search p50 to 0.871
 with an inference budget of one thread keeps four pairs a pass (`4ca4c6f`),
 and that path was not measured in either step. The nDCG@10 rows were taken
 through `Engine::search_reranked` over byte-identical copies of one index, as
-the paragraph above describes, not at `pamin search`; recall@50 was identical
+the paragraph above describes, not at `pamin-memory search`; recall@50 was identical
 in every group. CPU time counts the server's worker threads, so it exceeds
 wall time; no accelerator ran. The raw rows, per-run premises and harnesses
 are in the private q42 and q44 folders named above.
@@ -1041,8 +1041,8 @@ long text could start last while the other sessions sat idle.
 `Encoder::run_each` now orders every caller's passes longest first, by
 padded tokens, and the reranker's own reversal is gone. No pass changes, so
 no score does. What moved is ingest, which is where the embedder's order
-changed; search reranks as before. Measured at the entry point (`pamin serve`
-and one `pamin search --limit 10` process a query, CPU execution provider,
+changed; search reranks as before. Measured at the entry point (`pamin-memory serve`
+and one `pamin-memory search --limit 10` process a query, CPU execution provider,
 four Xeon cores at 2.8 GHz with AVX-512 VNNI, ONNX Runtime 1.28,
 `gpahal/bge-m3-onnx-int8` @ `2b34e84` and
 `onnx-community/bge-reranker-v2-m3-ONNX` (`onnx/model_int8.onnx`) @
@@ -1069,7 +1069,7 @@ of it was not re-timed, so they do not cover the two together:
 Indexing is faster, and its peak memory is higher: the longest passes now run
 at the same time, and their intermediates are alive together. Search latency
 moved in the same direction but within noise, and search peak memory did not
-move. Memory is the `pamin serve` process alone, with no accelerator
+move. Memory is the `pamin-memory serve` process alone, with no accelerator
 services; the prepared model copies (1,668 MB) are the same in both arms and
 are not in the index figure. The raw rows and harness are in the private
 [`pamin-memory/research/2026-10-19/raw/q65/`](https://github.com/Pamin-Labs/InternalDocs/tree/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-19/raw/q65) folder.
@@ -1124,7 +1124,7 @@ peak is held to about a gigabyte.
 - **A 128 KiB threshold.** Mapping every small buffer cost ingest 1.19×
   its wall time.
 
-Memory is the `pamin serve` process alone, with no accelerator services.
+Memory is the `pamin-memory serve` process alone, with no accelerator services.
 CPU time counts the server's worker threads. The setting has an effect only
 under glibc on Linux; macOS and Windows are unaffected and unmeasured. The
 raw rows and harnesses are in the private
@@ -1244,7 +1244,7 @@ server's memory:
   with CIs reaching +13.3%. Neither bounds the latency of one query after
   idle, or its tail.
 
-Memory is the `pamin serve` process alone, with no accelerator services.
+Memory is the `pamin-memory serve` process alone, with no accelerator services.
 Disk is the index directory; the prepared copies (1,668 MB) are unchanged.
 The release runs only on Linux; macOS and Windows are unaffected and
 unmeasured. The raw rows and harnesses are in the private
@@ -1302,7 +1302,7 @@ scored, on the CPU, each arm in its own fresh evaluation home:
   upgraded install also keeps the old download until it is removed by hand;
   see [cli.md](cli.md#upgrading-from-profiles-and-tiers).
 
-Memory is the `pamin serve` process alone, with no accelerator services. Disk
+Memory is the `pamin-memory serve` process alone, with no accelerator services. Disk
 is the index directory, the prepared copies and the reranker's download, as
 named. The XQuAD-R arms ran one after the other on the same host, for
 accuracy only; their wall times are not a latency measurement. Accelerators
@@ -1358,7 +1358,7 @@ does not move beyond noise.**
   of the runtime.
 - The first query is faster too. Its cause was not profiled, so no mechanism
   is claimed.
-- Memory is the `pamin serve` process alone, with no accelerator services.
+- Memory is the `pamin-memory serve` process alone, with no accelerator services.
   The prepared-copy figure includes the trimmed graphs; the index figure does
   not.
 - The raw rows and harness are in the private
@@ -1395,7 +1395,7 @@ so every query is still reranked, and the learned route does not ship.
 spun, and they no longer do.** ONNX Runtime lets an intra-op thread that runs
 out of work spin before it sleeps; the embedder and the reranker each own a
 pool of one thread per core, so on a busy machine the spinning threads hold
-cores the working ones need. Turned off, through `pamin serve` and `pamin
+cores the working ones need. Turned off, through `pamin-memory serve` and `pamin
 search` at the defaults on one hundred queries of the own corpus and an
 XQuAD-R subset, with rankings and scores bit-identical:
 
@@ -1444,7 +1444,7 @@ reranker loaded beside the current one; a current server loads only the
 570 MB reranker.
 
 **And where those seven gigabytes are.** The `MEMORY` arm of
-`pamin-engine/tests/monolingual.rs` reads `/proc/self/smaps` after each thing a
+`engine/tests/monolingual.rs` reads `/proc/self/smaps` after each thing a
 server loads, on MIRACL at the shipped configuration. Anonymous memory -- the
 part only the process can give back:
 
@@ -1462,7 +1462,7 @@ project grown from empty recorded a segment of 2,000 documents, and every
 segment holds its own full-text stores resident. Fifty thousand documents open
 at 1,292 MB in 25 segments and at 308 MB in 4. The floor is now 10,000 -- the
 largest size whose graph still agrees with an exhaustive scan exactly -- and
-`pamin reindex` reshapes an existing index reusing every vector it holds, so it
+`pamin-memory reindex` reshapes an existing index reusing every vector it holds, so it
 needs no model: fifty thousand documents reused all fifty thousand. ONNX
 Runtime's memory arena is off, which took a hundred `accurate` searches from
 6,208 MB to 5,914 MB anonymous with bit-identical scores.
@@ -1473,8 +1473,8 @@ since the change below.
 
 **The weights are mapped now, not copied.** On the CPU each model loads from a
 copy the runtime maps from disk -- written once from the download; see
-`crates/pamin-index/src/prepared.rs` -- and
-`crates/pamin-index/tests/prepared.rs` measures it through `Reranker::load`
+`crates/index/src/prepared.rs` -- and
+`crates/index/tests/prepared.rs` measures it through `Reranker::load`
 and `Embedder::load`. Each load runs in a fresh process, and what is counted
 is live anonymous memory with the model loaded, after `malloc_trim`, in MiB as
 the test prints it:
@@ -1526,7 +1526,7 @@ the hub unreachable, the next load failed naming the model and the network;
 with the hub back it fetched the file again, wrote the copy under the same key
 as before -- a re-download is given the removed file's modification time, so
 it keys identically -- and removed the download again. All five loads scored
-bit-identically, the load from the download (then `PAMIN_PREPARED=off`, now
+bit-identically, the load from the download (then `PAMIN_MEMORY_PREPARED=off`, now
 `--prepared false`) among them. What this gives up is
 offline use across a key change, and [cli.md](cli.md) says so where the
 setting is described. Disuse is not a key change: the collection that removes
@@ -1542,8 +1542,8 @@ process, 280 MiB for each. The `accurate`
 reranker describes exactly BGE-M3's model, every piece and score bit for bit, and `fast`
 differs only in leaving a default flag unstated, so a loaded model now finds
 one already built rather than building its own; see
-`crates/pamin-index/src/tokenizer.rs`.
-`crates/pamin-index/tests/shared_vocabulary.rs` measures it with BGE-M3 and
+`crates/index/src/tokenizer.rs`.
+`crates/index/tests/shared_vocabulary.rs` measures it with BGE-M3 and
 the `accurate` reranker both loaded, as a server searching at the defaults
 holds them, through `Embedder::load` and `Reranker::load` against `fastembed`
 loading the same prepared copies the way the product did before. Each arm is a
@@ -1572,7 +1572,7 @@ median -2.5%, while one arm's own rounds moved by up to 40%.
 
 The 280 MiB is `tokenizers`' own Unigram model, a trie with a hash map in every
 node. The shared vocabulary has since been held in a double-array trie instead
-(see `crates/pamin-index/src/tokenizer.rs`), with ids tested equal to that
+(see `crates/index/src/tokenizer.rs`), with ids tested equal to that
 model's. The figures above are for the layout before it. The same measuring
 child, run before (`ad33d2d`) and after (`c176020`) in the order A B, B A,
 A B on a shared 4-vCPU Xeon with a warm page cache, gave these medians of
@@ -1591,8 +1591,8 @@ The disk rows compare the release binary built at `perf/rescore-simd`
 (`67fd1f3`) and at this change (`21d249d`). The change's product code is the
 tokenizer and its `yada` dependency, and it adds no file write.
 
-At the search entry point (`pamin import` and `pamin search` against a fresh
-`pamin serve`), the same two commits gave the rows below. Before is
+At the search entry point (`pamin-memory import` and `pamin-memory search` against a fresh
+`pamin-memory serve`), the same two commits gave the rows below. Before is
 `67fd1f3` (`perf/rescore-simd`) and after is `21d249d`.
 
 **Scope.** These rows compare the tokenizer change with its parent on the
@@ -1667,7 +1667,7 @@ waits on:
 Each was measured against its own parent. The merged result, measured against
 the main it started from:
 
-- **Entry point:** start `pamin-server`, run three `pamin search` calls, stop
+- **Entry point:** start `pamin-memory-server`, run three `pamin-memory search` calls, stop
   it. All three ask "why was the deployment rolled back" with `--limit 10`.
   The second and third reuse the first's query vector and reranker scores
   from their caches; retrieval and fusion still run.
@@ -1771,8 +1771,8 @@ revisions unchanged:
 | model cache in use | unchanged | unchanged | N/A: no model path touched | N/A |
 
 **No speed change is claimed: every latency CI includes 1.0.** Import is
-`pamin import` writing the texts and indexing them as they arrive; drain is
-`pamin cascade drain` finishing the jobs left after it, under a second, whose
+`pamin-memory import` writing the texts and indexing them as they arrive; drain is
+`pamin-memory cascade drain` finishing the jobs left after it, under a second, whose
 CIs are wide. CPU is the server process's own; postgres and the clients are
 excluded. Memory is the server process only, sampled every 0.5 s, with no
 accelerator services. Disk is the project's index directory: postgres data,
@@ -2139,6 +2139,76 @@ under `memory`.
 The table, the tuning and the write-path measurement are in
 [the ADR](adr/0001-tech-selection.md#two-vector-indexes-both-half-precision-memory-by-default).
 
+**Re-ingesting an unchanged tree appends no evidence, and costs seconds.** This
+repository's 105 tracked Markdown and text files, cut into 4,090 sections,
+through the release `pamin-memory ingest` at `cf4a771` on four shared cores: six
+unchanged re-ingests across two runs took 4.20 to 6.72 s each and appended no
+evidence, and a one-word edit to prose wrote one to three sections, three when
+it fell in a section split into parts. Re-importing the same 4,090 memories
+with `pamin-memory import` appended 4,090 evidence rows, 4 MB.
+
+| | `import` | `ingest` | difference | change |
+| --- | ---: | ---: | ---: | ---: |
+| evidence rows an unchanged re-run appended | 4,090 | 0 | −4,090 | −100% |
+| database growth from that re-run | +4.0 MiB | +0.0 MiB | −4.0 MiB | −100% |
+| that re-run, wall (n = 1 each) | 2.52 s | 4.20 s | +1.68 s | +66.4%, inside ingest's own 4.20–6.72 s spread |
+| cold, wall (n = 1 each) | 505.2 s | 565.1 s | +59.9 s | +11.9%, inside the 351.5–671.9 s spread |
+
+Only the first two rows are a difference that holds: they are counts, the same
+on every run. The timings are one sample each, and a cold ingest of this tree
+ran 351.5, 671.9 and 565.1 s on three runs of the day. Nor is the cold pair the
+same work: ingest keeps its topics out of the name index and owes them no
+backfill, where import files 4,090 path-and-heading names and backfills each.
+Server CPU excludes PostgreSQL's backends and includes whatever index upkeep
+the server ran during an arm. Accuracy over ingested documents is measured on
+Qasper below; nothing on the search path changed. Conditions, every arm and the raw rows are
+in [benchmarks/results/ingest/](../benchmarks/results/ingest/ingest-cost-2026-10-23.md). These were
+taken on an earlier cut that also split a section longer than the reranker's
+window into parts, each its own memory; ingest now records one memory per
+heading section and leaves size to the index's spans, so the section count and
+the timings above describe that earlier cut and are not re-measured.
+
+**Heading sections find more evidence per hit and less per token read than
+sized ones.** On 308 Qasper questions over 100 papers, through
+`search_reranked` at the shipped defaults, sections cut at headings alone
+against the earlier cut that sized each to about 200 tokens:
+
+- **At rank k.** covered@1 is +54.3% (0.1537 → 0.2372) and covered@10
+  +13.8% (0.4761 → 0.5420), both p = 0.0001 over papers.
+- **Per hit.** Each hit returns 2.4 times the text, because a hit shows its
+  best span and one either side.
+- **At a fixed read.** Read to the same 1,000 tokens, the sized cut finds
+  more: −10.8% for heading sections, p = 0.010. The gain at rank k is
+  therefore the view's width more than the cut.
+- **Cost.** Heading sections make a 63.5% smaller index, ingest 10.9% faster,
+  and search 6–7% slower at p50 and p95 over three rounds.
+- **Against whole files.** Heading sections find more in a fixed read (+37.4%)
+  while returning 28.4% less text.
+
+Conditions, both tables and the raw rows:
+[benchmarks/results/ingest/](../benchmarks/results/ingest/qasper-sections-2026-10-25.md).
+
+**Where evidence is spread over a document, heading sections and `part_of`
+are both worth having; a parent's text in the hit is not.** Qasper rarely asks
+about more than one section, so ingest was also measured on ConditionalQA:
+871 questions over 652 gov.uk pages, whose answers hold under conditions stated
+elsewhere on the page. Every question went through `search_reranked`, and was
+scored on whether *every* evidence sentence was read:
+
+- **Sections against whole pages:** every evidence sentence was in the first
+  10 hits for 0.805 of questions against 0.432, while returning 51.5% less
+  text.
+- **`part_of` between sections:** read to a fixed 1,000 tokens, every
+  sentence was found for 0.792 of questions against 0.755 (p = 0.0001). Among
+  the 267 needing a section and the one above it, 0.618 against 0.506.
+- **A `related_to` to the next sibling** added nothing over `part_of` alone.
+- **Showing each hit's parent section** raised covered@1 by 14.5%, but only by
+  returning 40% more text, and found no more within the same 1,000 tokens.
+  So a hit carries its parent's name, not its text.
+
+Latency was not measured. Conditions and every table:
+[benchmarks/results/ingest/](../benchmarks/results/ingest/conditionalqa-sections-2026-10-26.md).
+
 **Above this, nothing is measured.** The largest corpus here is 131,924
 documents. A million and beyond is untested — not projected, not extrapolated,
 untested — and the descriptor count is the first thing that would break: this
@@ -2160,11 +2230,11 @@ already exceeds the 1,024 a Linux process is given by default.
 
 - **Accuracy.** No question category ranks significantly worse (p < 0.05) on any corpus.
 - **The loss.** It is covered@5 on LongMemEval: a session runs to about 1,700 words, and the window (the best span and
-  one either side) misses the answer turn about half the time. `pamin read --span --around` reaches it.
+  one either side) misses the answer turn about half the time. `pamin-memory read --span --around` reaches it.
 
 **Latency and cost at the entry point.**
 
-- **Setup.** `pamin-server` plus one `pamin search` process per query. Each round is 20 warm and 120 timed queries;
+- **Setup.** `pamin-memory-server` plus one `pamin-memory search` process per query. Each round is 20 warm and 120 timed queries;
   rounds are rotated between the arms.
 - **Host.** Four-core Xeon with AVX-512 VNNI, CPU execution provider.
 - **Builds.** Short sessions compare whole memories with the first span build. Long sessions compare `main` with the
@@ -2175,12 +2245,12 @@ already exceeds the 1,024 a Linux process is given by default.
 | search p50, whole → spans | 5,173 → 4,229 ms (−18.3%) | 5,088 → 4,532 ms (−10.9%) |
 | search p95, whole → spans | 5,751 → 4,854 ms (−15.6%) | 5,924 → 5,852 ms (−1.2%, not significant) |
 | server peak RSS | +6.3% | +11.3% |
-| `pamin import` wall time | +49.8% | +323% |
+| `pamin-memory import` wall time | +49.8% | +323% |
 | index on disk | +28.8% | +84.6% |
 
 - **Why search is faster.** The reranker reads shorter pairs.
 - **What it costs.** Ingest and disk grow with memory length.
-- **Upgrading.** An index built before spans keeps its grain until `pamin reindex`.
+- **Upgrading.** An index built before spans keeps its grain until `pamin-memory reindex`.
 - **Evidence.** Each record names its compared commits and keeps its scripts and raw results beside it:
   - accuracy: [`pamin-memory/research/2026-10-23/q111-a0-span-vs-topic.md`](https://github.com/Pamin-Labs/InternalDocs/blob/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-23/q111-a0-span-vs-topic.md) (LoCoMo) and
     [`pamin-memory/research/2026-10-24/q111-part2-lme-md-a1.md`](https://github.com/Pamin-Labs/InternalDocs/blob/f2017073506c35e6ecca8cb951e3552fea24f79e/pamin-memory/research/2026-10-24/q111-part2-lme-md-a1.md) (LongMemEval-S, Markdown), with

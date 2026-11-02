@@ -1,0 +1,22 @@
+[package]
+name = "memory-core"
+description = "Domain model, version ledger semantics, and retrieval fusion for pamin-memory."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# memory-core stays free of heavy dependencies on purpose: it is the crate that is
+# edited most often, so its rebuild cost sets the daily development loop.
+[dependencies]
+# The machine-wide model directory's default.
+dirs = { workspace = true }
+serde = { workspace = true }
+# The workspace's server record, and a list of paths spelled as one value.
+serde_json = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+# JSON Schema for the types the operation contract carries; only
+# `memory-contract` turns it on.
+schemars = { workspace = true, optional = true }

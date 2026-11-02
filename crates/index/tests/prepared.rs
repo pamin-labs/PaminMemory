@@ -1,0 +1,442 @@
+//! A prepared copy of a model scores exactly as the file it came from -- the
+//! `accurate` reranker's copy ranks as it does, on a graph trimmed by design --
+//! and the weights it holds are mapped rather than copied.
+//!
+//! Ignored by default: it needs the `accurate` reranker and the
+//! BGE-M3 embedder, 1.1 GB between them, and writes a copy of each. Run with
+//!
+//! ```sh
+//! cargo test -p memory-index --test prepared -- --ignored --nocapture
+//! ```
+//!
+//! and with `PAMIN_MEMORY_EVAL_MODELS` pointing at a model directory that already
+//! holds them to skip the download -- its `models--*` entries are linked into
+//! a temporary directory, so the copies are written there and removed after.
+//!
+//! The copy's split graph -- word embeddings read from the data file rather
+//! than mapped (see `word_embeddings.rs`) -- is loaded by default, and is
+//! held to the same: a third load turns it off, and every output of the two
+//! must match bit for bit. Each child scores once on the session of the whole
+//! budget, a single batch, and once side by side on the one-thread session,
+//! several batches, so both sessions read the table.
+//!
+//! Each load runs in a child process of its own, through `Reranker::load` and
+//! `Embedder::load` -- the functions a server calls -- and that is the point of
+//! the design rather than a convenience. Anonymous memory is what the copy is
+//! for, and within one process it cannot be compared fairly: an allocator that
+//! kept the source's freed weights would hand them straight back to a copy that
+//! had fallen back to packing on the heap, and the copy would look free. In a
+//! fresh process there is nothing to hand back.
+
+mod support;
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use memory_index::{Device, Embedder, Reranker};
+
+/// Which load a child process runs, and where its models are.
+const ARM: &str = "PAMIN_MEMORY_EVAL_PREPARED_ARM";
+const CACHE: &str = "PAMIN_MEMORY_EVAL_PREPARED_CACHE";
+
+/// What a child prints its result after, so it can be found in libtest's own
+/// output.
+const MARK: &str = "prepared-arm-result";
+
+/// Models loaded by the product's own entry points, by name.
+const MODELS: &[&str] = &["accurate", "embedder"];
+
+const QUERY: &str = "how does the deployment pipeline handle a failed migration";
+
+/// Asked of one text alone, so its pair is one the scores of [`QUERY`] have
+/// not already remembered, and runs.
+const ALONE: &str = "what happens to the schema when a migration fails";
+
+/// Of different lengths, so a reranker batch pads and an embedding runs at
+/// more than one shape.
+const TEXTS: &[&str] = &[
+    "When a migration fails the deployment pipeline rolls the release back and \
+     leaves the previous version serving.",
+    "The office coffee machine is descaled on the first Monday of each month.",
+    "Deployments are frozen on Fridays after noon.",
+    "Database migrations run before the new version takes traffic, and a \
+     migration that cannot finish inside its window is reverted automatically \
+     so that the schema never drifts from what the running code expects.",
+    "Wenn eine Migration fehlschlägt, rollt die Pipeline das Release zurück.",
+];
+
+#[test]
+#[ignore = "downloads the reranker and the BGE-M3 embedder"]
+fn a_prepared_copy_scores_the_same_and_holds_less() {
+    if let Ok(model) = std::env::var(ARM) {
+        return child(&model, Path::new(&std::env::var(CACHE).expect("the cache")));
+    }
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let cache = dir.path().join("models");
+    std::fs::create_dir_all(&cache).expect("make the cache");
+    link_models(&cache);
+    let copies = cache.join("prepared");
+
+    for model in MODELS {
+        let source = run(model, &cache, false, true);
+
+        // The first prepared load writes the copy, and so loads the source
+        // onto the heap in the same process before loading the copy: its
+        // scores count, its memory does not.
+        let writing = run(model, &cache, true, true);
+        let copy = only_copy(&copies);
+        let data = std::fs::metadata(copy.join("model.onnx.data"))
+            .unwrap_or_else(|_| panic!("the {model} copy has no data file, so nothing is mapped"))
+            .len()
+            / 1024;
+        let prepared = run(model, &cache, true, true);
+        let unsplit = run(model, &cache, true, false);
+
+        // Which graph the copy loads: attention fused, or as the runtime
+        // wrote it -- see `attention.rs`. The `accurate` reranker is the one
+        // export whose attention the fusion was written for and checked on,
+        // so a copy of it that stopped fusing has lost the speed-up without
+        // any score saying so; the others fuse or not by what their graphs
+        // hold, and the bit-identical scores above are what matters there.
+        let fused = copy.join("attention.onnx").exists();
+        let unfused = std::fs::read_to_string(copy.join("attention.unfused")).ok();
+        if *model == "accurate" && cfg!(target_arch = "x86_64") {
+            assert!(
+                fused,
+                "the accurate copy's attention was not fused: {}",
+                unfused.as_deref().unwrap_or("no reason recorded").trim()
+            );
+        }
+
+        assert_eq!(
+            prepared.bits, writing.bits,
+            "the {model} copy, loaded in the process that wrote it, is not bit-identical \
+             to the copy loaded on its own"
+        );
+        // A copy whose passes take one pair loads a graph that computes its
+        // last layer for the classification token alone, when its attention
+        // was fused. That graph is the speed-up, so a copy that fell back to
+        // the whole graph has lost it without any score saying so: it must
+        // have been written.
+        let trimmed = prepared.one_row == Some(true) && fused;
+        if trimmed {
+            let untrimmed = std::fs::read_to_string(copy.join("attention.cls1.untrimmed")).ok();
+            assert!(
+                copy.join("attention.cls1.onnx").exists(),
+                "the {model} copy's passes take one pair, but its graph was not trimmed: {}",
+                untrimmed.as_deref().unwrap_or("no reason recorded").trim()
+            );
+        }
+        // The trimmed graph scores a pair a pass, and the source pads its
+        // pairs into one batch on the whole graph: the int8 matrix products
+        // quantize activations with one scale over the rows they see, so the
+        // scores differ by design (see `docs/measured.md`). The ranking they
+        // give must not. Every other copy -- the embedder's, and a reranker's
+        // whose passes are padded -- loads the graph it came from, and must
+        // score exactly as the source.
+        if trimmed {
+            assert_eq!(
+                order(&source.bits[..TEXTS.len()]),
+                order(&prepared.bits[..TEXTS.len()]),
+                "the {model} copy ranks the texts differently from the source"
+            );
+        } else {
+            assert_eq!(
+                source.bits, prepared.bits,
+                "the {model} copy is not bit-identical to the source"
+            );
+        }
+
+        // Which graph it split, if any. Both exports gather their word
+        // embeddings from one quantized table, which is the pattern the split
+        // was written for, so a copy of either that stopped splitting has
+        // lost the saving without any score saying so. A copy whose passes
+        // take one pair splits the trimmed graph it loads for them.
+        let graph = if trimmed {
+            "attention.cls1"
+        } else if fused {
+            "attention"
+        } else {
+            "model"
+        };
+        let split = copy.join(format!("{graph}.split1.onnx")).exists();
+        let unsplit_reason =
+            std::fs::read_to_string(copy.join(format!("{graph}.split1.unsplit"))).ok();
+        assert!(
+            split,
+            "the {model} copy's word embeddings were not split: {}",
+            unsplit_reason
+                .as_deref()
+                .unwrap_or("no reason recorded")
+                .trim()
+        );
+        assert_eq!(
+            prepared.bits, unsplit.bits,
+            "the {model} copy's split graph is not bit-identical to the graph it came from"
+        );
+
+        println!(
+            "  {model}: {} outputs checked against the source; anonymous MiB, source against copy: \
+             after load {} / {}, after a pass {} / {}, live {} / {}; copy data file {} MiB; \
+             attention {}; word embeddings split, live anonymous MiB unsplit against split \
+             {} / {}",
+            source.bits.len(),
+            mebibytes(source.loaded),
+            mebibytes(prepared.loaded),
+            mebibytes(source.scored),
+            mebibytes(prepared.scored),
+            mebibytes(source.held),
+            mebibytes(prepared.held),
+            data / 1024,
+            match (fused, &unfused) {
+                (true, _) => "fused".to_string(),
+                (false, Some(reason)) => format!("unfused ({})", reason.trim()),
+                (false, None) => "unsettled".to_string(),
+            },
+            mebibytes(unsplit.held),
+            mebibytes(prepared.held),
+        );
+
+        // What the copy keeps off the heap, against what it maps.
+        //
+        // Both loads hold the same tokenizer as well, so the difference is the
+        // session's. Half the data file is the line between the two things a
+        // copy can be. Mapped, the `accurate` copy keeps 551 MiB of live
+        // memory off the heap against a data file of 833 MiB. A copy that
+        // finds none of its packed weights -- written for another CPU, or no
+        // longer matched by the runtime -- still maps everything else and
+        // scores identically: written without them, a bare session over it
+        // held 304 MiB against the source's 667, a saving of 363, under half.
+        // Nothing but this assertion tells those two apart.
+        if let (Some(source), Some(prepared)) = (source.held, prepared.held) {
+            let saved = source.saturating_sub(prepared);
+            assert!(
+                saved * 2 >= data,
+                "the {model} copy saves {saved} kB of live anonymous memory against the source, \
+                 under half of its {data} kB data file -- its weights are not being mapped"
+            );
+        }
+
+        // The next model's copy is written on a disk that need not hold both.
+        std::fs::remove_dir_all(&copies).expect("remove the copies");
+    }
+}
+
+/// The positions of `bits`, read as `f32` scores, from highest to lowest.
+fn order(bits: &[u32]) -> Vec<usize> {
+    let mut positions: Vec<usize> = (0..bits.len()).collect();
+    positions.sort_by(|&a, &b| f32::from_bits(bits[b]).total_cmp(&f32::from_bits(bits[a])));
+    positions
+}
+
+/// What one child load returned.
+struct Arm {
+    /// Every output as `f32` bits, so equality means bit-identical.
+    bits: Vec<u32>,
+    /// Anonymous memory added by the load, then after one pass, then after
+    /// the allocator has returned what it holds free -- see [`trim`] -- in
+    /// kB, with the model loaded throughout. `None` where the platform cannot
+    /// say.
+    loaded: Option<u64>,
+    scored: Option<u64>,
+    held: Option<u64>,
+    /// Whether the reranker plans a pass a pair, which is when its copy
+    /// loads the trimmed graph. `None` for the embedder.
+    one_row: Option<bool>,
+}
+
+/// Runs one load in a fresh process, from the prepared copy or from the source,
+/// and from the copy's split graph or the graph it came from.
+fn run(model: &str, cache: &Path, prepared: bool, split: bool) -> Arm {
+    let mut command = Command::new(std::env::current_exe().expect("this test binary"));
+    command
+        .args([
+            "--exact",
+            "a_prepared_copy_scores_the_same_and_holds_less",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(ARM, model)
+        .env(CACHE, cache)
+        // The copy is for the CPU; on a machine with a GPU the reranker would
+        // load the fp16 export there and neither arm would test anything.
+        .env("PAMIN_MEMORY_EVAL_DEVICE", "cpu");
+    if prepared {
+        command.env_remove("PAMIN_MEMORY_EVAL_PREPARED");
+    } else {
+        command.env("PAMIN_MEMORY_EVAL_PREPARED", "false");
+    }
+    if split {
+        command.env_remove("PAMIN_MEMORY_EVAL_SPLIT_EMBEDDINGS");
+    } else {
+        command.env("PAMIN_MEMORY_EVAL_SPLIT_EMBEDDINGS", "false");
+    }
+    let output = command.output().expect("run the child");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "the {model} child (prepared: {prepared}, split: {split}) failed:\n{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let line = stdout
+        .lines()
+        // Mid-line: libtest prints the test's name before its output.
+        .find_map(|line| line.split_once(MARK).map(|(_, result)| result))
+        .unwrap_or_else(|| panic!("the {model} child printed no result:\n{stdout}"));
+    let mut fields = line.split_whitespace();
+    let mut memory = || fields.next().expect("a memory field").parse::<u64>().ok();
+    let (loaded, scored, held) = (memory(), memory(), memory());
+    let one_row = fields.next().expect("a passes field").parse::<bool>().ok();
+    let bits = fields
+        .map(|bits| u32::from_str_radix(bits, 16).expect("hex bits"))
+        .collect();
+    Arm {
+        bits,
+        loaded,
+        scored,
+        held,
+        one_row,
+    }
+}
+
+/// The child: one load, one pass, and what it held.
+fn child(model: &str, cache: &Path) {
+    let before = anonymous();
+    let added = |now: Option<u64>| {
+        before
+            .zip(now)
+            .map(|(before, now)| now.saturating_sub(before))
+    };
+
+    // Kept alive until every figure below is taken: dropped any earlier, the
+    // last of them would measure a process that no longer holds a model.
+    let mut one_row = None;
+    let mut score: Box<dyn FnMut() -> Vec<f32>> = match model {
+        "accurate" => {
+            let mut reranker =
+                Reranker::load(cache, &support::inference()).expect("load the reranker");
+            assert_eq!(reranker.device(), Device::Cpu, "the copy is for the CPU");
+            let lengths = reranker.lengths(QUERY, TEXTS).expect("encode the pairs");
+            one_row = Some(reranker.plan(&lengths).iter().all(|pass| pass.len() == 1));
+            Box::new(move || {
+                // A pair a batch, side by side; then one batch alone, on the
+                // session of the whole budget, of a pair not scored yet.
+                let mut scores = vec![f32::NAN; TEXTS.len()];
+                for ranked in reranker.rank(QUERY, TEXTS).expect("rank") {
+                    scores[ranked.position] = ranked.score;
+                }
+                scores.extend(
+                    reranker
+                        .rank(ALONE, &TEXTS[..1])
+                        .expect("rank one")
+                        .into_iter()
+                        .map(|ranked| ranked.score),
+                );
+                scores
+            })
+        }
+        "embedder" => {
+            let mut embedder =
+                Embedder::load(cache, &support::inference()).expect("load the embedder");
+            Box::new(move || {
+                // A text a pass, side by side; then a query alone, on the
+                // session of the whole budget.
+                let vectors = embedder.embed_passages(TEXTS).expect("embed");
+                let mut outputs: Vec<f32> = vectors.into_iter().flatten().collect();
+                outputs.extend(embedder.embed_query(QUERY).expect("embed the query"));
+                outputs
+            })
+        }
+        other => panic!("no such model {other}"),
+    };
+    let loaded = added(anonymous());
+    let outputs = score();
+    let scored = added(anonymous());
+    trim();
+    let held = added(anonymous());
+
+    let memory = |kb: Option<u64>| kb.map_or_else(|| "-".to_string(), |kb| kb.to_string());
+    let bits: Vec<String> = outputs
+        .iter()
+        .map(|value| format!("{:08x}", value.to_bits()))
+        .collect();
+    println!(
+        "{MARK} {} {} {} {} {}",
+        memory(loaded),
+        memory(scored),
+        memory(held),
+        one_row.map_or_else(|| "-".to_string(), |one_row| one_row.to_string()),
+        bits.join(" ")
+    );
+    drop(score);
+}
+
+/// Hands back to the system what the allocator holds free.
+///
+/// Loading parses a 17 MB tokenizer file and discards the parse, and the
+/// allocator keeps what that freed until something makes it give memory back.
+/// When that happens differs between two processes that did different
+/// things, so a figure taken before it is partly the allocator's timing.
+/// After a trim, what is left is what is live.
+fn trim() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: `malloc_trim` only returns free memory to the system.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
+/// Anonymous memory this process holds, in kB, where the platform says.
+fn anonymous() -> Option<u64> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    std::fs::read_to_string("/proc/self/smaps_rollup")
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("Anonymous:"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+fn mebibytes(kb: Option<u64>) -> String {
+    kb.map_or_else(|| "-".to_string(), |kb| (kb / 1024).to_string())
+}
+
+/// The one copy under `copies`, which the load just wrote.
+fn only_copy(copies: &Path) -> PathBuf {
+    let written: Vec<PathBuf> = std::fs::read_dir(copies)
+        .expect("the copies directory")
+        .map(|entry| entry.expect("an entry").path())
+        .filter(|path| path.is_dir())
+        .collect();
+    assert_eq!(
+        written.len(),
+        1,
+        "expected exactly one complete copy, found {written:?}"
+    );
+    written.into_iter().next().expect("one copy")
+}
+
+/// Links the models an existing cache holds into `cache`, so nothing is
+/// downloaded and nothing is written beside them.
+fn link_models(cache: &Path) {
+    let Ok(existing) = std::env::var("PAMIN_MEMORY_EVAL_MODELS") else {
+        return;
+    };
+    for entry in std::fs::read_dir(&existing).expect("PAMIN_MEMORY_EVAL_MODELS") {
+        let path = entry.expect("an entry").path();
+        let name = path.file_name().expect("a name").to_owned();
+        if name.to_string_lossy().starts_with("models--") {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&path, cache.join(&name)).expect("link the model");
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_dir(&path, cache.join(&name)).expect("link the model");
+        }
+    }
+}

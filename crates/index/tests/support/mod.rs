@@ -1,0 +1,43 @@
+//! What more than one of the index's test files needs.
+
+// Each including test uses some of it.
+#![allow(dead_code)]
+
+pub mod eval;
+
+use memory_index::{DeviceChoice, InferenceSettings, RerankSettings};
+
+/// The inference settings a test or harness measures: the defaults, and what
+/// the `PAMIN_MEMORY_EVAL_*` knobs change about them. Refuses an unknown or retired
+/// `PAMIN_MEMORY_*` variable first; see [`eval::check`].
+pub fn inference() -> InferenceSettings {
+    eval::check();
+    let default = InferenceSettings::default();
+    InferenceSettings {
+        device: eval::parsed::<String>("PAMIN_MEMORY_EVAL_DEVICE")
+            .map(|name| {
+                DeviceChoice::parse(&name).unwrap_or_else(|| {
+                    panic!("PAMIN_MEMORY_EVAL_DEVICE={name:?}: expected auto or cpu")
+                })
+            })
+            .unwrap_or(default.device),
+        threads: eval::parsed("PAMIN_MEMORY_EVAL_INFERENCE_THREADS"),
+        ep_libraries: eval::paths("PAMIN_MEMORY_EVAL_EP_LIBRARIES"),
+        prepared: eval::switch("PAMIN_MEMORY_EVAL_PREPARED").unwrap_or(default.prepared),
+        fused_attention: eval::switch("PAMIN_MEMORY_EVAL_FUSED_ATTENTION")
+            .unwrap_or(default.fused_attention),
+        split_embeddings: eval::switch("PAMIN_MEMORY_EVAL_SPLIT_EMBEDDINGS")
+            .unwrap_or(default.split_embeddings),
+        rerank: RerankSettings {
+            batch: eval::parsed("PAMIN_MEMORY_EVAL_RERANK_BATCH"),
+            batch_tokens: eval::parsed::<std::num::NonZeroUsize>(
+                "PAMIN_MEMORY_EVAL_RERANK_BATCH_TOKENS",
+            )
+            .unwrap_or(default.rerank.batch_tokens),
+            max_tokens: eval::parsed::<std::num::NonZeroUsize>(
+                "PAMIN_MEMORY_EVAL_RERANK_MAX_TOKENS",
+            )
+            .unwrap_or(default.rerank.max_tokens),
+        },
+    }
+}

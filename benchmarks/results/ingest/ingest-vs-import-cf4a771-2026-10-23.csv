@@ -1,0 +1,7 @@
+# 4 cpus; load 2.70 3.42 2.42
+arm,wall_s,server_cpu_s,server_hwm_mb,memories,written,unchanged,held,versions,topics,db_mb,index_mb
+ingest-cold,565.052,2118.53,2352.4,4090,4090,0,0,4090,4090,20.9,97.1
+ingest-again,4.199,7.22,2352.4,4090,0,4090,0,4090,4090,20.9,31.6
+# exported 4090 sections
+import-cold,505.192,1870.38,2352.6,4090,4090,N/A,0,4090,4090,24.0,90.9
+import-again,2.524,4.97,2352.6,4090,0,N/A,4090,8180,4090,28.0,31.6
