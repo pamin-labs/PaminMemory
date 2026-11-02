@@ -537,11 +537,11 @@ impl Models {
         &self.settings
     }
 
-    /// Reads and writes the weights a workspace caches, loading and holding
-    /// them as `settings` says.
-    pub fn new(workspace: &Workspace, settings: Settings) -> Self {
+    /// Reads and writes the weights cached in `settings`' model directory,
+    /// loading and holding them as `settings` says.
+    pub fn new(settings: Settings) -> Self {
         Self {
-            dir: workspace.models_dir(),
+            dir: settings.models_dir.clone(),
             settings: Arc::new(settings),
             loaded: Arc::default(),
             reranker: Arc::default(),
@@ -883,7 +883,7 @@ impl Engine {
         settings: &Settings,
     ) -> Result<Self> {
         let database = Database::open(workspace, Connections::PerCommand, &settings.store).await?;
-        let models = Models::new(workspace, settings.clone());
+        let models = Models::new(settings.clone());
         Self::assemble(
             database,
             &models,

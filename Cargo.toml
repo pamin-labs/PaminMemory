@@ -26,12 +26,15 @@ memory-index = { path = "crates/index" }
 memory-store = { path = "crates/store" }
 # Instruction-set kernels, ONNX Runtime devices, thread budgets and prepared-
 # model keys, shared by every Pamin module that runs models locally.
-pamin-runtime = "0.1.1"
+pamin-runtime = "0.1.2"
 # The module framework: serves the operation contract as MCP, and is the only
 # crate that names the MCP SDK.
 pamin-kit = "0.1.0"
 
 anyhow = "1"
+# The platform's cache directory, where models are kept for every workspace.
+# Already compiled for `hf-hub`.
+dirs = "6"
 clap = { version = "4", features = ["derive", "env"] }
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }

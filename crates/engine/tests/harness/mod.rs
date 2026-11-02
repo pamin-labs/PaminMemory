@@ -90,10 +90,16 @@ pub fn load_models() -> ModelsTurn {
 
 /// The model cache the loads of an evaluation under `home` use: the root
 /// [`memory_index::model_cache_root`] makes of the model directory they are
-/// given, `models` under the home -- [`memory_engine::Models::in_workspace`]
-/// for a workspace at the home, `home.join("models")` for a direct load.
+/// given, `models` under the home (see [`models_dir`]).
 fn model_cache(home: &std::path::Path) -> PathBuf {
     memory_index::model_cache_root(&home.join("models"))
+}
+
+/// Where evaluations keep models: `models` under [`eval_home`], not the
+/// machine's model directory, so what an evaluation counts as a cold or warm
+/// load is not decided by what the product last loaded.
+pub fn models_dir() -> PathBuf {
+    eval_home().join("models")
 }
 
 /// The locks the turn across processes takes, in the order it takes them:
@@ -228,6 +234,7 @@ pub fn settings() -> memory_engine::Settings {
         .unwrap_or(default.unindexed_budget),
         grain: eval::parsed::<std::num::NonZeroU32>("PAMIN_MEMORY_EVAL_SPAN_TOKENS")
             .map_or(default.grain, memory_index::Grain::Spans),
+        models_dir: models_dir(),
     }
 }
 

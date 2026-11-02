@@ -314,8 +314,8 @@ fn refuse_removed_settings() -> Result<()> {
 
 /// The settings [`refuse_removed_settings`] turns away, and what became of
 /// each. Since only `PAMIN_MEMORY_HOME`, `PAMIN_MEMORY_PROJECT`, `PAMIN_MEMORY_VECTOR_INDEX`,
-/// `PAMIN_MEMORY_DEVICE` and `PAMIN_MEMORY_LOG` are read, every other setting that was a
-/// variable is a flag, a `config.toml` key, or gone.
+/// `PAMIN_MEMORY_DEVICE`, `PAMIN_MEMORY_MODELS_DIR` and `PAMIN_MEMORY_LOG` are read,
+/// every other setting that was a variable is a flag, a `config.toml` key, or gone.
 const REMOVED: &[(&str, &str)] = &[
     (
         "PAMIN_MEMORY_NO_SERVER",
@@ -580,12 +580,14 @@ mod tests {
     use super::*;
 
     /// The variables the binary still reads: where its state is, which
-    /// project and vector index, which device, and what to log.
+    /// project and vector index, which device, where models are, and what to
+    /// log.
     const READ: &[&str] = &[
         "PAMIN_MEMORY_HOME",
         "PAMIN_MEMORY_PROJECT",
         "PAMIN_MEMORY_VECTOR_INDEX",
         "PAMIN_MEMORY_DEVICE",
+        "PAMIN_MEMORY_MODELS_DIR",
         "PAMIN_MEMORY_LOG",
     ];
 
