@@ -110,6 +110,47 @@ pub async fn ensure_project(pool: &PgPool, name: &str) -> Result<Project> {
     })
 }
 
+/// What [`purge_project`] deleted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PurgedProject {
+    pub id: ProjectId,
+    pub topics: u64,
+    pub sources: u64,
+    /// The paths it kept in sync, for the caller to stop watching.
+    pub synced: Vec<String>,
+}
+
+/// Deletes the project with this name and every row it owns, for good.
+///
+/// Unlike a retraction, which closes a validity interval and keeps the
+/// history, this is for privacy requests: nothing of the project is left to
+/// query. Every table references `projects` with `ON DELETE CASCADE`, so one
+/// statement removes it all; the counts come from the same statement's
+/// snapshot, taken before the delete. `None` when there is no such project.
+pub async fn purge_project(
+    executor: impl PgExecutor<'_>,
+    name: &str,
+) -> Result<Option<PurgedProject>> {
+    let row: Option<(uuid::Uuid, i64, i64, Vec<String>)> = sqlx::query_as(
+        "WITH gone AS (DELETE FROM projects WHERE name = $1 RETURNING id)
+         SELECT gone.id,
+                (SELECT count(*) FROM topics WHERE project_id = gone.id),
+                (SELECT count(*) FROM sources WHERE project_id = gone.id),
+                ARRAY(SELECT path FROM synced_paths
+                       WHERE project_id = gone.id ORDER BY path)
+           FROM gone",
+    )
+    .bind(name)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row.map(|(id, topics, sources, synced)| PurgedProject {
+        id: id.into(),
+        topics: topics as u64,
+        sources: sources as u64,
+        synced,
+    }))
+}
+
 /// Returns the source with this locator, creating it if it does not exist,
 /// and holds it locked until the transaction ends.
 ///

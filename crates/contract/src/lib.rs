@@ -25,6 +25,7 @@ pub mod ingest;
 pub mod init;
 pub mod link;
 pub mod neighbors;
+pub mod purge;
 pub mod read;
 pub mod reindex;
 pub mod search;
