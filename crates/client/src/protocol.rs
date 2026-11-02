@@ -107,6 +107,7 @@ pub enum Call {
     Cascade(memory_contract::cascade::Args),
     Sync(memory_contract::sync::Args),
     Unsync(memory_contract::unsync::Args),
+    Purge(memory_contract::purge::Args),
     /// Stop the database, and the server answering this. The one call a client
     /// will not start a server in order to make.
     Stop,
@@ -131,6 +132,7 @@ impl Call {
             Self::Cascade(_) => "cascade",
             Self::Sync(_) => "sync",
             Self::Unsync(_) => "unsync",
+            Self::Purge(_) => "purge",
             Self::Stop => "stop",
         }
     }
