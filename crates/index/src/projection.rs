@@ -868,6 +868,40 @@ pub fn vector_index_lags(documents: u64, completeness: f32, budget: std::num::No
     documents.saturating_sub(covered) >= budget.get()
 }
 
+/// How many documents an index of this kind, segmented at this size, may hold
+/// outside its last `optimize` before upkeep runs one.
+///
+/// [`UNINDEXED_BUDGET`] priced only the vector scan, and the unindexed remainder
+/// costs the lexical channels far more. Until `optimize` compacts a segment, its
+/// full-text postings are bitmaps merged at read time with no block maxima, so
+/// an ask scores every posting of every term instead of skipping. Over 4,892
+/// spans of LongMemEval at cap 200, the n-gram ask at depth 400 took p50 471 ms
+/// with nothing compacted and 17.7 ms after one `optimize`, over the same
+/// topics in the same order on 139 of 140 queries; the remainder costs about
+/// 0.11 ms of p50 a document, against about 0.0002 ms for the vector scan.
+///
+/// `optimize` costs in proportion to the segment it rewrites, about 1.2 ms a
+/// document whatever the remainder (1.6, 3.7 and 5.8 s at 1,200, 2,446 and
+/// 4,892), so the bound is a share of the segment rather than a count. A
+/// twentieth holds the lexical penalty at about 55 ms on the smallest segment
+/// (500 documents) and spends about 12 ms a written document on compaction
+/// over a segment's life, a few percent of embedding the document.
+///
+/// A [`VectorIndex::Disk`] index keeps [`UNINDEXED_BUDGET`]: every `optimize`
+/// there rebuilds much of the graph (114 to 310 s on 25,000 documents), which no
+/// lexical saving pays for.
+pub fn unindexed_budget(index: VectorIndex, segment: u64) -> std::num::NonZeroU64 {
+    match index {
+        VectorIndex::Disk => UNINDEXED_BUDGET,
+        VectorIndex::Memory => std::num::NonZeroU64::new(segment / LEXICAL_SHARE)
+            .unwrap_or(std::num::NonZeroU64::MIN)
+            .min(UNINDEXED_BUDGET),
+    }
+}
+
+/// The share of a segment [`unindexed_budget`] lets sit uncompacted.
+const LEXICAL_SHARE: u64 = 20;
+
 /// What one document in this index stands for.
 ///
 /// Recorded beside the model because an index keyed by something else is not
@@ -2453,8 +2487,8 @@ fn holds_spans<'a>(
 #[cfg(test)]
 mod upkeep {
     use super::{
-        Segmentation, UNINDEXED_BUDGET, is_fragmented, segment_documents, vector_index_lags,
-        wastes_disk,
+        Segmentation, UNINDEXED_BUDGET, VectorIndex, is_fragmented, segment_documents,
+        unindexed_budget, vector_index_lags, wastes_disk,
     };
 
     /// A workspace that grew from empty holds the floor's segments, and the
@@ -2563,6 +2597,17 @@ mod upkeep {
         // The bound is on the remainder, not on the project: the size that
         // never fired as a threshold is fully indexed here.
         assert!(!vector_index_lags(1_000_000, 1.0, UNINDEXED_BUDGET));
+    }
+
+    #[test]
+    fn a_memory_index_compacts_at_a_twentieth_of_its_segment() {
+        assert_eq!(unindexed_budget(VectorIndex::Memory, 10_000).get(), 500);
+        assert_eq!(unindexed_budget(VectorIndex::Memory, 250_000).get(), 12_500);
+        assert_eq!(unindexed_budget(VectorIndex::Memory, 5).get(), 1);
+        assert_eq!(
+            unindexed_budget(VectorIndex::Disk, 10_000),
+            UNINDEXED_BUDGET
+        );
     }
 
     /// A small index is compacted after a few flushes, not after the file

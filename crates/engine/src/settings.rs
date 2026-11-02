@@ -24,10 +24,11 @@ pub struct Settings {
     /// [`memory_core::settings::MODEL_IDLE`]. Never zero, which would give a
     /// model back the tick after it loaded and make every search a model load.
     pub model_idle: std::num::NonZeroU64,
-    /// How many documents may sit outside the vector graph before upkeep
-    /// builds it; [`memory_index::projection::UNINDEXED_BUDGET`] in the
-    /// product, lowered by a test that has to reach the case. Never zero,
-    /// which would optimize the index on every drain.
+    /// The most documents that may sit outside the last `optimize` before
+    /// upkeep runs one. The index's own [`memory_index::unindexed_budget`]
+    /// applies beneath it, so this is [`memory_index::projection::UNINDEXED_BUDGET`]
+    /// in the product and lowered only by a test that has to reach the case.
+    /// Never zero, which would optimize the index on every drain.
     pub unindexed_budget: std::num::NonZeroU64,
     /// How a memory is cut into documents in an index this process creates
     /// or rebuilds; one that exists keeps its own. See [`memory_index::Grain`].
