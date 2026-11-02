@@ -111,7 +111,8 @@ async fn the_ledger_holds_its_promises() {
 async fn a_scoped_transaction_reaches_only_its_project(database: &Database) {
     let guarded: Vec<(String,)> = sqlx::query_as(
         "SELECT relname::text FROM pg_class
-          WHERE relnamespace = current_schema()::regnamespace AND relrowsecurity
+          WHERE relnamespace = current_schema()::regnamespace
+            AND relrowsecurity AND relforcerowsecurity
           ORDER BY relname",
     )
     .fetch_all(database.pool())
@@ -199,6 +200,31 @@ async fn a_scoped_transaction_reaches_only_its_project(database: &Database) {
         .await
         .expect("count with no project named");
     assert_eq!(unnamed, 0, "with no project named the role sees nothing");
+    sqlx::raw_sql("ROLLBACK")
+        .execute(&mut *connection)
+        .await
+        .expect("roll back");
+
+    // Hosted, the connection owns the tables and is no superuser. Played here
+    // by a role made owner inside a transaction that is rolled back.
+    for statement in [
+        "BEGIN; CREATE ROLE owner_probe NOLOGIN NOSUPERUSER NOBYPASSRLS",
+        "ALTER TABLE topics OWNER TO owner_probe",
+        "SET LOCAL ROLE owner_probe",
+    ] {
+        sqlx::raw_sql(statement)
+            .execute(&mut *connection)
+            .await
+            .unwrap_or_else(|error| panic!("{statement}: {error}"));
+    }
+    let (as_owner,): (i64,) = sqlx::query_as("SELECT count(*) FROM topics")
+        .fetch_one(&mut *connection)
+        .await
+        .expect("count as the owner");
+    assert_eq!(
+        as_owner, 0,
+        "an owner outside a scoped transaction sees no guarded row"
+    );
     sqlx::raw_sql("ROLLBACK")
         .execute(&mut *connection)
         .await
