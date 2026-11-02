@@ -1614,8 +1614,10 @@ retrieval engine replaceable and makes a breaking engine upgrade a rebuild
 rather than a migration. Relationships are unaffected: they live in the
 authority store, not the index.
 
-Run it after changing `--vector-index`, on a project indexed under a retired
-profile, or after deleting the index directory. It is also how an index built
+Run it after changing `--vector-index`, or on a project indexed under a
+retired profile. A project whose index directory is missing while PostgreSQL
+holds its memories, or whose rebuild stopped part way, is rebuilt by the server
+the first time it is used; that first call waits for the rebuild. It is also how an index built
 before [spans](#long-memories-spans), one document per memory, is cut into
 them: an index keeps the grain it was built with, and a rebuild uses the
 current one. It rebuilds one project — the one named by `--project` — and

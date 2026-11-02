@@ -336,6 +336,10 @@ pub struct Engine {
     pub(crate) access: Access,
     /// What a rebuild holds until [`reindex`](Self::reindex) has finished.
     rebuilding: Arc<Mutex<Option<Rebuilding>>>,
+    /// Whether the index has to be rebuilt before it answers: the ledger
+    /// holds memories and the directory was missing at open, or a rebuild in
+    /// it never finished. See [`needs_rebuild`](Self::needs_rebuild).
+    needs_rebuild: bool,
     /// Index writes that are applied but not yet on disk, with their claims.
     ///
     /// The projection buffers a write in memory and a query reads that buffer,
@@ -937,6 +941,19 @@ impl Engine {
         .await
     }
 
+    /// Whether this index has to be rebuilt from the ledger before it
+    /// answers.
+    ///
+    /// The ledger is the authority and the index is derived from it, so an
+    /// index can be gone while the memories are not: a node whose disk was
+    /// replaced, or restored from a copy that did not hold this project. An
+    /// open then creates an empty index, and every search would answer
+    /// nothing. A rebuild that stopped part way leaves a marker behind
+    /// ([`reindex`](Self::reindex)), so it is caught the same way.
+    pub fn needs_rebuild(&self) -> bool {
+        self.needs_rebuild
+    }
+
     async fn assemble(
         database: Database,
         models: &Models,
@@ -979,6 +996,10 @@ impl Engine {
         }
         // Only a rebuild keeps it past the open.
         let exclusive = exclusive.filter(|_| discard);
+
+        // Read before the open, which creates the directory.
+        let needs_rebuild =
+            !discard && documents > 0 && (!dir.exists() || dir.join(UNFINISHED_REBUILD).exists());
 
         let (index, previous) = off_the_runtime(|| {
             // Set aside rather than deleted, so the rebuild can take the
@@ -1030,6 +1051,7 @@ impl Engine {
                 previous,
                 _exclusive: exclusive,
             }))),
+            needs_rebuild,
             embedder: std::sync::OnceLock::new(),
             vector_index,
             models: models.clone(),
@@ -2787,6 +2809,16 @@ impl Engine {
     /// directory first, which is what makes this a genuine rebuild rather than
     /// an overwrite that could leave orphans behind.
     pub async fn reindex(&self) -> Result<Rebuilt> {
+        // Marked until it finishes, so an open after a failed or killed
+        // rebuild knows the index is partial.
+        let marker = self.dir.join(UNFINISHED_REBUILD);
+        tokio::fs::write(&marker, b"").await?;
+        let rebuilt = self.reindex_unmarked().await?;
+        tokio::fs::remove_file(&marker).await?;
+        Ok(rebuilt)
+    }
+
+    async fn reindex_unmarked(&self) -> Result<Rebuilt> {
         // Before the states are read: the pointer decides which state a topic
         // resolves to, so a rebuild that trusted a stale one would index the
         // wrong content and look like it had worked.
@@ -3016,6 +3048,9 @@ pub struct Recorded {
     /// Absent when the filter held the content in the evidence layer.
     pub state: Option<TopicState>,
 }
+
+/// Left in an index directory while [`Engine::reindex`] runs in it.
+const UNFINISHED_REBUILD: &str = ".rebuilding";
 
 /// What a rebuild did.
 #[derive(Clone, Copy, Debug)]
