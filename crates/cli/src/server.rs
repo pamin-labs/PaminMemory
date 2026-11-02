@@ -351,6 +351,9 @@ impl CatchingUp {
             // will open it, and no index means nothing to catch up.
             let dir = session.workspace().index_dir(owing.project);
             let vector_index = match ProjectionIndex::built_for(&dir) {
+                // Half rebuilt: the first request rebuilds it, which the
+                // budget here could not hold.
+                Ok(Some(_)) if Engine::rebuild_unfinished(&dir) => continue,
                 Ok(Some(built)) => built,
                 Ok(None) => continue,
                 // An index built with a retired model is owed work only a

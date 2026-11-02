@@ -314,12 +314,9 @@ impl Session {
                 if !engine.needs_rebuild() {
                     return Ok(engine);
                 }
-                // Inside the open, which holds the slot: every caller, the
-                // server's own warm-up included, waits for the rebuild rather
-                // than answering from the empty index, and a rebuild that
-                // fails leaves the slot empty for the next caller to retry.
-                // Dropped first: it holds the lock on the directory the
-                // rebuild sets aside.
+                // Inside the open, which holds the slot: every caller waits
+                // for the rebuild, and one that fails leaves the slot empty.
+                // Dropped first: it holds the directory's lock.
                 drop(engine);
                 let engine = Engine::rebuilding_attached(
                     self.database.clone(),

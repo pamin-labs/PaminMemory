@@ -336,9 +336,7 @@ pub struct Engine {
     pub(crate) access: Access,
     /// What a rebuild holds until [`reindex`](Self::reindex) has finished.
     rebuilding: Arc<Mutex<Option<Rebuilding>>>,
-    /// Whether the index has to be rebuilt before it answers: the ledger
-    /// holds memories and the directory was missing at open, or a rebuild in
-    /// it never finished. See [`needs_rebuild`](Self::needs_rebuild).
+    /// See [`needs_rebuild`](Self::needs_rebuild).
     needs_rebuild: bool,
     /// Index writes that are applied but not yet on disk, with their claims.
     ///
@@ -954,6 +952,11 @@ impl Engine {
         self.needs_rebuild
     }
 
+    /// Whether a rebuild in this index directory started and never finished.
+    pub fn rebuild_unfinished(dir: &std::path::Path) -> bool {
+        dir.join(UNFINISHED_REBUILD).exists()
+    }
+
     async fn assemble(
         database: Database,
         models: &Models,
@@ -997,11 +1000,10 @@ impl Engine {
         // Only a rebuild keeps it past the open.
         let exclusive = exclusive.filter(|_| discard);
 
-        // Read before the open, which creates the directory.
-        let needs_rebuild =
-            !discard && documents > 0 && (!dir.exists() || dir.join(UNFINISHED_REBUILD).exists());
-
-        let (index, previous) = off_the_runtime(|| {
+        let (index, previous, needs_rebuild) = off_the_runtime(|| {
+            // Read before the open, which creates the directory.
+            let needs_rebuild =
+                !discard && documents > 0 && (!dir.exists() || Self::rebuild_unfinished(&dir));
             // Set aside rather than deleted, so the rebuild can take the
             // vectors it still holds instead of embedding every memory again.
             let previous = if discard {
@@ -1030,6 +1032,7 @@ impl Engine {
             Ok::<_, memory_index::IndexError>((
                 Arc::new(index) as Arc<dyn Projection + Send + Sync>,
                 previous,
+                needs_rebuild,
             ))
         })?;
 
