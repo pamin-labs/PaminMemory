@@ -32,6 +32,7 @@ pub fn engine(server: &Server) -> anyhow::Result<memory_engine::Settings> {
             // in neither a flag, `config.toml`, nor the settings a client
             // sends the server and prints.
             database_url: database_url()?,
+            database_connections: server.database_connections.map(std::num::NonZeroU32::get),
         },
         model_idle: server.model_idle,
         models_dir: server.models_dir.clone(),
@@ -77,11 +78,15 @@ mod tests {
         let server =
             memory_client::settings::Server::resolve(root.path(), &parsed.server, &matches)
                 .unwrap();
-        // `PAMIN_MEMORY_DEVICE` may be set by whoever runs the tests; nothing else is
-        // read from the environment.
+        // `PAMIN_MEMORY_DEVICE` and the external database may be set by
+        // whoever runs the tests; nothing else is read from the environment.
         let settings = memory_engine::Settings {
             inference: memory_index::InferenceSettings {
                 device: server.device,
+                ..Default::default()
+            },
+            store: memory_store::StoreSettings {
+                database_url: super::database_url().unwrap(),
                 ..Default::default()
             },
             ..Default::default()
