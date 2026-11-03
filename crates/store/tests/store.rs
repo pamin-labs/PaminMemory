@@ -94,11 +94,85 @@ async fn the_ledger_holds_its_promises() {
     a_promoted_write_is_one_statement_after_its_locks(&database).await;
     an_edge_reads_the_same_direction_from_either_end(&database).await;
     a_version_is_numbered_and_read_from_its_own_key(&database, &workspace).await;
+    a_span_vector_is_kept_once_and_for_its_project_alone(&database).await;
     a_scoped_transaction_reaches_only_its_project(&database).await;
     purging_a_project_leaves_none_of_its_rows(&database).await;
 
     drop(database);
     a_stopped_server_is_started_again_without_waiting(&workspace).await;
+}
+
+/// A span vector is kept once per model, text and plan, read back under
+/// every plan of the model asked for, out of another project's reach, and
+/// purged with its project.
+async fn a_span_vector_is_kept_once_and_for_its_project_alone(database: &Database) {
+    let mine = repository::ensure_project(database.pool(), "span-vectors-mine")
+        .await
+        .expect("project")
+        .id;
+    let theirs = repository::ensure_project(database.pool(), "span-vectors-theirs")
+        .await
+        .expect("project")
+        .id;
+    let hashes = [[1u8; 32], [2u8; 32]];
+    let vectors = [([1u8; 32], vec![10u8, 0]), ([2u8; 32], vec![20u8, 0])];
+    for (project, revision, encoding) in [
+        (mine, "model@1", "cpu:a"),
+        (mine, "model@1", "cpu:a"),
+        (mine, "model@1", "npu:b"),
+        (mine, "model@2", "cpu:a"),
+        (theirs, "model@1", "cpu:a"),
+    ] {
+        let mut scoped = database.scoped(project).await.expect("scoped");
+        repository::put_span_vectors(&mut *scoped, project, revision, encoding, &vectors)
+            .await
+            .expect("keep vectors");
+        scoped.commit().await.expect("commit");
+    }
+
+    let mut scoped = database.scoped(mine).await.expect("scoped");
+    let mut kept = repository::span_vectors(&mut *scoped, mine, "model@1", None, &hashes[..1])
+        .await
+        .expect("read vectors");
+    kept.sort_by(|left, right| left.encoding.cmp(&right.encoding));
+    assert_eq!(
+        kept.iter()
+            .map(|kept| (kept.encoding.as_str(), kept.vector.as_slice()))
+            .collect::<Vec<_>>(),
+        [("cpu:a", &[10u8, 0][..]), ("npu:b", &[10u8, 0][..])],
+        "one row per plan of the model asked for, however often it was kept"
+    );
+    assert_eq!(
+        repository::span_vectors(&mut *scoped, mine, "model@1", Some("npu:b"), &hashes)
+            .await
+            .expect("read one plan")
+            .len(),
+        2,
+        "asked for one plan, only its rows"
+    );
+    assert!(
+        repository::span_vectors(&mut *scoped, theirs, "model@1", None, &hashes)
+            .await
+            .expect("read theirs")
+            .is_empty(),
+        "another project's vectors are out of reach, whatever the query names"
+    );
+    let odd = [([3; 32], vec![1])];
+    let malformed = repository::put_span_vectors(&mut *scoped, mine, "model@1", "x", &odd).await;
+    assert!(malformed.is_err(), "an odd-width vector is refused");
+    drop(scoped);
+    let mut scoped = database.scoped(mine).await.expect("scoped");
+    repository::purge_project(&mut *scoped, mine)
+        .await
+        .expect("purge")
+        .expect("the project existed");
+    scoped.commit().await.expect("commit the purge");
+    let (left,): (i64,) = sqlx::query_as("SELECT count(*) FROM span_vectors WHERE project_id = $1")
+        .bind(mine.0)
+        .fetch_one(database.pool())
+        .await
+        .expect("count");
+    assert_eq!(left, 0, "a purged project's vectors go with it");
 }
 
 /// Inside a scoped transaction the guarded tables hold one project's rows.

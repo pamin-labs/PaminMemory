@@ -1889,6 +1889,87 @@ pub async fn forget_file_record_of(
     Ok(())
 }
 
+/// A span's vector as it was embedded. See `V22__span_vectors`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpanVector {
+    /// The hash of the text the vector was embedded from.
+    pub passage_hash: [u8; 32],
+    /// The plan that embedded it.
+    pub encoding: String,
+    /// Its fp16 codes, little-endian.
+    pub vector: Vec<u8>,
+}
+
+/// The vectors the model at `revision` embedded for these passages, under
+/// `encoding`, or under every plan that embedded one when it is `None`: a
+/// rebuild that loads no model has to choose among them.
+pub async fn span_vectors(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    revision: &str,
+    encoding: Option<&str>,
+    passage_hashes: &[[u8; 32]],
+) -> Result<Vec<SpanVector>> {
+    if passage_hashes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let hashes: Vec<&[u8]> = passage_hashes.iter().map(|hash| hash.as_slice()).collect();
+    let rows: Vec<(Vec<u8>, String, Vec<u8>)> = sqlx::query_as(
+        "SELECT passage_hash, encoding, vector FROM span_vectors
+          WHERE project_id = $1 AND revision = $2 AND passage_hash = ANY($3)
+            AND ($4::text IS NULL OR encoding = $4)",
+    )
+    .bind(project.0)
+    .bind(revision)
+    .bind(&hashes)
+    .bind(encoding)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(hash, encoding, vector)| SpanVector {
+            passage_hash: hash
+                .try_into()
+                .expect("span_vectors checks passage_hash is 32 bytes"),
+            encoding,
+            vector,
+        })
+        .collect())
+}
+
+/// Keeps each vector, embedded by the model at `revision` under `encoding`
+/// from the passage hashed beside it. One already kept stays: the same model
+/// and plan over the same text give the same vector.
+pub async fn put_span_vectors<'a>(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    revision: &str,
+    encoding: &str,
+    vectors: impl IntoIterator<Item = &'a ([u8; 32], Vec<u8>)>,
+) -> Result<()> {
+    let (hashes, vectors): (Vec<&[u8]>, Vec<&[u8]>) = vectors
+        .into_iter()
+        .map(|(hash, vector)| (hash.as_slice(), vector.as_slice()))
+        .unzip();
+    if hashes.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "INSERT INTO span_vectors (project_id, revision, passage_hash, encoding, vector)
+         SELECT $1, $2, passage_hash, $3, vector FROM unnest($4::bytea[], $5::bytea[])
+                AS v (passage_hash, vector)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(project.0)
+    .bind(revision)
+    .bind(encoding)
+    .bind(&hashes)
+    .bind(&vectors)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
 /// A path `pamin-memory ingest` keeps in sync. See `V19__synced_paths`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SyncedPath {

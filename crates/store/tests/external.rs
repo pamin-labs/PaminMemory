@@ -72,6 +72,29 @@ async fn an_external_server_is_used_and_never_started() {
         .expect("read it through the host");
     assert_eq!(written.id, read.id);
 
+    // The node reaches the newest guarded table as the guarded role.
+    let mut scoped = database.scoped(written.id).await.expect("scoped");
+    memory_store::repository::put_span_vectors(
+        &mut *scoped,
+        written.id,
+        "model@1",
+        "cpu:plan",
+        &[([7; 32], vec![1, 0])],
+    )
+    .await
+    .expect("keep a span vector as the node");
+    let kept = memory_store::repository::span_vectors(
+        &mut *scoped,
+        written.id,
+        "model@1",
+        None,
+        &[[7; 32]],
+    )
+    .await
+    .expect("read it back as the node");
+    assert_eq!(kept.len(), 1);
+    scoped.commit().await.expect("commit");
+
     // A second open migrates nothing new and fails nothing.
     Database::open(&node, Connections::PerCommand, &settings)
         .await
