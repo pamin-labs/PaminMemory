@@ -1,9 +1,11 @@
 #!/bin/sh
 # Repository fallback for pamin-labs-dev (InternalDocs pamin-labs-dev/architecture/0.1.0/p3-design.md, section 4).
-# - Cloud sessions load no plugins: run the same hook with the binary from the public /v1/bin mirror; the
-#   environment's network-secrets proxy adds the Access service token.
+# - Cloud sessions load no plugins: run the same hook with the binary served by the Worker; the
+#   session signs in with `pamin-labs-dev login` like any other.
 # - Locally the organization plugin does the work; if it is not running in this session, deny edits.
-# Usage: pamin-labs-dev.sh session-start|pre-tool-use|stop|session-end, with the hook input on stdin.
+# - `wait` (asyncRewake, at SessionStart and every Stop): in a cloud session, waits for the next
+#   thread message and wakes the agent with it; there is no mod there to do it.
+# Usage: pamin-labs-dev.sh session-start|pre-tool-use|stop|session-end|wait, with the hook input on stdin.
 hook="$1"
 input="$(cat)"
 home="${PAMIN_LABS_DEV_HOME:-$HOME/.pamin-labs-dev}"
@@ -24,6 +26,7 @@ if [ "$CLAUDE_CODE_REMOTE" = true ]; then
   fi
   # No plugin monitor runs here: watch keeps the cache live and sends the heartbeat, and exits with Claude Code.
   [ "$hook" = session-start ] && "$bin" watch > /dev/null 2>&1 &
+  [ "$hook" = wait ] && exec "$bin" watch --wake
   printf '%s' "$input" | exec "$bin" hook "$hook"
 fi
 

@@ -14,6 +14,12 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pamin-labs-dev.sh session-start"
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pamin-labs-dev.sh wait",
+            "asyncRewake": true,
+            "timeout": 86400
           }
         ]
       }
@@ -35,6 +41,12 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pamin-labs-dev.sh stop"
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pamin-labs-dev.sh wait",
+            "asyncRewake": true,
+            "timeout": 86400
           }
         ]
       }
