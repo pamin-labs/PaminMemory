@@ -1786,18 +1786,6 @@ impl Previous {
         }))
     }
 
-    /// Which of these topics [`lend`](Self::lend) would supply, without
-    /// reading a vector.
-    ///
-    /// `wanted` maps each topic to the spans the rebuild will write for it,
-    /// in order.
-    pub fn lends(
-        &self,
-        wanted: &HashMap<TopicId, Vec<SpanSource<'_>>>,
-    ) -> Result<HashSet<TopicId>> {
-        self.whole(wanted)
-    }
-
     /// Hands `take` every document this index can lend, at most `batch` at a
     /// time, as the span, the text wanted for it, the header its vector was
     /// recorded under ([`Stored::header`]) and its stored vector, with what
@@ -1828,7 +1816,7 @@ impl Previous {
         batch: usize,
         mut take: impl FnMut(&[SpanDocument<'_>], Option<&str>) -> Result<()>,
     ) -> Result<HashSet<TopicId>> {
-        let lent = self.whole(wanted)?;
+        let lent = self.lends(wanted)?;
         let mut pending: BTreeMap<Option<String>, Vec<PendingSpanDocument<'_>>> = BTreeMap::new();
         let mut waiting = 0;
         let mut hand_over =
@@ -1895,13 +1883,18 @@ impl Previous {
         Ok(lent)
     }
 
-    /// The topics of `wanted` this index holds with exactly the spans given
-    /// for them: every one, each with its text, and none past them.
+    /// The topics of `wanted` [`lend`](Self::lend) would supply, without
+    /// reading a vector: those this index holds with exactly the spans given
+    /// for them, every one, each with its text, and none past them. `wanted`
+    /// maps each topic to the spans the rebuild will write for it, in order.
     ///
     /// A pass of its own, without vectors, before any is lent: a topic is
     /// lent whole or not at all, and whether it is whole is known only once
     /// every document has been seen.
-    fn whole(&self, wanted: &HashMap<TopicId, Vec<SpanSource<'_>>>) -> Result<HashSet<TopicId>> {
+    pub fn lends(
+        &self,
+        wanted: &HashMap<TopicId, Vec<SpanSource<'_>>>,
+    ) -> Result<HashSet<TopicId>> {
         let mut matched: HashMap<TopicId, usize> = HashMap::new();
         let mut spoiled: HashSet<TopicId> = HashSet::new();
         self.each(false, |(topic, ordinal), doc| {
