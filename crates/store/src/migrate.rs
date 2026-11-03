@@ -127,6 +127,11 @@ fn migrations() -> Vec<Migration> {
             "force_row_level_security",
             include_str!("../migrations/V21__force_row_level_security.sql"),
         ),
+        migration(
+            22,
+            "span_vectors",
+            include_str!("../migrations/V22__span_vectors.sql"),
+        ),
     ]
 }
 

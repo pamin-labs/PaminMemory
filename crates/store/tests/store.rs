@@ -128,6 +128,7 @@ async fn a_scoped_transaction_reaches_only_its_project(database: &Database) {
             "source_spans",
             "source_versions",
             "sources",
+            "span_vectors",
             "topic_aliases",
             "topic_name_tokens",
             "topic_states",
