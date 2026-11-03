@@ -17,18 +17,38 @@ async fn an_external_server_is_used_and_never_started() {
     let hosted = Database::open(&host, Connections::PerCommand, &common::store())
         .await
         .expect("start the stand-in server");
-    let url = host
+    let superuser = host
         .read_server()
         .expect("read the host's record")
         .expect("the host recorded its server")
         .url();
+    let (server, _) = superuser.rsplit_once('/').expect("a database in the URL");
+    let (_, address) = server.split_once('@').expect("credentials in the URL");
+    let external = |role: &str, database: &str| StoreSettings {
+        database_url: Some(DatabaseUrl(format!(
+            "postgresql://{role}:{role}@{address}/{database}"
+        ))),
+        ..common::store()
+    };
+
+    // A hosted login: it owns its databases and is bound by row-level
+    // security, with the guarded role made for it once.
+    for statement in [
+        "CREATE ROLE node LOGIN PASSWORD 'node' NOSUPERUSER NOBYPASSRLS",
+        "GRANT pamin_memory_app TO node WITH ADMIN OPTION",
+        "CREATE DATABASE nodes OWNER node",
+        "CREATE DATABASE racing OWNER node",
+        "CREATE ROLE bypassing LOGIN PASSWORD 'bypassing' NOSUPERUSER BYPASSRLS",
+    ] {
+        sqlx::query(statement)
+            .execute(hosted.pool())
+            .await
+            .unwrap_or_else(|error| panic!("{statement}: {error}"));
+    }
 
     let node = tempfile::tempdir().expect("node workspace");
     let node = Workspace::at(node.path());
-    let settings = StoreSettings {
-        database_url: Some(DatabaseUrl(url.clone())),
-        ..common::store()
-    };
+    let settings = external("node", "nodes");
     let database = Database::open(&node, Connections::Resident, &settings)
         .await
         .expect("open the external server");
@@ -44,7 +64,10 @@ async fn an_external_server_is_used_and_never_started() {
     let written = memory_store::repository::ensure_project(database.pool(), &name)
         .await
         .expect("write a project through the node");
-    let read = memory_store::repository::ensure_project(hosted.pool(), &name)
+    let as_host = sqlx::PgPool::connect(&format!("{server}/nodes"))
+        .await
+        .expect("the host on the node's database");
+    let read = memory_store::repository::ensure_project(&as_host, &name)
         .await
         .expect("read it through the host");
     assert_eq!(written.id, read.id);
@@ -56,17 +79,7 @@ async fn an_external_server_is_used_and_never_started() {
 
     // Two nodes starting at once on a database nothing has migrated, as after
     // an upgrade, both start: the loser of the migration race tries again.
-    sqlx::query("CREATE DATABASE racing")
-        .execute(hosted.pool())
-        .await
-        .expect("create an empty database");
-    let racing = StoreSettings {
-        database_url: Some(DatabaseUrl(format!(
-            "{}/racing",
-            url.rsplit_once('/').expect("a database in the URL").0
-        ))),
-        ..common::store()
-    };
+    let racing = external("node", "racing");
     let (first, second) = tokio::join!(
         Database::open(&node, Connections::PerCommand, &racing),
         Database::open(&host, Connections::PerCommand, &racing),
@@ -76,7 +89,7 @@ async fn an_external_server_is_used_and_never_started() {
 
     // The URL carries credentials and never prints.
     let printed = format!("{settings:?}");
-    assert!(!printed.contains(&url), "{printed}");
+    assert!(!printed.contains("node:node"), "{printed}");
 
     // A node's pool is capped, so nodes sharing the server fit its limit.
     let capped = StoreSettings {
@@ -88,86 +101,23 @@ async fn an_external_server_is_used_and_never_started() {
         .expect("open with a cap");
     assert_eq!(database.pool().options().get_max_connections(), 2);
 
-    // A hosted role that owns its database but may not create roles, as a
-    // managed server's often is.
-    for statement in [
-        "CREATE ROLE hosted_node LOGIN PASSWORD 'hosted' NOCREATEROLE NOSUPERUSER",
-        "CREATE DATABASE limited OWNER hosted_node",
+    // A login row-level security would not bind is refused, saying why: one
+    // with BYPASSRLS, as a managed server's administrator often is, and a
+    // superuser.
+    for (refused, how) in [
+        (external("bypassing", "nodes"), "BYPASSRLS"),
+        (
+            StoreSettings {
+                database_url: Some(DatabaseUrl(format!("{server}/nodes"))),
+                ..common::store()
+            },
+            "a superuser",
+        ),
     ] {
-        sqlx::query(statement)
-            .execute(hosted.pool())
+        let error = Database::open(&node, Connections::PerCommand, &refused)
             .await
-            .unwrap_or_else(|error| panic!("{statement}: {error}"));
+            .err()
+            .unwrap_or_else(|| panic!("a login with {how} is refused"));
+        assert!(error.to_string().contains("row-level security"), "{error}");
     }
-    let (_, address) = url.split_once('@').expect("credentials in the URL");
-    let limited = StoreSettings {
-        database_url: Some(DatabaseUrl(format!(
-            "postgresql://hosted_node:hosted@{}/limited",
-            address.rsplit_once('/').expect("a database in the URL").0
-        ))),
-        ..common::store()
-    };
-
-    // Without the guarded role it is refused before migrating, saying how to
-    // make it.
-    sqlx::query("ALTER ROLE pamin_memory_app RENAME TO pamin_memory_app_aside")
-        .execute(hosted.pool())
-        .await
-        .expect("set the guarded role aside");
-    let refused = Database::open(&node, Connections::PerCommand, &limited).await;
-    sqlx::query("ALTER ROLE pamin_memory_app_aside RENAME TO pamin_memory_app")
-        .execute(hosted.pool())
-        .await
-        .expect("put the guarded role back");
-    let refused = refused.err().expect("refused without the guarded role");
-    assert!(
-        refused.to_string().contains("CREATE ROLE pamin_memory_app"),
-        "{refused}"
-    );
-
-    // The role made but not granted: still refused, since V20 grants it to
-    // whoever migrates.
-    let ungranted = Database::open(&node, Connections::PerCommand, &limited)
-        .await
-        .err()
-        .expect("refused while the guarded role is not granted");
-    assert!(
-        ungranted
-            .to_string()
-            .contains("CREATE ROLE pamin_memory_app"),
-        "{ungranted}"
-    );
-
-    // With the role made once and granted, the same role migrates and starts.
-    sqlx::query("GRANT pamin_memory_app TO hosted_node WITH ADMIN OPTION")
-        .execute(hosted.pool())
-        .await
-        .expect("grant the guarded role");
-    Database::open(&node, Connections::PerCommand, &limited)
-        .await
-        .expect("a role without CREATEROLE starts once the guarded role exists");
-
-    // A role with CREATEROLE on a server without the guarded role makes it
-    // and grants it to itself, which PostgreSQL 16 and later allow the
-    // creator. Last: the role it makes stays.
-    for statement in [
-        "CREATE ROLE creating_node LOGIN PASSWORD 'creating' CREATEROLE NOSUPERUSER",
-        "CREATE DATABASE creating OWNER creating_node",
-        "ALTER ROLE pamin_memory_app RENAME TO pamin_memory_app_before",
-    ] {
-        sqlx::query(statement)
-            .execute(hosted.pool())
-            .await
-            .unwrap_or_else(|error| panic!("{statement}: {error}"));
-    }
-    let creating = StoreSettings {
-        database_url: Some(DatabaseUrl(format!(
-            "postgresql://creating_node:creating@{}/creating",
-            address.rsplit_once('/').expect("a database in the URL").0
-        ))),
-        ..common::store()
-    };
-    Database::open(&node, Connections::PerCommand, &creating)
-        .await
-        .expect("a role with CREATEROLE makes the guarded role and starts");
 }

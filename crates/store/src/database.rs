@@ -159,6 +159,7 @@ impl Database {
                 )
                 .await?,
             };
+            database.bound_by_row_level_security().await?;
             database.migrate_shared().await?;
             return Ok(database);
         }
@@ -203,7 +204,6 @@ impl Database {
     /// the losers of a race fail; the next pass finds the winner's work done
     /// and applies only what is left.
     async fn migrate_shared(&self) -> Result<()> {
-        self.can_take_on_the_guarded_role().await?;
         const ATTEMPTS: u32 = 3;
         let mut attempt = 1;
         loop {
@@ -219,29 +219,20 @@ impl Database {
         }
     }
 
-    /// Refuses, before migrating, a role that could not finish: the
-    /// row-level security migration creates `pamin_memory_app` when it is
-    /// missing, which takes `CREATEROLE`, and a hosted role often has only
-    /// its database. Said here rather than as a failed migration, with what
-    /// to do about it.
-    async fn can_take_on_the_guarded_role(&self) -> Result<()> {
-        // V20 grants the role to whoever migrates, which takes its admin
-        // option when the role is already there.
-        let (able,): (bool,) = sqlx::query_as(
-            "SELECT rolsuper OR CASE
-                 WHEN EXISTS (SELECT FROM pg_roles WHERE rolname = 'pamin_memory_app')
-                 THEN pg_has_role(current_user, 'pamin_memory_app', 'MEMBER WITH ADMIN OPTION')
-                 ELSE rolcreaterole END
-               FROM pg_roles WHERE rolname = current_user",
+    /// Refuses a login that skips row-level security, a superuser or one
+    /// with `BYPASSRLS`: hosted, the database is the second guard on which
+    /// project a query reaches, and such a login would switch it off without
+    /// a sign. Managed servers often hand out an administrator login like that.
+    async fn bound_by_row_level_security(&self) -> Result<()> {
+        let (bypasses,): (bool,) = sqlx::query_as(
+            "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user",
         )
         .fetch_one(&self.pool)
         .await?;
-        if !able {
+        if bypasses {
             return Err(crate::StoreError::Role(
-                "the role in PAMIN_MEMORY_DATABASE_URL can neither create pamin_memory_app nor \
-                 grant it to itself, which the migrations need; create it once with `CREATE ROLE pamin_memory_app \
-                 NOLOGIN NOSUPERUSER NOBYPASSRLS` and `GRANT pamin_memory_app TO <that role> \
-                 WITH ADMIN OPTION`, or give the role CREATEROLE"
+                "the role in PAMIN_MEMORY_DATABASE_URL is a superuser or has BYPASSRLS, so \
+                 row-level security would not apply to it; use a role that has neither"
                     .into(),
             ));
         }

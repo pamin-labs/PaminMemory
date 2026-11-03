@@ -25,8 +25,7 @@ pub enum StoreError {
     #[error("{0}")]
     OtherSettings(String),
 
-    /// An external database's role that cannot run the migrations, with what
-    /// to change.
+    /// An external database's role that row-level security would not bind.
     #[error("{0}")]
     Role(String),
 }
