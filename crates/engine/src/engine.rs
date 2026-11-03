@@ -1251,51 +1251,6 @@ impl Engine {
         Ok(held.lock().expect("the embedder lock is poisoned"))
     }
 
-    /// Adds one topic state to the projection index, without flushing.
-    ///
-    /// The flush belongs to whoever is running a group of these, not here.
-    /// Every buffered write costs one flush and one set of files, and an index
-    /// built a document at a time is measurably a different object than the
-    /// same documents written in batches: 384 sentences cost 1,161 files and
-    /// 1,893 MB flushed one at a time, and 35 files and 61 MB flushed every
-    /// thirty-two. Rate went with it, 13.6 documents a second against 328.
-    ///
-    /// So this leaves the writes buffered and [`drain_cascade`] flushes the
-    /// round. `pub(crate)` because that contract cannot be honoured by a caller
-    /// outside this crate, which would get an index that never became visible.
-    ///
-    /// [`drain_cascade`]: Self::drain_cascade
-    pub(crate) async fn index_state(&self, state: &TopicState) -> Result<()> {
-        let spans = self
-            .spans(std::slice::from_ref(state))
-            .await?
-            .pop()
-            .expect("the spans of one state");
-        off_the_runtime(|| {
-            let mut embedder = self.embedding()?;
-            let passages: Vec<&str> = spans.iter().map(|span| span.passage.as_str()).collect();
-            // The plan that produced every vector of the pass, even one the
-            // pass itself moved the model to.
-            let (embeddings, encoding) = embedder.encode_passages(&passages)?;
-            let documents: Vec<SpanDocument<'_>> = spans
-                .iter()
-                .zip(&embeddings)
-                .enumerate()
-                .map(|(ordinal, (span, embedding))| {
-                    (
-                        state.topic_id,
-                        ordinal as u32,
-                        span.text.as_str(),
-                        Some(span.header.as_str()),
-                        embedding.as_slice(),
-                    )
-                })
-                .collect();
-            self.index().replace(&documents, encoding.as_deref())
-        })?;
-        Ok(())
-    }
-
     /// What each state is indexed as: the spans it is cut into, as this
     /// project's index cuts memories ([`memory_index::Grain`]), each with the
     /// text the lexical channels match and the passage its vector is embedded
@@ -1365,7 +1320,19 @@ impl Engine {
         })?)
     }
 
-    /// The same for many states, in one forward pass.
+    /// Adds topic states to the projection index, in one forward pass and
+    /// without flushing.
+    ///
+    /// The flush belongs to whoever is running a group of these, not here.
+    /// Every buffered write costs one flush and one set of files, and an index
+    /// built a document at a time is measurably a different object than the
+    /// same documents written in batches: 384 sentences cost 1,161 files and
+    /// 1,893 MB flushed one at a time, and 35 files and 61 MB flushed every
+    /// thirty-two. Rate went with it, 13.6 documents a second against 328.
+    ///
+    /// So this leaves the writes buffered and [`drain_cascade`] flushes the
+    /// round. `pub(crate)` because that contract cannot be honoured by a caller
+    /// outside this crate, which would get an index that never became visible.
     ///
     /// A cascade round claims up to sixty-four jobs and used to index them one
     /// at a time, which is sixty-four forward passes where the model can do one
@@ -1384,7 +1351,7 @@ impl Engine {
     ///
     /// One model lock and one index lock for the whole batch rather than one
     /// each per state, which is the other saving and the reason this is one
-    /// closure rather than a loop over the single-state form.
+    /// closure rather than a loop over states.
     ///
     /// A state whose document the index already holds with exactly this text,
     /// embedded under the plan the model runs on now, is skipped before
@@ -1399,6 +1366,8 @@ impl Engine {
     /// check rather than after a pass, so nothing else may write the same
     /// topic in between -- and a sync of the same topic that read an older
     /// state is exactly such a write.
+    ///
+    /// [`drain_cascade`]: Self::drain_cascade
     pub(crate) async fn index_states(&self, states: &[TopicState]) -> Result<()> {
         if states.is_empty() {
             return Ok(());

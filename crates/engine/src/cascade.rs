@@ -491,7 +491,7 @@ impl Engine {
             Err(_) => {
                 for (job, topic) in topics {
                     let one = match found.get(&topic) {
-                        Some(state) => self.index_state(state).await,
+                        Some(state) => self.index_states(std::slice::from_ref(state)).await,
                         None => crate::engine::off_the_runtime(|| self.index().delete(&[topic]))
                             .map_err(Into::into),
                     };
@@ -634,7 +634,7 @@ impl Engine {
                 .map_err(Into::into);
         };
 
-        self.index_state(state).await
+        self.index_states(std::slice::from_ref(state)).await
     }
 
     /// Recomputes the edges a topic's current content implies.
