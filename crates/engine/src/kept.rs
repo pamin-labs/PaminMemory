@@ -11,7 +11,7 @@ use memory_core::TopicId;
 use memory_index::{SpanDocument, SpanSource};
 use memory_store::repository;
 
-use crate::engine::Engine;
+use crate::engine::{Engine, off_the_runtime};
 
 /// What a span's vector is embedded from, with the hash it is kept under,
 /// taken once.
@@ -81,6 +81,21 @@ impl Kept {
             }
         }
         (supplied, to_embed)
+    }
+
+    /// The plan whose kept vectors cover the most of `topics` whole, ties to
+    /// the first by name, so a choice made with no model loaded is the same
+    /// every time.
+    pub(crate) fn widest<'t>(
+        &self,
+        topics: impl Iterator<Item = &'t [Passage<'t>]> + Clone,
+    ) -> Option<&str> {
+        // Reversed because `max_by_key` keeps the last of equals.
+        self.by_plan
+            .iter()
+            .rev()
+            .max_by_key(|(_, kept)| topics.clone().filter(|spans| covers(kept, spans)).count())
+            .map(|(plan, _)| plan.as_str())
     }
 }
 
@@ -231,6 +246,37 @@ impl Engine {
         kept
     }
 
+    /// What a rebuild that has not loaded the model can stand in for `topics`
+    /// with: every plan the next load's revision kept for them, and the plan
+    /// that covers the most ([`Kept::widest`]). Nothing while no revision is
+    /// pinned to match.
+    ///
+    /// ponytail: span_vectors is per project, not per node, so the widest
+    /// plan can be another node's; one image on one instance type means one
+    /// plan in practice. Checking it would mean loading the model.
+    ///
+    /// ponytail: with no model cached there is no revision to look up by, so
+    /// a rebuild embeds everything even when the database kept it all. Hosted
+    /// images bake the models in; ask the loaded model's revision instead if a
+    /// node ever starts without them.
+    pub(crate) async fn kept_for_rebuild(
+        &self,
+        topics: &[&[Passage<'_>]],
+    ) -> (Kept, Option<String>) {
+        let Some(revision) = off_the_runtime(|| memory_index::cached_revision(&self.models.dir))
+        else {
+            return (Kept::default(), None);
+        };
+        // ponytail: holds every kept vector of these topics at once, so a
+        // rebuild's peak follows the project here; page it by topic if that
+        // matters.
+        let kept = self
+            .kept_vectors(revision, None, &digests(topics.iter().copied()))
+            .await;
+        let plan = kept.widest(topics.iter().copied()).map(str::to_string);
+        (kept, plan)
+    }
+
     /// Keeps what passes embedded, so a rebuild or another node's catch-up
     /// writes it back instead of embedding it again. One insert per model
     /// revision and plan, in its own transaction after the passes: one held
@@ -275,7 +321,8 @@ mod tests {
 
     /// A topic is supplied only when every span has a vector under the plan
     /// and revision asked for, in order; a topic with no spans is neither
-    /// supplied nor embedded.
+    /// supplied nor embedded; and the widest plan is chosen, ties to the
+    /// first by name.
     #[test]
     fn a_topic_is_kept_whole_under_one_plan_or_embedded() {
         let [x, y, z] = ["x", "y", "z"].map(Passage::of);
@@ -307,6 +354,13 @@ mod tests {
             kept.split("model@2", Some("a"), topics),
             (Vec::new(), vec![0, 1, 2]),
             "another revision's vectors are not this model's"
+        );
+        let spans = topics.map(|(_, spans)| spans);
+        assert_eq!(kept.widest(spans.into_iter()), Some("a"));
+        assert_eq!(
+            kept.widest(spans[1..].iter().copied()),
+            Some("a"),
+            "a and b both cover one; a is first by name"
         );
     }
 }

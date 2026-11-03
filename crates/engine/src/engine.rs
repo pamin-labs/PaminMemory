@@ -23,7 +23,7 @@ use time::OffsetDateTime;
 
 use crate::Settings;
 use crate::cuts::Cuts;
-use crate::kept::{Embedded, Kept, Passage, digests, span_documents, widen};
+use crate::kept::{Embedded, Kept, Passage, digests, span_document, span_documents, widen};
 
 pub use memory_core::Depths;
 
@@ -567,7 +567,7 @@ struct Rebuilding {
 /// decides nothing about them.
 #[derive(Clone)]
 pub struct Models {
-    dir: std::path::PathBuf,
+    pub(crate) dir: std::path::PathBuf,
     /// What this process was started with: how the models load, how long
     /// they are held, and what every engine opened on them is given.
     settings: Arc<Settings>,
@@ -2923,19 +2923,35 @@ impl Engine {
             None => (None, None),
         };
 
-        let reused = off_the_runtime(|| {
-            let wanted: std::collections::HashMap<TopicId, Vec<SpanSource<'_>>> = states
-                .iter()
-                .zip(&spans)
-                .map(|(state, spans)| (state.topic_id, Indexed::sources(spans)))
-                .collect();
-            // Found before any lock is taken, so a rebuild that can reuse
-            // every vector never loads the model at all.
-            let lent = match &previous {
-                Some(previous) => previous.lends(&wanted)?,
-                None => std::collections::HashSet::new(),
-            };
+        let wanted: std::collections::HashMap<TopicId, Vec<SpanSource<'_>>> = states
+            .iter()
+            .zip(&spans)
+            .map(|(state, spans)| (state.topic_id, Indexed::sources(spans)))
+            .collect();
+        // Decided before the model's lock is taken, so a rebuild that can
+        // reuse every vector -- the old index's, then the ones kept in
+        // PostgreSQL -- never loads the model at all.
+        let lendable = match &previous {
+            Some(previous) => off_the_runtime(|| previous.lends(&wanted))?,
+            None => std::collections::HashSet::new(),
+        };
+        let unlent: Vec<(TopicId, &[Indexed], Vec<Passage<'_>>)> = states
+            .iter()
+            .zip(&spans)
+            .filter(|(state, _)| !lendable.contains(&state.topic_id))
+            .map(|(state, spans)| (state.topic_id, spans.as_slice(), Indexed::passages(spans)))
+            .collect();
+        let unlent_passages: Vec<&[Passage<'_>]> = unlent
+            .iter()
+            .map(|(_, _, passages)| passages.as_slice())
+            .collect();
+        let unlent_at = || unlent_passages.iter().copied().enumerate();
+        // Read before the locks, written under them: written any earlier, a
+        // sync between the two could be overwritten by this older read.
+        let (kept, plan) = self.kept_for_rebuild(&unlent_passages).await;
+        let unloaded = kept.split(&kept.revision, plan.as_deref(), unlent_at());
 
+        let (reused, embedded) = off_the_runtime(|| {
             // Both locks, in the order every other caller takes them, and held
             // for the whole rebuild. Taking the index first here would invert
             // the order against `search` and deadlock: a rebuild holding the
@@ -2943,44 +2959,69 @@ impl Engine {
             // and wanting the index. Holding both throughout also matches what
             // a rebuild has always done -- it opens the collection for writing,
             // which excluded every reader in every other process already.
-            let mut embedder = if lent.len() < states.len() {
-                Some(self.embedding()?)
-            } else {
+            let mut embedder = if unloaded.1.is_empty() {
                 None
+            } else {
+                Some(self.embedding()?)
+            };
+            // A model loaded after all says which kept vectors stand in: those
+            // of its own revision and plan.
+            let (plan, (supplied, to_embed)) = match &embedder {
+                Some(model) => {
+                    let plan = model.reusable_encoding();
+                    let split = kept.split(&model.revision(), plan.as_deref(), unlent_at());
+                    (plan, split)
+                }
+                None => (plan, unloaded),
             };
             let index = self.index();
 
             // What the old index holds first, in one pass over it, then
             // whatever it could not supply.
             if let Some(previous) = &previous {
-                previous.lend(&wanted, &lent, REINDEX_BATCH, |documents, encoding| {
+                previous.lend(&wanted, &lendable, REINDEX_BATCH, |documents, encoding| {
                     index.write_spans(documents, encoding)
                 })?;
             }
-            // Every span of every topic not lent, a batch of spans at a time:
-            // a topic's spans can straddle two batches, and each is written
-            // without cutting the topic short, into an index that starts
-            // empty.
-            let missing: Vec<(TopicId, u32, &Indexed)> = states
-                .iter()
-                .zip(&spans)
-                .filter(|(state, _)| !lent.contains(&state.topic_id))
-                .flat_map(|(state, spans)| {
-                    spans
+            for batch in supplied.chunks(REINDEX_BATCH) {
+                let vectors = widen(batch);
+                let documents = span_documents(
+                    batch
                         .iter()
-                        .enumerate()
-                        .map(|(ordinal, span)| (state.topic_id, ordinal as u32, span))
-                })
-                .collect();
+                        .map(|&(at, _)| (unlent[at].0, wanted[&unlent[at].0].as_slice())),
+                    vectors.iter().map(Vec::as_slice),
+                );
+                index.write_spans(&documents, plan.as_deref())?;
+            }
+            // Every span of every topic left to embed, a batch of spans at a
+            // time: a topic's spans can straddle two batches, and each is
+            // written without cutting the topic short, into an index that
+            // starts empty.
+            let missing: Vec<(TopicId, u32, &Indexed, &Passage<'_>)> =
+                to_embed
+                    .iter()
+                    .flat_map(|&at| {
+                        let (topic, spans, passages) = &unlent[at];
+                        spans.iter().zip(passages).enumerate().map(
+                            move |(ordinal, (span, passage))| {
+                                (*topic, ordinal as u32, span, passage)
+                            },
+                        )
+                    })
+                    .collect();
 
             // One forward pass per batch rather than one per state. Measured
             // on the smallest profile, thirty-two texts together take 190 ms
             // against 409 ms one at a time -- the model is the same work
             // either way, and what the batch saves is everything around it.
+            // ponytail: what is embedded is kept after the locks are let go,
+            // so it is all held until then; a store per batch would need a
+            // round trip under the locks.
+            let mut embedded = Vec::new();
             for batch in missing.chunks(REINDEX_BATCH) {
                 let texts: Vec<&str> = batch
                     .iter()
-                    .map(|(_, _, span)| span.passage.as_str())
+                    .map(|(_, _, _, passage)| passage.text)
                     .collect();
                 let model = embedder
                     .as_mut()
@@ -2989,17 +3030,17 @@ impl Engine {
                 let documents: Vec<SpanDocument<'_>> = batch
                     .iter()
                     .zip(&embeddings)
-                    .map(|((topic, ordinal, span), embedding)| {
-                        (
-                            *topic,
-                            *ordinal,
-                            span.text.as_str(),
-                            Some(span.header.as_str()),
-                            embedding.as_slice(),
-                        )
+                    .map(|((topic, ordinal, span, _), embedding)| {
+                        span_document(*topic, *ordinal, span.source(), embedding)
                     })
                     .collect();
                 index.write_spans(&documents, encoding.as_deref())?;
+                embedded.extend(Embedded::of(
+                    model.revision(),
+                    encoding.as_deref(),
+                    batch.iter().map(|(.., passage)| *passage),
+                    &embeddings,
+                ));
             }
             index.flush()?;
             // A rebuild is the one point where building the vector graph is
@@ -3010,8 +3051,9 @@ impl Engine {
             if let Some(previous) = previous {
                 previous.discard()?;
             }
-            Ok::<_, memory_index::IndexError>(lent.len())
+            Ok::<_, memory_index::IndexError>((lendable.len() + supplied.len(), embedded))
         })?;
+        self.keep_vectors(&embedded).await;
 
         Ok(Rebuilt {
             indexed: states.len(),
@@ -3116,8 +3158,10 @@ const UNFINISHED_REBUILD: &str = ".rebuilding";
 pub struct Rebuilt {
     /// Topics written to the projection, which is one document each.
     pub indexed: usize,
-    /// Of those, how many kept the vector the replaced index already held
-    /// rather than being embedded again. See [`Previous`].
+    /// Of those, how many kept the vector the replaced index already held,
+    /// or one kept in PostgreSQL, rather than being embedded again. See
+    /// [`Previous`]. A topic with no spans has no vector, and is counted in
+    /// `indexed` alone.
     pub reused: usize,
     /// Topics whose current-state pointer disagreed with the ledger.
     ///

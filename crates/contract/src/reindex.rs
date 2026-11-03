@@ -11,8 +11,9 @@ pub struct Reindexed {
     /// Topics written to the projection. One document each, whatever a topic's
     /// version history holds -- searching ranks what a topic says now.
     pub indexed: usize,
-    /// Of those, topics that kept the vector the replaced index held, because
-    /// their text had not changed, rather than being embedded again.
+    /// Of those, topics that kept a vector already embedded from their text,
+    /// the replaced index's or one kept in PostgreSQL, rather than being
+    /// embedded again.
     pub reused: usize,
     /// Topics whose current-state pointer disagreed with the ledger and was
     /// corrected. Zero unless something stopped maintaining it.

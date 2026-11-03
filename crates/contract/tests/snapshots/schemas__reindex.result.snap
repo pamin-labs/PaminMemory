@@ -26,7 +26,7 @@ expression: "schema_for! (reindex::Reindexed)"
       "minimum": 0
     },
     "reused": {
-      "description": "Of those, topics that kept the vector the replaced index held, because\ntheir text had not changed, rather than being embedded again.",
+      "description": "Of those, topics that kept a vector already embedded from their text,\nthe replaced index's or one kept in PostgreSQL, rather than being\nembedded again.",
       "type": "integer",
       "format": "uint",
       "minimum": 0
