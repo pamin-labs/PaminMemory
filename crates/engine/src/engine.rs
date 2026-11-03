@@ -23,7 +23,7 @@ use time::OffsetDateTime;
 
 use crate::Settings;
 use crate::cuts::Cuts;
-use crate::kept::{Embedded, Passage, span_documents};
+use crate::kept::{Embedded, Kept, Passage, digests, span_documents, widen};
 
 pub use memory_core::Depths;
 
@@ -186,9 +186,34 @@ impl PassageEncoder for Embedder {
     }
 }
 
+/// What [`unheld`] answered, under the plan the model was on and the
+/// revision it is of when it was asked.
+struct Checked {
+    revision: String,
+    plan: Option<String>,
+    unheld: Vec<bool>,
+}
+
+/// Asks which topics of `wanted` the index lacks under the plan the model is
+/// on ([`unheld`]), for [`write_unheld`] to write once anything kept for them
+/// has been looked up.
+fn check(
+    index: &dyn Projection,
+    encoder: &impl PassageEncoder,
+    wanted: &[(TopicId, &[SpanSource<'_>])],
+) -> Checked {
+    let plan = encoder.reusable_encoding();
+    let unheld = unheld(index, wanted, plan.as_deref());
+    Checked {
+        revision: encoder.revision(),
+        plan,
+        unheld,
+    }
+}
+
 /// Embeds and writes each topic of `wanted` -- its spans' texts -- the index
-/// does not already hold under the plan the model would embed it with
-/// ([`unheld`]); `passages` is what each span's vector is embedded from.
+/// did not hold when it was `checked`; `passages` is what each span's vector
+/// is embedded from.
 ///
 /// Which states are held is decided against one plan, and the model can move
 /// off it before their vectors are worth keeping: a fallback whose retry
@@ -203,6 +228,12 @@ impl PassageEncoder for Embedder {
 /// the two halves of the batch under two plans with no job left to reconcile
 /// them, while one pass names only a plan that produced all of it.
 ///
+/// A topic the index does not hold, but whose every span has a vector `kept`
+/// under the plan the model is on when asked again, is written from those
+/// vectors rather than embedded, and is otherwise treated as held: a pass
+/// that moves the plan embeds it again with the rest. One with no spans left
+/// is removed.
+///
 /// `index` takes the index lock per call, so the pass runs without it and a
 /// search is not held up behind a forward pass.
 ///
@@ -213,22 +244,45 @@ fn write_unheld<G>(
     encoder: &mut impl PassageEncoder,
     wanted: &[(TopicId, &[SpanSource<'_>])],
     passages: &[&[Passage<'_>]],
+    checked: Checked,
+    kept: &Kept,
 ) -> memory_index::Result<Vec<Embedded>>
 where
     G: std::ops::Deref<Target = Arc<dyn Projection + Send + Sync>>,
 {
     let reusable = encoder.reusable_encoding();
-    let mut unheld = unheld(&**index(), wanted, reusable.as_deref());
-    if encoder.reusable_encoding() != reusable {
+    let mut unheld = checked.unheld;
+    if reusable != checked.plan {
         unheld.fill(true);
     }
     let (fresh, held): (Vec<usize>, Vec<usize>) = (0..wanted.len()).partition(|&at| unheld[at]);
-    if fresh.is_empty() {
+    let emptied: Vec<TopicId> = fresh
+        .iter()
+        .filter(|&&at| passages[at].is_empty())
+        .map(|&at| wanted[at].0)
+        .collect();
+    if !emptied.is_empty() {
+        index().delete(&emptied)?;
+    }
+    let (supplied, to_embed) = kept.split(
+        &encoder.revision(),
+        reusable.as_deref(),
+        fresh.iter().map(|&at| (at, passages[at])),
+    );
+    if !supplied.is_empty() {
+        let vectors = widen(&supplied);
+        let documents = span_documents(
+            supplied.iter().map(|(at, _)| wanted[*at]),
+            vectors.iter().map(Vec::as_slice),
+        );
+        index().replace(&documents, reusable.as_deref())?;
+    }
+    if to_embed.is_empty() {
         return Ok(Vec::new());
     }
-    let first = write_encoded(&index, encoder, wanted, passages, &fresh)?;
+    let first = write_encoded(&index, encoder, wanted, passages, &to_embed)?;
     let encoding = first.as_ref().map(|pass| pass.encoding.as_str());
-    let moved = !held.is_empty() && encoding != reusable.as_deref();
+    let moved = !(held.is_empty() && supplied.is_empty()) && encoding != reusable.as_deref();
     let mut embedded: Vec<Embedded> = first.into_iter().collect();
     if moved {
         let every: Vec<usize> = (0..wanted.len()).collect();
@@ -1396,9 +1450,36 @@ impl Engine {
 
         // The model before the index, as everywhere. Loaded even when every
         // state turns out held: which plan it runs on is the question the
-        // check asks.
+        // check asks. Asked first so only the topics the index lacks are
+        // looked up, and with no lock held while they are.
+        let checked = off_the_runtime(|| {
+            let embedder = self.embedding()?;
+            Ok::<_, memory_index::IndexError>(check(&**self.index(), &*embedder, &wanted))
+        })?;
+        let kept = match &checked.plan {
+            Some(plan) => {
+                let lacking = digests(
+                    passages
+                        .iter()
+                        .zip(&checked.unheld)
+                        .filter(|(_, unheld)| **unheld)
+                        .map(|(passages, _)| *passages),
+                );
+                self.kept_vectors(checked.revision.clone(), Some(plan), &lacking)
+                    .await
+            }
+            // With no plan to match, nothing kept could stand in.
+            None => Kept::default(),
+        };
         let embedded = off_the_runtime(|| {
-            write_unheld(|| self.index(), &mut *self.embedding()?, &wanted, &passages)
+            write_unheld(
+                || self.index(),
+                &mut *self.embedding()?,
+                &wanted,
+                &passages,
+                checked,
+                &kept,
+            )
         })?;
         self.keep_vectors(&embedded).await;
         Ok(())
@@ -4808,6 +4889,112 @@ mod tests {
         );
     }
 
+    /// A topic whose every span has a vector kept under the plan the model
+    /// is on is written from it with no pass; kept under another plan, or
+    /// with no plan to match, it is embedded.
+    #[test]
+    fn a_kept_vector_stands_in_for_a_pass_under_its_own_plan_only() {
+        let run = |model: &mut Moving, kept_under: &str| {
+            let (_dir, index) = open_index();
+            let topic = TopicId::new();
+            let kept = kept(kept_under, &["beta"]);
+            let embedded = sync_with(
+                &index,
+                model,
+                &whole(&[(topic, source("beta"))]),
+                &each(&["beta"]),
+                &kept,
+            );
+            (embedded.len(), stored_encodings(&index, &[topic]).remove(0))
+        };
+
+        let mut model = Moving::on("cpu:plan");
+        assert_eq!(run(&mut model, "cpu:plan"), (0, Some("cpu:plan".into())));
+        assert!(model.passes.is_empty(), "the kept vector stood in");
+
+        let mut model = Moving::on("cpu:plan");
+        assert_eq!(run(&mut model, "npu:other"), (1, Some("cpu:plan".into())));
+        assert_eq!(model.passes, [vec!["beta".to_string()]]);
+
+        let mut model = Moving::on("cpu:plan");
+        model.reusable = std::cell::RefCell::new(vec![None]);
+        run(&mut model, "cpu:plan");
+        assert_eq!(
+            model.passes,
+            [vec!["beta".to_string()]],
+            "with no plan to match, nothing kept is reused"
+        );
+    }
+
+    /// Kept vectors stand in only under the plan the model is on when they
+    /// are written: a plan that moves after the check supplies nothing, and
+    /// one that moves during the pass embeds the topics they stood in for
+    /// again with the rest.
+    #[test]
+    fn a_kept_vector_gives_way_when_the_plan_moves() {
+        // Moved after the check: every topic was kept under the old plan, so
+        // without this nothing would be embedded at all.
+        let (_dir, index) = open_index();
+        let topic = TopicId::new();
+        let mut model = Moving::on("npu:moved");
+        model.reusable =
+            std::cell::RefCell::new(vec![Some("cpu:plan".into()), Some("npu:moved".into())]);
+        sync_with(
+            &index,
+            &mut model,
+            &whole(&[(topic, source("alpha"))]),
+            &each(&["alpha"]),
+            &kept("cpu:plan", &["alpha"]),
+        );
+        assert_eq!(model.passes, [vec!["alpha".to_string()]]);
+        assert_eq!(
+            stored_encodings(&index, &[topic]),
+            [Some("npu:moved".into())]
+        );
+
+        // Moved by the pass: the kept topic is embedded again beside the one
+        // that was not kept, both under the plan the second pass ran on.
+        let (_dir, index) = open_index();
+        let (alpha, beta) = (TopicId::new(), TopicId::new());
+        let mut model = Moving::on("cpu:plan");
+        model.moves = vec!["npu:restored".into()];
+        sync_with(
+            &index,
+            &mut model,
+            &whole(&[(alpha, source("alpha")), (beta, source("beta"))]),
+            &each(&["alpha", "beta"]),
+            &kept("cpu:plan", &["alpha"]),
+        );
+        assert_eq!(
+            model.passes,
+            [
+                vec!["beta".to_string()],
+                vec!["alpha".to_string(), "beta".to_string()]
+            ]
+        );
+        assert_eq!(
+            stored_encodings(&index, &[alpha, beta]),
+            [Some("npu:restored".into()), Some("npu:restored".into())]
+        );
+    }
+
+    /// A topic whose spans are all gone is removed rather than left with
+    /// what it used to say.
+    #[test]
+    fn a_topic_with_no_spans_left_is_removed() {
+        let (_dir, index) = open_index();
+        let topic = TopicId::new();
+        let mut model = Moving::on("cpu:plan");
+        sync(
+            &index,
+            &mut model,
+            &whole(&[(topic, source("alpha"))]),
+            &each(&["alpha"]),
+        );
+        sync(&index, &mut model, &[(topic, &[])], &[&[]]);
+        assert_eq!(index.stored(&[topic]).expect("read back"), [vec![]]);
+    }
+
     /// A write the index has buffered and not yet flushed is already held.
     /// A span whose text stayed while its header changed is embedded again.
     ///
@@ -4905,6 +5092,25 @@ mod tests {
 
     const REVISION: &str = "model@test";
 
+    /// Vectors kept by [`Moving`]'s revision under `plan` for these texts.
+    fn kept(plan: &str, texts: &[&str]) -> super::Kept {
+        let vector = vec![0.2; memory_index::DIMENSIONS as usize];
+        super::Kept {
+            revision: REVISION.into(),
+            by_plan: [(
+                plan.to_string(),
+                texts
+                    .iter()
+                    .map(|text| {
+                        let digest = super::Passage::of(text).digest;
+                        (digest, memory_index::vector_to_bytes(&vector))
+                    })
+                    .collect(),
+            )]
+            .into(),
+        }
+    }
+
     /// An empty index in a directory of its own.
     fn open_index() -> (
         tempfile::TempDir,
@@ -4936,18 +5142,30 @@ mod tests {
     }
 
     /// Syncs `wanted` as an index job does, each topic embedded from
-    /// `passages`.
+    /// `passages`, with nothing kept.
     fn sync(
         index: &Arc<dyn memory_index::Projection + Send + Sync>,
         model: &mut Moving,
         wanted: &[(TopicId, &[SpanSource<'_>])],
         passages: &[&[&str]],
     ) -> Vec<super::Embedded> {
+        sync_with(index, model, wanted, passages, &super::Kept::default())
+    }
+
+    /// [`sync`], with `kept` to stand in: checked, then written.
+    fn sync_with(
+        index: &Arc<dyn memory_index::Projection + Send + Sync>,
+        model: &mut Moving,
+        wanted: &[(TopicId, &[SpanSource<'_>])],
+        passages: &[&[&str]],
+        kept: &super::Kept,
+    ) -> Vec<super::Embedded> {
         let passages: Vec<Vec<super::Passage<'_>>> = passages
             .iter()
             .map(|texts| texts.iter().map(|text| super::Passage::of(text)).collect())
             .collect();
         let passages: Vec<&[super::Passage<'_>]> = passages.iter().map(Vec::as_slice).collect();
-        super::write_unheld(|| index, model, wanted, &passages).expect("sync")
+        let checked = super::check(&**index, model, wanted);
+        super::write_unheld(|| index, model, wanted, &passages, checked, kept).expect("sync")
     }
 }
