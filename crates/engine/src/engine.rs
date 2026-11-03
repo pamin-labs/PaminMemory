@@ -2873,7 +2873,7 @@ impl Engine {
             // Counted before any lock is taken, so a rebuild that can reuse
             // every vector never loads the model at all.
             let lendable = match &previous {
-                Some(previous) => previous.lends(&wanted)?,
+                Some(previous) => previous.lends(&wanted)?.len(),
                 None => 0,
             };
 

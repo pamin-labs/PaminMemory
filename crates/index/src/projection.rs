@@ -1786,13 +1786,16 @@ impl Previous {
         }))
     }
 
-    /// How many of these topics [`lend`](Self::lend) would supply, without
+    /// Which of these topics [`lend`](Self::lend) would supply, without
     /// reading a vector.
     ///
     /// `wanted` maps each topic to the spans the rebuild will write for it,
     /// in order.
-    pub fn lends(&self, wanted: &HashMap<TopicId, Vec<SpanSource<'_>>>) -> Result<usize> {
-        Ok(self.whole(wanted)?.len())
+    pub fn lends(
+        &self,
+        wanted: &HashMap<TopicId, Vec<SpanSource<'_>>>,
+    ) -> Result<HashSet<TopicId>> {
+        self.whole(wanted)
     }
 
     /// Hands `take` every document this index can lend, at most `batch` at a
