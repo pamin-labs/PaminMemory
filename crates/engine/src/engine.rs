@@ -2870,11 +2870,11 @@ impl Engine {
                 .zip(&spans)
                 .map(|(state, spans)| (state.topic_id, Indexed::sources(spans)))
                 .collect();
-            // Counted before any lock is taken, so a rebuild that can reuse
+            // Found before any lock is taken, so a rebuild that can reuse
             // every vector never loads the model at all.
-            let lendable = match &previous {
-                Some(previous) => previous.lends(&wanted)?.len(),
-                None => 0,
+            let lent = match &previous {
+                Some(previous) => previous.lends(&wanted)?,
+                None => std::collections::HashSet::new(),
             };
 
             // Both locks, in the order every other caller takes them, and held
@@ -2884,7 +2884,7 @@ impl Engine {
             // and wanting the index. Holding both throughout also matches what
             // a rebuild has always done -- it opens the collection for writing,
             // which excluded every reader in every other process already.
-            let mut embedder = if lendable < states.len() {
+            let mut embedder = if lent.len() < states.len() {
                 Some(self.embedding()?)
             } else {
                 None
@@ -2893,14 +2893,11 @@ impl Engine {
 
             // What the old index holds first, in one pass over it, then
             // whatever it could not supply.
-            let lent = match &previous {
-                Some(previous) => {
-                    previous.lend(&wanted, REINDEX_BATCH, |documents, encoding| {
-                        index.write_spans(documents, encoding)
-                    })?
-                }
-                None => std::collections::HashSet::new(),
-            };
+            if let Some(previous) = &previous {
+                previous.lend(&wanted, &lent, REINDEX_BATCH, |documents, encoding| {
+                    index.write_spans(documents, encoding)
+                })?;
+            }
             // Every span of every topic not lent, a batch of spans at a time:
             // a topic's spans can straddle two batches, and each is written
             // without cutting the topic short, into an index that starts

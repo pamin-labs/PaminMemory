@@ -966,8 +966,9 @@ fn lent(
     wanted: &HashMap<TopicId, Vec<&str>>,
 ) -> HashMap<TopicId, (String, Vec<f32>)> {
     let mut lent = HashMap::new();
-    let topics = previous
-        .lend(&sources(wanted), 256, |documents, _| {
+    let topics = previous.lends(&sources(wanted)).expect("lends");
+    previous
+        .lend(&sources(wanted), &topics, 256, |documents, _| {
             for (topic, ordinal, content, _, vector) in documents {
                 assert_eq!(*ordinal, 0, "every memory here is one span");
                 lent.insert(*topic, (content.to_string(), vector.to_vec()));
@@ -1026,8 +1027,9 @@ fn a_rebuild_keeps_what_produced_each_lent_vector() {
         .collect();
     let rebuilt = open();
     let mut batches: Vec<(Option<String>, usize)> = Vec::new();
-    let lent = previous
-        .lend(&sources(&wanted), 2, |documents, encoding| {
+    let lent = previous.lends(&sources(&wanted)).expect("lends");
+    previous
+        .lend(&sources(&wanted), &lent, 2, |documents, encoding| {
             batches.push((encoding.map(str::to_string), documents.len()));
             rebuilt.write_spans(documents, encoding)
         })
@@ -1339,8 +1341,9 @@ fn an_index_keyed_by_the_identifier_as_written_keeps_answering() {
     let rebuilt =
         ProjectionIndex::open(&dir, &legacy, VectorIndex::default(), Access::ReadWrite, 0)
             .expect("rebuild");
-    let lent = previous
-        .lend(&sources(&wanted), 256, |documents, encoding| {
+    let lent = previous.lends(&sources(&wanted)).expect("lends");
+    previous
+        .lend(&sources(&wanted), &lent, 256, |documents, encoding| {
             rebuilt.write_spans(documents, encoding)
         })
         .expect("lend");
@@ -1841,8 +1844,9 @@ fn an_fp32_index_from_before_is_refused_and_lends_to_its_rebuild() {
     let rebuilt =
         ProjectionIndex::open(&dir, &legacy, VectorIndex::default(), Access::ReadWrite, 0)
             .expect("rebuild");
+    let lent = previous.lends(&sources(&wanted)).expect("lends");
     previous
-        .lend(&sources(&wanted), 256, |documents, encoding| {
+        .lend(&sources(&wanted), &lent, 256, |documents, encoding| {
             rebuilt.write_spans(documents, encoding)
         })
         .expect("lend");
@@ -2056,8 +2060,9 @@ fn a_rebuild_lends_a_memory_of_several_spans_whole_or_not_at_all() {
     ]);
     assert_eq!(previous.lends(&sources(&wanted)).expect("count").len(), 1);
     let mut documents: Vec<(TopicId, u32, String)> = Vec::new();
-    let lent = previous
-        .lend(&sources(&wanted), 256, |batch, encoding| {
+    let lent = previous.lends(&sources(&wanted)).expect("lends");
+    previous
+        .lend(&sources(&wanted), &lent, 256, |batch, encoding| {
             assert_eq!(encoding, Some("cpu:one"));
             for (topic, ordinal, text, _, vector) in batch {
                 assert!(*vector == memory_index::as_stored(&vectors[*ordinal as usize]));
@@ -2147,8 +2152,9 @@ fn an_index_keeps_its_grain_and_lends_across_grains() {
         Some("span/200/v1")
     );
     let wanted = HashMap::from([(id(1), vec!["a short memory"])]);
-    let lent = previous
-        .lend(&sources(&wanted), 256, |documents, encoding| {
+    let lent = previous.lends(&sources(&wanted)).expect("lends");
+    previous
+        .lend(&sources(&wanted), &lent, 256, |documents, encoding| {
             rebuilt.write_spans(documents, encoding)
         })
         .expect("lend");

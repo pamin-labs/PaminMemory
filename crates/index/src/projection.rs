@@ -1786,11 +1786,12 @@ impl Previous {
         }))
     }
 
-    /// Hands `take` every document this index can lend, at most `batch` at a
-    /// time, as the span, the text wanted for it, the header its vector was
-    /// recorded under ([`Stored::header`]) and its stored vector, with what
-    /// produced those vectors ([`Stored::encoding`]); returns the topics it
-    /// lent, every span of each.
+    /// Hands `take` every document of the topics `lent` names, at most
+    /// `batch` at a time, as the span, the text wanted for it, the header its
+    /// vector was recorded under ([`Stored::header`]) and its stored vector,
+    /// with what produced those vectors ([`Stored::encoding`]). `lent` is what
+    /// [`lends`](Self::lends) answered for `wanted`, so the caller decides
+    /// what else to supply before this pass and the pass is not run twice.
     ///
     /// Each batch shares one encoding, so the caller can record it as this
     /// index did: a rebuild that dropped it would leave every lent document
@@ -1800,9 +1801,7 @@ impl Previous {
     /// vectors at once. So whenever `batch` documents are waiting in all,
     /// every encoding's are handed over.
     ///
-    /// A topic is lent when this index holds it with exactly the spans in
-    /// `wanted` (see [`holds_spans`]); everything else is the caller's to
-    /// embed, and nothing of it is lent. The documents are written with
+    /// Everything else is the caller's to supply, and nothing of it is lent. The documents are written with
     /// [`Projection::write_spans`], so a topic whose spans arrive in two
     /// batches is not cut short by the first. In the order this
     /// index holds its documents rather than the caller's, because that is
@@ -1813,10 +1812,10 @@ impl Previous {
     pub fn lend(
         &self,
         wanted: &HashMap<TopicId, Vec<SpanSource<'_>>>,
+        lent: &HashSet<TopicId>,
         batch: usize,
         mut take: impl FnMut(&[SpanDocument<'_>], Option<&str>) -> Result<()>,
-    ) -> Result<HashSet<TopicId>> {
-        let lent = self.lends(wanted)?;
+    ) -> Result<()> {
         let mut pending: BTreeMap<Option<String>, Vec<PendingSpanDocument<'_>>> = BTreeMap::new();
         let mut waiting = 0;
         let mut hand_over =
@@ -1880,7 +1879,7 @@ impl Previous {
                 hand_over(encoding, group)?;
             }
         }
-        Ok(lent)
+        Ok(())
     }
 
     /// The topics of `wanted` [`lend`](Self::lend) would supply, without
