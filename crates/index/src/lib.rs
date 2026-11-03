@@ -22,7 +22,7 @@ pub mod spans;
 mod tokenizer;
 
 pub use descriptors::raise_open_file_limit;
-pub use embedding::{DIMENSIONS, Embedder, MODEL_ID};
+pub use embedding::{DIMENSIONS, Embedder, MODEL_ID, cached_revision};
 pub use error::{IndexError, Result};
 pub use half::{
     VECTOR_BYTES, as_stored, from_bytes as vector_from_bytes, to_bytes as vector_to_bytes,
