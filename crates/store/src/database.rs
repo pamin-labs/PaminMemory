@@ -77,6 +77,11 @@ pub struct StoreSettings {
     /// installed, started or recorded for it; the store only connects and
     /// migrates. `jit` and `postgres_dir` do not apply.
     pub database_url: Option<DatabaseUrl>,
+    /// The most connections this node opens to [`Self::database_url`]. Every
+    /// node sharing that server holds a pool of its own, so their caps
+    /// together have to fit its connection limit. Unset, a node opens up to
+    /// [`Connections::limit`].
+    pub database_connections: Option<u32>,
 }
 
 /// A `postgres://` URL. It carries credentials, so it never prints.
@@ -95,6 +100,7 @@ impl Default for StoreSettings {
             jit: memory_core::settings::JIT,
             postgres_dir: None,
             database_url: None,
+            database_connections: None,
         }
     }
 }
@@ -109,6 +115,7 @@ impl StoreSettings {
         Ok(Self {
             jit: self.jit,
             database_url: self.database_url.clone(),
+            database_connections: self.database_connections,
             postgres_dir: self
                 .postgres_dir
                 .as_deref()
@@ -144,8 +151,15 @@ impl Database {
     ) -> Result<Self> {
         if let Some(url) = &settings.database_url {
             let database = Self {
-                pool: pool(&url.0, connections, Reach::Remote).await?,
+                pool: pool(
+                    &url.0,
+                    connections,
+                    Reach::Remote,
+                    settings.database_connections,
+                )
+                .await?,
             };
+            database.bound_by_row_level_security().await?;
             database.migrate_shared().await?;
             return Ok(database);
         }
@@ -180,7 +194,7 @@ impl Database {
     /// Connects to an already running server without touching its lifecycle.
     pub async fn connect(server: &LocalServer, connections: Connections) -> Result<Self> {
         Ok(Self {
-            pool: pool(&server.url(), connections, Reach::Local).await?,
+            pool: pool(&server.url(), connections, Reach::Local, None).await?,
         })
     }
 
@@ -203,6 +217,26 @@ impl Database {
                 Err(error) => return Err(error),
             }
         }
+    }
+
+    /// Refuses a login that skips row-level security, a superuser or one
+    /// with `BYPASSRLS`: hosted, the database is the second guard on which
+    /// project a query reaches, and such a login would switch it off without
+    /// a sign. Managed servers often hand out an administrator login like that.
+    async fn bound_by_row_level_security(&self) -> Result<()> {
+        let (bypasses,): (bool,) = sqlx::query_as(
+            "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if bypasses {
+            return Err(crate::StoreError::Role(
+                "the role in PAMIN_MEMORY_DATABASE_URL is a superuser or has BYPASSRLS, so \
+                 row-level security would not apply to it; use a role that has neither"
+                    .into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Wraps a pool the caller built, for a caller that needs a particular
@@ -327,10 +361,16 @@ fn other_settings(
 /// may sleep and wake between calls, so there each connection is tested and
 /// recycled. Every node sharing it holds a pool of its own, so the server's
 /// connection limit is divided among them.
-async fn pool(url: &str, connections: Connections, reach: Reach) -> Result<PgPool> {
+async fn pool(
+    url: &str,
+    connections: Connections,
+    reach: Reach,
+    cap: Option<u32>,
+) -> Result<PgPool> {
     let remote = reach == Reach::Remote;
+    let limit = cap.map_or(connections.limit(), |cap| cap.min(connections.limit()));
     let pool = PgPoolOptions::new()
-        .max_connections(connections.limit())
+        .max_connections(limit)
         .min_connections(1)
         .test_before_acquire(remote)
         // Locally a command outlives neither, so recycling connections
@@ -774,6 +814,7 @@ mod tests {
             jit: false,
             postgres_dir: Some("/usr/lib/postgresql/17".into()),
             database_url: None,
+            database_connections: None,
         };
         let mut server = read_started(&started);
         assert!(super::reusable(&server, &started));
@@ -843,6 +884,7 @@ mod tests {
             jit: false,
             postgres_dir: Some("pg".into()),
             database_url: None,
+            database_connections: None,
         };
         let resolved = relative.resolved().unwrap();
         assert_eq!(resolved.postgres_dir, Some(here.join("pg")));
@@ -867,6 +909,7 @@ mod tests {
             jit: false,
             postgres_dir: Some(std::ffi::OsStr::from_bytes(&[b'/', b'p', byte]).into()),
             database_url: None,
+            database_connections: None,
         };
         let recorded = super::started_with(&prefix(0x80));
         let json = serde_json::to_vec(&recorded).unwrap();

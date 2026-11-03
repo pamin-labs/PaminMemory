@@ -24,6 +24,10 @@ pub enum StoreError {
     /// which only the caller who stops the workspace may replace.
     #[error("{0}")]
     OtherSettings(String),
+
+    /// An external database's role that row-level security would not bind.
+    #[error("{0}")]
+    Role(String),
 }
 
 /// Result alias for store operations.
