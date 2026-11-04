@@ -1937,11 +1937,17 @@ pub async fn span_vectors(
         .collect())
 }
 
+/// Rows per `span_vectors` insert, so no one statement grows with the
+/// project.
+pub const PUT_SPAN_VECTORS_BATCH: usize = 1_000;
+
 /// Keeps each vector, embedded by the model at `revision` under `encoding`
-/// from the passage hashed beside it. One already kept stays: the same model
-/// and plan over the same text give the same vector.
+/// from the passage hashed beside it, [`PUT_SPAN_VECTORS_BATCH`] rows a
+/// statement, all on `connection`, so a caller's transaction keeps all or
+/// none. One already kept stays: the same model and plan over the same text
+/// give the same vector.
 pub async fn put_span_vectors<'a>(
-    executor: impl PgExecutor<'_>,
+    connection: &mut sqlx::PgConnection,
     project: ProjectId,
     revision: &str,
     encoding: &str,
@@ -1951,22 +1957,24 @@ pub async fn put_span_vectors<'a>(
         .into_iter()
         .map(|(hash, vector)| (hash.as_slice(), vector.as_slice()))
         .unzip();
-    if hashes.is_empty() {
-        return Ok(());
+    for (hashes, vectors) in hashes
+        .chunks(PUT_SPAN_VECTORS_BATCH)
+        .zip(vectors.chunks(PUT_SPAN_VECTORS_BATCH))
+    {
+        sqlx::query(
+            "INSERT INTO span_vectors (project_id, revision, passage_hash, encoding, vector)
+             SELECT $1, $2, passage_hash, $3, vector FROM unnest($4::bytea[], $5::bytea[])
+                    AS v (passage_hash, vector)
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(project.0)
+        .bind(revision)
+        .bind(encoding)
+        .bind(hashes)
+        .bind(vectors)
+        .execute(&mut *connection)
+        .await?;
     }
-    sqlx::query(
-        "INSERT INTO span_vectors (project_id, revision, passage_hash, encoding, vector)
-         SELECT $1, $2, passage_hash, $3, vector FROM unnest($4::bytea[], $5::bytea[])
-                AS v (passage_hash, vector)
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(project.0)
-    .bind(revision)
-    .bind(encoding)
-    .bind(&hashes)
-    .bind(&vectors)
-    .execute(executor)
-    .await?;
     Ok(())
 }
 

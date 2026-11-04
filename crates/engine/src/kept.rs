@@ -202,7 +202,7 @@ impl Engine {
             .scoped(async |connection| {
                 Ok(
                     repository::span_vectors(
-                        &mut *connection,
+                        connection,
                         self.project,
                         &kept.revision,
                         plan,
@@ -288,7 +288,7 @@ impl Engine {
             .scoped(async |connection| {
                 for ((revision, encoding), vectors) in &by_plan {
                     repository::put_span_vectors(
-                        &mut *connection,
+                        connection,
                         self.project,
                         revision,
                         encoding,

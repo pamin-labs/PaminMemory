@@ -75,7 +75,7 @@ async fn an_external_server_is_used_and_never_started() {
     // The node reaches the newest guarded table as the guarded role.
     let mut scoped = database.scoped(written.id).await.expect("scoped");
     memory_store::repository::put_span_vectors(
-        &mut *scoped,
+        &mut scoped,
         written.id,
         "model@1",
         "cpu:plan",

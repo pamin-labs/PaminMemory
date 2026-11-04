@@ -124,7 +124,7 @@ async fn a_span_vector_is_kept_once_and_for_its_project_alone(database: &Databas
         (theirs, "model@1", "cpu:a"),
     ] {
         let mut scoped = database.scoped(project).await.expect("scoped");
-        repository::put_span_vectors(&mut *scoped, project, revision, encoding, &vectors)
+        repository::put_span_vectors(&mut scoped, project, revision, encoding, &vectors)
             .await
             .expect("keep vectors");
         scoped.commit().await.expect("commit");
@@ -158,10 +158,29 @@ async fn a_span_vector_is_kept_once_and_for_its_project_alone(database: &Databas
         "another project's vectors are out of reach, whatever the query names"
     );
     let odd = [([3; 32], vec![1])];
-    let malformed = repository::put_span_vectors(&mut *scoped, mine, "model@1", "x", &odd).await;
+    let malformed = repository::put_span_vectors(&mut scoped, mine, "model@1", "x", &odd).await;
     assert!(malformed.is_err(), "an odd-width vector is refused");
     drop(scoped);
     let mut scoped = database.scoped(mine).await.expect("scoped");
+    let many: Vec<([u8; 32], Vec<u8>)> = (0..2 * repository::PUT_SPAN_VECTORS_BATCH as u32 + 1)
+        .map(|at| {
+            let mut hash = [0u8; 32];
+            hash[..4].copy_from_slice(&at.to_le_bytes());
+            (hash, vec![1, 0])
+        })
+        .collect();
+    repository::put_span_vectors(&mut scoped, mine, "model@3", "cpu:a", &many)
+        .await
+        .expect("keep more than one statement's worth");
+    let many_hashes: Vec<[u8; 32]> = many.iter().map(|(hash, _)| *hash).collect();
+    assert_eq!(
+        repository::span_vectors(&mut *scoped, mine, "model@3", None, &many_hashes)
+            .await
+            .expect("read them back")
+            .len(),
+        many.len(),
+        "every row is kept, however many statements it takes"
+    );
     repository::purge_project(&mut *scoped, mine)
         .await
         .expect("purge")
