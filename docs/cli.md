@@ -1634,6 +1634,10 @@ index is recreated. Rebuilding recomputes it from what the project holds now,
 so a project that has outgrown its layout searches faster afterwards. Where the
 old index was built the way a new one is, a memory whose text has not changed
 keeps the vector it already has rather than being embedded again.
+Without an old index to take them from, a rebuild takes the vectors
+PostgreSQL keeps for each memory's text, embedded by the same model under the
+same plan, so a project whose index was lost is not embedded again, and the
+model is not loaded at all when every vector is kept.
 
 The server does this on its own. Once a project's index is spread over
 more than twice the segments it should be, the server copies it into the right
