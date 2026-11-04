@@ -176,18 +176,8 @@ pub(crate) fn span_documents<'a>(
                 .map(move |(ordinal, span)| (topic, ordinal as u32, *span))
         })
         .zip(vectors)
-        .map(|((topic, ordinal, span), vector)| span_document(topic, ordinal, span, vector))
+        .map(|((topic, ordinal, span), vector)| span.document(topic, ordinal, vector))
         .collect()
-}
-
-/// Span `ordinal` of `topic` as the index is written it, with `vector`.
-pub(crate) fn span_document<'a>(
-    topic: TopicId,
-    ordinal: u32,
-    span: SpanSource<'a>,
-    vector: &'a [f32],
-) -> SpanDocument<'a> {
-    (topic, ordinal, span.text, Some(span.header), vector)
 }
 
 impl Engine {
@@ -212,7 +202,7 @@ impl Engine {
             .scoped(async |connection| {
                 Ok(
                     repository::span_vectors(
-                        connection,
+                        &mut *connection,
                         self.project,
                         &kept.revision,
                         plan,

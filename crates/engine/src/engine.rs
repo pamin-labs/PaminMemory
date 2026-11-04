@@ -23,7 +23,7 @@ use time::OffsetDateTime;
 
 use crate::Settings;
 use crate::cuts::Cuts;
-use crate::kept::{Embedded, Kept, Passage, digests, span_document, span_documents, widen};
+use crate::kept::{Embedded, Kept, Passage, digests, span_documents, widen};
 
 pub use memory_core::Depths;
 
@@ -3031,7 +3031,7 @@ impl Engine {
                     .iter()
                     .zip(&embeddings)
                     .map(|((topic, ordinal, span, _), embedding)| {
-                        span_document(*topic, *ordinal, span.source(), embedding)
+                        span.source().document(*topic, *ordinal, embedding)
                     })
                     .collect();
                 index.write_spans(&documents, encoding.as_deref())?;

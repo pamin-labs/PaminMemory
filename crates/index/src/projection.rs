@@ -134,6 +134,13 @@ pub struct SpanSource<'a> {
     pub header: &'a str,
 }
 
+impl<'a> SpanSource<'a> {
+    /// This span as span `ordinal` of `topic` is written, with `vector`.
+    pub fn document(self, topic: TopicId, ordinal: u32, vector: &'a [f32]) -> SpanDocument<'a> {
+        (topic, ordinal, self.text, Some(self.header), vector)
+    }
+}
+
 /// What the layer above needs a projection to do.
 ///
 /// The architecture decision that chose this engine mitigated its pre-1.0 risk
