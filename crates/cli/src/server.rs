@@ -376,26 +376,17 @@ impl CatchingUp {
             };
             let key = owing.name;
 
-            let engine = if session.holds(&key) {
-                // Being opened, or rebuilt: the next tick.
-                let Some(engine) = session.opened_engine_for_work(&key) else {
-                    continue;
-                };
-                engine
-            } else {
+            if !session.holds(&key) {
                 if opened_one || !owing.never_failed || self.refused.contains_key(&key) {
                     continue;
                 }
                 opened_one = true;
-                match session.engine(&key, vector_index).await {
-                    Ok(engine) => engine,
-                    Err(error) => {
-                        tracing::warn!(project = %key, %error, "opening a project to catch up failed");
-                        self.refused.insert(key, Instant::now());
-                        continue;
-                    }
+                if let Err(error) = session.engine(&key, vector_index).await {
+                    tracing::warn!(project = %key, %error, "opening a project to catch up failed");
+                    self.refused.insert(key, Instant::now());
+                    continue;
                 }
-            };
+            }
 
             // Rounds in every gap between requests until the project is
             // caught up or the budget is spent. A request stops the drain
@@ -407,6 +398,13 @@ impl CatchingUp {
                     tokio::time::sleep(QUIET_POLL).await;
                     continue;
                 }
+                // Taken each round rather than held across them: a rebuild
+                // waits for every holder of the engine it replaces, and one
+                // held here would keep it waiting and could sync into the
+                // index it discards. Being opened or rebuilt: the next tick.
+                let Some(engine) = session.opened_engine_for_work(&key) else {
+                    break;
+                };
                 let draining = Instant::now();
                 match engine
                     .drain_cascade_while(Owed::WhatAMemoryNeeds, self.batch, go_on)
