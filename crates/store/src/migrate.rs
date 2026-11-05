@@ -201,9 +201,7 @@ pub async fn run_shared(pool: &PgPool) -> Result<()> {
             Ok(()) => return Ok(()),
             Err(error) if attempt < attempts => {
                 let before = left;
-                left = pending(pool, &migrations())
-                    .await
-                    .map_or(before, |pending| pending.len());
+                left = pending(pool, &migrations()).await?.len();
                 if left == before && !raced(&error) {
                     return Err(error);
                 }
