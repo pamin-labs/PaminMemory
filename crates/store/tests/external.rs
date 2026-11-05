@@ -1,6 +1,7 @@
 //! A store on a PostgreSQL server it did not start, as hosted memory runs:
-//! `StoreSettings::database_url` connects and migrates, and the workspace's
-//! own cluster is neither started nor recorded.
+//! a deploy migrates it with `Database::migrate`, `StoreSettings::database_url`
+//! connects to it, and the workspace's own cluster is neither started nor
+//! recorded.
 //!
 //! Run with `cargo test -p memory-store --test external -- --ignored`.
 
@@ -37,7 +38,6 @@ async fn an_external_server_is_used_and_never_started() {
         "CREATE ROLE node LOGIN PASSWORD 'node' NOSUPERUSER NOBYPASSRLS",
         "GRANT pamin_memory_app TO node WITH ADMIN OPTION",
         "CREATE DATABASE nodes OWNER node",
-        "CREATE DATABASE racing OWNER node",
         "CREATE ROLE bypassing LOGIN PASSWORD 'bypassing' NOSUPERUSER BYPASSRLS",
     ] {
         sqlx::query(statement)
@@ -49,6 +49,25 @@ async fn an_external_server_is_used_and_never_started() {
     let node = tempfile::tempdir().expect("node workspace");
     let node = Workspace::at(node.path());
     let settings = external("node", "nodes");
+
+    // A server never migrates the database it shares: until a deploy has, it
+    // refuses to start, naming what is missing.
+    let behind = Database::open(&node, Connections::Resident, &settings)
+        .await
+        .err()
+        .expect("a database nothing has migrated is refused");
+    assert!(
+        matches!(&behind, memory_store::StoreError::Behind(pending) if !pending.is_empty()),
+        "{behind}"
+    );
+    let url = settings.database_url.as_ref().expect("an external URL");
+    Database::migrate(url)
+        .await
+        .expect("migrate as a deploy does");
+    Database::migrate(url)
+        .await
+        .expect("a second deploy migrates nothing new and fails nothing");
+
     let database = Database::open(&node, Connections::Resident, &settings)
         .await
         .expect("open the external server");
@@ -95,21 +114,6 @@ async fn an_external_server_is_used_and_never_started() {
     assert_eq!(kept.len(), 1);
     scoped.commit().await.expect("commit");
 
-    // A second open migrates nothing new and fails nothing.
-    Database::open(&node, Connections::PerCommand, &settings)
-        .await
-        .expect("open it again");
-
-    // Two nodes starting at once on a database nothing has migrated, as after
-    // an upgrade, both start: the loser of the migration race tries again.
-    let racing = external("node", "racing");
-    let (first, second) = tokio::join!(
-        Database::open(&node, Connections::PerCommand, &racing),
-        Database::open(&host, Connections::PerCommand, &racing),
-    );
-    first.expect("the first node starts");
-    second.expect("the second node starts");
-
     // The URL carries credentials and never prints.
     let printed = format!("{settings:?}");
     assert!(!printed.contains("node:node"), "{printed}");
@@ -124,9 +128,9 @@ async fn an_external_server_is_used_and_never_started() {
         .expect("open with a cap");
     assert_eq!(database.pool().options().get_max_connections(), 2);
 
-    // A login row-level security would not bind is refused, saying why: one
-    // with BYPASSRLS, as a managed server's administrator often is, and a
-    // superuser.
+    // A login row-level security would not bind is refused, saying why, by a
+    // server and by a deploy migrating: one with BYPASSRLS, as a managed
+    // server's administrator often is, and a superuser.
     for (refused, how) in [
         (external("bypassing", "nodes"), "BYPASSRLS"),
         (
@@ -141,6 +145,12 @@ async fn an_external_server_is_used_and_never_started() {
             .await
             .err()
             .unwrap_or_else(|| panic!("a login with {how} is refused"));
+        assert!(error.to_string().contains("row-level security"), "{error}");
+        let url = refused.database_url.as_ref().expect("an external URL");
+        let error = Database::migrate(url)
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("migrating as a login with {how} is refused"));
         assert!(error.to_string().contains("row-level security"), "{error}");
     }
 }

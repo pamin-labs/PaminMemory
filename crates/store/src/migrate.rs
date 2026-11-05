@@ -15,13 +15,16 @@
 use std::borrow::Cow;
 
 use sqlx::PgPool;
-use sqlx::SqlStr;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
+use sqlx::{AssertSqlSafe, SqlSafeStr, SqlStr};
 
 use crate::error::Result;
 
 /// The table `refinery` recorded applied migrations in, before `sqlx`.
 const APPLIED_BY_REFINERY: &str = "refinery_schema_history";
+
+/// What every migration runs first; see [`migration`].
+const ROW_SECURITY_OFF: &str = "SET LOCAL row_security = off;\n";
 
 /// Every migration, oldest first.
 fn migrations() -> Vec<Migration> {
@@ -136,13 +139,27 @@ fn migrations() -> Vec<Migration> {
 }
 
 fn migration(version: i64, description: &'static str, sql: &'static str) -> Migration {
-    Migration::new(
+    let mut migration = Migration::new(
         version,
         Cow::Borrowed(description),
         MigrationType::Simple,
         SqlStr::from_static(sql),
         false,
-    )
+    );
+    // Row security off for each migration, so one that rewrites guarded rows
+    // as the tables' owner -- the hosted role, which V21 subjects to the
+    // policies -- fails where a policy would filter, rather than matching no
+    // row and recording itself applied. A superuser, as a local workspace's
+    // connection is, skips the policies either way, so only hosted shows it.
+    //
+    // `SET LOCAL`, inside the transaction `sqlx` applies each migration in,
+    // because a session setting is not safe behind a transaction-pooling
+    // proxy such as PgBouncer: the next transaction may run on another
+    // server connection, and this one goes back to whoever is next. The
+    // checksum stays the file's, computed above, so the history a database
+    // already recorded still matches.
+    migration.sql = AssertSqlSafe(format!("{ROW_SECURITY_OFF}{sql}")).into_sql_str();
+    migration
 }
 
 /// Applies every migration the database has not seen yet.
@@ -176,89 +193,28 @@ pub async fn run(pool: &PgPool) -> Result<()> {
     // applied in the same transaction that records it and the version column is
     // a primary key, so the loser fails rather than applying anything twice.
     // That is the exposure this already had under `refinery`. A resident server
-    // owns startup for one workspace; nodes sharing an external database race
-    // instead, and retry ([`run_shared`]).
+    // owns startup for one workspace, and an external database is migrated once
+    // per deploy ([`crate::Database::migrate`]), never by the servers on it.
     migrator.set_locking(false);
 
-    // Row security off for the run, so a migration that rewrites guarded rows
-    // as the tables' owner -- the hosted role, which V21 subjects to the
-    // policies -- fails where a policy would filter, rather than matching no
-    // row and recording itself applied. A superuser, as a local workspace's
-    // connection is, skips the policies either way, so only hosted shows it.
-    // On a pooled connection closed when it drops rather than returned, so
-    // the setting never reaches one a scoped transaction would take, the
-    // pool's cap holds while it runs, and a failed close does not fail a
-    // migration that succeeded.
-    let mut connection = pool.acquire().await?;
-    connection.close_on_drop();
-    sqlx::raw_sql("SET row_security = off")
-        .execute(&mut *connection)
-        .await?;
-    migrator.run(&mut *connection).await?;
+    migrator.run(pool).await?;
 
     Ok(())
 }
 
-/// Migrates a database other servers may be migrating at the same moment,
-/// as several nodes sharing an external database do when they start after
-/// an upgrade. Migrations take no advisory lock (see [`run`]), so
-/// the losers of a race fail; the next pass finds the winner's work done
-/// and applies only what is left.
+/// Refuses a database with migrations this release has not seen applied, as
+/// a server on an external database does: [`Database::migrate`] applies them
+/// once per deploy, before servers that need them start. A database a newer
+/// release has migrated further is current, since each migration adds only
+/// what its release needs.
 ///
-/// A loser fails on whichever migration the winner commits under it, and
-/// how that looks depends on the migration: its version already recorded,
-/// or an object it creates already there or one it drops already gone. So
-/// a failure is tried again when it shows the race: fewer migrations left
-/// than before the attempt, or a duplicate where nothing is left to apply
-/// yet, the table recording them. Any other failure, a missing permission
-/// say, fails the same way every time and is returned at once. Each retry
-/// follows a commit of the winner's, so a loser fails at most once per
-/// migration and once on that table.
-pub async fn run_shared(pool: &PgPool) -> Result<()> {
-    let mut left = pending(pool, &migrations()).await?.len();
-    // One failure per migration left plus one on the table recording them,
-    // which a fresh database does not have yet, and the attempt that then
-    // succeeds.
-    let attempts = left + 2;
-    let mut attempt = 1;
-    loop {
-        match run(pool).await {
-            Ok(()) => return Ok(()),
-            Err(error) if attempt < attempts => {
-                let before = left;
-                left = pending(pool, &migrations()).await?.len();
-                if left == before && !raced(&error) {
-                    return Err(error);
-                }
-                tracing::warn!(%error, attempt, "migrating a shared database; trying again");
-                attempt += 1;
-            }
-            Err(error) => return Err(error),
-        }
+/// [`Database::migrate`]: crate::Database::migrate
+pub async fn current(pool: &PgPool) -> Result<()> {
+    let pending = pending(pool, &migrations()).await?;
+    if pending.is_empty() {
+        return Ok(());
     }
-}
-
-/// Whether `error` is a collision with another server's concurrent write: an
-/// insert of the same row or object, or a transaction PostgreSQL rolled back
-/// for colliding with it.
-fn raced(error: &crate::StoreError) -> bool {
-    use sqlx::migrate::MigrateError;
-    let (crate::StoreError::Database(error)
-    | crate::StoreError::Migration(
-        MigrateError::Execute(error) | MigrateError::ExecuteMigration(error, _),
-    )) = error
-    else {
-        return false;
-    };
-    let Some(error) = error.as_database_error() else {
-        return false;
-    };
-    // duplicate_object, duplicate_table, and class 40, serialization_failure
-    // and deadlock_detected among it.
-    error.is_unique_violation()
-        || error
-            .code()
-            .is_some_and(|code| matches!(&*code, "42710" | "42P07") || code.starts_with("40"))
+    Err(crate::StoreError::Behind(pending))
 }
 
 /// The versions this database has not applied yet.
@@ -381,6 +337,7 @@ async fn table_exists(pool: &PgPool, name: &str) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
+    use sqlx::SqlSafeStr;
     use sqlx::migrate::Migrator;
 
     /// Constructs that would strand us on a single PostgreSQL node.
@@ -489,5 +446,28 @@ mod tests {
             files,
             "a migration file exists that the runner never applies"
         );
+    }
+
+    #[test]
+    fn every_migration_turns_row_security_off_and_keeps_its_files_checksum() {
+        for migration in super::migrations() {
+            let file = migration
+                .sql
+                .as_str()
+                .strip_prefix(super::ROW_SECURITY_OFF)
+                .unwrap_or_else(|| panic!("V{} runs with row security on", migration.version));
+            let unprefixed = sqlx::migrate::Migration::new(
+                migration.version,
+                migration.description.clone(),
+                migration.migration_type,
+                sqlx::AssertSqlSafe(file.to_owned()).into_sql_str(),
+                migration.no_tx,
+            );
+            assert_eq!(
+                migration.checksum, unprefixed.checksum,
+                "V{}'s recorded checksum would no longer match",
+                migration.version
+            );
+        }
     }
 }

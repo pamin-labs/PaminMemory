@@ -120,6 +120,12 @@ pub enum Command {
     /// Stop the local database server, and the resident server if one is up.
     Stop,
 
+    /// Apply this release's schema migrations to the external database named
+    /// by `PAMIN_MEMORY_DATABASE_URL`, once per deploy, before starting the
+    /// servers that need them. Servers on that database never migrate it
+    /// themselves; a workspace's own cluster migrates when it opens.
+    Migrate,
+
     /// Hold the database, the index and the model, and answer commands.
     ///
     /// Started automatically by any command that needs one, so this is for
@@ -150,6 +156,9 @@ pub enum Unserved {
         workspace: Workspace,
         format: output::Format,
     },
+    /// `migrate`: migrate the external database, with no server or session,
+    /// since a server refuses one that is not migrated.
+    Migrate,
 }
 
 /// Logging, the removed-settings check and the arguments, which neither needs
@@ -185,6 +194,12 @@ pub async fn run(cli: Cli, matches: clap::ArgMatches) -> Result<Option<Unserved>
     // Before the settings are resolved: `stop` runs with none of them, and
     // it is what a workspace whose `config.toml` no longer parses, or whose
     // PostgreSQL prefix is gone, still needs to get its server down.
+    // Before the settings too: it reads only the database URL, which no
+    // setting holds.
+    if let Command::Migrate = cli.command {
+        return Ok(Some(Unserved::Migrate));
+    }
+
     if let Command::Stop = cli.command {
         let request = protocol::Request {
             version: protocol::version(),
@@ -236,7 +251,7 @@ pub async fn run(cli: Cli, matches: clap::ArgMatches) -> Result<Option<Unserved>
     }
 
     let call = match cli.command {
-        Command::Serve | Command::Config | Command::Stop | Command::Mcp => {
+        Command::Serve | Command::Config | Command::Stop | Command::Migrate | Command::Mcp => {
             unreachable!("handled above")
         }
         Command::Init => protocol::Call::Init,
