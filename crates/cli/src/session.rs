@@ -435,6 +435,7 @@ impl Session {
                 Ok(purged)
             })
             .await
+            .map_err(held_by_work)
     }
 
     /// Rebuilds this project's index from the ledger, discarding it first.
@@ -459,7 +460,17 @@ impl Session {
                 rebuilt = Some(done);
                 Ok(engine)
             })
-            .await?;
+            .await
+            .map_err(held_by_work)?;
         Ok(rebuilt.expect("set by the open that succeeded"))
+    }
+}
+
+/// Says what usually holds a project when waiting for it ran out.
+fn held_by_work(error: anyhow::Error) -> anyhow::Error {
+    if error.is::<crate::registry::StillInUse>() {
+        error.context("the project is busy, most often with a reshape or an import")
+    } else {
+        error
     }
 }

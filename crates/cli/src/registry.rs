@@ -282,6 +282,18 @@ impl<K: Eq + Hash + Clone, T> Registry<K, T> {
     }
 }
 
+/// A value still held by another caller once the patience ran out.
+#[derive(Debug)]
+pub struct StillInUse(Duration);
+
+impl std::fmt::Display for StillInUse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "still in use after {:?}; try again", self.0)
+    }
+}
+
+impl std::error::Error for StillInUse {}
+
 /// Empties a held slot once nothing but it holds the value, waiting up to
 /// `patience`; past that the value is put back and the caller refused.
 async fn released<T>(held: &mut Option<Arc<T>>, patience: Duration) -> Result<()> {
@@ -293,9 +305,7 @@ async fn released<T>(held: &mut Option<Arc<T>>, patience: Duration) -> Result<()
     while Arc::strong_count(&value) > 1 {
         if Instant::now() >= deadline {
             *held = Some(value);
-            anyhow::bail!(
-                "still in use after {patience:?}, most often by a reshape or an import; try again"
-            );
+            return Err(StillInUse(patience).into());
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
