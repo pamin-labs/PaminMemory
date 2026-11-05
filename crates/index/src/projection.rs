@@ -1808,14 +1808,15 @@ impl Previous {
     /// vectors at once. So whenever `batch` documents are waiting in all,
     /// every encoding's are handed over.
     ///
-    /// Everything else is the caller's to supply, and nothing of it is lent. The documents are written with
-    /// [`Projection::write_spans`], so a topic whose spans arrive in two
-    /// batches is not cut short by the first. In the order this
-    /// index holds its documents rather than the caller's, because that is
-    /// the order they are read in: one pass over the collection rather than a
-    /// keyed fetch per batch. Over MIRACL's 131,924 documents a pass takes
-    /// 0.28 s this way against 1.46-1.59 s of keyed fetches, with the same
-    /// resident set and identical vectors and text (ADR 0001).
+    /// Everything else is the caller's to supply, and nothing of it is lent.
+    /// The documents are written with [`Projection::write_spans`], so a topic
+    /// whose spans arrive in two batches is not cut short by the first. In
+    /// the order this index holds its documents rather than the caller's,
+    /// because that is the order they are read in: one pass over the
+    /// collection rather than a keyed fetch per batch. Over MIRACL's 131,924
+    /// documents a pass takes 0.28 s this way against 1.46-1.59 s of keyed
+    /// fetches, with the same resident set and identical vectors and text
+    /// (ADR 0001).
     pub fn lend(
         &self,
         wanted: &HashMap<TopicId, Vec<SpanSource<'_>>>,
