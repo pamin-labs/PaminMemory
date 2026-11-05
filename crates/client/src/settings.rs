@@ -188,7 +188,8 @@ pub struct ServerArgs {
     pub postgres_dir: Option<PathBuf>,
 
     /// The most connections the server opens to the PostgreSQL server named
-    /// by `PAMIN_MEMORY_DATABASE_URL`. Default: the server's own pool size.
+    /// by `PAMIN_MEMORY_DATABASE_URL`, which it needs. Default: the server's
+    /// own pool size.
     #[arg(
         long,
         value_name = "N",

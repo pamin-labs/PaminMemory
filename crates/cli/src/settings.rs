@@ -21,18 +21,34 @@ pub fn engine(server: &Server) -> anyhow::Result<memory_engine::Settings> {
             split_embeddings: server.split_embeddings,
             ..default.inference
         },
-        store: memory_store::StoreSettings {
-            jit: server.jit,
-            postgres_dir: server.postgres_dir.clone(),
-            // From the environment alone: it holds credentials, which belong
-            // in neither a flag, `config.toml`, nor the settings a client
-            // sends the server and prints.
-            database_url: database_url()?,
-            database_connections: server.database_connections.map(std::num::NonZeroU32::get),
-        },
+        // The database URL from the environment alone: it holds credentials,
+        // which belong in neither a flag, `config.toml`, nor the settings a
+        // client sends the server and prints.
+        store: store(server, database_url()?)?,
         model_idle: server.model_idle,
         models_dir: server.models_dir.clone(),
         ..default
+    })
+}
+
+/// The store settings for `server` and the external database `url`, if one is
+/// named. A cap on connections to an external database is refused without
+/// one, rather than ignored.
+fn store(
+    server: &Server,
+    url: Option<memory_store::DatabaseUrl>,
+) -> anyhow::Result<memory_store::StoreSettings> {
+    if url.is_none() && server.database_connections.is_some() {
+        anyhow::bail!(
+            "database_connections caps the connections to the server named by {DATABASE_URL}, \
+             which is not set; set it, or drop the cap"
+        );
+    }
+    Ok(memory_store::StoreSettings {
+        jit: server.jit,
+        postgres_dir: server.postgres_dir.clone(),
+        database_url: url,
+        database_connections: server.database_connections.map(std::num::NonZeroU32::get),
     })
 }
 
@@ -89,5 +105,27 @@ mod tests {
         };
         assert_eq!(super::engine(&server).unwrap(), settings);
         assert_eq!(server.open_indexes, OPEN_INDEXES);
+    }
+
+    /// A connection cap names no server without an external database, so it
+    /// is refused rather than ignored, and taken with one.
+    #[test]
+    fn a_connection_cap_needs_an_external_database() {
+        let root = tempfile::tempdir().unwrap();
+        let matches = Test::command()
+            .try_get_matches_from(["pamin-memory", "--database-connections", "2"])
+            .unwrap();
+        let parsed = Test::from_arg_matches(&matches).unwrap();
+        let server =
+            memory_client::settings::Server::resolve(root.path(), &parsed.server, &matches)
+                .unwrap();
+        let error = super::store(&server, None).unwrap_err().to_string();
+        assert!(
+            error.contains(memory_client::settings::DATABASE_URL),
+            "{error}"
+        );
+        let url = memory_store::DatabaseUrl("postgres://node@db/memory".to_string());
+        let store = super::store(&server, Some(url)).unwrap();
+        assert_eq!(store.database_connections, Some(2));
     }
 }
