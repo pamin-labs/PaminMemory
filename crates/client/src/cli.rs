@@ -157,8 +157,9 @@ pub enum Unserved {
         format: output::Format,
     },
     /// `migrate`: migrate the external database, with no server or session,
-    /// since a server refuses one that is not migrated.
-    Migrate,
+    /// since a server refuses one that is not migrated, and print the result
+    /// as `format`.
+    Migrate { format: output::Format },
 }
 
 /// Logging, the removed-settings check and the arguments, which neither needs
@@ -185,21 +186,22 @@ pub fn parse() -> Result<(Cli, clap::ArgMatches)> {
 /// Runs one command through the workspace's server, starting one if it needs
 /// to, and prints the answer -- or says what is left for the binary to do.
 pub async fn run(cli: Cli, matches: clap::ArgMatches) -> Result<Option<Unserved>> {
+    let format = output::Format::from_flags(cli.json, cli.pretty);
+
+    // Before the workspace and the settings: it reads only the database URL,
+    // which neither holds, and a deploy job may have no home to find one in.
+    if let Command::Migrate = cli.command {
+        return Ok(Some(Unserved::Migrate { format }));
+    }
+
     let workspace = match &cli.home {
         Some(path) => Workspace::at(path),
         None => Workspace::discover()?,
     };
-    let format = output::Format::from_flags(cli.json, cli.pretty);
 
     // Before the settings are resolved: `stop` runs with none of them, and
     // it is what a workspace whose `config.toml` no longer parses, or whose
     // PostgreSQL prefix is gone, still needs to get its server down.
-    // Before the settings too: it reads only the database URL, which no
-    // setting holds.
-    if let Command::Migrate = cli.command {
-        return Ok(Some(Unserved::Migrate));
-    }
-
     if let Command::Stop = cli.command {
         let request = protocol::Request {
             version: protocol::version(),

@@ -31,7 +31,10 @@ pub enum StoreError {
 
     /// An external database that has not applied these migrations, which a
     /// deploy applies with [`crate::Database::migrate`].
-    #[error("the database has not applied migrations {0:?} of this release")]
+    #[error(
+        "the database has not applied migrations {0:?} of this release; \
+         migrate it first (`pamin-memory migrate`)"
+    )]
     Behind(Vec<i64>),
 }
 

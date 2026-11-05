@@ -50,6 +50,7 @@ fn every_operation_matches_its_schema_snapshot() {
         "cascade.failed.result" => cascade::Failures,
         "cascade.moved.result" => cascade::Moved,
         "init.result" => init::Initialized,
+        "migrate.result" => migrate::Migrated,
         "stop.result" => stop::Stopped,
     }
 }

@@ -55,7 +55,7 @@ fn store(
 /// The external database the server opens, if one is named; refused when it is
 /// named but unusable, since the fallback, the workspace's own cluster, would
 /// keep a hosted node's data on a disk that is not where its data lives.
-pub fn database_url() -> anyhow::Result<Option<memory_store::DatabaseUrl>> {
+pub(crate) fn database_url() -> anyhow::Result<Option<memory_store::DatabaseUrl>> {
     match std::env::var(DATABASE_URL) {
         Err(std::env::VarError::NotPresent) => Ok(None),
         Err(std::env::VarError::NotUnicode(_)) => anyhow::bail!("{DATABASE_URL} is not UTF-8"),

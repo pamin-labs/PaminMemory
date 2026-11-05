@@ -24,6 +24,7 @@ pub mod import;
 pub mod ingest;
 pub mod init;
 pub mod link;
+pub mod migrate;
 pub mod neighbors;
 pub mod purge;
 pub mod read;
