@@ -188,7 +188,7 @@ pub struct ServerArgs {
     pub postgres_dir: Option<PathBuf>,
 
     /// The most connections the server opens to the PostgreSQL server named
-    /// by `PAMIN_MEMORY_DATABASE_URL`. Default: four a core, up to 64.
+    /// by `PAMIN_MEMORY_DATABASE_URL`. Default: the server's own pool size.
     #[arg(
         long,
         value_name = "N",
@@ -488,7 +488,7 @@ impl Server {
             args.database_connections.map(|n| n.to_string()),
             given("database_connections"),
             serve.database_connections.map(|n| n.to_string()),
-            "four a core, up to 64".to_string(),
+            "none (the server's own pool size)".to_string(),
         );
 
         let flag_models = args.models_dir.as_ref().map(from_flag).transpose()?;
