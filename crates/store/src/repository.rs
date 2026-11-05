@@ -1953,10 +1953,14 @@ pub async fn put_span_vectors<'a>(
     encoding: &str,
     vectors: impl IntoIterator<Item = &'a ([u8; 32], Vec<u8>)>,
 ) -> Result<()> {
-    let (hashes, vectors): (Vec<&[u8]>, Vec<&[u8]>) = vectors
+    let mut rows: Vec<(&[u8], &[u8])> = vectors
         .into_iter()
         .map(|(hash, vector)| (hash.as_slice(), vector.as_slice()))
-        .unzip();
+        .collect();
+    // In one order, so two keeps of overlapping spans lock their rows in the
+    // same order and neither waits on a row the other holds.
+    rows.sort_unstable_by_key(|(hash, _)| *hash);
+    let (hashes, vectors): (Vec<&[u8]>, Vec<&[u8]>) = rows.into_iter().unzip();
     for (hashes, vectors) in hashes
         .chunks(PUT_SPAN_VECTORS_BATCH)
         .zip(vectors.chunks(PUT_SPAN_VECTORS_BATCH))
