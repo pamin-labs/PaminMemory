@@ -187,11 +187,14 @@ pub async fn run(pool: &PgPool) -> Result<()> {
 /// than before the attempt, or a duplicate where nothing is left to apply
 /// yet, the table recording them. Any other failure, a missing permission
 /// say, fails the same way every time and is returned at once. Each retry
-/// follows a commit of the winner's, so a loser needs at most one per
-/// migration and one for that table.
+/// follows a commit of the winner's, so a loser fails at most once per
+/// migration and once on that table.
 pub async fn run_shared(pool: &PgPool) -> Result<()> {
     let mut left = pending(pool, &migrations()).await?.len();
-    let attempts = left + 1;
+    // One failure per migration left plus one on the table recording them,
+    // which a fresh database does not have yet, and the attempt that then
+    // succeeds.
+    let attempts = left + 2;
     let mut attempt = 1;
     loop {
         match run(pool).await {
