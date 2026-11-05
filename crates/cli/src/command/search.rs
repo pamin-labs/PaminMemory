@@ -14,7 +14,6 @@ pub async fn execute(
     vector_index: VectorIndex,
     args: Args,
 ) -> Result<Results> {
-    let engine = session.engine(project, vector_index).await?;
     let depths = Depths {
         channel: args.channel_depth,
         graph: args.graph_depth,
@@ -22,7 +21,13 @@ pub async fn execute(
         effort: args.search_effort,
     };
     let ingested = session.ingested(project);
-    let mut hits = engine
+    // The engine is taken for each search and let go between them: freshening
+    // ingests, which asks for this project's engine again, and a rebuild
+    // waiting for this one to be let go would hold that request off until
+    // the rebuild gave up.
+    let mut hits = session
+        .engine(project, vector_index)
+        .await?
         .search_reranked(&args.query, args.limit, depths)
         .await?;
     // A hit from a file that changed since it was ingested answers with what
@@ -35,7 +40,9 @@ pub async fn execute(
         tracing::warn!(error = format!("{error:#}"), "freshening hits failed");
     }
     if session.ingested(project) != ingested {
-        hits = engine
+        hits = session
+            .engine(project, vector_index)
+            .await?
             .search_reranked(&args.query, args.limit, depths)
             .await?;
     }
