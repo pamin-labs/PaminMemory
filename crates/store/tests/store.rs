@@ -208,22 +208,20 @@ async fn a_scoped_transaction_reaches_only_its_project(database: &Database) {
     // Hosted, the connection owns the tables and is no superuser. Played here
     // by a role made owner of every guarded table inside a transaction that
     // is rolled back.
-    sqlx::raw_sql("BEGIN; CREATE ROLE owner_probe NOLOGIN NOSUPERUSER NOBYPASSRLS")
-        .execute(&mut *connection)
-        .await
-        .expect("make the owner");
-    for table in &guarded {
-        sqlx::raw_sql(AssertSqlSafe(format!(
-            "ALTER TABLE {table} OWNER TO owner_probe"
-        )))
-        .execute(&mut *connection)
-        .await
-        .unwrap_or_else(|error| panic!("owning {table}: {error}"));
+    let mut setup =
+        vec!["BEGIN; CREATE ROLE owner_probe NOLOGIN NOSUPERUSER NOBYPASSRLS".to_string()];
+    setup.extend(
+        guarded
+            .iter()
+            .map(|table| format!("ALTER TABLE {table} OWNER TO owner_probe")),
+    );
+    setup.push("SET LOCAL ROLE owner_probe".to_string());
+    for statement in setup {
+        sqlx::raw_sql(AssertSqlSafe(statement.as_str()))
+            .execute(&mut *connection)
+            .await
+            .unwrap_or_else(|error| panic!("{statement}: {error}"));
     }
-    sqlx::raw_sql("SET LOCAL ROLE owner_probe")
-        .execute(&mut *connection)
-        .await
-        .expect("take on the owner");
     for table in &guarded {
         let (seen,): (i64,) =
             sqlx::query_as(AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
