@@ -72,7 +72,8 @@ impl Drop for Serving<'_> {
 }
 
 impl Session {
-    /// Connects, migrates, and holds the result.
+    /// Connects, migrates a workspace's own cluster (an external database
+    /// must already be migrated), and holds the result.
     ///
     /// With a resident's pool: the server holding this is the only process
     /// the CLI talks to the cluster from.
@@ -87,16 +88,9 @@ impl Session {
         // The store names no variable; an external server is the one this
         // process was given in the environment.
         let database = match &settings.store.database_url {
-            Some(_) => database
-                .map_err(|error| match error {
-                    memory_store::StoreError::Behind(_) => {
-                        anyhow::anyhow!("{error}; run `pamin-memory migrate` against it first")
-                    }
-                    error => error.into(),
-                })
-                .with_context(|| {
-                    format!("opening the PostgreSQL server named by {DATABASE_URL}")
-                })?,
+            Some(_) => database.with_context(|| {
+                format!("opening the PostgreSQL server named by {DATABASE_URL}")
+            })?,
             None => database?,
         };
         Ok(Self {

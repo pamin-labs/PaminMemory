@@ -1,0 +1,22 @@
+---
+source: crates/contract/tests/schemas.rs
+expression: "schema_for! (migrate::Migrated)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Migrated",
+  "type": "object",
+  "properties": {
+    "applied": {
+      "description": "The migration versions this run applied, oldest first; empty when the\ndatabase was already current.",
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "format": "int64"
+      }
+    }
+  },
+  "required": [
+    "applied"
+  ]
+}
