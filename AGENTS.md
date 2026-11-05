@@ -2,10 +2,6 @@
 
 ## pamin-memory Workflow
 
-- For every CPU compute path, consider and prefer SIMD where supported and worthwhile; reuse optimized library/runtime kernels and justify material scalar exceptions with measurements.
-- When changing compute/inference dispatch, follow the [mixed accelerator policy](docs/adr/0001-tech-selection.md#mixed-accelerator-policy-2026-09-29): choose measured speed across supported single/mixed plans; do not permanently retreat to CPU solely for numerical drift.
-
-
 - Before making changes, branch from the latest `main` with a concise name that matches the intended PR.
 - Coordinate through pamin-labs-dev before editing. With the plugin, its hooks and the `protocol` skill guide you. Without it (other agents, other tools), declare an intent with the `pamin-labs-dev` CLI first (`pamin-labs-dev intent declare ...`), work on its branch `<type>/i-<number>-<slug>`, and put `Intent: I-<number>` in the PR description; CI rejects PRs without a live intent for their branch. External contributors follow [CONTRIBUTING.md](CONTRIBUTING.md) instead.
 - Read the relevant `pamin-memory/` materials in InternalDocs before implementing pamin-memory changes. InternalDocs is a sibling clone at `$PAMIN_LABS_DEV_INTERNAL_DOCS` (default `../internal-docs`); pull it first. See [docs/internal-docs.md](docs/internal-docs.md).
@@ -53,6 +49,13 @@
   cloning inside loops, repeated parsing, and blocking I/O on async paths; reuse
   buffers and the optimized kernels already in the tree. Any speed claim
   follows [Measuring Every Optimization](#measuring-every-optimization).
+- Business logic lives in one layer per area, apart from transport, wiring
+  and storage; each area's `AGENTS.md` says where.
+- **A directory says what its code is.** New code goes into the directory its
+  area's `AGENTS.md` names for its layer or concern, never beside them at the
+  top, and that file names each of its parts by path. A new directory at that
+  level changes the layout itself, so it updates the area's `AGENTS.md` in the
+  same PR.
 - **Model external data with types.** Parse external JSON (requests, MCP
   results, other services' answers, webhooks) into typed structs and enums
   that ignore unknown fields, and serialize requests from typed structs. No
@@ -88,6 +91,23 @@
   code already has (an operation, a setting, a model, a recall channel, a
   language) touches its one definition plus its tests and docs. If the change
   needed more places, fold them into one source in the same PR.
+
+## Areas
+
+Each area has its own `AGENTS.md` with its stack, its rules and its gates;
+read it before changing code there.
+
+| Folder | What | Instructions |
+| --- | --- | --- |
+| `crates/` | The Rust workspace: the engine, its store and index, the contract, the CLI | `crates/AGENTS.md` |
+
+Measurement harnesses in `benchmarks/`, `maintenance/` and `ci/` follow the
+`pamin-dev` skill.
+
+## Gates Before Every Push
+
+Run the gates of every area a change touches; each area's `AGENTS.md` lists
+them.
 
 ## Skills
 
