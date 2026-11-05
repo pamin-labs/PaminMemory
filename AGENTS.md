@@ -48,6 +48,9 @@
 Longer-form guidance lives in `.agents/skills/`, one directory per skill, each
 with a `SKILL.md`. Read the one that matches what you are doing:
 
+- **`pamin-engineering`** — the engineering bar every Pamin Labs repository
+  shares: read it before writing or changing code, adding a dependency,
+  claiming a speed-up, or reviewing.
 - **`pamin-memory`** — using the `pamin-memory` CLI as memory: which of `search`,
   `read`, `grep` and `neighbors` answers which question, how to read the `why`
   trace, and the traps around the evidence filter.
