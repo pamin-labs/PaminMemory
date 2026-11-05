@@ -2878,12 +2878,10 @@ impl Engine {
     /// directory first, which is what makes this a genuine rebuild rather than
     /// an overwrite that could leave orphans behind.
     pub async fn reindex(&self) -> Result<Rebuilt> {
-        // Marked until it finishes, so an open after a failed or killed
-        // rebuild knows the index is partial. A rebuilding engine marked it
-        // already, when it set the old index aside; one rebuilding in place
-        // marks it here.
+        // Marked unfinished when the old index was set aside (`assemble`),
+        // so an open after a failed or killed rebuild knows the index is
+        // partial; cleared once it is whole.
         let marker = self.dir.join(UNFINISHED_REBUILD);
-        tokio::fs::write(&marker, b"").await?;
         let rebuilt = self.reindex_unmarked().await?;
         // The index is whole either way: a marker left behind costs the next
         // open a rebuild it did not need, which is no reason to fail this one.

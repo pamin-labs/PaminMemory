@@ -83,16 +83,14 @@ impl Session {
         settings: memory_engine::Settings,
         open_indexes: usize,
     ) -> Result<Self> {
-        let database = Database::open(workspace, Connections::Resident, &settings.store)
-            .await
-            .map_err(anyhow::Error::from);
+        let database = Database::open(workspace, Connections::Resident, &settings.store).await;
         // The store names no variable; an external server is the one this
         // process was given in the environment.
-        let database = if settings.store.database_url.is_some() {
-            database
-                .with_context(|| format!("opening the PostgreSQL server named by {DATABASE_URL}"))?
-        } else {
-            database?
+        let database = match &settings.store.database_url {
+            Some(_) => database.with_context(|| {
+                format!("opening the PostgreSQL server named by {DATABASE_URL}")
+            })?,
+            None => database?,
         };
         Ok(Self {
             workspace: workspace.clone(),
@@ -330,7 +328,7 @@ impl Session {
                 // for the rebuild, and one that fails leaves the slot empty.
                 // Dropped first: it holds the directory's lock.
                 drop(engine);
-                Ok(self.rebuilt(project, vector_index).await?.0)
+                Ok(self.open_rebuilt(project, vector_index).await?.0)
             })
             .await?;
         if engine.vector_index() != vector_index {
@@ -441,7 +439,7 @@ impl Session {
         let mut rebuilt = None;
         self.engines
             .reopen(project.to_string(), || async {
-                let (engine, done) = self.rebuilt(project, vector_index).await?;
+                let (engine, done) = self.open_rebuilt(project, vector_index).await?;
                 rebuilt = Some(done);
                 Ok(engine)
             })
@@ -451,7 +449,11 @@ impl Session {
 
     /// An engine with this project's index discarded and rebuilt, and what
     /// the rebuild did. For a caller holding the project's slot.
-    async fn rebuilt(&self, project: &str, vector_index: VectorIndex) -> Result<(Engine, Rebuilt)> {
+    async fn open_rebuilt(
+        &self,
+        project: &str,
+        vector_index: VectorIndex,
+    ) -> Result<(Engine, Rebuilt)> {
         let engine = Engine::rebuilding_attached(
             self.database.clone(),
             &self.models,
