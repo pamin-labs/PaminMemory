@@ -180,14 +180,16 @@ pub async fn run(pool: &PgPool) -> Result<()> {
     // policies -- fails where a policy would filter, rather than matching no
     // row and recording itself applied. A superuser, as a local workspace's
     // connection is, skips the policies either way, so only hosted shows it.
-    // On a connection taken out of the pool and closed after, so the setting
-    // never reaches one a scoped transaction would take.
-    let mut connection = pool.acquire().await?.detach();
+    // On a pooled connection closed when it drops rather than returned, so
+    // the setting never reaches one a scoped transaction would take, the
+    // pool's cap holds while it runs, and a failed close does not fail a
+    // migration that succeeded.
+    let mut connection = pool.acquire().await?;
+    connection.close_on_drop();
     sqlx::raw_sql("SET row_security = off")
-        .execute(&mut connection)
+        .execute(&mut *connection)
         .await?;
-    migrator.run(&mut connection).await?;
-    connection.close().await?;
+    migrator.run(&mut *connection).await?;
 
     Ok(())
 }
