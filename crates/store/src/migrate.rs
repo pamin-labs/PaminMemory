@@ -14,9 +14,9 @@
 
 use std::borrow::Cow;
 
+use sqlx::PgPool;
 use sqlx::SqlStr;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
-use sqlx::{Connection, PgPool};
 
 use crate::error::Result;
 
