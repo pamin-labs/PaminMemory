@@ -24,11 +24,12 @@ use memory_store::{Connections, Database, Workspace, repository};
 use crate::registry::Registry;
 use tokio::sync::Mutex;
 
-/// How long a purge waits for requests already inside the project's index.
+/// How long a purge or a rebuild waits for requests already inside the
+/// project's index.
 ///
 /// A reshape copies the whole index and can take a while; past this the
-/// purge is refused and can be asked for again.
-const PURGE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
+/// purge or rebuild is refused and can be asked for again.
+const RELEASE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// The database, and whatever has been opened against it so far.
 pub struct Session {
@@ -401,7 +402,7 @@ impl Session {
              run `pamin-memory reindex` first so a purge can remove one project's index"
         );
         self.engines
-            .take_then(project.to_string(), PURGE_PATIENCE, || async {
+            .take_then(project.to_string(), RELEASE_PATIENCE, || async {
                 let Some(id) = repository::find_project(self.database.pool(), project).await?
                 else {
                     return Ok(None);
@@ -431,14 +432,14 @@ impl Session {
     /// Rebuilds this project's index from the ledger, discarding it first.
     ///
     /// Evicts rather than reuses: the rebuild throws the collection away and
-    /// opens a new one, so an engine held from before points at a directory
-    /// that is gone. Rebuilt inside the slot, so a rebuild that fails leaves
-    /// it empty rather than holding a half-built index that answers from
-    /// part of the ledger.
+    /// opens a new one, so it waits until no request holds the old engine,
+    /// whose writes would land in the directory being discarded. Rebuilt
+    /// inside the slot, so a rebuild that fails leaves it empty rather than
+    /// holding a half-built index that answers from part of the ledger.
     pub async fn rebuild(&self, project: &str, vector_index: VectorIndex) -> Result<Rebuilt> {
         let mut rebuilt = None;
         self.engines
-            .reopen(project.to_string(), || async {
+            .reopen(project.to_string(), RELEASE_PATIENCE, || async {
                 let (engine, done) = self.open_rebuilt(project, vector_index).await?;
                 rebuilt = Some(done);
                 Ok(engine)
