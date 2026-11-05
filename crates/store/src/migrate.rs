@@ -179,6 +179,11 @@ pub async fn run(pool: &PgPool) -> Result<()> {
     Ok(())
 }
 
+/// How many migrations this database has not applied yet.
+pub(crate) async fn unapplied(pool: &PgPool) -> Result<usize> {
+    Ok(pending(pool, &migrations()).await?.len())
+}
+
 /// The versions this database has not applied yet.
 ///
 /// Read from the table `sqlx` keeps, which a database nothing has migrated does

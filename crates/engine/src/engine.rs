@@ -946,8 +946,9 @@ impl Engine {
     /// index can be gone while the memories are not: a node whose disk was
     /// replaced, or restored from a copy that did not hold this project. An
     /// open then creates an empty index, and every search would answer
-    /// nothing. A rebuild that stopped part way leaves a marker behind
-    /// ([`reindex`](Self::reindex)), so it is caught the same way.
+    /// nothing. A rebuild that stopped part way leaves a marker behind, from
+    /// when it set the old index aside until [`reindex`](Self::reindex)
+    /// finished, so it is caught the same way.
     pub fn needs_rebuild(&self) -> bool {
         self.needs_rebuild
     }
@@ -1011,6 +1012,12 @@ impl Engine {
                 // A rebuild is also the migration off the shared layout, which
                 // is what the error about it tells the caller to run.
                 ProjectionIndex::discard(&legacy)?;
+                // Marked before the empty index opens: a stop from here until
+                // `reindex` finishes leaves an index missing what the ledger
+                // holds, which the next open has to find unfinished rather
+                // than complete.
+                std::fs::create_dir_all(&dir)?;
+                std::fs::write(dir.join(UNFINISHED_REBUILD), b"")?;
                 previous
             } else {
                 None
@@ -2813,11 +2820,21 @@ impl Engine {
     /// an overwrite that could leave orphans behind.
     pub async fn reindex(&self) -> Result<Rebuilt> {
         // Marked until it finishes, so an open after a failed or killed
-        // rebuild knows the index is partial.
+        // rebuild knows the index is partial. A rebuilding engine marked it
+        // already, when it set the old index aside; one rebuilding in place
+        // marks it here.
         let marker = self.dir.join(UNFINISHED_REBUILD);
         tokio::fs::write(&marker, b"").await?;
         let rebuilt = self.reindex_unmarked().await?;
-        tokio::fs::remove_file(&marker).await?;
+        // The index is whole either way: a marker left behind costs the next
+        // open a rebuild it did not need, which is no reason to fail this one.
+        if let Err(error) = tokio::fs::remove_file(&marker).await {
+            tracing::warn!(
+                %error,
+                marker = %marker.display(),
+                "rebuilt the index but could not remove its marker; the next open rebuilds it again"
+            );
+        }
         Ok(rebuilt)
     }
 
@@ -3052,7 +3069,8 @@ pub struct Recorded {
     pub state: Option<TopicState>,
 }
 
-/// Left in an index directory while [`Engine::reindex`] runs in it.
+/// Left in an index directory from when a rebuild sets the old index aside, or
+/// [`Engine::reindex`] starts, until that finishes.
 const UNFINISHED_REBUILD: &str = ".rebuilding";
 
 /// What a rebuild did.

@@ -375,6 +375,55 @@ async fn a_reindex_keeps_sections_out_of_the_name_index() {
     );
 }
 
+/// A rebuild marks its index unfinished before it opens the empty one, so a
+/// rebuild stopped right after setting the old index aside, before it indexed
+/// anything, is rebuilt on the next open rather than taken for a whole index
+/// that answers nothing.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "provisions postgres"]
+async fn a_rebuild_stopped_after_setting_the_index_aside_is_unfinished() {
+    let scratch = tempfile::tempdir().expect("temp workspace");
+    let workspace = Workspace::at(scratch.path());
+    let database = Database::open(&workspace, Connections::PerCommand, &settings().store)
+        .await
+        .expect("open the database");
+    let name = format!("ingest-{}", uuid::Uuid::now_v7());
+    let open = async || {
+        Engine::open(
+            &workspace,
+            &name,
+            VectorIndex::default(),
+            Access::ReadWrite,
+            &settings(),
+        )
+        .await
+        .expect("open the engine")
+    };
+    open()
+        .await
+        .remember("rollback_plan", TEXT, Validity::ALWAYS)
+        .await
+        .expect("manual write");
+
+    // Stopped before `reindex`: the old index is aside and the new one empty.
+    drop(
+        Engine::rebuilding_attached(
+            database,
+            &memory_engine::Models::new(settings()),
+            &workspace,
+            &name,
+            VectorIndex::default(),
+        )
+        .await
+        .expect("start a rebuild"),
+    );
+
+    assert!(
+        open().await.needs_rebuild(),
+        "a rebuild stopped after setting the index aside was taken for finished"
+    );
+}
+
 /// A section a file no longer has is taken off the retrieval surface: every
 /// version soft deleted, nothing current, and the projection and the graph
 /// owed the work that removes it -- while its evidence stays, and ingesting it
