@@ -242,13 +242,13 @@ impl Engine {
     /// pinned to match.
     ///
     /// ponytail: span_vectors is per project, not per node, so the widest
-    /// plan can be another node's; one image on one instance type means one
-    /// plan in practice. Checking it would mean loading the model.
+    /// plan can be another node's; nodes on one kind of hardware run one plan
+    /// in practice. Checking it would mean loading the model.
     ///
     /// ponytail: with no model cached there is no revision to look up by, so
-    /// a rebuild embeds everything even when the database kept it all. Hosted
-    /// images bake the models in; ask the loaded model's revision instead if a
-    /// node ever starts without them.
+    /// a rebuild embeds everything even when the database kept it all.
+    /// Deployments that ship the model cached never meet this; ask the loaded
+    /// model's revision instead if a node ever starts without it.
     pub(crate) async fn kept_for_rebuild(
         &self,
         topics: &[&[Passage<'_>]],
