@@ -132,8 +132,9 @@ pub struct Database {
 
 impl Database {
     /// Ensures a server is running for this workspace, connects, and migrates;
-    /// or, given [`StoreSettings::database_url`], connects to that server and
-    /// migrates, leaving the workspace's own cluster alone.
+    /// or, given [`StoreSettings::database_url`], connects to that server,
+    /// leaving the workspace's own cluster alone, and refuses it unless
+    /// [`Database::migrate`] has already brought it up to this release.
     ///
     /// Safe to call repeatedly. The first call installs and initializes the
     /// cluster; later calls reuse the running server.
@@ -160,7 +161,7 @@ impl Database {
                 .await?,
             };
             database.bound_by_row_level_security().await?;
-            crate::migrate::run_shared(&database.pool).await?;
+            crate::migrate::current(&database.pool).await?;
             return Ok(database);
         }
         let settings = &settings.resolved()?;
@@ -189,6 +190,20 @@ impl Database {
 
         crate::migrate::run(&database.pool).await?;
         Ok(database)
+    }
+
+    /// Applies the migrations the external database at `url` has not seen,
+    /// as a deploy does once, before the servers that need them start.
+    ///
+    /// Servers sharing that database never migrate it themselves, so none
+    /// races another to, and each migration adds only what its release needs,
+    /// so the servers still running the release before keep working.
+    pub async fn migrate(url: &DatabaseUrl) -> Result<()> {
+        let database = Self {
+            pool: pool(&url.0, Connections::PerCommand, Reach::Remote, Some(1)).await?,
+        };
+        database.bound_by_row_level_security().await?;
+        crate::migrate::run(&database.pool).await
     }
 
     /// Connects to an already running server without touching its lifecycle.
