@@ -1960,7 +1960,8 @@ pub async fn put_span_vectors<'a>(
         .collect();
     // In one order, so two keeps of overlapping spans lock their rows in the
     // same order and neither waits on a row the other holds. And once each:
-    // one statement may not update a row it inserted.
+    // one statement may not update a row it inserted. Which duplicate stays
+    // does not matter: one hash is one text, embedded to one vector.
     rows.sort_unstable_by_key(|(hash, _)| *hash);
     rows.dedup_by_key(|(hash, _)| *hash);
     let (hashes, vectors): (Vec<&[u8]>, Vec<&[u8]>) = rows.into_iter().unzip();
