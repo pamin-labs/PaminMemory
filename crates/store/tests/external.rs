@@ -56,17 +56,20 @@ async fn an_external_server_is_used_and_never_started() {
         .await
         .err()
         .expect("a database nothing has migrated is refused");
+    assert!(!missing(&behind).is_empty(), "{behind}");
     assert!(
-        matches!(&behind, memory_store::StoreError::Behind(pending) if !pending.is_empty()),
+        behind.to_string().contains("pamin-memory migrate"),
         "{behind}"
     );
     let url = settings.database_url.as_ref().expect("an external URL");
-    Database::migrate(url)
+    let applied = Database::migrate(url)
         .await
         .expect("migrate as a deploy does");
-    Database::migrate(url)
+    assert_eq!(applied, *missing(&behind), "it applies what was missing");
+    let again = Database::migrate(url)
         .await
         .expect("a second deploy migrates nothing new and fails nothing");
+    assert!(again.is_empty(), "{again:?}");
 
     let database = Database::open(&node, Connections::Resident, &settings)
         .await
@@ -152,5 +155,13 @@ async fn an_external_server_is_used_and_never_started() {
             .err()
             .unwrap_or_else(|| panic!("migrating as a login with {how} is refused"));
         assert!(error.to_string().contains("row-level security"), "{error}");
+    }
+}
+
+/// The versions a refused open said were missing.
+fn missing(error: &memory_store::StoreError) -> &Vec<i64> {
+    match error {
+        memory_store::StoreError::Behind(pending) => pending,
+        other => panic!("refused for another reason: {other}"),
     }
 }

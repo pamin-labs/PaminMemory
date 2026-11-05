@@ -46,7 +46,7 @@ default.
 | `--jit <true\|false>` | `jit` | `false` | Let PostgreSQL compile query expressions with LLVM |
 | `--postgres-dir <path>` | `postgres_dir` | unset | Use a PostgreSQL already on this machine instead of installing one |
 | `--database-connections <n>` | `database_connections` | the server's own pool size | The most connections the server opens to the server named by `PAMIN_MEMORY_DATABASE_URL`; the server refuses to start with it when that is not set. Every node sharing that server holds its own pool, so their caps together have to fit its connection limit |
-| none | none | unset | `PAMIN_MEMORY_DATABASE_URL`, read by the server alone: a `postgres://` URL of a PostgreSQL server to use instead of the workspace's own cluster, as a hosted deployment does. The server connects, and starts, installs and records nothing; it migrates nothing either, and refuses to start until `pamin-memory migrate` has applied this release's migrations; `--jit` and `--postgres-dir` do not apply. It is read when the server starts, and a running server is not checked against it. It carries credentials, so it is neither a flag nor a `config.toml` key, and it is never printed; empty or not UTF-8, it is refused. Its role must be neither a superuser nor `BYPASSRLS`: such a role would skip row-level security, so the server refuses to start with one. The role `pamin-memory migrate` connects as owns the tables it migrates, and row-level security still confines every query on the guarded tables to one project, its owner's included. To migrate, that role needs `CREATEROLE`, or the role `pamin_memory_app` made once beforehand and granted to it `WITH ADMIN OPTION`. |
+| none | none | unset | `PAMIN_MEMORY_DATABASE_URL`, read by the server alone: a `postgres://` URL of a PostgreSQL server to use instead of the workspace's own cluster, as a hosted deployment does. The server connects, and starts, installs and records nothing; it migrates nothing either, and refuses to start until `pamin-memory migrate` has applied this release's migrations; `--jit` and `--postgres-dir` do not apply. It is read when the server starts, and a running server is not checked against it. It carries credentials, so it is neither a flag nor a `config.toml` key, and it is never printed; empty or not UTF-8, it is refused. Its role must be neither a superuser nor `BYPASSRLS`: such a role would skip row-level security, so the server refuses to start with one. Servers and `pamin-memory migrate` connect as the same role, which owns the tables it migrates and reads their migration history when a server starts. Row-level security still confines every query on the guarded tables to one project, its owner's included. To migrate, it needs `CREATEROLE`, or the role `pamin_memory_app` made once beforehand and granted to it `WITH ADMIN OPTION`. |
 | `--models-dir <path>` | `models_dir` | `pamin/models` in the platform's cache directory | Where models are downloaded, prepared and compiled. Also read from `PAMIN_MEMORY_MODELS_DIR` |
 
 ```toml
@@ -1880,6 +1880,7 @@ row and paying startup once.
 
 ```console
 $ PAMIN_MEMORY_DATABASE_URL=postgres://… pamin-memory migrate
+Applied migrations [21, 22]
 ```
 
 Applies this release's schema migrations to the PostgreSQL server named by
@@ -1888,8 +1889,11 @@ once per deploy, before starting the servers that need the new schema: servers
 on that database never migrate it, so none races another to, and a server
 started on a database it has not migrated refuses to start, saying to run this.
 Each migration adds only what its release needs, so servers still running the
-release before keep working while the new ones start. It refuses to run without
-the variable, since a workspace's own cluster migrates when it opens.
+release before keep working while the new ones start. Run one at a time: two at
+once never both apply a migration, but the loser fails. It refuses to run
+without the variable, since a workspace's own cluster migrates when it opens,
+and needs no workspace. With `--json` it prints the versions it applied,
+`{"applied":[21,22]}`, or an empty list when the database was already current.
 
 ## Notes for agents
 

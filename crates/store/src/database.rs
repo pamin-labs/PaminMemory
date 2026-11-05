@@ -151,17 +151,8 @@ impl Database {
         settings: &StoreSettings,
     ) -> Result<Self> {
         if let Some(url) = &settings.database_url {
-            let database = Self {
-                pool: pool(
-                    &url.0,
-                    connections,
-                    Reach::Remote,
-                    settings.database_connections,
-                )
-                .await?,
-            };
-            database.bound_by_row_level_security().await?;
-            crate::migrate::current(&database.pool).await?;
+            let database = Self::external(url, connections, settings.database_connections).await?;
+            crate::migrate::ensure_current(&database.pool).await?;
             return Ok(database);
         }
         let settings = &settings.resolved()?;
@@ -193,17 +184,32 @@ impl Database {
     }
 
     /// Applies the migrations the external database at `url` has not seen,
-    /// as a deploy does once, before the servers that need them start.
+    /// as a deploy does once, before the servers that need them start, and
+    /// returns their versions.
     ///
     /// Servers sharing that database never migrate it themselves, so none
     /// races another to, and each migration adds only what its release needs,
-    /// so the servers still running the release before keep working.
-    pub async fn migrate(url: &DatabaseUrl) -> Result<()> {
+    /// so the servers still running the release before keep working. Two runs
+    /// at once do not both apply a migration, but the loser fails, so a deploy
+    /// runs one.
+    pub async fn migrate(url: &DatabaseUrl) -> Result<Vec<i64>> {
+        // One connection: the migrations run one after another.
+        let database = Self::external(url, Connections::PerCommand, Some(1)).await?;
+        crate::migrate::run(&database.pool).await
+    }
+
+    /// A pool on the external server at `url`, refused when its login would
+    /// skip row-level security.
+    async fn external(
+        url: &DatabaseUrl,
+        connections: Connections,
+        cap: Option<u32>,
+    ) -> Result<Self> {
         let database = Self {
-            pool: pool(&url.0, Connections::PerCommand, Reach::Remote, Some(1)).await?,
+            pool: pool(&url.0, connections, Reach::Remote, cap).await?,
         };
         database.bound_by_row_level_security().await?;
-        crate::migrate::run(&database.pool).await
+        Ok(database)
     }
 
     /// Connects to an already running server without touching its lifecycle.
