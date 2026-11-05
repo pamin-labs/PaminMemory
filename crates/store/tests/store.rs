@@ -251,11 +251,12 @@ async fn a_scoped_transaction_reaches_only_its_project(database: &Database) {
         let inserted = sqlx::query(AssertSqlSafe(format!("INSERT INTO {table} DEFAULT VALUES")))
             .execute(&mut *connection)
             .await;
+        // insufficient_privilege, which a row-level security refusal is.
         let refused = inserted
             .as_ref()
             .err()
             .and_then(|error| error.as_database_error())
-            .is_some_and(|error| error.message().contains("row-level security"));
+            .is_some_and(|error| error.code().as_deref() == Some("42501"));
         assert!(
             refused,
             "the owner's insert into {table} is refused by row-level security: {inserted:?}"
