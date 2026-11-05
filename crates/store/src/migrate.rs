@@ -225,10 +225,15 @@ fn raced(error: &crate::StoreError) -> bool {
     else {
         return false;
     };
-    let code = error.as_database_error().and_then(|error| error.code());
-    // unique_violation, duplicate_object, duplicate_table, and class 40,
-    // serialization_failure and deadlock_detected among it.
-    code.is_some_and(|code| matches!(&*code, "23505" | "42710" | "42P07") || code.starts_with("40"))
+    let Some(error) = error.as_database_error() else {
+        return false;
+    };
+    // duplicate_object, duplicate_table, and class 40, serialization_failure
+    // and deadlock_detected among it.
+    error.is_unique_violation()
+        || error
+            .code()
+            .is_some_and(|code| matches!(&*code, "42710" | "42P07") || code.starts_with("40"))
 }
 
 /// The versions this database has not applied yet.
