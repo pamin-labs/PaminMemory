@@ -585,7 +585,7 @@ mod tests {
     /// log; and the server's external database, which holds credentials and
     /// so is no flag or `config.toml` key.
     const READ: &[&str] = &[
-        "PAMIN_MEMORY_DATABASE_URL",
+        settings::DATABASE_URL,
         "PAMIN_MEMORY_HOME",
         "PAMIN_MEMORY_PROJECT",
         "PAMIN_MEMORY_VECTOR_INDEX",
@@ -625,9 +625,43 @@ mod tests {
             }
         }
         envs(&Cli::command(), &mut read);
-        read.push("PAMIN_MEMORY_LOG".to_string());
-        // Read by the server when it opens the store, in `memory-cli`.
-        read.push("PAMIN_MEMORY_DATABASE_URL".to_string());
+        // And those read some other way, by name, from both binaries' product
+        // sources: the client's, and the server's, which parses the same
+        // command line.
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crates directory");
+        let mut sources = Vec::new();
+        for binary in ["client", "cli"] {
+            rust_files(&crates.join(binary).join("src"), &mut sources);
+        }
+        for path in sources {
+            let source = std::fs::read_to_string(&path).expect("read a source file");
+            let product = product(&source);
+            for (at, _) in product.match_indices("\"PAMIN_MEMORY_") {
+                // A compile-time stamp from a build script, not a variable
+                // anything reads when it runs.
+                if product[..at].ends_with("env!(") {
+                    continue;
+                }
+                let rest = &product[at + 1..];
+                let Some(end) = rest.find('"') else { continue };
+                let name = &rest[..end];
+                // A name, upper case and underscores, which rules out prose
+                // and the bare prefix this search is written with.
+                if name.len() == "PAMIN_MEMORY_".len()
+                    || !name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_uppercase() || byte == b'_')
+                {
+                    continue;
+                }
+                // Named to refuse it, not to read it.
+                if !REMOVED.iter().any(|(removed, _)| *removed == name) {
+                    read.push(name.to_string());
+                }
+            }
+        }
         read.sort();
         read.dedup();
         let mut expected: Vec<String> = READ.iter().map(|name| name.to_string()).collect();
@@ -646,43 +680,6 @@ mod tests {
                 "{name} is refused but docs/cli.md does not say what replaced it"
             );
             assert!(!READ.contains(name), "{name} is both read and refused");
-        }
-
-        // Both binaries' sources: the client's, and the server's, which
-        // parses the same command line.
-        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("the crates directory");
-        let mut sources = Vec::new();
-        for binary in ["client", "cli"] {
-            rust_files(&crates.join(binary).join("src"), &mut sources);
-        }
-        for path in sources {
-            let source = std::fs::read_to_string(&path).expect("read a source file");
-            for (at, _) in source.match_indices("\"PAMIN_MEMORY_") {
-                // A compile-time stamp from a build script, not a variable
-                // anything reads when it runs.
-                if source[..at].ends_with("env!(") {
-                    continue;
-                }
-                let rest = &source[at + 1..];
-                let Some(end) = rest.find('"') else { continue };
-                let name = &rest[..end];
-                // A name, upper case and underscores, which rules out prose
-                // and the bare prefix this search is written with.
-                if name.len() == "PAMIN_MEMORY_".len()
-                    || !name
-                        .bytes()
-                        .all(|byte| byte.is_ascii_uppercase() || byte == b'_')
-                {
-                    continue;
-                }
-                assert!(
-                    READ.contains(&name) || REMOVED.iter().any(|(removed, _)| *removed == name),
-                    "{} names {name}, which is neither read nor refused",
-                    path.display()
-                );
-            }
         }
     }
 
@@ -744,17 +741,7 @@ mod tests {
             for path in sources {
                 files += 1;
                 let source = std::fs::read_to_string(&path).expect("read a source file");
-                // Up to the test module, however it is declared.
-                let product = source
-                    .match_indices("#[cfg(test)]\n")
-                    .find(|(at, marker)| {
-                        source[at + marker.len()..]
-                            .lines()
-                            .next()
-                            .is_some_and(|line| line.contains("mod tests"))
-                    })
-                    .map_or(source.as_str(), |(at, _)| &source[..at]);
-                for (number, line) in product.lines().enumerate() {
+                for (number, line) in product(&source).lines().enumerate() {
                     let code = line.trim_start();
                     if code.starts_with("//") {
                         continue;
@@ -775,6 +762,19 @@ mod tests {
             found.is_empty(),
             "a library names a PAMIN_MEMORY_ variable: {found:#?}"
         );
+    }
+
+    /// `source` up to its test module, however it is declared.
+    fn product(source: &str) -> &str {
+        source
+            .match_indices("#[cfg(test)]\n")
+            .find(|(at, marker)| {
+                source[at + marker.len()..]
+                    .lines()
+                    .next()
+                    .is_some_and(|line| line.contains("mod tests"))
+            })
+            .map_or(source, |(at, _)| &source[..at])
     }
 
     fn rust_files(dir: &std::path::Path, into: &mut Vec<std::path::PathBuf>) {

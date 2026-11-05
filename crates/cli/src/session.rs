@@ -14,7 +14,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use memory_client::settings::DATABASE_URL;
 use memory_core::ProjectId;
 use memory_engine::{Engine, Models};
 use memory_index::{Access, IndexError, VectorIndex};
@@ -82,9 +83,20 @@ impl Session {
         settings: memory_engine::Settings,
         open_indexes: usize,
     ) -> Result<Self> {
+        let database = Database::open(workspace, Connections::Resident, &settings.store)
+            .await
+            .map_err(anyhow::Error::from);
+        // The store names no variable; an external server is the one this
+        // process was given in the environment.
+        let database = if settings.store.database_url.is_some() {
+            database
+                .with_context(|| format!("opening the PostgreSQL server named by {DATABASE_URL}"))?
+        } else {
+            database?
+        };
         Ok(Self {
             workspace: workspace.clone(),
-            database: Database::open(workspace, Connections::Resident, &settings.store).await?,
+            database,
             models: Models::new(settings),
             projects: Mutex::default(),
             engines: Registry::with_capacity(open_indexes),
