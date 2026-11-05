@@ -72,7 +72,8 @@ impl Drop for Serving<'_> {
 }
 
 impl Session {
-    /// Connects, migrates, and holds the result.
+    /// Connects, migrates a workspace's own cluster (an external database
+    /// must already be migrated), and holds the result.
     ///
     /// With a resident's pool: the server holding this is the only process
     /// the CLI talks to the cluster from.
