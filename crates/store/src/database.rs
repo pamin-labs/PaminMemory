@@ -238,8 +238,10 @@ impl Database {
 
     /// Refuses a login that skips row-level security, a superuser or one
     /// with `BYPASSRLS`: hosted, the database is the second guard on which
-    /// project a query reaches, and such a login would switch it off without
-    /// a sign. Managed servers often hand out an administrator login like that.
+    /// project a query reaches, and whatever such a login runs as itself,
+    /// outside a [`scoped`](Self::scoped) transaction, skips that guard
+    /// without a sign. Managed servers often hand out an administrator login
+    /// like that.
     async fn bound_by_row_level_security(&self) -> Result<()> {
         let (bypasses,): (bool,) = sqlx::query_as(
             "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -248,8 +250,8 @@ impl Database {
         .await?;
         if bypasses {
             return Err(crate::StoreError::Role(
-                "the role in PAMIN_MEMORY_DATABASE_URL is a superuser or has BYPASSRLS, so \
-                 row-level security would not apply to it; use a role that has neither"
+                "the database role is a superuser or has BYPASSRLS, so it would skip \
+                 row-level security; use a role that has neither"
                     .into(),
             ));
         }
