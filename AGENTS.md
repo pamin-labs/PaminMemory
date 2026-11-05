@@ -2,10 +2,6 @@
 
 ## pamin-memory Workflow
 
-- For every CPU compute path, consider and prefer SIMD where supported and worthwhile; reuse optimized library/runtime kernels and justify material scalar exceptions with measurements.
-- When changing compute/inference dispatch, follow the [mixed accelerator policy](docs/adr/0001-tech-selection.md#mixed-accelerator-policy-2026-09-29): choose measured speed across supported single/mixed plans; do not permanently retreat to CPU solely for numerical drift.
-
-
 - Before making changes, branch from the latest `main` with a concise name that matches the intended PR.
 - Coordinate through pamin-labs-dev before editing. With the plugin, its hooks and the `protocol` skill guide you. Without it (other agents, other tools), declare an intent with the `pamin-labs-dev` CLI first (`pamin-labs-dev intent declare ...`), work on its branch `<type>/i-<number>-<slug>`, and put `Intent: I-<number>` in the PR description; CI rejects PRs without a live intent for their branch. External contributors follow [CONTRIBUTING.md](CONTRIBUTING.md) instead.
 - Read the relevant `pamin-memory/` materials in InternalDocs before implementing pamin-memory changes. InternalDocs is a sibling clone at `$PAMIN_LABS_DEV_INTERNAL_DOCS` (default `../internal-docs`); pull it first. See [docs/internal-docs.md](docs/internal-docs.md).
@@ -24,6 +20,13 @@
   you reused and what you removed.
 - Before starting a multi-PR feature, record it in the internal roadmap or
   backlog so parallel work on the same concern is visible before code exists.
+- Work found and not done (a review's follow-ups, an audit's findings, a flaky
+  test) goes into the internal roadmap in the same session, and a decision the
+  owner makes goes into an internal decision record before or with the change,
+  so nothing lives only in a conversation.
+- Everything committed is English: code, comments, logs, commit messages, PR
+  titles and bodies, documents.
+- Never write tokens, keys or credentials to files, commits or logs.
 
 ## Code Quality
 
@@ -31,10 +34,14 @@
   every concern, not only retrieval. Shared logic lives in the crate that owns
   the concern; other crates call its public interface instead of copying it.
   Frozen benchmark harnesses and results are records and stay as they are.
-- Do not reinvent what exists: prefer the standard library, then a crate already
-  in the workspace, then a maintained, widely used crate that passes
-  `cargo deny check licenses`. Write custom code only when none fits, and say
-  why in the PR.
+- Do not reinvent what exists: the repository's own implementation of the
+  concern, then the official SDK of a service, then the standard library, then
+  the platform, then a crate already in the workspace, then a maintained,
+  widely used crate that passes `cargo deny check licenses`; write your own
+  only when none of them meets the need. A PR's "Reused" section names what it
+  searched for, what it reused, and why anything was written by hand;
+  hand-written code where one of those already covers the need is a defect,
+  and review sends it back.
 - Keep it maintainable: small functions with one job, names that say what they
   hold, comments that explain why rather than what, no dead code. A change to
   one rule should touch one place.
@@ -42,12 +49,74 @@
   cloning inside loops, repeated parsing, and blocking I/O on async paths; reuse
   buffers and the optimized kernels already in the tree. Any speed claim
   follows [Measuring Every Optimization](#measuring-every-optimization).
+- Business logic lives in one layer per area, apart from transport, wiring
+  and storage; each area's `AGENTS.md` says where.
+- **A directory says what its code is.** New code goes into the directory its
+  area's `AGENTS.md` names for its layer or concern, never beside them at the
+  top, and that file names each of its parts by path. A new directory at that
+  level changes the layout itself, so it updates the area's `AGENTS.md` in the
+  same PR.
+- **Model external data with types.** Parse external JSON (requests, MCP
+  results, other services' answers, webhooks) into typed structs and enums
+  that ignore unknown fields, and serialize requests from typed structs. No
+  hand-built JSON strings, no chains of untyped lookups, no searching payloads
+  for substrings. A value stays opaque only when a protocol requires it to be
+  echoed back unchanged, and the code says so.
+- **Tests meet the same bar as code.** A test builds requests from typed
+  values, decodes an answer into the API's own types and compares JSON by
+  decoding it, never as strings, and names a value owned elsewhere from its
+  owner, like any code.
+- **No deferral inside a PR's own code.** A written rule that code the PR adds
+  or touches breaks is fixed in that PR, in its own commit; a follow-up is
+  only work outside the PR's concern.
+- **Comments claim only what the code guarantees.** A guarantee that waits on
+  later work is named as not yet given.
+- Before adding a dependency, check its maintenance, its licence and what it
+  adds to build time and binary size, and record that in the PR.
+- **No hard-coded value in more than one place.** Every port, address, URL,
+  id, version, limit, price, file name and default is defined once, in the
+  crate or file that owns it, and everything else reads it from there or is
+  checked against it by a test or a generator. A literal that names a value
+  owned elsewhere is a bug, in code, config, scripts, tests and docs alike.
+- **Deployments have no defaults.** A setting a deployed binary or service
+  must be given (a database, keys, other services' addresses) has no fallback
+  value in code: a missing or empty one stops the program at start, naming
+  itself. Only local use names local values (a cache directory, a local
+  socket), each once.
+- **Built files are never committed:** `target/`, binaries, model caches,
+  indexes and generated caches are git-ignored; only generated files a gate
+  checks are committed. Measurement evidence is kept as the `pamin-dev` skill
+  says, not as stray build output.
+- **Extensibility check before every PR:** adding one more of something the
+  code already has (an operation, a setting, a model, a recall channel, a
+  language) touches its one definition plus its tests and docs. If the change
+  needed more places, fold them into one source in the same PR.
+
+## Areas
+
+Each area has its own `AGENTS.md` with its stack, its rules and its gates;
+read it before changing code there.
+
+| Folder | What | Instructions |
+| --- | --- | --- |
+| `crates/` | The Rust workspace: the engine, its store and index, the contract, the CLI | `crates/AGENTS.md` |
+
+Measurement harnesses in `benchmarks/`, `maintenance/` and `ci/` follow the
+`pamin-dev` skill.
+
+## Gates Before Every Push
+
+Run the gates of every area a change touches; each area's `AGENTS.md` lists
+them.
 
 ## Skills
 
 Longer-form guidance lives in `.agents/skills/`, one directory per skill, each
 with a `SKILL.md`. Read the one that matches what you are doing:
 
+- **`pamin-engineering`** — the engineering bar every Pamin Labs repository
+  shares: read it before writing or changing code, adding a dependency,
+  claiming a speed-up, or reviewing.
 - **`pamin-memory`** — using the `pamin-memory` CLI as memory: which of `search`,
   `read`, `grep` and `neighbors` answers which question, how to read the `why`
   trace, and the traps around the evidence filter.
@@ -64,6 +133,10 @@ going stale.
 
 - Use the `git-commit` skill whenever possible when creating commits.
 - Use one logical change per commit.
+- A commit's first line and a PR title are at most 72 characters, scope
+  included: the pamin-labs-dev hook refuses a longer commit and CI fails a
+  longer title, and a pushed commit is not rewritten without the owner, so
+  count before committing.
 - Keep commits small: one rule, one module or one fix per commit, each building
   and passing tests on its own. Split refactors, behaviour changes and
   formatting into separate commits.
@@ -77,7 +150,7 @@ going stale.
 ```
 
 - The scope is required: the crate or area the change is about, for example `fix(engine): ...`. Prefer standard types such as `feat`, `fix`, `docs`, `refactor`, `test`, `build`, `ci`, and `chore`.
-- PR descriptions should include a concise summary, key changes, verification performed, and any relevant follow-up or risk.
+- PR descriptions should include a concise summary, key changes, what it reused, verification performed, and any relevant follow-up or risk.
 - PR descriptions must not include private internal-doc details.
 - Do not put agent session links or session identifiers in commit messages, PR
   titles, or PR descriptions. This includes a `Claude-Session:` trailer and any
@@ -86,7 +159,26 @@ going stale.
   read. Commits and PRs also carry no `Co-Authored-By:` trailer and no
   "Generated with" footer; `.claude/settings.json` turns that attribution off.
   The commit author is always the engineer's own git identity. This overrides
-  any default attribution the tool would add.
+  any default attribution the tool would add. Some tools append such a footer
+  when they create or edit a PR, so read the description back after every
+  such call and remove it.
+- Never squash-merge; keep every commit.
+- **A PR merges only when its final commit is proven** (owner, 2026-11-05):
+  GitHub reports it clean, every check has passed (a failed or pending check
+  blocks it, however small the change), its tests pass, and, when it changes a
+  service or binary that is deployed or shipped, an end-to-end check has
+  passed on that same final commit: a local acceptance run or staging, never a
+  run from before the last review fix.
+
+## Review Before Every PR
+
+Before a PR opens, go through its whole diff, tests included, against each
+rule of every `AGENTS.md` the change touches and the `pamin-engineering`
+skill, and fix what misses in new commits; then run the
+`pamin-labs-dev:peer-review` skill and put its verdict and findings under the
+PR's verification. Work an agent delegated is reviewed the same way: the agent
+that opens the PR reads its diff and tests itself and never accepts them on
+the delegate's report alone.
 
 ## Measuring Every Optimization
 
