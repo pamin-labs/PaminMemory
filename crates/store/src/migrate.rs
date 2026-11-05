@@ -135,10 +135,13 @@ fn migration(version: i64, description: &'static str, sql: &'static str) -> Migr
     )
 }
 
-/// Applies every migration the database has not seen yet.
+/// Applies every migration the database has not seen yet, and returns their
+/// versions.
 ///
-/// Safe to call on every start: already-applied migrations are skipped.
-pub async fn run(pool: &PgPool) -> Result<()> {
+/// Already-applied migrations are skipped, so a workspace's own cluster runs
+/// this on every open; an external database runs it only from
+/// [`crate::Database::migrate`].
+pub async fn run(pool: &PgPool) -> Result<Vec<i64>> {
     let migrations = migrations();
     adopt_refinery_history(pool, &migrations).await?;
 
@@ -171,17 +174,18 @@ pub async fn run(pool: &PgPool) -> Result<()> {
     migrator.set_locking(false);
     migrator.run(pool).await?;
 
-    Ok(())
+    Ok(pending)
 }
 
 /// Refuses a database with migrations this release has not seen applied, as
 /// a server on an external database does: [`Database::migrate`] applies them
 /// once per deploy, before servers that need them start. A database a newer
 /// release has migrated further is current, since each migration adds only
-/// what its release needs.
+/// what its release needs. Versions alone are compared: `migrate` validates
+/// checksums when it runs.
 ///
 /// [`Database::migrate`]: crate::Database::migrate
-pub async fn current(pool: &PgPool) -> Result<()> {
+pub async fn ensure_current(pool: &PgPool) -> Result<()> {
     let pending = pending(pool, &migrations()).await?;
     if pending.is_empty() {
         return Ok(());
