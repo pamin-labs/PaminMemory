@@ -937,6 +937,8 @@ impl Engine {
     /// The first half of [`rebuilt_attached`](Self::rebuilt_attached): the
     /// old index set aside and an empty one opened, marked unfinished, with
     /// nothing indexed yet. Public so a test can stop a rebuild there.
+    /// Nothing in the product calls it; use `rebuilt_attached`.
+    #[doc(hidden)]
     pub async fn rebuilding_attached(
         database: Database,
         models: &Models,
@@ -3082,8 +3084,8 @@ pub struct Recorded {
     pub state: Option<TopicState>,
 }
 
-/// Left in an index directory from when a rebuild sets the old index aside, or
-/// [`Engine::reindex`] starts, until that finishes.
+/// Left in an index directory from when a rebuild sets the old index aside
+/// until it finishes indexing.
 const UNFINISHED_REBUILD: &str = ".rebuilding";
 
 /// What a rebuild did.
