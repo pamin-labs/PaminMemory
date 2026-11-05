@@ -336,6 +336,8 @@ pub struct Engine {
     pub(crate) access: Access,
     /// What a rebuild holds until [`reindex`](Self::reindex) has finished.
     rebuilding: Arc<Mutex<Option<Rebuilding>>>,
+    /// See [`needs_rebuild`](Self::needs_rebuild).
+    needs_rebuild: bool,
     /// Index writes that are applied but not yet on disk, with their claims.
     ///
     /// The projection buffers a write in memory and a query reads that buffer,
@@ -913,11 +915,30 @@ impl Engine {
         .await
     }
 
-    /// Rebuilding, against a database that is already up.
+    /// This project's index rebuilt from the ledger, against a database that
+    /// is already up, and what the rebuild did.
     ///
     /// Discarding before opening rather than overwriting in place is what
     /// makes a rebuild a rebuild: an overwrite leaves behind anything the
     /// ledger no longer has, which is the drift the rebuild exists to remove.
+    pub async fn rebuilt_attached(
+        database: Database,
+        models: &Models,
+        workspace: &Workspace,
+        project: &str,
+        vector_index: VectorIndex,
+    ) -> Result<(Self, Rebuilt)> {
+        let engine =
+            Self::rebuilding_attached(database, models, workspace, project, vector_index).await?;
+        let rebuilt = engine.reindex().await?;
+        Ok((engine, rebuilt))
+    }
+
+    /// The first half of [`rebuilt_attached`](Self::rebuilt_attached): the
+    /// old index set aside and an empty one opened, marked unfinished, with
+    /// nothing indexed yet. Public so a test can stop a rebuild there.
+    /// Nothing in the product calls it; use `rebuilt_attached`.
+    #[doc(hidden)]
     pub async fn rebuilding_attached(
         database: Database,
         models: &Models,
@@ -935,6 +956,25 @@ impl Engine {
             true,
         )
         .await
+    }
+
+    /// Whether this index has to be rebuilt from the ledger before it
+    /// answers.
+    ///
+    /// The ledger is the authority and the index is derived from it, so an
+    /// index can be gone while the memories are not: a node whose disk was
+    /// replaced, or restored from a copy that did not hold this project. An
+    /// open then creates an empty index, and every search would answer
+    /// nothing. A rebuild that stopped part way leaves a marker behind, from
+    /// when it set the old index aside until it finished indexing, so it is
+    /// caught the same way.
+    pub fn needs_rebuild(&self) -> bool {
+        self.needs_rebuild
+    }
+
+    /// Whether a rebuild in this index directory started and never finished.
+    pub fn rebuild_unfinished(dir: &std::path::Path) -> bool {
+        dir.join(UNFINISHED_REBUILD).exists()
     }
 
     async fn assemble(
@@ -980,7 +1020,10 @@ impl Engine {
         // Only a rebuild keeps it past the open.
         let exclusive = exclusive.filter(|_| discard);
 
-        let (index, previous) = off_the_runtime(|| {
+        let (index, previous, needs_rebuild) = off_the_runtime(|| {
+            // Read before the open, which creates the directory.
+            let needs_rebuild =
+                !discard && documents > 0 && (!dir.exists() || Self::rebuild_unfinished(&dir));
             // Set aside rather than deleted, so the rebuild can take the
             // vectors it still holds instead of embedding every memory again.
             let previous = if discard {
@@ -988,6 +1031,12 @@ impl Engine {
                 // A rebuild is also the migration off the shared layout, which
                 // is what the error about it tells the caller to run.
                 ProjectionIndex::discard(&legacy)?;
+                // Marked before the empty index opens: a stop from here until
+                // `reindex` finishes leaves an index missing what the ledger
+                // holds, which the next open has to find unfinished rather
+                // than complete.
+                std::fs::create_dir_all(&dir)?;
+                std::fs::write(dir.join(UNFINISHED_REBUILD), b"")?;
                 previous
             } else {
                 None
@@ -1009,6 +1058,7 @@ impl Engine {
             Ok::<_, memory_index::IndexError>((
                 Arc::new(index) as Arc<dyn Projection + Send + Sync>,
                 previous,
+                needs_rebuild,
             ))
         })?;
 
@@ -1030,6 +1080,7 @@ impl Engine {
                 previous,
                 _exclusive: exclusive,
             }))),
+            needs_rebuild,
             embedder: std::sync::OnceLock::new(),
             vector_index,
             models: models.clone(),
@@ -2781,12 +2832,28 @@ impl Engine {
         Ok((ChannelResults::new(Channel::Graph, candidates), paths))
     }
 
-    /// Rebuilds the projection index from the authority store.
-    ///
-    /// Returns how many topics were indexed. The caller discards the index
-    /// directory first, which is what makes this a genuine rebuild rather than
-    /// an overwrite that could leave orphans behind.
-    pub async fn reindex(&self) -> Result<Rebuilt> {
+    /// Indexes the ledger into the empty index
+    /// [`rebuilding_attached`](Self::rebuilding_attached) opened, and clears
+    /// the marker it wrote.
+    async fn reindex(&self) -> Result<Rebuilt> {
+        // Marked unfinished when the old index was set aside (`assemble`),
+        // so an open after a failed or killed rebuild knows the index is
+        // partial; cleared once it is whole.
+        let marker = self.dir.join(UNFINISHED_REBUILD);
+        let rebuilt = self.reindex_unmarked().await?;
+        // The index is whole either way: a marker left behind costs the next
+        // open a rebuild it did not need, which is no reason to fail this one.
+        if let Err(error) = tokio::fs::remove_file(&marker).await {
+            tracing::warn!(
+                %error,
+                marker = %marker.display(),
+                "rebuilt the index but could not remove its marker; the next open rebuilds it again"
+            );
+        }
+        Ok(rebuilt)
+    }
+
+    async fn reindex_unmarked(&self) -> Result<Rebuilt> {
         // Before the states are read: the pointer decides which state a topic
         // resolves to, so a rebuild that trusted a stale one would index the
         // wrong content and look like it had worked.
@@ -3016,6 +3083,10 @@ pub struct Recorded {
     /// Absent when the filter held the content in the evidence layer.
     pub state: Option<TopicState>,
 }
+
+/// Left in an index directory from when a rebuild sets the old index aside
+/// until it finishes indexing.
+const UNFINISHED_REBUILD: &str = ".rebuilding";
 
 /// What a rebuild did.
 #[derive(Clone, Copy, Debug)]

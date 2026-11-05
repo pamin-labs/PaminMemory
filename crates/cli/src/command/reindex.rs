@@ -18,8 +18,7 @@ pub async fn execute(
 ) -> Result<Reindexed> {
     // Rebuilding discards this project's index first, and clears the shared
     // pre-split layout if the workspace still has one.
-    let engine = session.rebuilding(project, vector_index).await?;
-    let rebuilt = engine.reindex().await?;
+    let rebuilt = session.rebuild(project, vector_index).await?;
 
     let result = Reindexed {
         indexed: rebuilt.indexed,

@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Context, Result};
 use memory_client::settings::DATABASE_URL;
 use memory_core::ProjectId;
-use memory_engine::{Engine, Models};
+use memory_engine::{Engine, Models, Rebuilt};
 use memory_index::{Access, IndexError, VectorIndex};
 use memory_store::{Connections, Database, Workspace, repository};
 
@@ -312,8 +312,8 @@ impl Session {
     pub async fn engine(&self, project: &str, vector_index: VectorIndex) -> Result<Arc<Engine>> {
         let engine = self
             .engines
-            .get_or_open(project.to_string(), || {
-                Engine::attached(
+            .get_or_open(project.to_string(), || async {
+                let engine = Engine::attached(
                     self.database.clone(),
                     &self.models,
                     &self.workspace,
@@ -321,6 +321,23 @@ impl Session {
                     vector_index,
                     Access::ReadWrite,
                 )
+                .await?;
+                if !engine.needs_rebuild() {
+                    return Ok(engine);
+                }
+                // Inside the open, which holds the slot: every caller waits
+                // for the rebuild, and one that fails leaves the slot empty.
+                // Dropped first: it holds the directory's lock.
+                drop(engine);
+                Ok(Engine::rebuilt_attached(
+                    self.database.clone(),
+                    &self.models,
+                    &self.workspace,
+                    project,
+                    vector_index,
+                )
+                .await?
+                .0)
             })
             .await?;
         if engine.vector_index() != vector_index {
@@ -416,26 +433,29 @@ impl Session {
             .await
     }
 
-    /// An engine with this project's index discarded first, for a rebuild.
+    /// Rebuilds this project's index from the ledger, discarding it first.
     ///
     /// Evicts rather than reuses: the rebuild throws the collection away and
     /// opens a new one, so an engine held from before points at a directory
-    /// that is gone.
-    pub async fn rebuilding(
-        &self,
-        project: &str,
-        vector_index: VectorIndex,
-    ) -> Result<Arc<Engine>> {
+    /// that is gone. Rebuilt inside the slot, so a rebuild that fails leaves
+    /// it empty rather than holding a half-built index that answers from
+    /// part of the ledger.
+    pub async fn rebuild(&self, project: &str, vector_index: VectorIndex) -> Result<Rebuilt> {
+        let mut rebuilt = None;
         self.engines
-            .reopen(project.to_string(), || {
-                Engine::rebuilding_attached(
+            .reopen(project.to_string(), || async {
+                let (engine, done) = Engine::rebuilt_attached(
                     self.database.clone(),
                     &self.models,
                     &self.workspace,
                     project,
                     vector_index,
                 )
+                .await?;
+                rebuilt = Some(done);
+                Ok(engine)
             })
-            .await
+            .await?;
+        Ok(rebuilt.expect("set by the open that succeeded"))
     }
 }

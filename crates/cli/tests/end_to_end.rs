@@ -3093,3 +3093,72 @@ fn an_ingested_tree_is_kept_in_sync_without_ingesting_again() {
     server.kill().expect("stopping the server");
     server.wait().expect("reaping the server");
 }
+
+/// A server that finds a project's index gone, or half rebuilt, answers from
+/// PostgreSQL anyway.
+///
+/// The index is derived from the ledger, so it can be lost while the memories
+/// are not: a disk replaced, or restored from a copy without this project.
+/// Without the rebuild, a fresh server opens an empty index and every search
+/// answers nothing until someone runs `reindex`.
+#[test]
+#[ignore = "provisions postgres and downloads model weights"]
+fn a_server_without_its_index_rebuilds_it_on_first_use() {
+    const QUERY: &str = "when do the rocket skates launch";
+    const MEMORY: &str = "fourteenth of november";
+    let cli = Cli::new();
+    let server = cli.serve();
+    cli.run(&["init"]);
+    cli.run(&[
+        "write",
+        "--topic",
+        "launch_date",
+        "the rocket skates launch on the fourteenth of november",
+    ]);
+    stop(server, &cli);
+
+    let indexes = cli.home().join("index");
+    std::fs::remove_dir_all(&indexes).expect("delete the index");
+
+    let server = cli.serve();
+    let found = contents(&cli.json(&["search", QUERY, "--limit", "1"]));
+    assert!(
+        found.iter().any(|content| content.contains(MEMORY)),
+        "a memory postgres holds was not found after the index was lost: {found:?}"
+    );
+    stop(server, &cli);
+
+    // A rebuild killed part way: the directory is there, empty but for the
+    // marker the rebuild leaves until it finishes.
+    let project = std::fs::read_dir(&indexes)
+        .expect("the rebuilt index")
+        .flatten()
+        .map(|entry| entry.path())
+        // Not the copy a rebuild sets aside, `<project>.previous`.
+        .find(|path| path.is_dir() && path.extension().is_none())
+        .expect("the project's index directory");
+    std::fs::remove_dir_all(&project).expect("empty the index");
+    std::fs::create_dir(&project).expect("the directory again");
+    std::fs::write(project.join(".rebuilding"), b"").expect("the marker");
+
+    let server = cli.serve();
+    let found = contents(&cli.json(&["search", QUERY, "--limit", "1"]));
+    assert!(
+        found.iter().any(|content| content.contains(MEMORY)),
+        "an unfinished rebuild was not finished on first use: {found:?}"
+    );
+    assert!(
+        !project.join(".rebuilding").exists(),
+        "a finished rebuild removes its marker"
+    );
+    stop(server, &cli);
+}
+
+/// Kills a server and removes the socket it leaves, so the next `serve` waits
+/// for its own server instead of finding the old socket and returning at once,
+/// and no client starts an untracked server of its own meanwhile.
+fn stop(mut server: std::process::Child, cli: &Cli) {
+    server.kill().expect("stopping the server");
+    server.wait().expect("reaping the server");
+    let _ = std::fs::remove_file(cli.home().join("pamin.sock"));
+}

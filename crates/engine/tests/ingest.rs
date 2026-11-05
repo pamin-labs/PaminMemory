@@ -35,6 +35,13 @@ fn settings() -> memory_engine::Settings {
 /// A fresh project, in `PAMIN_MEMORY_EVAL_HOME`'s workspace when it is set -- where
 /// the model a reindex loads is already downloaded -- or in a scratch one.
 async fn engine() -> (Engine, Option<tempfile::TempDir>) {
+    let (engine, _, _, scratch) = engine_in().await;
+    (engine, scratch)
+}
+
+/// [`engine`], with the workspace and the project's name, for a test that
+/// opens the project again.
+async fn engine_in() -> (Engine, Workspace, String, Option<tempfile::TempDir>) {
     let home = std::env::var("PAMIN_MEMORY_EVAL_HOME").ok();
     let scratch = home
         .is_none()
@@ -60,7 +67,7 @@ async fn engine() -> (Engine, Option<tempfile::TempDir>) {
     )
     .await
     .expect("open the engine");
-    (engine, scratch)
+    (engine, workspace, name, scratch)
 }
 
 async fn count(engine: &Engine, sql: &'static str) -> i64 {
@@ -345,7 +352,7 @@ async fn a_sections_source_is_the_files() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "provisions postgres and downloads model weights"]
 async fn a_reindex_keeps_sections_out_of_the_name_index() {
-    let (engine, _scratch) = engine().await;
+    let (engine, workspace, name, _scratch) = engine_in().await;
 
     engine
         .remember_section(SECTION, TEXT, Validity::ALWAYS, ROOT)
@@ -362,7 +369,17 @@ async fn a_reindex_keeps_sections_out_of_the_name_index() {
         .await
         .expect("empty the name index");
 
-    let rebuilt = engine.reindex().await.expect("reindex");
+    let database = engine.database.clone();
+    drop(engine);
+    let (engine, rebuilt) = Engine::rebuilt_attached(
+        database,
+        &memory_engine::Models::new(settings()),
+        &workspace,
+        &name,
+        VectorIndex::default(),
+    )
+    .await
+    .expect("reindex");
     assert_eq!(rebuilt.indexed, 2, "both memories are in the projection");
     assert_eq!(rebuilt.names, 1);
     assert_eq!(
@@ -372,6 +389,55 @@ async fn a_reindex_keeps_sections_out_of_the_name_index() {
         )
         .await,
         1
+    );
+}
+
+/// A rebuild marks its index unfinished before it opens the empty one, so a
+/// rebuild stopped right after setting the old index aside, before it indexed
+/// anything, is rebuilt on the next open rather than taken for a whole index
+/// that answers nothing.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "provisions postgres"]
+async fn a_rebuild_stopped_after_setting_the_index_aside_is_unfinished() {
+    let scratch = tempfile::tempdir().expect("temp workspace");
+    let workspace = Workspace::at(scratch.path());
+    let database = Database::open(&workspace, Connections::PerCommand, &settings().store)
+        .await
+        .expect("open the database");
+    let name = format!("ingest-{}", uuid::Uuid::now_v7());
+    let open = async || {
+        Engine::open(
+            &workspace,
+            &name,
+            VectorIndex::default(),
+            Access::ReadWrite,
+            &settings(),
+        )
+        .await
+        .expect("open the engine")
+    };
+    open()
+        .await
+        .remember("rollback_plan", TEXT, Validity::ALWAYS)
+        .await
+        .expect("manual write");
+
+    // Stopped before `reindex`: the old index is aside and the new one empty.
+    drop(
+        Engine::rebuilding_attached(
+            database,
+            &memory_engine::Models::new(settings()),
+            &workspace,
+            &name,
+            VectorIndex::default(),
+        )
+        .await
+        .expect("start a rebuild"),
+    );
+
+    assert!(
+        open().await.needs_rebuild(),
+        "a rebuild stopped after setting the index aside was taken for finished"
     );
 }
 
