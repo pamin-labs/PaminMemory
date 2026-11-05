@@ -35,7 +35,6 @@ You must follow `.agents/skills/pamin-engineering/references/core.md`: @.agents/
 - The coordination tool is pamin-labs-dev: its `protocol` skill, its `pamin-labs-dev:commit` skill for commits and PRs, and `pamin-labs-dev:peer-review` for the review before every PR, which also checks the change against the `pamin-engineering` skill.
 - The roadmap and decision records are in InternalDocs; a published library's caret minimums are InternalDocs `pamin-platform/decisions/2026-11-01-library-dependency-requirements.md`.
 - Prefer `rtk <command>` for shell commands when `rtk` is available.
-- Provenance: the layer and domain rules came from an audit of Tala's server on 2026-11-03, and the errors, data, settings and calls rules from Tala's decisions of 2026-11-01 to 2026-11-05; the owner set the reuse ladder and the review before every PR on 2026-11-04 and the proven-final-commit merge rule on 2026-11-05.
 - A module served by the Pamin platform is metered by the platform, never by its own code.
 
 ## Areas
