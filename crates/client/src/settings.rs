@@ -36,6 +36,11 @@ use serde::{Deserialize, Serialize};
 /// The configuration file, relative to the workspace root.
 pub const CONFIG: &str = "config.toml";
 
+/// The variable naming an external PostgreSQL server, the one a server reads
+/// for itself: it carries credentials, so it is neither a flag nor a
+/// `config.toml` key, and no client sends it.
+pub const DATABASE_URL: &str = "PAMIN_MEMORY_DATABASE_URL";
+
 /// How many indexes stay open at once.
 ///
 /// An open index is not free and does not become free by being idle. It holds
@@ -183,7 +188,8 @@ pub struct ServerArgs {
     pub postgres_dir: Option<PathBuf>,
 
     /// The most connections the server opens to the PostgreSQL server named
-    /// by `PAMIN_MEMORY_DATABASE_URL`. Default: four a core, up to 64.
+    /// by `PAMIN_MEMORY_DATABASE_URL`, which it needs. Default: the server's
+    /// own pool size.
     #[arg(
         long,
         value_name = "N",
@@ -483,7 +489,7 @@ impl Server {
             args.database_connections.map(|n| n.to_string()),
             given("database_connections"),
             serve.database_connections.map(|n| n.to_string()),
-            "four a core, up to 64".to_string(),
+            "none (the server's own pool size)".to_string(),
         );
 
         let flag_models = args.models_dir.as_ref().map(from_flag).transpose()?;

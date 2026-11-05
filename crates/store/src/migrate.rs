@@ -14,9 +14,9 @@
 
 use std::borrow::Cow;
 
-use sqlx::PgPool;
 use sqlx::SqlStr;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
+use sqlx::{Connection, PgPool};
 
 use crate::error::Result;
 
@@ -179,9 +179,27 @@ pub async fn run(pool: &PgPool) -> Result<()> {
     // owns startup for one workspace; nodes sharing an external database race
     // instead, and retry (`Database::open`).
     migrator.set_locking(false);
-    migrator.run(pool).await?;
+
+    // Row security off for the run, so a migration that rewrites guarded rows
+    // as the tables' owner -- the hosted role, which V21 subjects to the
+    // policies -- fails where a policy would filter, rather than matching no
+    // row and recording itself applied. A superuser, as a local workspace's
+    // connection is, skips the policies either way, so only hosted shows it.
+    // On a connection taken out of the pool and closed after, so the setting
+    // never reaches one a scoped transaction would take.
+    let mut connection = pool.acquire().await?.detach();
+    sqlx::raw_sql("SET row_security = off")
+        .execute(&mut connection)
+        .await?;
+    migrator.run(&mut connection).await?;
+    connection.close().await?;
 
     Ok(())
+}
+
+/// How many migrations this database has not applied yet.
+pub(crate) async fn unapplied(pool: &PgPool) -> Result<usize> {
+    Ok(pending(pool, &migrations()).await?.len())
 }
 
 /// The versions this database has not applied yet.

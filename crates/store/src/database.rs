@@ -203,15 +203,32 @@ impl Database {
     /// an upgrade. Migrations take no advisory lock (see `migrate::run`), so
     /// the losers of a race fail; the next pass finds the winner's work done
     /// and applies only what is left.
+    ///
+    /// A loser fails on whichever migration the winner commits under it, and
+    /// how that looks depends on the migration: its version already recorded,
+    /// or an object it creates already there or one it drops already gone. So
+    /// a failure is tried again when it shows the race: fewer migrations left
+    /// than before the attempt, or a duplicate where nothing is left to apply
+    /// yet, the table recording them. Any other failure, a missing permission
+    /// say, fails the same way every time and is returned at once. Each retry
+    /// follows a commit of the winner's, so a loser needs at most one per
+    /// migration and one for that table.
     async fn migrate_shared(&self) -> Result<()> {
-        const ATTEMPTS: u32 = 3;
+        let mut left = crate::migrate::unapplied(&self.pool).await?;
+        let attempts = left + 1;
         let mut attempt = 1;
         loop {
             match crate::migrate::run(&self.pool).await {
                 Ok(()) => return Ok(()),
-                Err(error) if attempt < ATTEMPTS => {
+                Err(error) if attempt < attempts => {
+                    let before = left;
+                    left = crate::migrate::unapplied(&self.pool)
+                        .await
+                        .unwrap_or(before);
+                    if left == before && !raced(&error) {
+                        return Err(error);
+                    }
                     tracing::warn!(%error, attempt, "migrating a shared database; trying again");
-                    tokio::time::sleep(Duration::from_secs(u64::from(attempt))).await;
                     attempt += 1;
                 }
                 Err(error) => return Err(error),
@@ -221,8 +238,10 @@ impl Database {
 
     /// Refuses a login that skips row-level security, a superuser or one
     /// with `BYPASSRLS`: hosted, the database is the second guard on which
-    /// project a query reaches, and such a login would switch it off without
-    /// a sign. Managed servers often hand out an administrator login like that.
+    /// project a query reaches, and whatever such a login runs as itself,
+    /// outside a [`scoped`](Self::scoped) transaction, skips that guard
+    /// without a sign. Managed servers often hand out an administrator login
+    /// like that.
     async fn bound_by_row_level_security(&self) -> Result<()> {
         let (bypasses,): (bool,) = sqlx::query_as(
             "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -231,8 +250,8 @@ impl Database {
         .await?;
         if bypasses {
             return Err(crate::StoreError::Role(
-                "the role in PAMIN_MEMORY_DATABASE_URL is a superuser or has BYPASSRLS, so \
-                 row-level security would not apply to it; use a role that has neither"
+                "the database role is a superuser or has BYPASSRLS, so it would skip \
+                 row-level security; use a role that has neither"
                     .into(),
             ));
         }
@@ -291,6 +310,24 @@ impl Database {
             .map_err(crate::StoreError::from)?;
         Ok(result)
     }
+}
+
+/// Whether `error` is a collision with another server's concurrent write: an
+/// insert of the same row or object, or a transaction PostgreSQL rolled back
+/// for colliding with it.
+fn raced(error: &crate::StoreError) -> bool {
+    use sqlx::migrate::MigrateError;
+    let (crate::StoreError::Database(error)
+    | crate::StoreError::Migration(
+        MigrateError::Execute(error) | MigrateError::ExecuteMigration(error, _),
+    )) = error
+    else {
+        return false;
+    };
+    let code = error.as_database_error().and_then(|error| error.code());
+    // unique_violation, duplicate_object, duplicate_table, and class 40,
+    // serialization_failure and deadlock_detected among it.
+    code.is_some_and(|code| matches!(&*code, "23505" | "42710" | "42P07") || code.starts_with("40"))
 }
 
 /// The role a [`Database::scoped`] transaction runs as.

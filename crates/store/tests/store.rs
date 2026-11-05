@@ -300,25 +300,65 @@ async fn a_scoped_transaction_reaches_only_its_project(database: &Database) {
         .expect("roll back");
 
     // Hosted, the connection owns the tables and is no superuser. Played here
-    // by a role made owner inside a transaction that is rolled back.
-    for statement in [
-        "BEGIN; CREATE ROLE owner_probe NOLOGIN NOSUPERUSER NOBYPASSRLS",
-        "ALTER TABLE topics OWNER TO owner_probe",
-        "SET LOCAL ROLE owner_probe",
-    ] {
-        sqlx::raw_sql(statement)
+    // by a role made owner of every guarded table inside a transaction that
+    // is rolled back.
+    sqlx::raw_sql("BEGIN; CREATE ROLE owner_probe NOLOGIN NOSUPERUSER NOBYPASSRLS")
+        .execute(&mut *connection)
+        .await
+        .expect("make the owner");
+    for table in &guarded {
+        sqlx::raw_sql(AssertSqlSafe(format!(
+            "ALTER TABLE {table} OWNER TO owner_probe"
+        )))
+        .execute(&mut *connection)
+        .await
+        .unwrap_or_else(|error| panic!("owning {table}: {error}"));
+    }
+    sqlx::raw_sql("SET LOCAL ROLE owner_probe")
+        .execute(&mut *connection)
+        .await
+        .expect("take on the owner");
+    for table in &guarded {
+        let (seen,): (i64,) =
+            sqlx::query_as(AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
+                .fetch_one(&mut *connection)
+                .await
+                .unwrap_or_else(|error| panic!("counting {table} as the owner: {error}"));
+        assert_eq!(seen, 0, "the owner sees no row of {table}");
+        let touched = sqlx::query(AssertSqlSafe(format!(
+            "UPDATE {table} SET project_id = project_id"
+        )))
+        .execute(&mut *connection)
+        .await
+        .unwrap_or_else(|error| panic!("updating {table} as the owner: {error}"));
+        assert_eq!(
+            touched.rows_affected(),
+            0,
+            "the owner updates no row of {table}"
+        );
+        // Refused by the policies before any constraint is checked, so an
+        // empty row is enough; a savepoint keeps the transaction going.
+        sqlx::raw_sql("SAVEPOINT insert_probe")
             .execute(&mut *connection)
             .await
-            .unwrap_or_else(|error| panic!("{statement}: {error}"));
+            .expect("savepoint");
+        let inserted = sqlx::query(AssertSqlSafe(format!("INSERT INTO {table} DEFAULT VALUES")))
+            .execute(&mut *connection)
+            .await;
+        let refused = inserted
+            .as_ref()
+            .err()
+            .and_then(|error| error.as_database_error())
+            .is_some_and(|error| error.message().contains("row-level security"));
+        assert!(
+            refused,
+            "the owner's insert into {table} is refused by row-level security: {inserted:?}"
+        );
+        sqlx::raw_sql("ROLLBACK TO SAVEPOINT insert_probe")
+            .execute(&mut *connection)
+            .await
+            .expect("roll back to the savepoint");
     }
-    let (as_owner,): (i64,) = sqlx::query_as("SELECT count(*) FROM topics")
-        .fetch_one(&mut *connection)
-        .await
-        .expect("count as the owner");
-    assert_eq!(
-        as_owner, 0,
-        "an owner outside a scoped transaction sees no guarded row"
-    );
     sqlx::raw_sql("ROLLBACK")
         .execute(&mut *connection)
         .await

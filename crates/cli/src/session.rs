@@ -14,9 +14,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use memory_client::settings::DATABASE_URL;
 use memory_core::ProjectId;
-use memory_engine::{Engine, Models};
+use memory_engine::{Engine, Models, Rebuilt};
 use memory_index::{Access, IndexError, VectorIndex};
 use memory_store::{Connections, Database, Workspace, repository};
 
@@ -82,9 +83,20 @@ impl Session {
         settings: memory_engine::Settings,
         open_indexes: usize,
     ) -> Result<Self> {
+        let database = Database::open(workspace, Connections::Resident, &settings.store)
+            .await
+            .map_err(anyhow::Error::from);
+        // The store names no variable; an external server is the one this
+        // process was given in the environment.
+        let database = if settings.store.database_url.is_some() {
+            database
+                .with_context(|| format!("opening the PostgreSQL server named by {DATABASE_URL}"))?
+        } else {
+            database?
+        };
         Ok(Self {
             workspace: workspace.clone(),
-            database: Database::open(workspace, Connections::Resident, &settings.store).await?,
+            database,
             models: Models::new(settings),
             projects: Mutex::default(),
             engines: Registry::with_capacity(open_indexes),
@@ -318,16 +330,7 @@ impl Session {
                 // for the rebuild, and one that fails leaves the slot empty.
                 // Dropped first: it holds the directory's lock.
                 drop(engine);
-                let engine = Engine::rebuilding_attached(
-                    self.database.clone(),
-                    &self.models,
-                    &self.workspace,
-                    project,
-                    vector_index,
-                )
-                .await?;
-                engine.reindex().await?;
-                Ok(engine)
+                Ok(self.rebuilt(project, vector_index).await?.0)
             })
             .await?;
         if engine.vector_index() != vector_index {
@@ -427,26 +430,37 @@ impl Session {
             .await
     }
 
-    /// An engine with this project's index discarded first, for a rebuild.
+    /// Rebuilds this project's index from the ledger, discarding it first.
     ///
     /// Evicts rather than reuses: the rebuild throws the collection away and
     /// opens a new one, so an engine held from before points at a directory
-    /// that is gone.
-    pub async fn rebuilding(
-        &self,
-        project: &str,
-        vector_index: VectorIndex,
-    ) -> Result<Arc<Engine>> {
+    /// that is gone. Rebuilt inside the slot, so a rebuild that fails leaves
+    /// it empty rather than holding a half-built index that answers from
+    /// part of the ledger.
+    pub async fn rebuild(&self, project: &str, vector_index: VectorIndex) -> Result<Rebuilt> {
+        let mut rebuilt = None;
         self.engines
-            .reopen(project.to_string(), || {
-                Engine::rebuilding_attached(
-                    self.database.clone(),
-                    &self.models,
-                    &self.workspace,
-                    project,
-                    vector_index,
-                )
+            .reopen(project.to_string(), || async {
+                let (engine, done) = self.rebuilt(project, vector_index).await?;
+                rebuilt = Some(done);
+                Ok(engine)
             })
-            .await
+            .await?;
+        Ok(rebuilt.expect("set by the open that succeeded"))
+    }
+
+    /// An engine with this project's index discarded and rebuilt, and what
+    /// the rebuild did. For a caller holding the project's slot.
+    async fn rebuilt(&self, project: &str, vector_index: VectorIndex) -> Result<(Engine, Rebuilt)> {
+        let engine = Engine::rebuilding_attached(
+            self.database.clone(),
+            &self.models,
+            &self.workspace,
+            project,
+            vector_index,
+        )
+        .await?;
+        let rebuilt = engine.reindex().await?;
+        Ok((engine, rebuilt))
     }
 }
