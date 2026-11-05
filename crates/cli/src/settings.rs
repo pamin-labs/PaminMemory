@@ -6,11 +6,7 @@
 //! result to the engine, with the libraries' own defaults for everything a
 //! server is not started with.
 
-use memory_client::settings::Server;
-
-/// The variable naming an external PostgreSQL; see
-/// `memory_store::StoreSettings::database_url`.
-const DATABASE_URL: &str = "PAMIN_MEMORY_DATABASE_URL";
+use memory_client::settings::{DATABASE_URL, Server};
 
 /// What the engine runs with, for a server resolved as `server`.
 pub fn engine(server: &Server) -> anyhow::Result<memory_engine::Settings> {

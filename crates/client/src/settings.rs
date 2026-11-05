@@ -36,6 +36,11 @@ use serde::{Deserialize, Serialize};
 /// The configuration file, relative to the workspace root.
 pub const CONFIG: &str = "config.toml";
 
+/// The variable naming an external PostgreSQL server, the one a server reads
+/// for itself: it carries credentials, so it is neither a flag nor a
+/// `config.toml` key, and no client sends it.
+pub const DATABASE_URL: &str = "PAMIN_MEMORY_DATABASE_URL";
+
 /// How many indexes stay open at once.
 ///
 /// An open index is not free and does not become free by being idle. It holds
