@@ -171,8 +171,8 @@ pub async fn run(pool: &PgPool) -> Result<()> {
     // applied in the same transaction that records it and the version column is
     // a primary key, so the loser fails rather than applying anything twice.
     // That is the exposure this already had under `refinery`. A resident server
-    // owns startup for one workspace; nodes sharing an external database race
-    // instead, and retry ([`run_shared`]).
+    // owns startup for one workspace, and an external database is migrated once
+    // per deploy ([`crate::Database::migrate`]), never by the servers on it.
     migrator.set_locking(false);
 
     // Row security off for the run, so a migration that rewrites guarded rows
@@ -194,66 +194,19 @@ pub async fn run(pool: &PgPool) -> Result<()> {
     Ok(())
 }
 
-/// Migrates a database other servers may be migrating at the same moment,
-/// as several nodes sharing an external database do when they start after
-/// an upgrade. Migrations take no advisory lock (see [`run`]), so
-/// the losers of a race fail; the next pass finds the winner's work done
-/// and applies only what is left.
+/// Refuses a database with migrations this release has not seen applied, as
+/// a server on an external database does: [`Database::migrate`] applies them
+/// once per deploy, before servers that need them start. A database a newer
+/// release has migrated further is current, since each migration adds only
+/// what its release needs.
 ///
-/// A loser fails on whichever migration the winner commits under it, and
-/// how that looks depends on the migration: its version already recorded,
-/// or an object it creates already there or one it drops already gone. So
-/// a failure is tried again when it shows the race: fewer migrations left
-/// than before the attempt, or a duplicate where nothing is left to apply
-/// yet, the table recording them. Any other failure, a missing permission
-/// say, fails the same way every time and is returned at once. Each retry
-/// follows a commit of the winner's, so a loser fails at most once per
-/// migration and once on that table.
-pub async fn run_shared(pool: &PgPool) -> Result<()> {
-    let mut left = pending(pool, &migrations()).await?.len();
-    // One failure per migration left plus one on the table recording them,
-    // which a fresh database does not have yet, and the attempt that then
-    // succeeds.
-    let attempts = left + 2;
-    let mut attempt = 1;
-    loop {
-        match run(pool).await {
-            Ok(()) => return Ok(()),
-            Err(error) if attempt < attempts => {
-                let before = left;
-                left = pending(pool, &migrations()).await?.len();
-                if left == before && !raced(&error) {
-                    return Err(error);
-                }
-                tracing::warn!(%error, attempt, "migrating a shared database; trying again");
-                attempt += 1;
-            }
-            Err(error) => return Err(error),
-        }
+/// [`Database::migrate`]: crate::Database::migrate
+pub async fn current(pool: &PgPool) -> Result<()> {
+    let pending = pending(pool, &migrations()).await?;
+    if pending.is_empty() {
+        return Ok(());
     }
-}
-
-/// Whether `error` is a collision with another server's concurrent write: an
-/// insert of the same row or object, or a transaction PostgreSQL rolled back
-/// for colliding with it.
-fn raced(error: &crate::StoreError) -> bool {
-    use sqlx::migrate::MigrateError;
-    let (crate::StoreError::Database(error)
-    | crate::StoreError::Migration(
-        MigrateError::Execute(error) | MigrateError::ExecuteMigration(error, _),
-    )) = error
-    else {
-        return false;
-    };
-    let Some(error) = error.as_database_error() else {
-        return false;
-    };
-    // duplicate_object, duplicate_table, and class 40, serialization_failure
-    // and deadlock_detected among it.
-    error.is_unique_violation()
-        || error
-            .code()
-            .is_some_and(|code| matches!(&*code, "42710" | "42P07") || code.starts_with("40"))
+    Err(crate::StoreError::Behind(pending))
 }
 
 /// The versions this database has not applied yet.

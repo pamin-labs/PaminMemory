@@ -17,8 +17,9 @@ mod session;
 mod settings;
 mod watch;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use memory_client::cli::{self, Command, Unserved};
+use memory_client::settings::DATABASE_URL;
 
 fn main() -> Result<()> {
     // Before the runtime starts its worker threads: glibc fixes how many heap
@@ -64,6 +65,17 @@ async fn answer(unserved: Unserved) -> Result<()> {
             let result = command::stop::execute(&workspace).await?;
             format.emit(&result, || memory_contract::stop::render(&result));
             Ok(())
+        }
+        Unserved::Migrate => {
+            let url = settings::database_url()?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "migrate applies to the database named by {DATABASE_URL}, which is not set; \
+                     a workspace's own cluster migrates when it opens"
+                )
+            })?;
+            memory_store::Database::migrate(&url)
+                .await
+                .with_context(|| format!("migrating the PostgreSQL server named by {DATABASE_URL}"))
         }
     }
 }
