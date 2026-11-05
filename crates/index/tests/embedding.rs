@@ -129,3 +129,16 @@ fn a_batch_gives_each_text_the_vector_it_would_have_got_alone() {
         assert_eq!(batched, single, "{:?} came back changed", texts[index]);
     }
 }
+
+/// What the cache says the next load runs, read without loading, is the
+/// revision the load names.
+#[test]
+#[ignore = "loads embedding model weights"]
+fn the_cached_revision_is_the_one_a_load_runs() {
+    let cache = memory_core::settings::models_dir();
+    let embedder = Embedder::load(&cache, &support::inference()).expect("load model");
+    assert_eq!(
+        memory_index::cached_revision(&cache),
+        Some(embedder.revision())
+    );
+}

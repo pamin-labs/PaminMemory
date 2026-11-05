@@ -121,6 +121,12 @@ impl Embedder {
         pamin_runtime::plan::plans_of(&self.model, self.device)
     }
 
+    /// The model's `repository@commit`: what its vectors are of, on whatever
+    /// plan it runs.
+    pub fn revision(&self) -> String {
+        pamin_runtime::plan::RuntimeModel::revision(self.model.as_ref()).to_string()
+    }
+
     /// What produces the vectors this embeds now, for an index to record
     /// beside each one: the model's current execution plan, as its
     /// [`crate::PlanUse`] names it -- the target and the hash of the full plan
@@ -266,12 +272,25 @@ impl Embedder {
     }
 }
 
+/// The `repository@commit` the next load of the model runs, as
+/// [`Embedder::revision`] would name it, read from the cache in `cache_dir`
+/// without loading or fetching anything; `None` while no commit is pinned.
+pub fn cached_revision(cache_dir: &std::path::Path) -> Option<String> {
+    let repository = joint_repository(cache_dir).ok()?;
+    repository.resolved().then(|| repository.revision())
+}
+
+/// The joint model's repository as every load opens it, at what `main` names.
+fn joint_repository(cache_dir: &std::path::Path) -> Result<Repository> {
+    Repository::open_at(cache_dir, JOINT_REPOSITORY, "main")
+}
+
 fn primary_model(
     cache_dir: &std::path::Path,
     settings: &crate::InferenceSettings,
 ) -> Result<(Encoder, pamin_runtime::device::Device)> {
     std::fs::create_dir_all(cache_dir)?;
-    let repository = Repository::open_at(cache_dir, JOINT_REPOSITORY, "main")?;
+    let repository = joint_repository(cache_dir)?;
     let identity = plan_key(MODEL_ID, &repository.identity(cache_dir));
     let references = std::cell::RefCell::new(pamin_runtime::plan::References::default());
     let long = "migration ".repeat(600);

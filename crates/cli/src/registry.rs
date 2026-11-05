@@ -83,21 +83,25 @@ impl<K: Eq + Hash + Clone, T> Registry<K, T> {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        self.fill(key, open, false).await
+        self.fill(key, open, None).await
     }
 
     /// The value for this key, discarding whatever was there and opening again.
     ///
-    /// The registry's handle is dropped *before* `open` runs, because a rebuild
-    /// throws away the directory the old value points at. A concurrent
-    /// `get_or_open` for this key waits on the same slot and gets the new one,
-    /// which is the guarantee holding one lock over everything used to give.
-    pub async fn reopen<F, Fut>(&self, key: K, open: F) -> Result<Arc<T>>
+    /// `open` runs once nothing else holds the old value, because a rebuild
+    /// throws away the directory it points at, and a caller still inside it
+    /// would write there rather than into what replaces it. Waiting gives up
+    /// after `patience` and keeps the old value, as [`take_then`] does. A
+    /// concurrent `get_or_open` for this key waits on the same slot and gets
+    /// the new one.
+    ///
+    /// [`take_then`]: Self::take_then
+    pub async fn reopen<F, Fut>(&self, key: K, patience: Duration, open: F) -> Result<Arc<T>>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<T>>,
     {
-        self.fill(key, open, true).await
+        self.fill(key, open, Some(patience)).await
     }
 
     /// Empties this key's slot and runs `then` once nothing else holds what
@@ -114,29 +118,21 @@ impl<K: Eq + Hash + Clone, T> Registry<K, T> {
     {
         let slot = self.slot(key);
         let mut held = slot.lock().await;
-        if let Some(value) = held.take() {
-            let deadline = Instant::now() + patience;
-            // ponytail: polls the count; notify on drop if purges ever wait often.
-            while Arc::strong_count(&value) > 1 {
-                if Instant::now() >= deadline {
-                    *held = Some(value);
-                    anyhow::bail!("still in use after {patience:?}; try again");
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        }
+        released(&mut held, patience).await?;
         then().await
     }
 
-    async fn fill<F, Fut>(&self, key: K, open: F, discard: bool) -> Result<Arc<T>>
+    /// Opens this key's value unless it has one, or with `discard` once
+    /// nothing else holds the one it has.
+    async fn fill<F, Fut>(&self, key: K, open: F, discard: Option<Duration>) -> Result<Arc<T>>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<T>>,
     {
         let slot = self.slot(key);
         let mut held = slot.lock().await;
-        if discard {
-            *held = None;
+        if let Some(patience) = discard {
+            released(&mut held, patience).await?;
         } else if let Some(value) = held.as_ref() {
             return Ok(Arc::clone(value));
         }
@@ -286,6 +282,36 @@ impl<K: Eq + Hash + Clone, T> Registry<K, T> {
     }
 }
 
+/// A value still held by another caller once the patience ran out.
+#[derive(Debug)]
+pub struct StillInUse(Duration);
+
+impl std::fmt::Display for StillInUse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "still in use after {:?}; try again", self.0)
+    }
+}
+
+impl std::error::Error for StillInUse {}
+
+/// Empties a held slot once nothing but it holds the value, waiting up to
+/// `patience`; past that the value is put back and the caller refused.
+async fn released<T>(held: &mut Option<Arc<T>>, patience: Duration) -> Result<()> {
+    let Some(value) = held.take() else {
+        return Ok(());
+    };
+    let deadline = Instant::now() + patience;
+    // ponytail: polls the count; notify on drop if purges or rebuilds ever wait often.
+    while Arc::strong_count(&value) > 1 {
+        if Instant::now() >= deadline {
+            *held = Some(value);
+            return Err(StillInUse(patience).into());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Ok(())
+}
+
 impl<K: Eq + Hash + Clone, T> Open<K, T> {
     /// Closes least-recently-used entries until there is room for one more.
     ///
@@ -405,6 +431,43 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(*reopened, 2, "the next caller opens afresh");
+    }
+
+    /// A rebuild opens the new value only once the caller inside the old one
+    /// lets go of it.
+    ///
+    /// A caller still inside the old value would write into the index the
+    /// rebuild discards, and its write would be missing from the new one.
+    /// Reverting the wait in `fill` makes the reopen finish while `inside` is
+    /// held, and the first assertion fails.
+    #[tokio::test]
+    async fn reopening_a_value_waits_for_the_caller_inside_it() {
+        let registry: Arc<Registry<&str, u32>> = Arc::new(Registry::with_capacity(16));
+        let inside = registry
+            .get_or_open("busy", || async { Ok(1) })
+            .await
+            .unwrap();
+
+        let reopening = {
+            let registry = Arc::clone(&registry);
+            tokio::spawn(async move {
+                registry
+                    .reopen("busy", Duration::from_secs(10), || async { Ok(2) })
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !reopening.is_finished(),
+            "reopened while a caller was inside"
+        );
+
+        drop(inside);
+        let reopened = reopening
+            .await
+            .unwrap()
+            .expect("the reopen succeeds once released");
+        assert_eq!(*reopened, 2);
     }
 
     /// Waiting too long gives the value back rather than running anyway.

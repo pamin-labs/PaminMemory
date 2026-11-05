@@ -87,6 +87,35 @@ pub fn as_stored(vector: &[f32]) -> Vec<f32> {
     vector.iter().map(|value| decode(encode(*value))).collect()
 }
 
+/// `vector`'s fp16 codes as little-endian bytes: how a vector is kept outside
+/// an index, at what an index stores of it.
+pub fn to_bytes(vector: &[f32]) -> Vec<u8> {
+    vector
+        .iter()
+        .flat_map(|value| encode(*value).to_le_bytes())
+        .collect()
+}
+
+/// How many bytes [`to_bytes`] makes of one of this model's vectors.
+pub const VECTOR_BYTES: usize = 2 * crate::DIMENSIONS as usize;
+
+/// [`to_bytes`] widened back: the vector an index would have read back, or
+/// `None` for bytes that are not one of this model's vectors.
+pub fn from_bytes(bytes: &[u8]) -> Option<Vec<f32>> {
+    if bytes.len() != VECTOR_BYTES {
+        return None;
+    }
+    let codes: Vec<u16> = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
+        .collect();
+    let mut vector = vec![0.0; codes.len()];
+    pamin_runtime::kernels::f16::widen(&codes, &mut vector);
+    Some(vector)
+}
+
 /// A query vector for an fp16 field: its codes, two to an `f32`.
 ///
 /// `SearchQuery::new` takes `&[f32]` and hands the engine the bytes behind it,
@@ -113,7 +142,7 @@ pub(crate) fn query(vector: &[f32]) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode, query};
+    use super::{as_stored, encode, from_bytes, query, to_bytes};
 
     /// A packed query holds the codes, in order, in the bytes it hands over.
     #[test]
@@ -129,5 +158,16 @@ mod tests {
             .map(|pair| u16::from_ne_bytes(*pair))
             .collect();
         assert_eq!(codes, vector.iter().map(|v| encode(*v)).collect::<Vec<_>>());
+    }
+
+    /// A vector kept as bytes reads back as an index stores it.
+    #[test]
+    fn a_vector_kept_as_bytes_reads_back_as_stored() {
+        let vector: Vec<f32> = (0..crate::DIMENSIONS)
+            .map(|at| at as f32 / 7.0 - 3.0)
+            .collect();
+        let bytes = to_bytes(&vector);
+        assert_eq!(from_bytes(&bytes), Some(as_stored(&vector)));
+        assert_eq!(from_bytes(&bytes[2..]), None, "another width is not one");
     }
 }

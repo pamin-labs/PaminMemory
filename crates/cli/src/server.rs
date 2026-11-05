@@ -376,26 +376,23 @@ impl CatchingUp {
             };
             let key = owing.name;
 
-            let engine = if session.holds(&key) {
-                // Being opened, or rebuilt: the next tick.
-                let Some(engine) = session.opened_engine_for_work(&key) else {
-                    continue;
-                };
-                engine
-            } else {
+            // The engine this opened, if it opened one, for the first round:
+            // taken again from the registry it could go to a request first.
+            let mut opened = None;
+            if !session.holds(&key) {
                 if opened_one || !owing.never_failed || self.refused.contains_key(&key) {
                     continue;
                 }
                 opened_one = true;
                 match session.engine(&key, vector_index).await {
-                    Ok(engine) => engine,
+                    Ok(engine) => opened = Some(engine),
                     Err(error) => {
                         tracing::warn!(project = %key, %error, "opening a project to catch up failed");
                         self.refused.insert(key, Instant::now());
                         continue;
                     }
                 }
-            };
+            }
 
             // Rounds in every gap between requests until the project is
             // caught up or the budget is spent. A request stops the drain
@@ -404,9 +401,20 @@ impl CatchingUp {
             let mut caught_up = CaughtUp::default();
             while within_budget() {
                 if !session.is_quiet() {
+                    opened = None;
                     tokio::time::sleep(QUIET_POLL).await;
                     continue;
                 }
+                // Taken each round rather than held across them, or across a
+                // wait for quiet: a rebuild waits for every holder of the
+                // engine it replaces, and one held here would keep it waiting.
+                // Being opened or rebuilt: the next tick.
+                let Some(engine) = opened
+                    .take()
+                    .or_else(|| session.opened_engine_for_work(&key))
+                else {
+                    break;
+                };
                 let draining = Instant::now();
                 match engine
                     .drain_cascade_while(Owed::WhatAMemoryNeeds, self.batch, go_on)
@@ -488,8 +496,9 @@ const RESHAPE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 
 /// The reshapes this server has started, one per project at most.
 ///
 /// Held by the upkeep loop rather than the session, because nothing else
-/// starts one: `pamin-memory reindex` is a rebuild, and waits for a reshape of its
-/// project to finish rather than being one.
+/// starts one: `pamin-memory reindex` is a rebuild rather than a reshape. It
+/// waits a while for a reshape of its project to finish, as for anything
+/// else inside the project, and refuses if it does not.
 #[derive(Default)]
 struct Reshapes {
     started: HashMap<String, (Instant, tokio::task::JoinHandle<()>)>,

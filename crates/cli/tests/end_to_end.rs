@@ -1122,8 +1122,8 @@ fn the_index_rebuilds_from_postgres(cli: &Cli) {
     let rebuilt = cli.json(&["reindex"]);
     assert!(rebuilt["indexed"].as_u64().unwrap_or(0) >= MEMORIES.len() as u64);
     assert_eq!(
-        rebuilt["reused"], 0,
-        "with the index deleted there is nothing to reuse: {rebuilt}"
+        rebuilt["reused"], rebuilt["indexed"],
+        "with the index deleted every vector comes back from postgres: {rebuilt}"
     );
 
     let after = contents(&cli.json(&["search", "流水线", "--limit", "1"]));

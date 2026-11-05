@@ -150,7 +150,7 @@ impl Repository {
 
     /// Whether files are read at a known commit: one pinned from the ref,
     /// or a requested revision that is itself a commit id.
-    fn resolved(&self) -> bool {
+    pub(crate) fn resolved(&self) -> bool {
         self.pin();
         self.pinned.get().is_some() || is_commit(&self.revision)
     }

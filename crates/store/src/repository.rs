@@ -1889,6 +1889,105 @@ pub async fn forget_file_record_of(
     Ok(())
 }
 
+/// A span's vector as it was embedded. See `V22__span_vectors`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpanVector {
+    /// The hash of the text the vector was embedded from.
+    pub passage_hash: [u8; 32],
+    /// The plan that embedded it.
+    pub encoding: String,
+    /// Its fp16 codes, little-endian.
+    pub vector: Vec<u8>,
+}
+
+/// The vectors the model at `revision` embedded for these passages, under
+/// `encoding`, or under every plan that embedded one when it is `None`: a
+/// rebuild that loads no model has to choose among them.
+pub async fn span_vectors(
+    executor: impl PgExecutor<'_>,
+    project: ProjectId,
+    revision: &str,
+    encoding: Option<&str>,
+    passage_hashes: &[[u8; 32]],
+) -> Result<Vec<SpanVector>> {
+    if passage_hashes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let hashes: Vec<&[u8]> = passage_hashes.iter().map(|hash| hash.as_slice()).collect();
+    let rows: Vec<(Vec<u8>, String, Vec<u8>)> = sqlx::query_as(
+        "SELECT passage_hash, encoding, vector FROM span_vectors
+          WHERE project_id = $1 AND revision = $2 AND passage_hash = ANY($3)
+            AND ($4::text IS NULL OR encoding = $4)",
+    )
+    .bind(project.0)
+    .bind(revision)
+    .bind(&hashes)
+    .bind(encoding)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(hash, encoding, vector)| SpanVector {
+            passage_hash: hash
+                .try_into()
+                .expect("span_vectors checks passage_hash is 32 bytes"),
+            encoding,
+            vector,
+        })
+        .collect())
+}
+
+/// Rows per `span_vectors` insert, so no one statement grows with the
+/// project.
+pub const PUT_SPAN_VECTORS_BATCH: usize = 1_000;
+
+/// Keeps each vector, embedded by the model at `revision` under `encoding`
+/// from the passage hashed beside it, [`PUT_SPAN_VECTORS_BATCH`] rows a
+/// statement, all on `connection`, so a caller's transaction keeps all or
+/// none. One already kept stays: the same model and plan over the same text
+/// give the same vector. Unless it is of another width, which no reader
+/// takes, so it is put right rather than left to cost every rebuild.
+pub async fn put_span_vectors<'a>(
+    connection: &mut sqlx::PgConnection,
+    project: ProjectId,
+    revision: &str,
+    encoding: &str,
+    vectors: impl IntoIterator<Item = &'a ([u8; 32], Vec<u8>)>,
+) -> Result<()> {
+    let mut rows: Vec<(&[u8], &[u8])> = vectors
+        .into_iter()
+        .map(|(hash, vector)| (hash.as_slice(), vector.as_slice()))
+        .collect();
+    // In one order, so two keeps of overlapping spans lock their rows in the
+    // same order and neither waits on a row the other holds. And once each:
+    // one statement may not update a row it inserted. Which duplicate stays
+    // does not matter: one hash is one text, embedded to one vector.
+    rows.sort_unstable_by_key(|(hash, _)| *hash);
+    rows.dedup_by_key(|(hash, _)| *hash);
+    let (hashes, vectors): (Vec<&[u8]>, Vec<&[u8]>) = rows.into_iter().unzip();
+    for (hashes, vectors) in hashes
+        .chunks(PUT_SPAN_VECTORS_BATCH)
+        .zip(vectors.chunks(PUT_SPAN_VECTORS_BATCH))
+    {
+        sqlx::query(
+            "INSERT INTO span_vectors (project_id, revision, passage_hash, encoding, vector)
+             SELECT $1, $2, passage_hash, $3, vector FROM unnest($4::bytea[], $5::bytea[])
+                    AS v (passage_hash, vector)
+             ON CONFLICT (project_id, revision, passage_hash, encoding) DO UPDATE
+                SET vector = EXCLUDED.vector
+              WHERE octet_length(span_vectors.vector) <> octet_length(EXCLUDED.vector)",
+        )
+        .bind(project.0)
+        .bind(revision)
+        .bind(encoding)
+        .bind(hashes)
+        .bind(vectors)
+        .execute(&mut *connection)
+        .await?;
+    }
+    Ok(())
+}
+
 /// A path `pamin-memory ingest` keeps in sync. See `V19__synced_paths`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SyncedPath {
