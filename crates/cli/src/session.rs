@@ -83,16 +83,14 @@ impl Session {
         settings: memory_engine::Settings,
         open_indexes: usize,
     ) -> Result<Self> {
-        let database = Database::open(workspace, Connections::Resident, &settings.store)
-            .await
-            .map_err(anyhow::Error::from);
+        let database = Database::open(workspace, Connections::Resident, &settings.store).await;
         // The store names no variable; an external server is the one this
         // process was given in the environment.
-        let database = if settings.store.database_url.is_some() {
-            database
-                .with_context(|| format!("opening the PostgreSQL server named by {DATABASE_URL}"))?
-        } else {
-            database?
+        let database = match &settings.store.database_url {
+            Some(_) => database.with_context(|| {
+                format!("opening the PostgreSQL server named by {DATABASE_URL}")
+            })?,
+            None => database?,
         };
         Ok(Self {
             workspace: workspace.clone(),
