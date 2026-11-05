@@ -486,8 +486,9 @@ const RESHAPE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 
 /// The reshapes this server has started, one per project at most.
 ///
 /// Held by the upkeep loop rather than the session, because nothing else
-/// starts one: `pamin-memory reindex` is a rebuild, and waits for a reshape of its
-/// project to finish rather than being one.
+/// starts one: `pamin-memory reindex` is a rebuild rather than a reshape. It
+/// waits a while for a reshape of its project to finish, as for anything
+/// else inside the project, and refuses if it does not.
 #[derive(Default)]
 struct Reshapes {
     started: HashMap<String, (Instant, tokio::task::JoinHandle<()>)>,

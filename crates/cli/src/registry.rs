@@ -293,7 +293,9 @@ async fn released<T>(held: &mut Option<Arc<T>>, patience: Duration) -> Result<()
     while Arc::strong_count(&value) > 1 {
         if Instant::now() >= deadline {
             *held = Some(value);
-            anyhow::bail!("still in use after {patience:?}; try again");
+            anyhow::bail!(
+                "still in use after {patience:?}, most often by a reshape or an import; try again"
+            );
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
