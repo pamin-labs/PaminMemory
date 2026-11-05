@@ -2826,7 +2826,15 @@ impl Engine {
         let marker = self.dir.join(UNFINISHED_REBUILD);
         tokio::fs::write(&marker, b"").await?;
         let rebuilt = self.reindex_unmarked().await?;
-        tokio::fs::remove_file(&marker).await?;
+        // The index is whole either way: a marker left behind costs the next
+        // open a rebuild it did not need, which is no reason to fail this one.
+        if let Err(error) = tokio::fs::remove_file(&marker).await {
+            tracing::warn!(
+                %error,
+                marker = %marker.display(),
+                "rebuilt the index but could not remove its marker; the next open rebuilds it again"
+            );
+        }
         Ok(rebuilt)
     }
 
