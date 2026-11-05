@@ -141,13 +141,16 @@ fn migration(version: i64, description: &'static str, sql: &'static str) -> Migr
         SqlStr::from_static(sql),
         false,
     );
-    // Row security off for each migration, so one that rewrites guarded rows
+    // Row security off for each migration, so one that touches guarded rows
     // as the tables' owner -- the hosted role, which V21 subjects to the
-    // policies -- fails where a policy would filter, rather than matching no
-    // row and recording itself applied. A superuser, as a local workspace's
-    // connection is, skips the policies either way, so only hosted shows it.
+    // policies -- fails on any statement a policy applies to, rather than
+    // matching no row and recording itself applied. A superuser, as a local
+    // workspace's connection is, skips the policies either way, so only hosted
+    // shows it, and a migration that rewrites guarded rows has to run them per
+    // project as the guarded role instead.
     //
-    // `SET LOCAL`, inside the transaction `sqlx` applies each migration in,
+    // `SET LOCAL`, inside the transaction `sqlx` applies each migration in
+    // (none is `no_tx`, which the test below holds),
     // because a session setting is not safe behind a transaction-pooling
     // proxy such as PgBouncer: the next transaction may run on another
     // server connection, and this one goes back to whoever is next. The
@@ -332,8 +335,8 @@ async fn table_exists(pool: &PgPool, name: &str) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use sqlx::SqlSafeStr;
-    use sqlx::migrate::Migrator;
+    use sqlx::migrate::{Migration, Migrator};
+    use sqlx::{AssertSqlSafe, SqlSafeStr};
 
     /// Constructs that would strand us on a single PostgreSQL node.
     ///
@@ -444,18 +447,23 @@ mod tests {
     }
 
     #[test]
-    fn every_migration_turns_row_security_off_and_keeps_its_files_checksum() {
+    fn every_migration_turns_row_security_off_in_its_transaction_and_keeps_its_checksum() {
         for migration in super::migrations() {
+            assert!(
+                !migration.no_tx,
+                "V{} runs outside a transaction, where SET LOCAL does nothing",
+                migration.version
+            );
             let file = migration
                 .sql
                 .as_str()
                 .strip_prefix(super::ROW_SECURITY_OFF)
                 .unwrap_or_else(|| panic!("V{} runs with row security on", migration.version));
-            let unprefixed = sqlx::migrate::Migration::new(
+            let unprefixed = Migration::new(
                 migration.version,
                 migration.description.clone(),
                 migration.migration_type,
-                sqlx::AssertSqlSafe(file.to_owned()).into_sql_str(),
+                AssertSqlSafe(file.to_owned()).into_sql_str(),
                 migration.no_tx,
             );
             assert_eq!(
