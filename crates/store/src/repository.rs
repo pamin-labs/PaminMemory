@@ -110,6 +110,15 @@ pub async fn ensure_project(pool: &PgPool, name: &str) -> Result<Project> {
     })
 }
 
+/// The id of the project with this name, if there is one.
+pub async fn find_project(pool: &PgPool, name: &str) -> Result<Option<ProjectId>> {
+    let id: Option<(uuid::Uuid,)> = sqlx::query_as("SELECT id FROM projects WHERE name = $1")
+        .bind(name)
+        .fetch_optional(pool)
+        .await?;
+    Ok(id.map(|(id,)| id.into()))
+}
+
 /// What [`purge_project`] deleted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PurgedProject {
@@ -127,12 +136,15 @@ pub struct PurgedProject {
 /// query. Every table references `projects` with `ON DELETE CASCADE`, so one
 /// statement removes it all; the counts come from the same statement's
 /// snapshot, taken before the delete. `None` when there is no such project.
+///
+/// Run it in the project's [`scoped`](crate::Database::scoped) transaction:
+/// the counts read guarded tables, which show an owner nothing (V21).
 pub async fn purge_project(
     executor: impl PgExecutor<'_>,
-    name: &str,
+    project: ProjectId,
 ) -> Result<Option<PurgedProject>> {
     let row: Option<(uuid::Uuid, i64, i64, Vec<String>)> = sqlx::query_as(
-        "WITH gone AS (DELETE FROM projects WHERE name = $1 RETURNING id)
+        "WITH gone AS (DELETE FROM projects WHERE id = $1 RETURNING id)
          SELECT gone.id,
                 (SELECT count(*) FROM topics WHERE project_id = gone.id),
                 (SELECT count(*) FROM sources WHERE project_id = gone.id),
@@ -140,7 +152,7 @@ pub async fn purge_project(
                        WHERE project_id = gone.id ORDER BY path)
            FROM gone",
     )
-    .bind(name)
+    .bind(project.0)
     .fetch_optional(executor)
     .await?;
     Ok(row.map(|(id, topics, sources, synced)| PurgedProject {

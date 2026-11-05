@@ -111,7 +111,8 @@ async fn the_ledger_holds_its_promises() {
 async fn a_scoped_transaction_reaches_only_its_project(database: &Database) {
     let guarded: Vec<(String,)> = sqlx::query_as(
         "SELECT relname::text FROM pg_class
-          WHERE relnamespace = current_schema()::regnamespace AND relrowsecurity
+          WHERE relnamespace = current_schema()::regnamespace
+            AND relrowsecurity AND relforcerowsecurity
           ORDER BY relname",
     )
     .fetch_all(database.pool())
@@ -203,6 +204,74 @@ async fn a_scoped_transaction_reaches_only_its_project(database: &Database) {
         .execute(&mut *connection)
         .await
         .expect("roll back");
+
+    // Hosted, the connection owns the tables and is no superuser. Played here
+    // by a role made owner of every guarded table inside a transaction that
+    // is rolled back.
+    let mut setup =
+        vec!["BEGIN; CREATE ROLE owner_probe NOLOGIN NOSUPERUSER NOBYPASSRLS".to_string()];
+    setup.extend(
+        guarded
+            .iter()
+            .map(|table| format!("ALTER TABLE {table} OWNER TO owner_probe")),
+    );
+    setup.push("SET LOCAL ROLE owner_probe".to_string());
+    for statement in setup {
+        sqlx::raw_sql(AssertSqlSafe(statement.as_str()))
+            .execute(&mut *connection)
+            .await
+            .unwrap_or_else(|error| panic!("{statement}: {error}"));
+    }
+    for table in &guarded {
+        let (seen,): (i64,) =
+            sqlx::query_as(AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
+                .fetch_one(&mut *connection)
+                .await
+                .unwrap_or_else(|error| panic!("counting {table} as the owner: {error}"));
+        assert_eq!(seen, 0, "the owner sees no row of {table}");
+        let touched = sqlx::query(AssertSqlSafe(format!(
+            "UPDATE {table} SET project_id = project_id"
+        )))
+        .execute(&mut *connection)
+        .await
+        .unwrap_or_else(|error| panic!("updating {table} as the owner: {error}"));
+        assert_eq!(
+            touched.rows_affected(),
+            0,
+            "the owner updates no row of {table}"
+        );
+        // Refused by the policies before any constraint is checked, so an
+        // empty row is enough; a savepoint keeps the transaction going.
+        sqlx::raw_sql("SAVEPOINT insert_probe")
+            .execute(&mut *connection)
+            .await
+            .expect("savepoint");
+        let inserted = sqlx::query(AssertSqlSafe(format!("INSERT INTO {table} DEFAULT VALUES")))
+            .execute(&mut *connection)
+            .await;
+        // insufficient_privilege, which a row-level security refusal is but
+        // so is any other denied permission, so the message says which.
+        let refused = inserted
+            .as_ref()
+            .err()
+            .and_then(|error| error.as_database_error())
+            .is_some_and(|error| {
+                error.code().as_deref() == Some("42501")
+                    && error.message().contains("row-level security")
+            });
+        assert!(
+            refused,
+            "the owner's insert into {table} is refused by row-level security: {inserted:?}"
+        );
+        sqlx::raw_sql("ROLLBACK TO SAVEPOINT insert_probe")
+            .execute(&mut *connection)
+            .await
+            .expect("roll back to the savepoint");
+    }
+    sqlx::raw_sql("ROLLBACK")
+        .execute(&mut *connection)
+        .await
+        .expect("roll back");
 }
 
 /// Purging a project deletes every row it owns and nothing of any other.
@@ -276,10 +345,13 @@ async fn purging_a_project_leaves_none_of_its_rows(database: &Database) {
     );
     let others = rows(id, true).await;
 
-    let purged = repository::purge_project(database.pool(), &name)
+    // In the project's scoped transaction, as the server purges.
+    let mut scoped = database.scoped(id.into()).await.expect("scoped");
+    let purged = repository::purge_project(&mut *scoped, id.into())
         .await
         .expect("purge")
         .expect("the project existed");
+    scoped.commit().await.expect("commit the purge");
     assert_eq!(purged.id.0, id);
     assert!(purged.topics > 0, "{purged:?}");
 
@@ -295,9 +367,12 @@ async fn purging_a_project_leaves_none_of_its_rows(database: &Database) {
         "another project's rows changed"
     );
     assert_eq!(
-        repository::purge_project(database.pool(), &name)
-            .await
-            .expect("purge again"),
+        repository::purge_project(
+            &mut *database.scoped(id.into()).await.expect("scoped"),
+            id.into()
+        )
+        .await
+        .expect("purge again"),
         None,
         "a second purge finds nothing"
     );
