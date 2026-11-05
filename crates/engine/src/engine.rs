@@ -2915,6 +2915,15 @@ impl Engine {
         // derive an edge to.
         let names = self.rebuild_name_index().await?;
 
+        // Held from reading the states until the index has them, as an index
+        // sync holds it: the kept vectors are looked up between the two, and
+        // a sync that read a newer state meanwhile would otherwise be
+        // overwritten with this older one. Taken before the model's and the
+        // index's locks, in the order the syncs take them; it holds up only
+        // index syncs, which wait for the rebuild's locks anyway. Holding it
+        // is less than reading the states again after the lookup, which
+        // would have to redo the spans and the lookup for what changed.
+        let syncing = self.syncing.lock().await;
         // Current states, one per topic: the projection holds one document per
         // topic, so every live state would write a topic's whole history onto
         // one key and leave whichever row the scan reached last.
@@ -2963,8 +2972,8 @@ impl Engine {
             .map(|(_, _, passages)| passages.as_slice())
             .collect();
         let unlent_at = || unlent_passages.iter().copied().enumerate();
-        // Read before the locks, written under them: written any earlier, a
-        // sync between the two could be overwritten by this older read.
+        // Read before the locks, so no round trip runs under them; `syncing`
+        // keeps a sync from writing a newer state in between.
         let (kept, plan) = self.kept_for_rebuild(&unlent_passages).await;
         let unloaded = kept.split(&kept.revision, plan.as_deref(), unlent_at());
 
@@ -3070,6 +3079,7 @@ impl Engine {
             }
             Ok::<_, memory_index::IndexError>((lendable.len() + supplied.len(), embedded))
         })?;
+        drop(syncing);
         self.keep_vectors(&embedded).await;
 
         Ok(Rebuilt {
