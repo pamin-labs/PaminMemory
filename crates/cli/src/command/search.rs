@@ -39,12 +39,21 @@ pub async fn execute(
     if let Err(error) = crate::watch::freshen(session, project, vector_index, &topics).await {
         tracing::warn!(error = format!("{error:#}"), "freshening hits failed");
     }
+    // The first hits stand if the engine cannot be had again, a rebuild
+    // having refused it, say: as with a failed freshen, they are what the
+    // search found.
     if session.ingested(project) != ingested {
-        hits = session
-            .engine(project, vector_index)
-            .await?
-            .search_reranked(&args.query, args.limit, depths)
-            .await?;
+        match session.engine(project, vector_index).await {
+            Ok(engine) => {
+                hits = engine
+                    .search_reranked(&args.query, args.limit, depths)
+                    .await?;
+            }
+            Err(error) => tracing::warn!(
+                error = format!("{error:#}"),
+                "searching again after freshening failed; answering with the first search"
+            ),
+        }
     }
 
     let results = Results {
