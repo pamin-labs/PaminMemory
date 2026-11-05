@@ -1945,7 +1945,8 @@ pub const PUT_SPAN_VECTORS_BATCH: usize = 1_000;
 /// from the passage hashed beside it, [`PUT_SPAN_VECTORS_BATCH`] rows a
 /// statement, all on `connection`, so a caller's transaction keeps all or
 /// none. One already kept stays: the same model and plan over the same text
-/// give the same vector.
+/// give the same vector. Unless it is of another width, which no reader
+/// takes, so it is put right rather than left to cost every rebuild.
 pub async fn put_span_vectors<'a>(
     connection: &mut sqlx::PgConnection,
     project: ProjectId,
@@ -1958,8 +1959,10 @@ pub async fn put_span_vectors<'a>(
         .map(|(hash, vector)| (hash.as_slice(), vector.as_slice()))
         .collect();
     // In one order, so two keeps of overlapping spans lock their rows in the
-    // same order and neither waits on a row the other holds.
+    // same order and neither waits on a row the other holds. And once each:
+    // one statement may not update a row it inserted.
     rows.sort_unstable_by_key(|(hash, _)| *hash);
+    rows.dedup_by_key(|(hash, _)| *hash);
     let (hashes, vectors): (Vec<&[u8]>, Vec<&[u8]>) = rows.into_iter().unzip();
     for (hashes, vectors) in hashes
         .chunks(PUT_SPAN_VECTORS_BATCH)
@@ -1969,7 +1972,9 @@ pub async fn put_span_vectors<'a>(
             "INSERT INTO span_vectors (project_id, revision, passage_hash, encoding, vector)
              SELECT $1, $2, passage_hash, $3, vector FROM unnest($4::bytea[], $5::bytea[])
                     AS v (passage_hash, vector)
-             ON CONFLICT DO NOTHING",
+             ON CONFLICT (project_id, revision, passage_hash, encoding) DO UPDATE
+                SET vector = EXCLUDED.vector
+              WHERE octet_length(span_vectors.vector) <> octet_length(EXCLUDED.vector)",
         )
         .bind(project.0)
         .bind(revision)

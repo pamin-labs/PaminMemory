@@ -188,8 +188,26 @@ async fn a_rebuild_from_kept_vectors_loads_no_model() {
         rebuilt.reused
     );
 
-    // The malformed rows still make the rebuild load the model; vectors kept
-    // under a plan it is not on stand in for none of the rest.
+    // Embedding those topics again put their rows right, so the next rebuild
+    // takes every topic from what was kept.
+    let rebuilt = rebuild(&workspace, &name, project.id).await;
+    assert_eq!(
+        rebuilt.reused,
+        MEMORIES.len(),
+        "a rebuild that embeds a span repairs its row"
+    );
+
+    // A missing vector makes the rebuild load the model; vectors kept under a
+    // plan it is not on stand in for none of the rest.
+    execute(
+        &database,
+        "DELETE FROM span_vectors
+          WHERE (project_id, passage_hash) IN (
+                SELECT project_id, passage_hash FROM span_vectors
+                 WHERE project_id = $1 ORDER BY passage_hash LIMIT 1)",
+        project.id,
+    )
+    .await;
     execute(
         &database,
         "UPDATE span_vectors SET encoding = 'npu:another-plan' WHERE project_id = $1",

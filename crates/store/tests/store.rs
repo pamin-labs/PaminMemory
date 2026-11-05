@@ -157,6 +157,23 @@ async fn a_span_vector_is_kept_once_and_for_its_project_alone(database: &Databas
             .is_empty(),
         "another project's vectors are out of reach, whatever the query names"
     );
+    // A row of another width is put right; one of the same width stays.
+    for vector in [vec![10u8, 0, 0, 0], vec![99, 0, 0, 0]] {
+        repository::put_span_vectors(&mut scoped, mine, "model@1", "cpu:a", &[([1; 32], vector)])
+            .await
+            .expect("keep it again");
+    }
+    let rekept = repository::span_vectors(&mut *scoped, mine, "model@1", Some("cpu:a"), &hashes)
+        .await
+        .expect("read it back");
+    assert_eq!(
+        rekept
+            .iter()
+            .find(|kept| kept.passage_hash == [1; 32])
+            .map(|kept| kept.vector.as_slice()),
+        Some(&[10u8, 0, 0, 0][..]),
+        "the wrong width is replaced and the right one kept"
+    );
     let odd = [([3; 32], vec![1])];
     let malformed = repository::put_span_vectors(&mut scoped, mine, "model@1", "x", &odd).await;
     assert!(malformed.is_err(), "an odd-width vector is refused");
