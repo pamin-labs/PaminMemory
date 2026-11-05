@@ -127,9 +127,11 @@ async fn a_rebuild_from_kept_vectors_loads_no_model() {
     drop(engine);
 
     std::fs::remove_dir_all(workspace.index_dir(project.id)).expect("remove the index");
-    let engine = open(&workspace, &name).await;
-    assert!(engine.needs_rebuild(), "the premise: the index is gone");
-    let rebuilt = engine.reindex().await.expect("rebuild");
+    assert!(
+        open(&workspace, &name).await.needs_rebuild(),
+        "the premise: the index is gone"
+    );
+    let (engine, rebuilt) = rebuilt(&workspace, &name).await;
     assert_eq!(rebuilt.indexed, MEMORIES.len());
     assert_eq!(
         rebuilt.reused,
@@ -243,8 +245,23 @@ async fn rebuild(
     project: memory_core::ProjectId,
 ) -> memory_engine::Rebuilt {
     std::fs::remove_dir_all(workspace.index_dir(project)).expect("remove the index");
-    let engine = open(workspace, name).await;
-    let rebuilt = engine.reindex().await.expect("rebuild");
+    let (_, rebuilt) = rebuilt(workspace, name).await;
     assert_eq!(rebuilt.indexed, MEMORIES.len());
     rebuilt
+}
+
+/// The project's index rebuilt from the ledger, as the server rebuilds it.
+async fn rebuilt(workspace: &Workspace, name: &str) -> (Engine, memory_engine::Rebuilt) {
+    let database = Database::open(workspace, Connections::PerCommand, &settings().store)
+        .await
+        .expect("open the database");
+    Engine::rebuilt_attached(
+        database,
+        &memory_engine::Models::new(settings()),
+        workspace,
+        name,
+        VectorIndex::default(),
+    )
+    .await
+    .expect("rebuild")
 }

@@ -979,11 +979,28 @@ impl Engine {
         .await
     }
 
-    /// Rebuilding, against a database that is already up.
+    /// This project's index rebuilt from the ledger, against a database that
+    /// is already up, and what the rebuild did.
     ///
     /// Discarding before opening rather than overwriting in place is what
     /// makes a rebuild a rebuild: an overwrite leaves behind anything the
     /// ledger no longer has, which is the drift the rebuild exists to remove.
+    pub async fn rebuilt_attached(
+        database: Database,
+        models: &Models,
+        workspace: &Workspace,
+        project: &str,
+        vector_index: VectorIndex,
+    ) -> Result<(Self, Rebuilt)> {
+        let engine =
+            Self::rebuilding_attached(database, models, workspace, project, vector_index).await?;
+        let rebuilt = engine.reindex().await?;
+        Ok((engine, rebuilt))
+    }
+
+    /// The first half of [`rebuilt_attached`](Self::rebuilt_attached): the
+    /// old index set aside and an empty one opened, marked unfinished, with
+    /// nothing indexed yet. Public so a test can stop a rebuild there.
     pub async fn rebuilding_attached(
         database: Database,
         models: &Models,
@@ -1011,8 +1028,8 @@ impl Engine {
     /// replaced, or restored from a copy that did not hold this project. An
     /// open then creates an empty index, and every search would answer
     /// nothing. A rebuild that stopped part way leaves a marker behind, from
-    /// when it set the old index aside until [`reindex`](Self::reindex)
-    /// finished, so it is caught the same way.
+    /// when it set the old index aside until it finished indexing, so it is
+    /// caught the same way.
     pub fn needs_rebuild(&self) -> bool {
         self.needs_rebuild
     }
@@ -2872,12 +2889,10 @@ impl Engine {
         Ok((ChannelResults::new(Channel::Graph, candidates), paths))
     }
 
-    /// Rebuilds the projection index from the authority store.
-    ///
-    /// Returns how many topics were indexed. The caller discards the index
-    /// directory first, which is what makes this a genuine rebuild rather than
-    /// an overwrite that could leave orphans behind.
-    pub async fn reindex(&self) -> Result<Rebuilt> {
+    /// Indexes the ledger into the empty index
+    /// [`rebuilding_attached`](Self::rebuilding_attached) opened, and clears
+    /// the marker it wrote.
+    async fn reindex(&self) -> Result<Rebuilt> {
         // Marked unfinished when the old index was set aside (`assemble`),
         // so an open after a failed or killed rebuild knows the index is
         // partial; cleared once it is whole.
