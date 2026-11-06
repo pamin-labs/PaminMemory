@@ -1,48 +1,63 @@
 ---
 name: pamin-engineering
-description: The Pamin Labs engineering bar for code in this repository - fast, small, quick to build, clean, DRY, decoupled and easy to extend. Use it before writing or changing any code, before adding a dependency, before claiming something is faster or smaller, and when reviewing a change. Reach for it on words like implement, refactor, optimise, add a crate or package, abstraction, interface, performance, memory, binary size, build time, or "is this over-engineered".
+description: The engineering bar for code in this repository - fast, small, quick to build, clean, DRY, decoupled and easy to extend. Use it before writing or changing any code, before adding a dependency, before claiming something is faster or smaller, and when reviewing a change, even when the change looks small. Reach for it on words like implement, refactor, optimise, add a crate or package, abstraction, interface, layer, handler, migration, error code, setting, performance, memory, binary size, bundle size, build time, or "is this over-engineered".
 ---
 
-# The Pamin Labs engineering bar
+# The engineering bar
 
-Every Pamin Labs repository holds code to the same bar: high performance, low resource use, fast builds, clean code that is easy to maintain and extend. The rules below are how that bar turns into decisions while you work. They apply to Rust, Zig and TypeScript alike; the language notes at the end only add to them.
+Every repository that carries this skill holds code to one bar: high performance, low resource use, fast builds, and clean, DRY, decoupled code that is easy to maintain and extend. The rules live once, in `references/`, and each `AGENTS.md` imports the ones its code needs. This file is how to use them while you work; it states no rule of its own.
 
-## Before writing anything
+## Decide before you write
 
-1. **Does it need to exist?** Build what a real caller needs now. No options, layers, traits or config for a second use that has not appeared; add them when it does.
-2. **Does it already exist here?** Search the repository (and the shared crates `pamin-runtime` and `pamin-kit`) for the same concern. Extend the owner of a concern through its interface; never add a parallel version with its own rules.
-3. **Does the official SDK of the service, then the standard library, then the platform, then a dependency already in the tree, then a widely used maintained dependency cover it?** Write custom code only when none fits, and say why in the PR's "Reused" section. Lock files pin every dependency to an exact version; a published library requires caret minimums instead, so its consumers can unify, and pins exactly only with a stated reason.
+Walk these in order, and stop at the first that answers.
 
-## Shape of the code
+1. **Does it need to exist?** Is a real caller asking for it now? If it is for a second use that has not appeared (an option, a layer, an interface, a setting), do not build it.
+2. **Does it exist already?** Search this repository, then the shared libraries it depends on, for the same concern. If an owner exists, extend it through its interface.
+3. **Can something else do it?** Climb the reuse ladder in `core.md` ("Do not reinvent what exists"): the official SDK, the standard library, the platform, a dependency already in the tree, then a new maintained one. Writing it yourself is the last rung, and the PR's "Reused" section says why.
+4. **Where does it go?** Find its layer and directory in the `AGENTS.md` of the area you are in ("Layers here", the layout or module list). If no directory fits, the layout changes in the same PR.
+5. **Will it be faster or smaller?** Then measure before and after, on the entry point the product calls, and put both numbers in the PR. No number, no claim.
 
-- **One rule, one place.** A change to a rule touches one function or module. If you need to edit the same logic in two places, the logic is in the wrong place.
-- **Decoupled through narrow interfaces.** Components talk through small, explicit interfaces; dependencies point one way (adapters → contract → engine → runtime). An engine never knows about transports, auth or billing.
-- **Small functions with one job; names that say what they hold; comments that say why, not what; no dead code.**
-- **Errors carry context** and are handled where something can be done about them; nothing is swallowed.
-- **Trust boundaries are explicit.** Identity, tenant and project come from authentication, never from a request body, a tool argument or a model.
+## Which reference to read
 
-## Performance and resources
+Read every reference the change touches, before writing and again before the PR opens.
 
-- **Hot paths:** no allocation or cloning inside loops, no repeated parsing, no blocking I/O on async paths, static dispatch. Reuse buffers and the optimised kernels that already exist.
-- **Resources:** idle processes hold little memory; caches are bounded and evict; work that can wait runs in the background with a budget.
-- **Measure before and after** any change that claims to be faster, smaller or cheaper, on the entry point the product actually calls, and put both numbers and how they were taken in the PR. A claim without a measurement is removed.
+| Reference | Read it when |
+| --- | --- |
+| `references/core.md` | Always: shape of code, layers and domains, errors, data, settings, calls to other services, resources, review, commits and PRs |
+| `references/rust.md` | Writing or reviewing Rust: toolchain, errors, panics, `unsafe`, async, tasks, SQL, tests |
+| `references/go.md` | Writing or reviewing Go: tools, file layout, errors, context, concurrency, types, tests |
+| `references/performance.md` | Touching a request's hot path, a pool, start-up, or a benchmark |
+| `references/web.md` | A React, Vite and TypeScript web client or operator console |
+| `references/workers.md` | A Cloudflare Worker: routing, containers, config, deploys |
 
-## Build speed and footprint
+`AGENTS.md` files import these with `@` lines, so Claude Code loads them already; other tools open the paths they name.
 
-- Keep dependency trees shallow; prefer one well-chosen crate or package over several small ones, and turn off default features you do not use.
-- Split code so that an edit rebuilds as little as possible; keep heavy dependencies (inference, TLS) behind the crates or features that need them.
-- Release builds are as small as the language allows without losing safety checks the product relies on.
+## When the reference and the repository disagree
 
-## Before opening a PR
+- The repository's `AGENTS.md` says how it meets each rule and what it has not built yet; it never weakens a rule. A gap it names is not a licence to add to it: new code follows the rule.
+- A rule that seems wrong for a case is raised with the owner and recorded in a decision record, then changed in `references/` in every repository together. Do not work around it in code.
 
-- Branch `<type>/i-<number>-<slug>` from your pamin-labs-dev intent, Conventional Commits, one logical change per commit, each building and passing on its own.
-- Run the gates of every `AGENTS.md` the change touches, locally.
-- Rebase on the latest `main`; if `main` gained something overlapping, build on it and say what you reused.
-- Do the review before every PR that `AGENTS.md` describes: the whole diff against every rule, then the `pamin-labs-dev:peer-review` skill.
-- The PR says what changed, what it reused, how it was verified (with numbers when performance is involved), and any risk or follow-up.
+## Reviewing a change
 
-## Language notes
+1. Read the whole diff, tests included.
+2. Hold it against every rule of each reference its files import, and each rule of the `AGENTS.md` files it touches.
+3. Check the extensibility test in `core.md`: would one more of the same thing touch one place?
+4. Fix what misses in new commits, then run the peer-review skill, as `core.md`'s "Review before every PR" says.
 
-- **Rust:** edition and toolchain pinned in `rust-toolchain.toml`; `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`; `cargo deny` for licences and bans; a shared `CARGO_TARGET_DIR` keeps disk use down; `debug = "line-tables-only"` in dev profiles. The `## Rust` and `## Performance` rules in the `AGENTS.md` that covers the repository's Rust code add to these.
-- **Zig:** compiler version pinned in the repository; `ReleaseSafe` for production; one arena allocator per request; `std.testing.allocator` in tests to catch leaks; fuzz parsers.
-- **TypeScript:** strict mode; Bun for installs and scripts; measure the shipped JavaScript and keep a budget; no dependency for what the platform already does (CSS over JavaScript, native elements over widgets).
+## Before the PR opens
+
+1. Rebase on the latest `main`, and build on anything overlapping that landed.
+2. Run the gates of every `AGENTS.md` the change touches, locally.
+3. Review it as above, then write the description and commits as `core.md`'s "Commits and PRs" asks; the coordination tool's commit skill checks the mechanics.
+4. Put measurements, with how they were taken, under the PR's verification.
+
+## Where a question goes
+
+- A rule for every language: `core.md`.
+- How one language meets it: that language's reference.
+- How this repository meets it, its layers, its crates or packages, its gates: its own `AGENTS.md`.
+- Why a rule exists, and who decided it: the decision records, cited with a SHA permalink.
+
+## Changing these rules
+
+`references/` is identical in every repository that carries this skill. A change to a reference is made in all of them together, cites its decision record, and adds no repository-specific fact: those stay in the repository's own `AGENTS.md`.
