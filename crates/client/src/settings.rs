@@ -22,7 +22,7 @@
 //! request if it is running with something else (see [`mismatch`]).
 
 use std::collections::BTreeMap;
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -35,6 +35,11 @@ use serde::{Deserialize, Serialize};
 
 /// The configuration file, relative to the workspace root.
 pub const CONFIG: &str = "config.toml";
+
+/// The variable naming an external PostgreSQL server, the one a server reads
+/// for itself: it carries credentials, so it is neither a flag nor a
+/// `config.toml` key, and no client sends it.
+pub const DATABASE_URL: &str = "PAMIN_MEMORY_DATABASE_URL";
 
 /// How many indexes stay open at once.
 ///
@@ -182,6 +187,17 @@ pub struct ServerArgs {
     )]
     pub postgres_dir: Option<PathBuf>,
 
+    /// The most connections the server opens to the PostgreSQL server named
+    /// by `PAMIN_MEMORY_DATABASE_URL`, which it needs. Default: the server's
+    /// own pool size.
+    #[arg(
+        long,
+        value_name = "N",
+        global = true,
+        help_heading = "Server settings"
+    )]
+    pub database_connections: Option<NonZeroU32>,
+
     /// Where models are downloaded, prepared and compiled, relative to the
     /// current directory if not absolute. Default: `pamin/models` in the
     /// platform's cache directory, shared by every workspace.
@@ -226,6 +242,7 @@ struct Serve {
     open_indexes: Option<NonZeroUsize>,
     jit: Option<bool>,
     postgres_dir: Option<PathBuf>,
+    database_connections: Option<NonZeroU32>,
     models_dir: Option<PathBuf>,
 }
 
@@ -282,6 +299,7 @@ pub struct Server {
     pub open_indexes: usize,
     pub jit: bool,
     pub postgres_dir: Option<PathBuf>,
+    pub database_connections: Option<NonZeroU32>,
     pub models_dir: PathBuf,
     pub entries: Vec<Entry>,
 }
@@ -465,6 +483,15 @@ impl Server {
             "none (installs its own)".to_string(),
         );
 
+        let database_connections = args.database_connections.or(serve.database_connections);
+        pick(
+            "database_connections",
+            args.database_connections.map(|n| n.to_string()),
+            given("database_connections"),
+            serve.database_connections.map(|n| n.to_string()),
+            "none (the server's own pool size)".to_string(),
+        );
+
         let flag_models = args.models_dir.as_ref().map(from_flag).transpose()?;
         let file_models = serve.models_dir.as_ref().map(from_file).transpose()?;
         let default_models = defaults::models_dir();
@@ -510,6 +537,7 @@ impl Server {
             open_indexes,
             jit,
             postgres_dir,
+            database_connections,
             models_dir,
             entries,
         })
@@ -614,6 +642,9 @@ pub fn forwarded(args: &ServerArgs) -> Vec<std::ffi::OsString> {
     }
     if let Some(dir) = &args.postgres_dir {
         flag("postgres-dir", dir.clone().into());
+    }
+    if let Some(cap) = args.database_connections {
+        flag("database-connections", cap.to_string().into());
     }
     forwarded
 }

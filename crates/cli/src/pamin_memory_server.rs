@@ -65,5 +65,10 @@ async fn answer(unserved: Unserved) -> Result<()> {
             format.emit(&result, || memory_contract::stop::render(&result));
             Ok(())
         }
+        Unserved::Migrate { format } => {
+            let result = command::migrate::execute().await?;
+            format.emit(&result, || memory_contract::migrate::render(&result));
+            Ok(())
+        }
     }
 }

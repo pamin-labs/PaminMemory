@@ -72,6 +72,26 @@ pub struct StoreSettings {
     /// A PostgreSQL installation prefix (holding `bin/initdb`) to use instead
     /// of installing one into the workspace; see [`supplied_installation`].
     pub postgres_dir: Option<std::path::PathBuf>,
+    /// A PostgreSQL server to use instead of the workspace's own cluster, for
+    /// a hosted deployment whose disk is not where its data lives. Nothing is
+    /// installed, started or recorded for it; the store only connects and
+    /// migrates. `jit` and `postgres_dir` do not apply.
+    pub database_url: Option<DatabaseUrl>,
+    /// The most connections this node opens to [`Self::database_url`]. Every
+    /// node sharing that server holds a pool of its own, so their caps
+    /// together have to fit its connection limit. Unset, a node opens up to
+    /// [`Connections::limit`].
+    pub database_connections: Option<u32>,
+}
+
+/// A `postgres://` URL. It carries credentials, so it never prints.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DatabaseUrl(pub String);
+
+impl std::fmt::Debug for DatabaseUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DatabaseUrl(..)")
+    }
 }
 
 impl Default for StoreSettings {
@@ -79,6 +99,8 @@ impl Default for StoreSettings {
         Self {
             jit: memory_core::settings::JIT,
             postgres_dir: None,
+            database_url: None,
+            database_connections: None,
         }
     }
 }
@@ -92,6 +114,8 @@ impl StoreSettings {
     fn resolved(&self) -> Result<Self> {
         Ok(Self {
             jit: self.jit,
+            database_url: self.database_url.clone(),
+            database_connections: self.database_connections,
             postgres_dir: self
                 .postgres_dir
                 .as_deref()
@@ -107,7 +131,10 @@ pub struct Database {
 }
 
 impl Database {
-    /// Ensures a server is running for this workspace, connects, and migrates.
+    /// Ensures a server is running for this workspace, connects, and migrates;
+    /// or, given [`StoreSettings::database_url`], connects to that server,
+    /// leaving the workspace's own cluster alone, and refuses it unless
+    /// [`Database::migrate`] has already brought it up to this release.
     ///
     /// Safe to call repeatedly. The first call installs and initializes the
     /// cluster; later calls reuse the running server.
@@ -123,6 +150,11 @@ impl Database {
         connections: Connections,
         settings: &StoreSettings,
     ) -> Result<Self> {
+        if let Some(url) = &settings.database_url {
+            let database = Self::external(url, connections, settings.database_connections).await?;
+            crate::migrate::ensure_current(&database.pool).await?;
+            return Ok(database);
+        }
         let settings = &settings.resolved()?;
         let running = match workspace.read_server()? {
             Some(existing) if listening(existing.port) && !reusable(&existing, settings) => {
@@ -151,11 +183,62 @@ impl Database {
         Ok(database)
     }
 
+    /// Applies the migrations the external database at `url` has not seen,
+    /// as a deploy does once, before the servers that need them start, and
+    /// returns their versions.
+    ///
+    /// Servers sharing that database never migrate it themselves, so none
+    /// races another to, and each migration adds only what its release needs,
+    /// so the servers still running the release before keep working. Two runs
+    /// at once do not both apply a migration, but the loser fails, so a deploy
+    /// runs one.
+    pub async fn migrate(url: &DatabaseUrl) -> Result<Vec<i64>> {
+        // One connection: the migrations run one after another.
+        let database = Self::external(url, Connections::PerCommand, Some(1)).await?;
+        crate::migrate::run(&database.pool).await
+    }
+
+    /// A pool on the external server at `url`, refused when its login would
+    /// skip row-level security.
+    async fn external(
+        url: &DatabaseUrl,
+        connections: Connections,
+        cap: Option<u32>,
+    ) -> Result<Self> {
+        let database = Self {
+            pool: pool(&url.0, connections, Reach::Remote, cap).await?,
+        };
+        database.bound_by_row_level_security().await?;
+        Ok(database)
+    }
+
     /// Connects to an already running server without touching its lifecycle.
     pub async fn connect(server: &LocalServer, connections: Connections) -> Result<Self> {
         Ok(Self {
-            pool: pool(&server.url(), connections).await?,
+            pool: pool(&server.url(), connections, Reach::Local, None).await?,
         })
+    }
+
+    /// Refuses a login that skips row-level security, a superuser or one
+    /// with `BYPASSRLS`: hosted, the database is the second guard on which
+    /// project a query reaches, and whatever such a login runs as itself,
+    /// outside a [`scoped`](Self::scoped) transaction, skips that guard
+    /// without a sign. Managed servers often hand out an administrator login
+    /// like that.
+    async fn bound_by_row_level_security(&self) -> Result<()> {
+        let (bypasses,): (bool,) = sqlx::query_as(
+            "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if bypasses {
+            return Err(crate::StoreError::Role(
+                "the database role is a superuser or has BYPASSRLS, so it would skip \
+                 row-level security; use a role that has neither"
+                    .into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Wraps a pool the caller built, for a caller that needs a particular
@@ -273,18 +356,30 @@ fn other_settings(
 /// itself, as the evaluation harnesses do, is the other case, so
 /// [`Connections`] is the caller's to state.
 ///
-/// `test_before_acquire` is off. It costs a full round trip on every acquire to
-/// detect connections dropped by a proxy or an idle timer, and there is neither
-/// between here and a cluster on this machine that this process just started.
-async fn pool(url: &str, connections: Connections) -> Result<PgPool> {
+/// For a cluster on this machine, `test_before_acquire` is off. It costs a full
+/// round trip on every acquire to detect connections dropped by a proxy or an
+/// idle timer, and there is neither between here and a cluster this process
+/// just started. An external server is reached through both, and its server
+/// may sleep and wake between calls, so there each connection is tested and
+/// recycled. Every node sharing it holds a pool of its own, so the server's
+/// connection limit is divided among them.
+async fn pool(
+    url: &str,
+    connections: Connections,
+    reach: Reach,
+    cap: Option<u32>,
+) -> Result<PgPool> {
+    let remote = reach == Reach::Remote;
+    let limit = cap.map_or(connections.limit(), |cap| cap.min(connections.limit()));
     let pool = PgPoolOptions::new()
-        .max_connections(connections.limit())
+        .max_connections(limit)
         .min_connections(1)
-        .test_before_acquire(false)
-        // A command outlives neither, so recycling connections underneath it
-        // only adds reconnects.
-        .idle_timeout(None)
-        .max_lifetime(None)
+        .test_before_acquire(remote)
+        // Locally a command outlives neither, so recycling connections
+        // underneath it only adds reconnects; a remote server's proxy closes
+        // idle ones first.
+        .idle_timeout(remote.then_some(Duration::from_secs(5 * 60)))
+        .max_lifetime(remote.then_some(Duration::from_secs(30 * 60)))
         // Long enough to outlast a busy moment, short enough that a caller
         // learns the server is unreachable rather than appearing to hang.
         .acquire_timeout(Duration::from_secs(10))
@@ -292,6 +387,15 @@ async fn pool(url: &str, connections: Connections) -> Result<PgPool> {
         .await?;
 
     Ok(pool)
+}
+
+/// Where a pool's server is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// The workspace's own cluster, on this machine.
+    Local,
+    /// An external server, through the network and its proxy.
+    Remote,
 }
 
 /// What this cluster is started with.
@@ -711,6 +815,8 @@ mod tests {
         let started = StoreSettings {
             jit: false,
             postgres_dir: Some("/usr/lib/postgresql/17".into()),
+            database_url: None,
+            database_connections: None,
         };
         let mut server = read_started(&started);
         assert!(super::reusable(&server, &started));
@@ -779,6 +885,8 @@ mod tests {
         let relative = StoreSettings {
             jit: false,
             postgres_dir: Some("pg".into()),
+            database_url: None,
+            database_connections: None,
         };
         let resolved = relative.resolved().unwrap();
         assert_eq!(resolved.postgres_dir, Some(here.join("pg")));
@@ -802,6 +910,8 @@ mod tests {
         let prefix = |byte: u8| StoreSettings {
             jit: false,
             postgres_dir: Some(std::ffi::OsStr::from_bytes(&[b'/', b'p', byte]).into()),
+            database_url: None,
+            database_connections: None,
         };
         let recorded = super::started_with(&prefix(0x80));
         let json = serde_json::to_vec(&recorded).unwrap();
